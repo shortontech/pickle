@@ -1,6 +1,5 @@
-
-
 # Pickle 🥒
+
 
 ## Getting Started: Unboxing Your First Pickle
 
@@ -42,7 +41,12 @@ Compile -> Tickle -> Compile -> Pickle.
 * Tickle your pickle - this processes the idiomatic Go to store as templates in .go files.
 * Then you compile your pickle.
 * Whip out your pickle - pickle one of our test apps.
+* Squeeze your pickle - run automated tests.
 
-It's so easy. Anyone can play with their pickle.
+It's so easy. Anyone can enjoy their pickle.
 
 ## Contributing (Pickle Enhancement):
+
+## README TODO:
+* The squeeze test suite needs to be documented. Have to make sure the pickle isn't oozing. That's bad.
+* Empty sections need to be filled.

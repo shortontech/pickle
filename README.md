@@ -1,5 +1,44 @@
 # Pickle 🥒
 
+**Laravel's developer experience. Go's deployment story. Security by construction.**
+
+Pickle is a code generation framework for Go. You write controllers, migrations, request classes, and middleware using a Laravel-inspired syntax. Pickle watches your project and generates all the boilerplate — models, route bindings, query scopes, handler wiring, request deserialization — as plain, idiomatic Go. The output compiles to a single static binary with no runtime dependency on Pickle.
+
+```
+You write controllers.     Pickle generates models.
+You write migrations.      Pickle generates query builders.
+You write request classes.  Pickle generates validation + deserialization.
+You write routes.go.       Pickle generates handler registration.
+```
+
+The generated code is readable, debuggable, and `grep` friendly. It's not magical. It's just code you didn't have to type.
+
+### Why Pickle Exists
+
+Go makes you write 200 lines to do what Laravel does in 3. The GoLang community thinks this is a feature. I think it's a security nightmare not. It's boilerplate, and boilerplate is where bugs and exploits hide.
+
+Pickle takes the position that if code can be generated from your intent, it should be. You keep the control. You lose the tedium.
+
+### Security by Design, Not by Discipline
+
+Most frameworks treat security as a best practice.
+
+Pickle treats it as a structural property.
+
+**SQL injection is impossible.** The generated query builder uses parameterized queries exclusively. There is no API for string interpolation. No developer discipline required — the unsafe path doesn't exist.
+
+**Mass assignment is impossible.** Request structs define exactly which fields are accepted. If `CreateUserRequest` doesn't have a `Role` field, POSTing `{"role": "admin"}` does nothing. The model never sees unvalidated input.
+
+**Validation cannot be bypassed.** Controllers receive pre-validated, typed request structs. The generated binding layer runs validation before your code executes. There is no code path around it.
+
+**Authorization gaps are visible.** Every endpoint, its middleware stack, and its grouping are defined in a single `routes.go` file. A missing `Auth` or `RequireRole` middleware is immediately obvious. Security review is a 30-second read, not a codebase-wide audit.
+
+**Standard security tooling works out of the box.** Generated code is plain Go — `go vet`, `gosec`, `staticcheck`, Snyk, and Semgrep work with zero configuration. No framework abstractions to unwrap, no `interface{}` soup, no runtime reflection. Security scanners see exactly what runs in production.
+
+This is the main advantage of code generation over using runtime frameworks. A scanner can't reason about magic method resolution or custom middleware abstractions. It can reason about a struct, a function, and a parameterized query — because that's just Go.
+
+---
+
 ## Getting Started: Unboxing Your First Pickle
 
 ## Middleware Stack

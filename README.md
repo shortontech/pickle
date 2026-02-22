@@ -37,8 +37,12 @@ Request → Controller
 ## Testing (Poking Your Pickle):
 It's not complicated.
 
-* First you tickle your pickle, which processes idiomatic Go to store as templates in .go files.
+Compile -> Tickle -> Compile -> Pickle.
+* Compile the tickler - a generator for generating generators used within Pickle, so that pickle's generators are plain idiomatic .go files.
+* Tickle your pickle - this processes the idiomatic Go to store as templates in .go files.
 * Then you compile your pickle.
-* Whip out your pickle and pickle one of our test apps.
+* Whip out your pickle - pickle one of our test apps.
+
+It's so easy. Anyone can play with their pickle.
 
 ## Contributing (Pickle Enhancement):

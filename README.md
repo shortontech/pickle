@@ -1,6 +1,6 @@
 
 
-# Pickle
+# Pickle 🥒
 
 - **Getting Started:** "Unboxing Your First Pickle"
 
@@ -15,7 +15,7 @@ a thick, secure barrier between the internet and your
 business logic.
 
 
-## A properly wrapped pickle
+## A properly wrapped Pickle
 Request → RateLimit → CORS → Auth → RBAC → Validation → Controller
 
 An unwrapped pickle (DO NOT DO THIS):
@@ -23,7 +23,7 @@ Request → Controller
 
 
 > ⚠️ **WARNING:** Never deploy an unwrapped pickle. An unwrapped 
-> pickle exposed to the open internet is a liability.
+> Pickle exposed to the open internet is a liability.
 
 - **Database (What's Inside Your Pickle):**
 

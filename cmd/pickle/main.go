@@ -7,12 +7,21 @@ import (
 	"runtime"
 
 	"github.com/pickle-framework/pickle/pkg/generator"
+	"github.com/pickle-framework/pickle/pkg/watcher"
 )
 
 func main() {
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(1)
+	}
+
+	// Handle --watch flag anywhere in args
+	for _, arg := range os.Args[1:] {
+		if arg == "--watch" {
+			cmdWatch()
+			return
+		}
 	}
 
 	switch os.Args[1] {
@@ -42,12 +51,14 @@ func usage() {
 
 Commands:
   generate          Generate all files from project sources
+  --watch           Watch for changes and regenerate on save
   make:controller   Scaffold a new controller
   make:migration    Scaffold a new migration
   make:request      Scaffold a new request class
   make:middleware    Scaffold a new middleware
 
 Options:
+  --project <dir>   Project directory (default: current directory)
   --help, -h        Show this help
   --version, -v     Show version`)
 }
@@ -78,6 +89,54 @@ func cmdGenerate() {
 		os.Exit(1)
 	}
 	fmt.Println("pickle: done")
+}
+
+func cmdWatch() {
+	projectDir := "."
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--project" && i+1 < len(args) {
+			projectDir = args[i+1]
+			i++
+		}
+	}
+
+	project, err := generator.DetectProject(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+
+	picklePkgDir := findPicklePkgDir()
+
+	// Run an initial generate
+	fmt.Printf("pickle --watch: %s\n", project.Dir)
+	fmt.Println("  initial generation...")
+	if err := generator.Generate(project, picklePkgDir); err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: generate failed: %v\n", err)
+	}
+
+	fmt.Println("  watching for changes (ctrl+c to stop)")
+	if err := watcher.Watch(project.Dir, func(changed []string) {
+		fmt.Printf("\n  changed: %d file(s)\n", len(changed))
+		for _, path := range changed {
+			rel, _ := filepath.Rel(project.Dir, path)
+			if rel == "" {
+				rel = path
+			}
+			fmt.Printf("    %s\n", rel)
+		}
+
+		fmt.Println("  regenerating...")
+		if err := generator.Generate(project, picklePkgDir); err != nil {
+			fmt.Fprintf(os.Stderr, "  error: %v\n", err)
+		} else {
+			fmt.Println("  done")
+		}
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 // findPicklePkgDir locates the pkg/ directory of the pickle installation.

@@ -100,9 +100,3 @@ func TestGenerateBasicCrudScopes(t *testing.T) {
 	}
 }
 
-func toLowerFirst(s string) string {
-	if len(s) == 0 {
-		return s
-	}
-	return string(s[0]+32) + s[1:]
-}

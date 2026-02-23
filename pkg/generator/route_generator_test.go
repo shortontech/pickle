@@ -105,12 +105,18 @@ func TestGenerateRoutesBasicCrud(t *testing.T) {
 		t.Error("missing Auth middleware reference")
 	}
 
-	// Store/Update routes should have JSON decoding
-	if !strings.Contains(output, "json.NewDecoder") {
-		t.Error("missing JSON decoding for request-bound handlers")
+	// Store/Update routes should call binding functions
+	if !strings.Contains(output, "BindCreateUserRequest(r)") {
+		t.Error("missing BindCreateUserRequest call")
 	}
-	if !strings.Contains(output, "validate.Struct") {
-		t.Error("missing validation call")
+	if !strings.Contains(output, "BindUpdateUserRequest(r)") {
+		t.Error("missing BindUpdateUserRequest call")
+	}
+	if !strings.Contains(output, "BindCreatePostRequest(r)") {
+		t.Error("missing BindCreatePostRequest call")
+	}
+	if !strings.Contains(output, "bindErr.Status") {
+		t.Error("missing bindErr.Status check")
 	}
 
 	// Context-only handlers should call controller directly

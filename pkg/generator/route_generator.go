@@ -126,9 +126,8 @@ func convertPath(picklePath string) (goPath string, params []string) {
 
 // routeTemplateData is the data passed to the route generation template.
 type routeTemplateData struct {
-	Package    string
-	HasBinding bool // whether any route needs JSON decoding
-	Handlers   []handlerData
+	Package  string
+	Handlers []handlerData
 }
 
 type handlerData struct {
@@ -148,15 +147,8 @@ package {{ .Package }}
 
 import (
 	"net/http"
-{{- if .HasBinding }}
-	"encoding/json"
-
-	"github.com/go-playground/validator/v10"
-{{- end }}
 )
-{{ if .HasBinding }}
-var validate = validator.New()
-{{ end }}
+
 // RegisterRoutes wires all route handlers onto the given ServeMux.
 func RegisterRoutes(mux *http.ServeMux) {
 {{- range .Handlers }}
@@ -172,12 +164,9 @@ func RegisterRoutes(mux *http.ServeMux) {
 		resp := RunMiddleware(ctx, nil, func() Response {
 {{- end }}
 {{- if .RequestType }}
-			var req {{ .RequestType }}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				return ctx.JSON(400, map[string]string{"error": "invalid request body"})
-			}
-			if err := validate.Struct(req); err != nil {
-				return ctx.JSON(422, map[string]string{"error": err.Error()})
+			req, bindErr := Bind{{ .RequestType }}(r)
+			if bindErr != nil {
+				return ctx.JSON(bindErr.Status, bindErr)
 			}
 			return (&{{ .Controller }}{}).{{ .Action }}(req, ctx)
 {{- else }}
@@ -194,7 +183,6 @@ func RegisterRoutes(mux *http.ServeMux) {
 // the parsed route definitions onto an http.ServeMux.
 func GenerateRoutes(routes []ParsedRoute, controllers map[string]map[string]ControllerMethod, packageName string) ([]byte, error) {
 	var handlers []handlerData
-	hasBinding := false
 
 	for _, route := range routes {
 		goPath, params := convertPath(route.Path)
@@ -212,7 +200,6 @@ func GenerateRoutes(routes []ParsedRoute, controllers map[string]map[string]Cont
 		if methods, ok := controllers[route.Controller]; ok {
 			if cm, ok := methods[route.Action]; ok && cm.RequestType != "" {
 				h.RequestType = cm.RequestType
-				hasBinding = true
 			}
 		}
 
@@ -228,9 +215,8 @@ func GenerateRoutes(routes []ParsedRoute, controllers map[string]map[string]Cont
 	})
 
 	data := routeTemplateData{
-		Package:    packageName,
-		HasBinding: hasBinding,
-		Handlers:   handlers,
+		Package:  packageName,
+		Handlers: handlers,
 	}
 
 	var buf bytes.Buffer

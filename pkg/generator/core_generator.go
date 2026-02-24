@@ -21,3 +21,9 @@ func GenerateCoreQuery(packageName string) []byte {
 func GenerateCoreSchema(packageName string) []byte {
 	return []byte(strings.ReplaceAll(embedSCHEMA, packagePlaceholder, packageName))
 }
+
+// GenerateCoreConfig returns the config helpers (Env, .env loader, DatabaseConfig, etc.)
+// with the package name set to the target package.
+func GenerateCoreConfig(packageName string) []byte {
+	return []byte(strings.ReplaceAll(embedCONFIG, packagePlaceholder, packageName))
+}

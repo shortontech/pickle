@@ -260,6 +260,27 @@ func Generate(project *Project, picklePkgDir string) error {
 	modelsDir := filepath.Join(project.Dir, "models")
 	migrationsDir := filepath.Join(project.Dir, "migrations")
 
+	configDir := filepath.Join(project.Dir, "config")
+
+	// 0. Generate config glue if config/ exists
+	if _, err := os.Stat(configDir); err == nil {
+		scan, err := ScanConfigs(configDir)
+		if err != nil {
+			return fmt.Errorf("scanning config: %w", err)
+		}
+
+		if len(scan.Configs) > 0 {
+			fmt.Println("  generating config/pickle_gen.go")
+			configSrc, err := GenerateConfigGlue(scan, "config")
+			if err != nil {
+				return fmt.Errorf("generating config glue: %w", err)
+			}
+			if err := writeFile(filepath.Join(configDir, "pickle_gen.go"), configSrc); err != nil {
+				return err
+			}
+		}
+	}
+
 	// 1. Write pre-tickled core types
 	fmt.Println("  generating pickle_gen.go")
 	if err := writeFile(filepath.Join(project.Dir, "pickle_gen.go"), GenerateCoreHTTP(rootPkg)); err != nil {

@@ -1,16 +1,21 @@
 package main
 
 import (
-	"fmt"
+	"log"
 	"net/http"
 
 	basiccrud "github.com/shortontech/pickle/testdata/basic-crud"
+	"github.com/shortontech/pickle/testdata/basic-crud/config"
+	"github.com/shortontech/pickle/testdata/basic-crud/models"
 )
 
 func main() {
+	config.Init()
+	models.DB = config.Database.Open()
+
 	mux := http.NewServeMux()
 	basiccrud.API.RegisterRoutes(mux)
 
-	fmt.Println("listening on :9999")
-	http.ListenAndServe(":9999", mux)
+	log.Printf("listening on :%s", config.App.Port)
+	http.ListenAndServe(":"+config.App.Port, mux)
 }

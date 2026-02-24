@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pickle-framework/pickle/pkg/schema"
+	"github.com/shortontech/pickle/pkg/schema"
 )
 
 func TestGenerateModelUsers(t *testing.T) {

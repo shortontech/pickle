@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/pickle-framework/pickle/pkg/tickle"
+	"github.com/shortontech/pickle/pkg/tickle"
 )
 
 const placeholder = "__PACKAGE__"

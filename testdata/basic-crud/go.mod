@@ -1,4 +1,4 @@
-module github.com/pickle-framework/pickle/testdata/basic-crud
+module github.com/shortontech/pickle/testdata/basic-crud
 
 go 1.24.0
 

@@ -3,7 +3,7 @@ package names
 import (
 	"strings"
 
-	"github.com/pickle-framework/pickle/pkg/schema"
+	"github.com/shortontech/pickle/pkg/schema"
 )
 
 // commonInitialisms are words that should be fully uppercased in Go names.

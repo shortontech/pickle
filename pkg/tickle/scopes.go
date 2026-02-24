@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/pickle-framework/pickle/pkg/names"
-	"github.com/pickle-framework/pickle/pkg/schema"
+	"github.com/shortontech/pickle/pkg/names"
+	"github.com/shortontech/pickle/pkg/schema"
 )
 
 // ScopeBlock represents a template block extracted from a scopes file.

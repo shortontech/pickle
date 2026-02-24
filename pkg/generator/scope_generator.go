@@ -6,8 +6,8 @@ import (
 	"go/format"
 	"strings"
 
-	"github.com/pickle-framework/pickle/pkg/schema"
-	"github.com/pickle-framework/pickle/pkg/tickle"
+	"github.com/shortontech/pickle/pkg/schema"
+	"github.com/shortontech/pickle/pkg/tickle"
 )
 
 // GenerateQueryScopes produces a Go source file with typed Where*/With* methods

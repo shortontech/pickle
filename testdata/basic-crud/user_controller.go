@@ -2,7 +2,7 @@ package basiccrud
 
 import (
 	"github.com/google/uuid"
-	"github.com/pickle-framework/pickle/testdata/basic-crud/models"
+	"github.com/shortontech/pickle/testdata/basic-crud/models"
 )
 
 type UserController struct {

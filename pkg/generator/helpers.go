@@ -1,8 +1,8 @@
 package generator
 
 import (
-	"github.com/pickle-framework/pickle/pkg/names"
-	"github.com/pickle-framework/pickle/pkg/schema"
+	"github.com/shortontech/pickle/pkg/names"
+	"github.com/shortontech/pickle/pkg/schema"
 )
 
 func snakeToPascal(s string) string {

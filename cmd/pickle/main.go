@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/pickle-framework/pickle/pkg/generator"
-	"github.com/pickle-framework/pickle/pkg/watcher"
+	"github.com/shortontech/pickle/pkg/generator"
+	"github.com/shortontech/pickle/pkg/watcher"
 )
 
 func main() {

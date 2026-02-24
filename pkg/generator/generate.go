@@ -13,8 +13,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pickle-framework/pickle/pkg/schema"
-	"github.com/pickle-framework/pickle/pkg/tickle"
+	"github.com/shortontech/pickle/pkg/schema"
+	"github.com/shortontech/pickle/pkg/tickle"
 )
 
 // Project represents a Pickle project layout rooted at a directory.

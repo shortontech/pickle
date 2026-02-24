@@ -2,10 +2,12 @@ package cooked
 
 import "testing"
 
+func noop(ctx *Context) Response { return Response{} }
+
 func TestRoutesBasic(t *testing.T) {
 	r := Routes(func(r *Router) {
-		r.Get("/health", "healthHandler")
-		r.Post("/users", "createUser")
+		r.Get("/health", noop)
+		r.Post("/users", noop)
 	})
 
 	routes := r.AllRoutes()
@@ -25,9 +27,9 @@ func TestRoutesGroup(t *testing.T) {
 
 	r := Routes(func(r *Router) {
 		r.Group("/api", mw, func(r *Router) {
-			r.Get("/users", "listUsers")
+			r.Get("/users", noop)
 			r.Group("/admin", func(r *Router) {
-				r.Delete("/users/:id", "deleteUser")
+				r.Delete("/users/:id", noop)
 			})
 		})
 	})
@@ -42,7 +44,6 @@ func TestRoutesGroup(t *testing.T) {
 	if routes[1].Path != "/api/admin/users/:id" {
 		t.Errorf("route[1].Path = %q, want /api/admin/users/:id", routes[1].Path)
 	}
-	// Group middleware should be inherited
 	if len(routes[0].Middleware) != 1 {
 		t.Errorf("route[0] middleware count = %d, want 1", len(routes[0].Middleware))
 	}
@@ -57,7 +58,7 @@ func TestRoutesPerRouteMiddleware(t *testing.T) {
 
 	r := Routes(func(r *Router) {
 		r.Group("/api", mw1, func(r *Router) {
-			r.Post("/transfers", "create", mw2)
+			r.Post("/transfers", noop, mw2)
 		})
 	})
 

@@ -36,7 +36,12 @@ func (c PostController) Show(ctx *Context) Response {
 	return ctx.JSON(200, post)
 }
 
-func (c PostController) Store(req CreatePostRequest, ctx *Context) Response {
+func (c PostController) Store(ctx *Context) Response {
+	req, bindErr := BindCreatePostRequest(ctx.Request())
+	if bindErr != nil {
+		return ctx.JSON(bindErr.Status, bindErr)
+	}
+
 	post := &models.Post{
 		UserID: uuid.MustParse(ctx.Auth().UserID),
 		Title:  req.Title,
@@ -51,7 +56,12 @@ func (c PostController) Store(req CreatePostRequest, ctx *Context) Response {
 	return ctx.JSON(201, post)
 }
 
-func (c PostController) Update(req UpdatePostRequest, ctx *Context) Response {
+func (c PostController) Update(ctx *Context) Response {
+	req, bindErr := BindUpdatePostRequest(ctx.Request())
+	if bindErr != nil {
+		return ctx.JSON(bindErr.Status, bindErr)
+	}
+
 	post, err := models.QueryPost().
 		WhereID(uuid.MustParse(ctx.Param("id"))).
 		WhereUserID(uuid.MustParse(ctx.Auth().UserID)).

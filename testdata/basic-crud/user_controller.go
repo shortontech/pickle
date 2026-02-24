@@ -30,7 +30,12 @@ func (c UserController) Show(ctx *Context) Response {
 	return ctx.JSON(200, user)
 }
 
-func (c UserController) Store(req CreateUserRequest, ctx *Context) Response {
+func (c UserController) Store(ctx *Context) Response {
+	req, bindErr := BindCreateUserRequest(ctx.Request())
+	if bindErr != nil {
+		return ctx.JSON(bindErr.Status, bindErr)
+	}
+
 	user := &models.User{
 		Name:     req.Name,
 		Email:    req.Email,
@@ -44,7 +49,12 @@ func (c UserController) Store(req CreateUserRequest, ctx *Context) Response {
 	return ctx.JSON(201, user)
 }
 
-func (c UserController) Update(req UpdateUserRequest, ctx *Context) Response {
+func (c UserController) Update(ctx *Context) Response {
+	req, bindErr := BindUpdateUserRequest(ctx.Request())
+	if bindErr != nil {
+		return ctx.JSON(bindErr.Status, bindErr)
+	}
+
 	user, err := models.QueryUser().
 		WhereID(uuid.MustParse(ctx.Param("id"))).
 		First()

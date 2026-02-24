@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"encoding/json"
+	"regexp"
 )
 
 // AuthInfo holds authentication state set by middleware.
@@ -205,11 +206,14 @@ func (r Response) Write(w http.ResponseWriter) {
 // MiddlewareFunc is the signature for middleware functions.
 type MiddlewareFunc func(ctx *Context, next func() Response) Response
 
+// HandlerFunc is a resolved handler that takes a Context and returns a Response.
+type HandlerFunc func(ctx *Context) Response
+
 // Route describes a single registered route.
 type Route struct {
 	Method     string
 	Path       string
-	Handler    any
+	Handler    HandlerFunc
 	Middleware []MiddlewareFunc
 }
 
@@ -228,7 +232,7 @@ func Routes(fn func(r *Router)) *Router {
 	return r
 }
 
-func (r *Router) addRoute(method, path string, handler any, mw []MiddlewareFunc) {
+func (r *Router) addRoute(method, path string, handler HandlerFunc, mw []MiddlewareFunc) {
 	r.routes = append(r.routes, Route{
 		Method:     method,
 		Path:       path,
@@ -238,27 +242,27 @@ func (r *Router) addRoute(method, path string, handler any, mw []MiddlewareFunc)
 }
 
 // Get registers a GET route.
-func (r *Router) Get(path string, handler any, mw ...MiddlewareFunc) {
+func (r *Router) Get(path string, handler HandlerFunc, mw ...MiddlewareFunc) {
 	r.addRoute("GET", path, handler, mw)
 }
 
 // Post registers a POST route.
-func (r *Router) Post(path string, handler any, mw ...MiddlewareFunc) {
+func (r *Router) Post(path string, handler HandlerFunc, mw ...MiddlewareFunc) {
 	r.addRoute("POST", path, handler, mw)
 }
 
 // Put registers a PUT route.
-func (r *Router) Put(path string, handler any, mw ...MiddlewareFunc) {
+func (r *Router) Put(path string, handler HandlerFunc, mw ...MiddlewareFunc) {
 	r.addRoute("PUT", path, handler, mw)
 }
 
 // Patch registers a PATCH route.
-func (r *Router) Patch(path string, handler any, mw ...MiddlewareFunc) {
+func (r *Router) Patch(path string, handler HandlerFunc, mw ...MiddlewareFunc) {
 	r.addRoute("PATCH", path, handler, mw)
 }
 
 // Delete registers a DELETE route.
-func (r *Router) Delete(path string, handler any, mw ...MiddlewareFunc) {
+func (r *Router) Delete(path string, handler HandlerFunc, mw ...MiddlewareFunc) {
 	r.addRoute("DELETE", path, handler, mw)
 }
 
@@ -281,26 +285,20 @@ func (r *Router) Group(prefix string, args ...any) {
 }
 
 // Resource registers standard CRUD routes for a controller.
-// It looks for Index, Show, Store, Update, and Destroy methods via
-// interface checks on the controller.
-func (r *Router) Resource(prefix string, controller any, mw ...MiddlewareFunc) {
-	type indexer interface{ Index(*Context) Response }
-	type shower interface{ Show(*Context) Response }
-	type destroyer interface{ Destroy(*Context) Response }
+type ResourceController interface {
+	Index(*Context) Response
+	Show(*Context) Response
+	Store(*Context) Response
+	Update(*Context) Response
+	Destroy(*Context) Response
+}
 
-	if c, ok := controller.(indexer); ok {
-		r.addRoute("GET", prefix, c.Index, mw)
-	}
-	if c, ok := controller.(shower); ok {
-		r.addRoute("GET", prefix+"/:id", c.Show, mw)
-	}
-	// Store and Update use `any` handler since they take request structs —
-	// the generator resolves the actual method signature.
-	r.addRoute("POST", prefix, controller, mw)
-	r.addRoute("PUT", prefix+"/:id", controller, mw)
-	if c, ok := controller.(destroyer); ok {
-		r.addRoute("DELETE", prefix+"/:id", c.Destroy, mw)
-	}
+func (r *Router) Resource(prefix string, c ResourceController, mw ...MiddlewareFunc) {
+	r.addRoute("GET", prefix, c.Index, mw)
+	r.addRoute("GET", prefix+"/:id", c.Show, mw)
+	r.addRoute("POST", prefix, c.Store, mw)
+	r.addRoute("PUT", prefix+"/:id", c.Update, mw)
+	r.addRoute("DELETE", prefix+"/:id", c.Destroy, mw)
 }
 
 // AllRoutes returns a flattened list of all routes with prefixes and
@@ -329,5 +327,57 @@ func (r *Router) collectRoutes(parentPrefix string, parentMW []MiddlewareFunc) [
 	}
 
 	return routes
+}
+
+var paramPattern = regexp.MustCompile(`:(\w+)`)
+
+// RegisterRoutes wires all routes onto the given ServeMux.
+func (r *Router) RegisterRoutes(mux *http.ServeMux) {
+	for _, route := range r.AllRoutes() {
+		route := route // capture
+
+		// Convert :param to Go 1.22+ {param}
+		goPath := paramPattern.ReplaceAllString(route.Path, "{${1}}")
+
+		// Extract param names
+		var params []string
+		for _, match := range paramPattern.FindAllStringSubmatch(route.Path, -1) {
+			params = append(params, match[1])
+		}
+
+		pattern := route.Method + " " + goPath
+
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, req *http.Request) {
+			ctx := NewContext(w, req)
+			for _, name := range params {
+				ctx.SetParam(name, req.PathValue(name))
+			}
+
+			var mw []MiddlewareFunc
+			if len(route.Middleware) > 0 {
+				mw = route.Middleware
+			}
+
+			resp := RunMiddleware(ctx, mw, func() Response {
+				return route.Handler(ctx)
+			})
+			resp.Write(w)
+		})
+	}
+}
+
+// Convenience: register on http.DefaultServeMux
+func (r *Router) ListenAndServe(addr string) error {
+	mux := http.NewServeMux()
+	r.RegisterRoutes(mux)
+	return http.ListenAndServe(addr, mux)
+}
+
+// trimTrailingSlash normalizes paths.
+func trimTrailingSlash(s string) string {
+	if len(s) > 1 {
+		return strings.TrimRight(s, "/")
+	}
+	return s
 }
 

@@ -327,36 +327,7 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 	}
 
-	// 6. Generate routes into project root
-	routesFile := filepath.Join(project.Dir, "routes.go")
-	if _, err := os.Stat(routesFile); err == nil {
-		fmt.Println("  generating routes")
-		src, err := os.ReadFile(routesFile)
-		if err != nil {
-			return fmt.Errorf("reading routes.go: %w", err)
-		}
-
-		routes, err := ParseRoutes(routesFile, src)
-		if err != nil {
-			return fmt.Errorf("parsing routes: %w", err)
-		}
-
-		controllers, err := ScanControllers(project.Dir)
-		if err != nil {
-			return fmt.Errorf("scanning controllers: %w", err)
-		}
-
-		routeSrc, err := GenerateRoutes(routes, controllers, rootPkg)
-		if err != nil {
-			return fmt.Errorf("generating routes: %w", err)
-		}
-
-		if err := writeFile(filepath.Join(project.Dir, "routes_gen.go"), routeSrc); err != nil {
-			return err
-		}
-	}
-
-	// 7. Generate bindings into project root
+	// 6. Generate bindings into project root
 	requests, err := ScanRequests(project.Dir)
 	if err != nil {
 		return fmt.Errorf("scanning requests: %w", err)

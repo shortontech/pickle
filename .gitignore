@@ -29,5 +29,8 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Specs
+specs/
 testdata/basic-crud/post_controller.go
 testdata/basic-crud/server

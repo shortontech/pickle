@@ -79,6 +79,8 @@ func (r *Router) Group(prefix string, args ...any) {
 		switch v := arg.(type) {
 		case MiddlewareFunc:
 			g.middleware = append(g.middleware, v)
+		case func(*Context, func() Response) Response:
+			g.middleware = append(g.middleware, v)
 		case func(r *Router):
 			v(g)
 		}

@@ -30,3 +30,4 @@ Thumbs.db
 .env
 .env.local
 testdata/basic-crud/post_controller.go
+testdata/basic-crud/server

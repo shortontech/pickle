@@ -1,4 +1,4 @@
-package requests
+package basiccrud
 
 type CreateUserRequest struct {
 	Name     string `json:"name" validate:"required,min=1,max=255"`

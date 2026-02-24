@@ -14,25 +14,69 @@ import (
 	"strings"
 )
 
+// GenerateCoreHTTP generates the HTTP types (Context, Response, Router, Middleware, Controller)
+// into a single file. This goes into the project root package.
+func GenerateCoreHTTP(cookedDir, packageName string) ([]byte, error) {
+	skip := map[string]bool{"query.go": true, "scopes.go": true}
+	return generateCoreFiles(cookedDir, packageName, skip)
+}
+
+// GenerateCoreQuery generates the QueryBuilder[T] and related query types
+// into a single file. This goes into the models/ package.
+func GenerateCoreQuery(cookedDir, packageName string) ([]byte, error) {
+	only := map[string]bool{"query.go": true}
+	return generateCoreFilesOnly(cookedDir, packageName, only)
+}
+
 // GenerateCore reads the Go source files from pkg/cooked/ (excluding tests,
 // build-tagged files, and query/scope machinery), rewrites them into a single
 // file with the target package name, and returns the formatted source.
 //
 // The result is a standalone pickle.go that user projects embed in generated/.
 func GenerateCore(cookedDir, packageName string) ([]byte, error) {
+	skip := map[string]bool{"query.go": true, "scopes.go": true}
+	return generateCoreFiles(cookedDir, packageName, skip)
+}
+
+func generateCoreFilesOnly(cookedDir, packageName string, only map[string]bool) ([]byte, error) {
 	entries, err := os.ReadDir(cookedDir)
 	if err != nil {
 		return nil, fmt.Errorf("reading cooked dir: %w", err)
 	}
 
-	// Collect source file paths, skipping tests, query builder, and scope templates.
 	var paths []string
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		if name == "query.go" || name == "scopes.go" {
+		if !only[name] {
+			continue
+		}
+		paths = append(paths, filepath.Join(cookedDir, name))
+	}
+	sort.Strings(paths)
+
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("no source files found in %s matching filter", cookedDir)
+	}
+
+	return assembleCoreFiles(paths, packageName)
+}
+
+func generateCoreFiles(cookedDir, packageName string, skip map[string]bool) ([]byte, error) {
+	entries, err := os.ReadDir(cookedDir)
+	if err != nil {
+		return nil, fmt.Errorf("reading cooked dir: %w", err)
+	}
+
+	var paths []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		if skip[name] {
 			continue
 		}
 		paths = append(paths, filepath.Join(cookedDir, name))
@@ -43,6 +87,10 @@ func GenerateCore(cookedDir, packageName string) ([]byte, error) {
 		return nil, fmt.Errorf("no source files found in %s", cookedDir)
 	}
 
+	return assembleCoreFiles(paths, packageName)
+}
+
+func assembleCoreFiles(paths []string, packageName string) ([]byte, error) {
 	// Two passes per file:
 	// 1. AST parse to collect imports and detect build constraints.
 	// 2. Text extraction of everything after the import block.

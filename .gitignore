@@ -1,5 +1,5 @@
 # Binaries
-pickle
+/pickle
 *.exe
 *.exe~
 *.dll

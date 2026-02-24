@@ -1,10 +1,10 @@
 package basiccrud
 
-var API = pickle.Routes(func(r *pickle.Router) {
-	r.Group("/api", func(r *pickle.Router) {
+var API = Routes(func(r *Router) {
+	r.Group("/api", func(r *Router) {
 		r.Resource("/users", UserController{})
 
-		r.Group("/posts", Auth, func(r *pickle.Router) {
+		r.Group("/posts", Auth, func(r *Router) {
 			r.Get("/", PostController{}.Index)
 			r.Get("/:id", PostController{}.Show)
 			r.Post("/", PostController{}.Store)

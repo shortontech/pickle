@@ -1,4 +1,4 @@
-package requests
+package basiccrud
 
 type UpdateUserRequest struct {
 	Name  string `json:"name" validate:"omitempty,min=1,max=255"`

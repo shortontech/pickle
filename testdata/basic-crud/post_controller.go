@@ -1,11 +1,13 @@
-package controllers
+package basiccrud
+
+import "github.com/pickle-framework/pickle/testdata/basic-crud/models"
 
 type PostController struct {
 	Controller
 }
 
 func (c *PostController) Index(ctx *Context) Response {
-	posts, err := Query[Post]().
+	posts, err := models.Query[models.Post]().
 		WhereUserID(ctx.Auth().UserID).
 		WithUser().
 		All()
@@ -18,7 +20,7 @@ func (c *PostController) Index(ctx *Context) Response {
 }
 
 func (c *PostController) Show(ctx *Context) Response {
-	post, err := Query[Post]().
+	post, err := models.Query[models.Post]().
 		WhereID(ctx.Param("id")).
 		WhereUserID(ctx.Auth().UserID).
 		WithUser().
@@ -32,14 +34,14 @@ func (c *PostController) Show(ctx *Context) Response {
 }
 
 func (c *PostController) Store(req CreatePostRequest, ctx *Context) Response {
-	post := &Post{
+	post := &models.Post{
 		UserID: ctx.Auth().UserID,
 		Title:  req.Title,
 		Body:   req.Body,
 		Status: "draft",
 	}
 
-	if err := Query[Post]().Create(post); err != nil {
+	if err := models.Query[models.Post]().Create(post); err != nil {
 		return ctx.Error(err)
 	}
 
@@ -47,7 +49,7 @@ func (c *PostController) Store(req CreatePostRequest, ctx *Context) Response {
 }
 
 func (c *PostController) Update(req UpdatePostRequest, ctx *Context) Response {
-	post, err := Query[Post]().
+	post, err := models.Query[models.Post]().
 		WhereID(ctx.Param("id")).
 		WhereUserID(ctx.Auth().UserID).
 		First()
@@ -66,7 +68,7 @@ func (c *PostController) Update(req UpdatePostRequest, ctx *Context) Response {
 		post.Status = req.Status
 	}
 
-	if err := Query[Post]().Update(post); err != nil {
+	if err := models.Query[models.Post]().Update(post); err != nil {
 		return ctx.Error(err)
 	}
 
@@ -74,7 +76,7 @@ func (c *PostController) Update(req UpdatePostRequest, ctx *Context) Response {
 }
 
 func (c *PostController) Destroy(ctx *Context) Response {
-	post, err := Query[Post]().
+	post, err := models.Query[models.Post]().
 		WhereID(ctx.Param("id")).
 		WhereUserID(ctx.Auth().UserID).
 		First()
@@ -83,7 +85,7 @@ func (c *PostController) Destroy(ctx *Context) Response {
 		return ctx.NotFound("post not found")
 	}
 
-	if err := Query[Post]().Delete(post); err != nil {
+	if err := models.Query[models.Post]().Delete(post); err != nil {
 		return ctx.Error(err)
 	}
 

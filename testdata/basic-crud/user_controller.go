@@ -1,11 +1,13 @@
-package controllers
+package basiccrud
+
+import "github.com/pickle-framework/pickle/testdata/basic-crud/models"
 
 type UserController struct {
 	Controller
 }
 
 func (c *UserController) Index(ctx *Context) Response {
-	users, err := Query[User]().All()
+	users, err := models.Query[models.User]().All()
 	if err != nil {
 		return ctx.Error(err)
 	}
@@ -14,7 +16,7 @@ func (c *UserController) Index(ctx *Context) Response {
 }
 
 func (c *UserController) Show(ctx *Context) Response {
-	user, err := Query[User]().
+	user, err := models.Query[models.User]().
 		WhereID(ctx.Param("id")).
 		First()
 
@@ -26,13 +28,13 @@ func (c *UserController) Show(ctx *Context) Response {
 }
 
 func (c *UserController) Store(req CreateUserRequest, ctx *Context) Response {
-	user := &User{
+	user := &models.User{
 		Name:     req.Name,
 		Email:    req.Email,
 		Password: HashPassword(req.Password),
 	}
 
-	if err := Query[User]().Create(user); err != nil {
+	if err := models.Query[models.User]().Create(user); err != nil {
 		return ctx.Error(err)
 	}
 
@@ -40,7 +42,7 @@ func (c *UserController) Store(req CreateUserRequest, ctx *Context) Response {
 }
 
 func (c *UserController) Update(req UpdateUserRequest, ctx *Context) Response {
-	user, err := Query[User]().
+	user, err := models.Query[models.User]().
 		WhereID(ctx.Param("id")).
 		First()
 
@@ -55,7 +57,7 @@ func (c *UserController) Update(req UpdateUserRequest, ctx *Context) Response {
 		user.Email = req.Email
 	}
 
-	if err := Query[User]().Update(user); err != nil {
+	if err := models.Query[models.User]().Update(user); err != nil {
 		return ctx.Error(err)
 	}
 
@@ -63,7 +65,7 @@ func (c *UserController) Update(req UpdateUserRequest, ctx *Context) Response {
 }
 
 func (c *UserController) Destroy(ctx *Context) Response {
-	user, err := Query[User]().
+	user, err := models.Query[models.User]().
 		WhereID(ctx.Param("id")).
 		First()
 
@@ -71,7 +73,7 @@ func (c *UserController) Destroy(ctx *Context) Response {
 		return ctx.NotFound("user not found")
 	}
 
-	if err := Query[User]().Delete(user); err != nil {
+	if err := models.Query[models.User]().Delete(user); err != nil {
 		return ctx.Error(err)
 	}
 

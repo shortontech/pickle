@@ -1,4 +1,4 @@
-package tickler
+package tickle
 
 import (
 	"os"

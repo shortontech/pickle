@@ -8,7 +8,7 @@ import (
 )
 
 func TestScanControllers(t *testing.T) {
-	dir := filepath.Join("..", "..", "testdata", "basic-crud", "controllers")
+	dir := filepath.Join("..", "..", "testdata", "basic-crud")
 	controllers, err := ScanControllers(dir)
 	if err != nil {
 		t.Fatalf("ScanControllers: %v", err)
@@ -64,13 +64,13 @@ func TestGenerateRoutesBasicCrud(t *testing.T) {
 		t.Fatalf("ParseRoutes: %v", err)
 	}
 
-	controllerDir := filepath.Join("..", "..", "testdata", "basic-crud", "controllers")
+	controllerDir := filepath.Join("..", "..", "testdata", "basic-crud")
 	controllers, err := ScanControllers(controllerDir)
 	if err != nil {
 		t.Fatalf("ScanControllers: %v", err)
 	}
 
-	out, err := GenerateRoutes(routes, controllers, "generated")
+	out, err := GenerateRoutes(routes, controllers, "basiccrud")
 	if err != nil {
 		t.Fatalf("GenerateRoutes: %v", err)
 	}
@@ -134,14 +134,7 @@ func TestGenerateRoutesBasicCrud(t *testing.T) {
 		t.Error("missing PathValue extraction for :id param")
 	}
 
-	// Write the output for inspection
-	outputDir := filepath.Join("..", "..", "testdata", "basic-crud", "generated", "routes")
-	os.MkdirAll(outputDir, 0o755)
-	outPath := filepath.Join(outputDir, "routes_gen.go")
-	if err := os.WriteFile(outPath, out, 0o644); err != nil {
-		t.Fatalf("writing output: %v", err)
-	}
-	t.Logf("generated → %s", outPath)
+	t.Logf("generated %d bytes", len(out))
 }
 
 func TestConvertPath(t *testing.T) {

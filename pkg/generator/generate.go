@@ -14,7 +14,7 @@ import (
 	"strings"
 
 	"github.com/pickle-framework/pickle/pkg/schema"
-	"github.com/pickle-framework/pickle/pkg/tickler"
+	"github.com/pickle-framework/pickle/pkg/tickle"
 )
 
 // Project represents a Pickle project layout rooted at a directory.
@@ -105,7 +105,7 @@ func ScanMigrationStructs(migrationsDir string) ([]string, error) {
 
 // inspectorTableInfo mirrors the JSON output from the schema inspector program.
 type inspectorTableInfo struct {
-	Name    string               `json:"name"`
+	Name    string                `json:"name"`
 	Columns []inspectorColumnInfo `json:"columns"`
 	Indexes []inspectorIndexInfo  `json:"indexes,omitempty"`
 }
@@ -218,25 +218,68 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, error) {
 	return tables, nil
 }
 
-// Generate runs all generators for a project and writes output to generated/.
-func Generate(project *Project, picklePkgDir string) error {
-	outputDir := filepath.Join(project.Dir, "generated")
-
-	// 1. Generate core pickle.go
-	cookedDir := filepath.Join(picklePkgDir, "cooked")
-	if _, err := os.Stat(cookedDir); err == nil {
-		fmt.Println("  generating pickle.go")
-		coreSrc, err := GenerateCore(cookedDir, "generated")
-		if err != nil {
-			return fmt.Errorf("generating core: %w", err)
+// detectPackageName reads the package declaration from the first .go file in the directory.
+func detectPackageName(dir string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
 		}
-		if err := writeFile(filepath.Join(outputDir, "pickle.go"), coreSrc); err != nil {
+		if strings.HasSuffix(e.Name(), "_gen.go") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, path, nil, parser.PackageClauseOnly)
+		if err != nil {
+			continue
+		}
+		return f.Name.Name, nil
+	}
+	return "", fmt.Errorf("no Go files found in %s", dir)
+}
+
+// Generate runs all generators for a project and writes output.
+//
+// Layout:
+//   - {root}/pickle_gen.go            — HTTP types (Context, Response, Router, etc.)
+//   - {root}/routes_gen.go            — Route registration
+//   - {root}/bindings_gen.go          — Request deserialization + validation
+//   - {root}/models/pickle_gen.go     — QueryBuilder[T]
+//   - {root}/models/*.go              — Model structs and query scopes
+//   - {root}/migrations/types_gen.go  — Schema DSL types (Migration, Table, etc.)
+func Generate(project *Project, picklePkgDir string) error {
+	rootPkg, err := detectPackageName(project.Dir)
+	if err != nil {
+		return fmt.Errorf("detecting package name: %w", err)
+	}
+
+	modelsDir := filepath.Join(project.Dir, "models")
+	migrationsDir := filepath.Join(project.Dir, "migrations")
+
+	// 1. Write pre-tickled core types
+	fmt.Println("  generating pickle_gen.go")
+	if err := writeFile(filepath.Join(project.Dir, "pickle_gen.go"), GenerateCoreHTTP(rootPkg)); err != nil {
+		return err
+	}
+
+	fmt.Println("  generating models/pickle_gen.go")
+	if err := writeFile(filepath.Join(modelsDir, "pickle_gen.go"), GenerateCoreQuery("models")); err != nil {
+		return err
+	}
+
+	// 2. Write pre-tickled schema types into migrations/
+	if _, err := os.Stat(migrationsDir); err == nil {
+		fmt.Println("  generating migrations/types_gen.go")
+		if err := writeFile(filepath.Join(migrationsDir, "types_gen.go"), GenerateCoreSchema("migrations")); err != nil {
 			return err
 		}
 	}
 
-	// 2. Run schema inspector to get tables from migrations
-	migrationsDir := filepath.Join(project.Dir, "migrations")
+	// 3. Run schema inspector to get tables from migrations
 	var tables []*schema.Table
 	if _, err := os.Stat(migrationsDir); err == nil {
 		fmt.Println("  inspecting schema from migrations")
@@ -246,9 +289,8 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 	}
 
-	// 3. Generate models
+	// 4. Generate models into models/
 	if len(tables) > 0 {
-		modelsDir := filepath.Join(outputDir, "models")
 		for _, tbl := range tables {
 			fmt.Printf("  generating model: %s\n", tbl.Name)
 			src, err := GenerateModel(tbl, "models")
@@ -262,33 +304,31 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 	}
 
-	// 4. Generate query scopes
+	// 5. Generate query scopes into models/
 	if len(tables) > 0 {
 		scopesPath := filepath.Join(picklePkgDir, "cooked", "scopes.go")
 		if _, err := os.Stat(scopesPath); err == nil {
-			blocks, err := tickler.ParseScopeBlocks(scopesPath)
+			blocks, err := tickle.ParseScopeBlocks(scopesPath)
 			if err != nil {
 				return fmt.Errorf("parsing scope blocks: %w", err)
 			}
 
-			queriesDir := filepath.Join(outputDir, "queries")
 			for _, tbl := range tables {
 				fmt.Printf("  generating queries: %s\n", tbl.Name)
-				src, err := GenerateQueryScopes(tbl, blocks, "queries")
+				src, err := GenerateQueryScopes(tbl, blocks, "models")
 				if err != nil {
 					return fmt.Errorf("generating scopes for %s: %w", tbl.Name, err)
 				}
 				filename := toLowerFirst(tableToStructName(tbl.Name)) + "_query.go"
-				if err := writeFile(filepath.Join(queriesDir, filename), src); err != nil {
+				if err := writeFile(filepath.Join(modelsDir, filename), src); err != nil {
 					return err
 				}
 			}
 		}
 	}
 
-	// 5. Generate routes
+	// 6. Generate routes into project root
 	routesFile := filepath.Join(project.Dir, "routes.go")
-	controllerDir := filepath.Join(project.Dir, "controllers")
 	if _, err := os.Stat(routesFile); err == nil {
 		fmt.Println("  generating routes")
 		src, err := os.ReadFile(routesFile)
@@ -301,44 +341,36 @@ func Generate(project *Project, picklePkgDir string) error {
 			return fmt.Errorf("parsing routes: %w", err)
 		}
 
-		controllers := map[string]map[string]ControllerMethod{}
-		if _, err := os.Stat(controllerDir); err == nil {
-			controllers, err = ScanControllers(controllerDir)
-			if err != nil {
-				return fmt.Errorf("scanning controllers: %w", err)
-			}
+		controllers, err := ScanControllers(project.Dir)
+		if err != nil {
+			return fmt.Errorf("scanning controllers: %w", err)
 		}
 
-		routeSrc, err := GenerateRoutes(routes, controllers, "generated")
+		routeSrc, err := GenerateRoutes(routes, controllers, rootPkg)
 		if err != nil {
 			return fmt.Errorf("generating routes: %w", err)
 		}
 
-		routesDir := filepath.Join(outputDir, "routes")
-		if err := writeFile(filepath.Join(routesDir, "routes_gen.go"), routeSrc); err != nil {
+		if err := writeFile(filepath.Join(project.Dir, "routes_gen.go"), routeSrc); err != nil {
 			return err
 		}
 	}
 
-	// 6. Generate bindings
-	requestsDir := filepath.Join(project.Dir, "requests")
-	if _, err := os.Stat(requestsDir); err == nil {
-		requests, err := ScanRequests(requestsDir)
+	// 7. Generate bindings into project root
+	requests, err := ScanRequests(project.Dir)
+	if err != nil {
+		return fmt.Errorf("scanning requests: %w", err)
+	}
+
+	if len(requests) > 0 {
+		fmt.Println("  generating bindings")
+		bindingSrc, err := GenerateBindings(requests, rootPkg)
 		if err != nil {
-			return fmt.Errorf("scanning requests: %w", err)
+			return fmt.Errorf("generating bindings: %w", err)
 		}
 
-		if len(requests) > 0 {
-			fmt.Println("  generating bindings")
-			bindingSrc, err := GenerateBindings(requests, "generated")
-			if err != nil {
-				return fmt.Errorf("generating bindings: %w", err)
-			}
-
-			bindingsDir := filepath.Join(outputDir, "bindings")
-			if err := writeFile(filepath.Join(bindingsDir, "bindings_gen.go"), bindingSrc); err != nil {
-				return err
-			}
+		if err := writeFile(filepath.Join(project.Dir, "bindings_gen.go"), bindingSrc); err != nil {
+			return err
 		}
 	}
 

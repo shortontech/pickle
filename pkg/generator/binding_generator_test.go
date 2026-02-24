@@ -1,14 +1,13 @@
 package generator
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestScanRequests(t *testing.T) {
-	dir := filepath.Join("..", "..", "testdata", "basic-crud", "requests")
+	dir := filepath.Join("..", "..", "testdata", "basic-crud")
 	requests, err := ScanRequests(dir)
 	if err != nil {
 		t.Fatalf("ScanRequests: %v", err)
@@ -70,13 +69,13 @@ func TestScanRequests(t *testing.T) {
 }
 
 func TestGenerateBindings(t *testing.T) {
-	dir := filepath.Join("..", "..", "testdata", "basic-crud", "requests")
+	dir := filepath.Join("..", "..", "testdata", "basic-crud")
 	requests, err := ScanRequests(dir)
 	if err != nil {
 		t.Fatalf("ScanRequests: %v", err)
 	}
 
-	out, err := GenerateBindings(requests, "generated")
+	out, err := GenerateBindings(requests, "basiccrud")
 	if err != nil {
 		t.Fatalf("GenerateBindings: %v", err)
 	}
@@ -113,14 +112,7 @@ func TestGenerateBindings(t *testing.T) {
 		t.Error("missing human-readable required message")
 	}
 
-	// Write the output
-	outputDir := filepath.Join("..", "..", "testdata", "basic-crud", "generated", "bindings")
-	os.MkdirAll(outputDir, 0o755)
-	outPath := filepath.Join(outputDir, "bindings_gen.go")
-	if err := os.WriteFile(outPath, out, 0o644); err != nil {
-		t.Fatalf("writing output: %v", err)
-	}
-	t.Logf("generated → %s", outPath)
+	t.Logf("generated %d bytes", len(out))
 }
 
 func TestExtractTag(t *testing.T) {

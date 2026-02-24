@@ -1,13 +1,12 @@
 package generator
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/pickle-framework/pickle/pkg/schema"
-	"github.com/pickle-framework/pickle/pkg/tickler"
+	"github.com/pickle-framework/pickle/pkg/tickle"
 )
 
 func basicCrudTables() []*schema.Table {
@@ -42,9 +41,6 @@ func basicCrudTables() []*schema.Table {
 }
 
 func TestGenerateBasicCrudModels(t *testing.T) {
-	outputDir := filepath.Join("..", "..", "testdata", "basic-crud", "generated", "models")
-	os.MkdirAll(outputDir, 0o755)
-
 	for _, tbl := range basicCrudTables() {
 		out, err := GenerateModel(tbl, "models")
 		if err != nil {
@@ -52,38 +48,23 @@ func TestGenerateBasicCrudModels(t *testing.T) {
 		}
 
 		filename := tableToStructName(tbl.Name)
-		outPath := filepath.Join(outputDir, toLowerFirst(filename)+".go")
-		if err := os.WriteFile(outPath, out, 0o644); err != nil {
-			t.Fatalf("writing %s: %v", outPath, err)
-		}
-		t.Logf("generated → %s", outPath)
+		t.Logf("generated %s (%d bytes)", toLowerFirst(filename)+".go", len(out))
 	}
 }
 
 func TestGenerateBasicCrudScopes(t *testing.T) {
 	scopesPath := filepath.Join("..", "..", "pkg", "cooked", "scopes.go")
-	blocks, err := tickler.ParseScopeBlocks(scopesPath)
+	blocks, err := tickle.ParseScopeBlocks(scopesPath)
 	if err != nil {
 		t.Fatalf("parsing scope blocks: %v", err)
 	}
 
-	outputDir := filepath.Join("..", "..", "testdata", "basic-crud", "generated", "queries")
-	os.MkdirAll(outputDir, 0o755)
-
 	for _, tbl := range basicCrudTables() {
-		out, err := GenerateQueryScopes(tbl, blocks, "queries")
+		out, err := GenerateQueryScopes(tbl, blocks, "models")
 		if err != nil {
 			t.Fatalf("generating scopes for %s: %v", tbl.Name, err)
 		}
 
-		filename := tableToStructName(tbl.Name)
-		outPath := filepath.Join(outputDir, toLowerFirst(filename)+"_query.go")
-		if err := os.WriteFile(outPath, out, 0o644); err != nil {
-			t.Fatalf("writing %s: %v", outPath, err)
-		}
-		t.Logf("generated → %s", outPath)
-
-		// Verify key methods exist
 		src := string(out)
 
 		if !strings.Contains(src, "WhereID(") {
@@ -97,6 +78,7 @@ func TestGenerateBasicCrudScopes(t *testing.T) {
 		if tbl.Name == "posts" && !strings.Contains(src, "WithUser()") {
 			t.Error("missing WithUser eager loading for posts")
 		}
+
+		t.Logf("generated %s_query.go (%d bytes)", tbl.Name, len(out))
 	}
 }
-

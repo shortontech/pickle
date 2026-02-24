@@ -17,7 +17,6 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/pickle-framework/pickle/pkg/schema"
 	"{{ .ModulePath }}/migrations"
 )
 
@@ -47,40 +46,40 @@ type indexInfo struct {
 	Unique  bool     ` + "`" + `json:"unique"` + "`" + `
 }
 
-var typeNames = map[schema.ColumnType]string{
-	schema.UUID:       "uuid",
-	schema.String:     "string",
-	schema.Text:       "text",
-	schema.Integer:    "integer",
-	schema.BigInteger: "biginteger",
-	schema.Decimal:    "decimal",
-	schema.Boolean:    "boolean",
-	schema.Timestamp:  "timestamp",
-	schema.JSONB:      "jsonb",
-	schema.Date:       "date",
-	schema.Time:       "time",
-	schema.Binary:     "binary",
+var typeNames = map[migrations.ColumnType]string{
+	migrations.UUID:       "uuid",
+	migrations.String:     "string",
+	migrations.Text:       "text",
+	migrations.Integer:    "integer",
+	migrations.BigInteger: "biginteger",
+	migrations.Decimal:    "decimal",
+	migrations.Boolean:    "boolean",
+	migrations.Timestamp:  "timestamp",
+	migrations.JSONB:      "jsonb",
+	migrations.Date:       "date",
+	migrations.Time:       "time",
+	migrations.Binary:     "binary",
 }
 
-var goTypeNames = map[schema.ColumnType]string{
-	schema.UUID:       "uuid.UUID",
-	schema.String:     "string",
-	schema.Text:       "string",
-	schema.Integer:    "int",
-	schema.BigInteger: "int64",
-	schema.Decimal:    "decimal.Decimal",
-	schema.Boolean:    "bool",
-	schema.Timestamp:  "time.Time",
-	schema.JSONB:      "json.RawMessage",
-	schema.Date:       "time.Time",
-	schema.Time:       "string",
-	schema.Binary:     "[]byte",
+var goTypeNames = map[migrations.ColumnType]string{
+	migrations.UUID:       "uuid.UUID",
+	migrations.String:     "string",
+	migrations.Text:       "string",
+	migrations.Integer:    "int",
+	migrations.BigInteger: "int64",
+	migrations.Decimal:    "decimal.Decimal",
+	migrations.Boolean:    "bool",
+	migrations.Timestamp:  "time.Time",
+	migrations.JSONB:      "json.RawMessage",
+	migrations.Date:       "time.Time",
+	migrations.Time:       "string",
+	migrations.Binary:     "[]byte",
 }
 
-func processOps(ops []schema.Operation, tables map[string]*tableInfo, order *[]string) {
+func processOps(ops []migrations.Operation, tables map[string]*tableInfo, order *[]string) {
 	for _, op := range ops {
 		switch op.Type {
-		case schema.OpCreateTable:
+		case migrations.OpCreateTable:
 			ti := &tableInfo{Name: op.Table}
 			for _, col := range op.TableDef.Columns {
 				goType := goTypeNames[col.Type]
@@ -104,7 +103,7 @@ func processOps(ops []schema.Operation, tables map[string]*tableInfo, order *[]s
 			}
 			tables[op.Table] = ti
 			*order = append(*order, op.Table)
-		case schema.OpAddIndex, schema.OpAddUniqueIndex:
+		case migrations.OpAddIndex, migrations.OpAddUniqueIndex:
 			if ti, ok := tables[op.Table]; ok {
 				ti.Indexes = append(ti.Indexes, indexInfo{
 					Columns: op.Index.Columns,
@@ -221,11 +220,10 @@ type MigrationEntry struct {
 	StructName string
 }
 
-// GenerateSchemaInspector produces a Go program that lives in the user's project
-// at generated/cmd/schema/main.go. It imports the project's migrations package,
-// runs each migration's Up() method, and outputs the schema as a table or JSON.
-//
-// modulePath is the Go module path from the project's go.mod (e.g., "github.com/user/myapp").
+// GenerateSchemaInspector produces a temporary Go program that imports the
+// project's migrations package, runs each migration's Up() method, and
+// outputs the schema as JSON. The migrations package contains tickled copies
+// of the schema types — no dependency on pickle.
 func GenerateSchemaInspector(modulePath string, migrations []MigrationEntry) ([]byte, error) {
 	sort.Slice(migrations, func(i, j int) bool {
 		return migrations[i].StructName < migrations[j].StructName

@@ -1,4 +1,4 @@
-package tickler
+package tickle
 
 import (
 	"fmt"
@@ -119,6 +119,7 @@ func GenerateScopes(blocks []ScopeBlock, columns []ColumnDef, modelName string) 
 			}
 
 			expanded := block.Body
+			expanded = strings.ReplaceAll(expanded, "QueryBuilder[T]", modelName+"Query")
 			expanded = strings.ReplaceAll(expanded, "__Column__", col.PascalName)
 			expanded = strings.ReplaceAll(expanded, "__column__", col.SnakeName)
 			expanded = strings.ReplaceAll(expanded, "__type__", col.GoType)

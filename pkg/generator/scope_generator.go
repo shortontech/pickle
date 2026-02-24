@@ -7,15 +7,15 @@ import (
 	"strings"
 
 	"github.com/pickle-framework/pickle/pkg/schema"
-	"github.com/pickle-framework/pickle/pkg/tickler"
+	"github.com/pickle-framework/pickle/pkg/tickle"
 )
 
 // GenerateQueryScopes produces a Go source file with typed Where*/With* methods
 // for a given table, using scope templates parsed from the cooked scopes file.
-func GenerateQueryScopes(table *schema.Table, blocks []tickler.ScopeBlock, packageName string) ([]byte, error) {
-	columns := tickler.ColumnsFromTable(table)
+func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packageName string) ([]byte, error) {
+	columns := tickle.ColumnsFromTable(table)
 	structName := tableToStructName(table.Name)
-	scopeBody := tickler.GenerateScopes(blocks, columns, structName)
+	scopeBody := tickle.GenerateScopes(blocks, columns, structName)
 
 	// Collect imports needed by the generated scopes
 	imports := collectScopeImports(table, blocks)
@@ -32,12 +32,24 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickler.ScopeBlock, packa
 		b.WriteString(")\n\n")
 	}
 
+	// Generate the model-specific query wrapper type
+	queryType := structName + "Query"
+	b.WriteString(fmt.Sprintf("// %s provides typed query methods for %s.\n", queryType, structName))
+	b.WriteString(fmt.Sprintf("type %s struct {\n\t*QueryBuilder[%s]\n}\n\n", queryType, structName))
+
+	// Generate a typed Query constructor
+	b.WriteString(fmt.Sprintf("// Query%s starts a new query for %s.\n", structName, structName))
+	b.WriteString(fmt.Sprintf("func Query%s() *%s {\n", structName, queryType))
+	b.WriteString(fmt.Sprintf("\treturn &%s{QueryBuilder: Query[%s]()}\n", queryType, structName))
+	b.WriteString("}\n\n")
+
 	// Generate eager loading methods from foreign keys
 	for _, col := range table.Columns {
 		if col.ForeignKeyTable != "" {
 			relName := tableToStructName(col.ForeignKeyTable)
-			b.WriteString(fmt.Sprintf("func (q *QueryBuilder[%s]) With%s() *QueryBuilder[%s] {\n", structName, relName, structName))
-			b.WriteString(fmt.Sprintf("\treturn q.EagerLoad(%q)\n", col.ForeignKeyTable))
+			b.WriteString(fmt.Sprintf("func (q *%s) With%s() *%s {\n", queryType, relName, queryType))
+			b.WriteString(fmt.Sprintf("\tq.EagerLoad(%q)\n", col.ForeignKeyTable))
+			b.WriteString(fmt.Sprintf("\treturn q\n"))
 			b.WriteString("}\n\n")
 		}
 	}
@@ -52,7 +64,7 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickler.ScopeBlock, packa
 	return formatted, nil
 }
 
-func collectScopeImports(table *schema.Table, blocks []tickler.ScopeBlock) []string {
+func collectScopeImports(table *schema.Table, blocks []tickle.ScopeBlock) []string {
 	imports := map[string]bool{}
 
 	// Check if any timestamp columns exist and timestamp scopes are used

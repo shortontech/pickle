@@ -7,7 +7,7 @@ import (
 )
 
 func TestScanRequests(t *testing.T) {
-	dir := filepath.Join("..", "..", "testdata", "basic-crud")
+	dir := filepath.Join("..", "..", "testdata", "basic-crud", "app", "http", "requests")
 	requests, err := ScanRequests(dir)
 	if err != nil {
 		t.Fatalf("ScanRequests: %v", err)
@@ -69,13 +69,13 @@ func TestScanRequests(t *testing.T) {
 }
 
 func TestGenerateBindings(t *testing.T) {
-	dir := filepath.Join("..", "..", "testdata", "basic-crud")
+	dir := filepath.Join("..", "..", "testdata", "basic-crud", "app", "http", "requests")
 	requests, err := ScanRequests(dir)
 	if err != nil {
 		t.Fatalf("ScanRequests: %v", err)
 	}
 
-	out, err := GenerateBindings(requests, "basiccrud")
+	out, err := GenerateBindings(requests, "requests")
 	if err != nil {
 		t.Fatalf("GenerateBindings: %v", err)
 	}

@@ -1,4 +1,4 @@
-package basiccrud
+package requests
 
 type CreatePostRequest struct {
 	Title string `json:"title" validate:"required,min=1,max=255"`

@@ -1,4 +1,4 @@
-package basiccrud
+package controllers
 
 // HashPassword is a placeholder for password hashing.
 func HashPassword(password string) string {

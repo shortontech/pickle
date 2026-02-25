@@ -15,24 +15,32 @@ Pickle is a **code generation framework** for Go that gives you Laravel's develo
 ## Architecture
 
 ```
-You Write (source of truth):          Pickle Generates (don't edit):
-├── routes.go                         ├── pickle_gen.go              ← Context, Response, Router, Middleware
-├── user_controller.go                ├── bindings_gen.go            ← request deserialization + validation
-├── post_controller.go                ├── models/
-├── create_user_request.go            │   ├── pickle_gen.go          ← QueryBuilder[T], DB
-├── auth_middleware.go                │   ├── user.go                ← struct from migration
-├── migrations/                       │   ├── post.go                ← struct from migration
-│   ├── 001_create_users.go           │   ├── user_query.go          ← WhereEmail(), WhereStatus(), etc.
-│   └── 002_create_posts.go           │   └── post_query.go          ← WhereUserID(), WhereTitle(), etc.
-└── go.mod                            └── migrations/
-                                          └── types_gen.go           ← Migration, Table, Column types
+You Write (source of truth):              Pickle Generates (don't edit):
+├── app/                                  ├── app/
+│   └── http/                             │   ├── http/
+│       ├── controllers/                  │   │   ├── pickle_gen.go       ← Context, Response, Router, Middleware
+│       │   ├── user_controller.go        │   │   └── requests/
+│       │   └── post_controller.go        │   │       └── bindings_gen.go ← request deserialization + validation
+│       ├── middleware/                    │   └── models/
+│       │   └── auth.go                   │       ├── pickle_gen.go       ← QueryBuilder[T], DB
+│       └── requests/                     │       ├── user.go             ← struct from migration
+│           ├── create_user.go            │       ├── user_query.go       ← WhereEmail(), etc.
+│           └── update_user.go            │       ├── post.go
+├── routes/                               │       └── post_query.go
+│   └── web.go                            └── database/
+├── database/                                 └── migrations/
+│   └── migrations/                               └── types_gen.go       ← Migration, Table, Column types
+│       ├── 001_create_users.go
+│       └── 002_create_posts.go
+├── config/
+└── go.mod
 ```
 
-Everything lives in the project root as one flat Go package. Controllers, requests, middleware, and routes are all the same package — no cross-package import issues. Models live in `models/` as a separate package. Migrations live in `migrations/` with tickle-generated schema types.
+The project follows a Laravel-like directory layout. Controllers, requests, and middleware each live in their own package under `app/http/`. The generated HTTP types (Context, Response, Router) live in `app/http/` as package `pickle` — controllers and middleware import them. Models live in `app/models/` as a separate package. Migrations live in `database/migrations/` with tickle-generated schema types. Routes live in `routes/`.
 
 **`pickle --watch`** scans for changes and regenerates. You never edit generated files — they get overwritten on the next run.
 
-**The exit route:** If you stop using Pickle, all generated code still compiles. The generated output has zero dependency on Pickle. The only Pickle dependency is in `migrations/types_gen.go` — and even that is a self-contained copy of the schema types, not an import.
+**The exit route:** If you stop using Pickle, all generated code still compiles. The generated output has zero dependency on Pickle. The only Pickle dependency is in `database/migrations/types_gen.go` — and even that is a self-contained copy of the schema types, not an import.
 
 ## Core Concepts
 
@@ -43,7 +51,7 @@ Migrations are the **single source of truth** for your database schema. You writ
 Migration files use Laravel-style naming: `{timestamp}_{description}.go`. The timestamp prefix determines execution order:
 
 ```go
-// migrations/2026_02_21_143052_create_transfers_table.go
+// database/migrations/2026_02_21_143052_create_transfers_table.go
 type CreateTransfersTable_2026_02_21_143052 struct {
     Migration
 }
@@ -196,7 +204,9 @@ Request classes define what comes in, how it's validated, and what the controlle
 
 You write:
 ```go
-// create_transfer_request.go
+// app/http/requests/create_transfer.go
+package requests
+
 type CreateTransferRequest struct {
     ExpectationID string `json:"expectation_id" validate:"required,uuid"`
     Amount        string `json:"amount" validate:"required,decimal,min=0.01"`
@@ -205,20 +215,28 @@ type CreateTransferRequest struct {
 }
 ```
 
-Pickle generates `BindCreateTransferRequest(r *http.Request) (CreateTransferRequest, *BindingError)` with JSON deserialization, struct validation, and human-readable error messages.
+Pickle generates `requests.BindCreateTransferRequest(r *http.Request) (CreateTransferRequest, *BindingError)` with JSON deserialization, struct validation, and human-readable error messages.
 
 ### Controllers
 
-Controllers are plain Go structs with value receivers. All handlers take `*Context` and return `Response`. Controllers that need request binding call the generated `Bind` function themselves.
+Controllers are plain Go structs with value receivers. All handlers take `*pickle.Context` and return `pickle.Response`. Controllers that need request binding call the generated `Bind` function from the `requests` package.
 
 ```go
-// transfer_controller.go
+// app/http/controllers/transfer_controller.go
+package controllers
+
+import (
+    pickle "myapp/app/http"
+    "myapp/app/http/requests"
+    "myapp/app/models"
+)
+
 type TransferController struct {
-    Controller
+    pickle.Controller
 }
 
-func (c TransferController) Store(ctx *Context) Response {
-    req, bindErr := BindCreateTransferRequest(ctx.Request())
+func (c TransferController) Store(ctx *pickle.Context) pickle.Response {
+    req, bindErr := requests.BindCreateTransferRequest(ctx.Request())
     if bindErr != nil {
         return ctx.JSON(bindErr.Status, bindErr)
     }
@@ -237,7 +255,7 @@ func (c TransferController) Store(ctx *Context) Response {
     return ctx.JSON(201, transfer)
 }
 
-func (c TransferController) Show(ctx *Context) Response {
+func (c TransferController) Show(ctx *pickle.Context) pickle.Response {
     transfer, err := models.QueryTransfer().
         WhereID(uuid.MustParse(ctx.Param("id"))).
         First()
@@ -249,7 +267,7 @@ func (c TransferController) Show(ctx *Context) Response {
     return ctx.JSON(200, transfer)
 }
 
-func (c TransferController) Index(ctx *Context) Response {
+func (c TransferController) Index(ctx *pickle.Context) pickle.Response {
     transfers, err := models.QueryTransfer().
         WhereCustomerID(uuid.MustParse(ctx.Auth().UserID)).
         All()
@@ -264,22 +282,30 @@ func (c TransferController) Index(ctx *Context) Response {
 
 ### Routes
 
-Routes are defined in a central `routes.go` file. The `Router` type is both a descriptor and a runtime router — it collects route definitions and registers them directly onto `net/http.ServeMux` via `RegisterRoutes()`. No code generation needed for routing.
+Routes are defined in `routes/web.go`. The `Router` type is both a descriptor and a runtime router — it collects route definitions and registers them directly onto `net/http.ServeMux` via `RegisterRoutes()`. No code generation needed for routing.
 
 ```go
-// routes.go
-var API = Routes(func(r *Router) {
-    r.Group("/api", RateLimit, func(r *Router) {
-        r.Post("/auth/login", AuthController{}.Login)
+// routes/web.go
+package routes
 
-        r.Group("/transfers", Auth, RequireKYB, func(r *Router) {
-            r.Get("/", TransferController{}.Index)
-            r.Get("/:id", TransferController{}.Show)
-            r.Post("/", TransferController{}.Store)
+import (
+    pickle "myapp/app/http"
+    "myapp/app/http/controllers"
+    "myapp/app/http/middleware"
+)
+
+var API = pickle.Routes(func(r *pickle.Router) {
+    r.Group("/api", middleware.RateLimit, func(r *pickle.Router) {
+        r.Post("/auth/login", controllers.AuthController{}.Login)
+
+        r.Group("/transfers", middleware.Auth, middleware.RequireKYB, func(r *pickle.Router) {
+            r.Get("/", controllers.TransferController{}.Index)
+            r.Get("/:id", controllers.TransferController{}.Show)
+            r.Post("/", controllers.TransferController{}.Store)
         })
 
-        r.Group("/admin", Auth, RequireRole("admin"), func(r *Router) {
-            r.Resource("/users", UserController{})
+        r.Group("/admin", middleware.Auth, middleware.RequireRole("admin"), func(r *pickle.Router) {
+            r.Resource("/users", controllers.UserController{})
         })
     })
 })
@@ -289,7 +315,7 @@ Wire it up in main:
 ```go
 func main() {
     mux := http.NewServeMux()
-    API.RegisterRoutes(mux)
+    routes.API.RegisterRoutes(mux)
     http.ListenAndServe(":8080", mux)
 }
 ```
@@ -298,7 +324,7 @@ Key features:
 - **Groups** with shared prefixes and middleware that cascade to all child routes
 - **Per-route middleware** passed as additional arguments after the handler
 - **`r.Resource()`** registers standard CRUD routes (Index, Show, Store, Update, Destroy) for controllers that implement `ResourceController`
-- **One file, whole app** — open `routes.go` and see every endpoint, its middleware, and its grouping
+- **One file, whole app** — open `routes/web.go` and see every endpoint, its middleware, and its grouping
 - **No code generation** — the Router handles registration at runtime using Go 1.22+ `ServeMux` patterns
 
 ### Middleware Stack
@@ -306,8 +332,12 @@ Key features:
 Middleware uses a simple function signature. Each middleware explicitly calls `next()` to continue the chain, or returns early to short-circuit it.
 
 ```go
-// auth_middleware.go
-func Auth(ctx *Context, next func() Response) Response {
+// app/http/middleware/auth.go
+package middleware
+
+import pickle "myapp/app/http"
+
+func Auth(ctx *pickle.Context, next func() pickle.Response) pickle.Response {
     token := ctx.BearerToken()
     if token == "" {
         return ctx.Unauthorized("missing token")
@@ -323,11 +353,11 @@ func Auth(ctx *Context, next func() Response) Response {
 }
 ```
 
-Parameterized middleware returns a `MiddlewareFunc`:
+Parameterized middleware returns a `pickle.MiddlewareFunc`:
 
 ```go
-func RequireRole(roles ...string) MiddlewareFunc {
-    return func(ctx *Context, next func() Response) Response {
+func RequireRole(roles ...string) pickle.MiddlewareFunc {
+    return func(ctx *pickle.Context, next func() pickle.Response) pickle.Response {
         if !slices.Contains(roles, ctx.Auth().Role) {
             return ctx.Forbidden("insufficient permissions")
         }
@@ -339,7 +369,7 @@ func RequireRole(roles ...string) MiddlewareFunc {
 Middleware can also do post-processing since it receives the `Response` from `next()`:
 
 ```go
-func RequestTimer(ctx *Context, next func() Response) Response {
+func RequestTimer(ctx *pickle.Context, next func() pickle.Response) pickle.Response {
     start := time.Now()
     resp := next()
     resp.Header("X-Request-Duration", time.Since(start).String())
@@ -412,13 +442,16 @@ pickle/
 │   └── migration/                 ← Migration runner (not yet implemented)
 ├── testdata/
 │   └── basic-crud/                ← Test app: users, posts (compiles standalone)
-│       ├── routes.go
-│       ├── user_controller.go
-│       ├── post_controller.go
-│       ├── *_request.go
-│       ├── auth_middleware.go
-│       ├── migrations/
-│       └── models/                ← Generated
+│       ├── app/
+│       │   ├── http/
+│       │   │   ├── controllers/   ← UserController, PostController
+│       │   │   ├── middleware/    ← Auth
+│       │   │   ├── requests/     ← CreateUser, UpdateUser, etc.
+│       │   │   └── pickle_gen.go ← Generated: Context, Response, Router
+│       │   └── models/           ← Generated: User, Post, queries
+│       ├── routes/web.go
+│       ├── database/migrations/
+│       └── config/
 ├── go.mod
 └── CLAUDE.md
 ```
@@ -456,7 +489,7 @@ Pickle makes the secure path the default and the insecure path impossible or vis
 
 ### By Review — One-File Audit
 
-- **IDOR / broken access control** — open `routes.go`, see every endpoint and its middleware stack. Missing `Auth` or `RequireRole` is immediately visible.
+- **IDOR / broken access control** — open `routes/web.go`, see every endpoint and its middleware stack. Missing `Auth` or `RequireRole` is immediately visible.
 - **Middleware gaps** — the central route file makes it obvious which endpoints are public and which are protected. A security review is a 30-second read.
 
 ### By Tooling — Standard Scanner Compatibility
@@ -469,7 +502,7 @@ This is the advantage of code generation over runtime frameworks. A scanner can'
 
 ### Why a central route file?
 
-Go doesn't have decorators or annotations. A central route file (`routes.go`) means one file, entire app surface area visible at a glance. It's how Laravel does it (`web.php` / `api.php`), and it's idiomatic Go (just function calls). The `Router` type collects route definitions and registers them at runtime — no code generation needed for routing.
+Go doesn't have decorators or annotations. A central route file (`routes/web.go`) means one file, entire app surface area visible at a glance. It's how Laravel does it (`routes/web.php` / `routes/api.php`), and it's idiomatic Go (just function calls). The `Router` type collects route definitions and registers them at runtime — no code generation needed for routing.
 
 ### Why migrations in Go instead of SQL?
 
@@ -480,7 +513,7 @@ Go doesn't have decorators or annotations. A central route file (`routes.go`) me
 
 ### Generated files: where do they go?
 
-Generated files live alongside user code in the project root (with `_gen.go` suffix) and in `models/`. Every generated file has a `// Code generated by Pickle. DO NOT EDIT.` header.
+Generated files live alongside user code in their respective packages: `app/http/pickle_gen.go`, `app/http/requests/bindings_gen.go`, `app/models/`, `database/migrations/types_gen.go`. Every generated file has a `// Code generated by Pickle. DO NOT EDIT.` header.
 
 ### Query builder: not a full ORM
 
@@ -513,7 +546,7 @@ Convention over configuration means the LLM never has to search. Validation is i
 
 - **Controllers are pure business logic** — no boilerplate to read past. 20 lines of intent, not 200 lines of wiring.
 - **Request structs are self-documenting API contracts** — struct tags tell the LLM exactly what's accepted and how it's validated.
-- **`routes.go` is the entire API surface** — one file, every endpoint, every middleware stack.
+- **`routes/web.go` is the entire API surface** — one file, every endpoint, every middleware stack.
 - **`QueryTransfer().WhereStatus("pending").All()`** — reads like a sentence. No query builder internals to understand.
 - **Generated files never need to be read** — they're an implementation detail. The LLM works at the same abstraction level the developer works at.
 

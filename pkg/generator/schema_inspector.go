@@ -17,7 +17,7 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"{{ .ModulePath }}/migrations"
+	"{{ .MigrationsImport }}"
 )
 
 type columnInfo struct {
@@ -224,17 +224,17 @@ type MigrationEntry struct {
 // project's migrations package, runs each migration's Up() method, and
 // outputs the schema as JSON. The migrations package contains tickled copies
 // of the schema types — no dependency on pickle.
-func GenerateSchemaInspector(modulePath string, migrations []MigrationEntry) ([]byte, error) {
+func GenerateSchemaInspector(migrationsImport string, migrations []MigrationEntry) ([]byte, error) {
 	sort.Slice(migrations, func(i, j int) bool {
 		return migrations[i].StructName < migrations[j].StructName
 	})
 
 	data := struct {
-		ModulePath string
-		Migrations []MigrationEntry
+		MigrationsImport string
+		Migrations       []MigrationEntry
 	}{
-		ModulePath: modulePath,
-		Migrations: migrations,
+		MigrationsImport: migrationsImport,
+		Migrations:       migrations,
 	}
 
 	var buf bytes.Buffer

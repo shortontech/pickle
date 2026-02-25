@@ -11,7 +11,7 @@ func TestGenerateSchemaInspector(t *testing.T) {
 		{StructName: "CreatePostsTable_2026_02_21_100001"},
 	}
 
-	out, err := GenerateSchemaInspector("github.com/example/myapp", migrations)
+	out, err := GenerateSchemaInspector("github.com/example/myapp/migrations", migrations)
 	if err != nil {
 		t.Fatalf("GenerateSchemaInspector: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestGenerateSchemaInspectorSortsAlphabetically(t *testing.T) {
 		{StructName: "CreateUsersTable_2026_02_21_100000"},
 	}
 
-	out, err := GenerateSchemaInspector("github.com/example/myapp", migrations)
+	out, err := GenerateSchemaInspector("github.com/example/myapp/migrations", migrations)
 	if err != nil {
 		t.Fatalf("GenerateSchemaInspector: %v", err)
 	}

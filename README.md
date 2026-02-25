@@ -150,3 +150,7 @@ No pickle gets deployed without being squeezed first. That's just good hygiene.
 
 
 ## Contributing (Pickle Enhancement):
+
+## Core rules.
+
+I don't want anything the user apps do to expose their pickle. That's public indecency.

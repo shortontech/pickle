@@ -1,15 +1,18 @@
-package basiccrud
+package controllers
 
 import (
+	pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
+	"github.com/shortontech/pickle/testdata/basic-crud/app/http/requests"
+	"github.com/shortontech/pickle/testdata/basic-crud/app/models"
+
 	"github.com/google/uuid"
-	"github.com/shortontech/pickle/testdata/basic-crud/models"
 )
 
 type PostController struct {
-	Controller
+	pickle.Controller
 }
 
-func (c PostController) Index(ctx *Context) Response {
+func (c PostController) Index(ctx *pickle.Context) pickle.Response {
 	posts, err := models.QueryPost().
 		WhereUserID(uuid.MustParse(ctx.Auth().UserID)).
 		WithUser().
@@ -22,7 +25,7 @@ func (c PostController) Index(ctx *Context) Response {
 	return ctx.JSON(200, posts)
 }
 
-func (c PostController) Show(ctx *Context) Response {
+func (c PostController) Show(ctx *pickle.Context) pickle.Response {
 	post, err := models.QueryPost().
 		WhereID(uuid.MustParse(ctx.Param("id"))).
 		WhereUserID(uuid.MustParse(ctx.Auth().UserID)).
@@ -36,8 +39,8 @@ func (c PostController) Show(ctx *Context) Response {
 	return ctx.JSON(200, post)
 }
 
-func (c PostController) Store(ctx *Context) Response {
-	req, bindErr := BindCreatePostRequest(ctx.Request())
+func (c PostController) Store(ctx *pickle.Context) pickle.Response {
+	req, bindErr := requests.BindCreatePostRequest(ctx.Request())
 	if bindErr != nil {
 		return ctx.JSON(bindErr.Status, bindErr)
 	}
@@ -56,8 +59,8 @@ func (c PostController) Store(ctx *Context) Response {
 	return ctx.JSON(201, post)
 }
 
-func (c PostController) Update(ctx *Context) Response {
-	req, bindErr := BindUpdatePostRequest(ctx.Request())
+func (c PostController) Update(ctx *pickle.Context) pickle.Response {
+	req, bindErr := requests.BindUpdatePostRequest(ctx.Request())
 	if bindErr != nil {
 		return ctx.JSON(bindErr.Status, bindErr)
 	}
@@ -88,7 +91,7 @@ func (c PostController) Update(ctx *Context) Response {
 	return ctx.JSON(200, post)
 }
 
-func (c PostController) Destroy(ctx *Context) Response {
+func (c PostController) Destroy(ctx *pickle.Context) pickle.Response {
 	post, err := models.QueryPost().
 		WhereID(uuid.MustParse(ctx.Param("id"))).
 		WhereUserID(uuid.MustParse(ctx.Auth().UserID)).

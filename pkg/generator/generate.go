@@ -17,10 +17,23 @@ import (
 	"github.com/shortontech/pickle/pkg/tickle"
 )
 
+// Layout describes where generated and user-written files live.
+// Follows Laravel conventions: app/http/, app/models/, database/migrations/.
+type Layout struct {
+	HTTPDir       string // absolute path: where pickle_gen.go (Context, Response, Router) goes
+	HTTPPkg       string // package name for HTTPDir ("pickle")
+	RequestsDir   string // absolute path: where request structs + bindings_gen.go live
+	ModelsDir     string // absolute path: where generated models live
+	MigrationsDir string // absolute path: where migration files live
+	MigrationsRel string // relative to module root (e.g. "database/migrations")
+	ConfigDir     string // absolute path: where config files live
+}
+
 // Project represents a Pickle project layout rooted at a directory.
 type Project struct {
 	Dir        string // project root
 	ModulePath string // Go module path from go.mod
+	Layout     Layout
 }
 
 // DetectProject finds the project layout from the given directory.
@@ -35,7 +48,19 @@ func DetectProject(dir string) (*Project, error) {
 		return nil, fmt.Errorf("reading go.mod: %w", err)
 	}
 
-	return &Project{Dir: absDir, ModulePath: modPath}, nil
+	return &Project{
+		Dir:        absDir,
+		ModulePath: modPath,
+		Layout: Layout{
+			HTTPDir:       filepath.Join(absDir, "app", "http"),
+			HTTPPkg:       "pickle",
+			RequestsDir:   filepath.Join(absDir, "app", "http", "requests"),
+			ModelsDir:     filepath.Join(absDir, "app", "models"),
+			MigrationsDir: filepath.Join(absDir, "database", "migrations"),
+			MigrationsRel: "database/migrations",
+			ConfigDir:     filepath.Join(absDir, "config"),
+		},
+	}, nil
 }
 
 func readModulePath(goModPath string) (string, error) {
@@ -148,7 +173,7 @@ var typeNameToColumnType = map[string]schema.ColumnType{
 // RunSchemaInspector generates a temp inspector program, compiles and runs it,
 // and returns the parsed schema tables.
 func RunSchemaInspector(project *Project) ([]*schema.Table, error) {
-	migrationsDir := filepath.Join(project.Dir, "migrations")
+	migrationsDir := project.Layout.MigrationsDir
 	structNames, err := ScanMigrationStructs(migrationsDir)
 	if err != nil {
 		return nil, fmt.Errorf("scanning migrations: %w", err)
@@ -163,7 +188,8 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, error) {
 		entries = append(entries, MigrationEntry{StructName: name})
 	}
 
-	inspectorSrc, err := GenerateSchemaInspector(project.ModulePath, entries)
+	migrationsImport := project.ModulePath + "/" + project.Layout.MigrationsRel
+	inspectorSrc, err := GenerateSchemaInspector(migrationsImport, entries)
 	if err != nil {
 		return nil, fmt.Errorf("generating inspector: %w", err)
 	}
@@ -218,49 +244,23 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, error) {
 	return tables, nil
 }
 
-// detectPackageName reads the package declaration from the first .go file in the directory.
-func detectPackageName(dir string) (string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", err
-	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
-			continue
-		}
-		if strings.HasSuffix(e.Name(), "_gen.go") {
-			continue
-		}
-		path := filepath.Join(dir, e.Name())
-		fset := token.NewFileSet()
-		f, err := parser.ParseFile(fset, path, nil, parser.PackageClauseOnly)
-		if err != nil {
-			continue
-		}
-		return f.Name.Name, nil
-	}
-	return "", fmt.Errorf("no Go files found in %s", dir)
-}
 
 // Generate runs all generators for a project and writes output.
 //
-// Layout:
-//   - {root}/pickle_gen.go            — HTTP types (Context, Response, Router, etc.)
-//   - {root}/routes_gen.go            — Route registration
-//   - {root}/bindings_gen.go          — Request deserialization + validation
-//   - {root}/models/pickle_gen.go     — QueryBuilder[T]
-//   - {root}/models/*.go              — Model structs and query scopes
-//   - {root}/migrations/types_gen.go  — Schema DSL types (Migration, Table, etc.)
+// Layout (Laravel-style):
+//   - {root}/app/http/pickle_gen.go         — HTTP types (Context, Response, Router, etc.)
+//   - {root}/app/http/requests/bindings_gen.go — Request deserialization + validation
+//   - {root}/app/models/pickle_gen.go       — QueryBuilder[T]
+//   - {root}/app/models/*.go                — Model structs and query scopes
+//   - {root}/database/migrations/types_gen.go — Schema DSL types (Migration, Table, etc.)
+//   - {root}/config/pickle_gen.go           — Config glue
 func Generate(project *Project, picklePkgDir string) error {
-	rootPkg, err := detectPackageName(project.Dir)
-	if err != nil {
-		return fmt.Errorf("detecting package name: %w", err)
-	}
-
-	modelsDir := filepath.Join(project.Dir, "models")
-	migrationsDir := filepath.Join(project.Dir, "migrations")
-
-	configDir := filepath.Join(project.Dir, "config")
+	layout := project.Layout
+	modelsDir := layout.ModelsDir
+	migrationsDir := layout.MigrationsDir
+	configDir := layout.ConfigDir
+	requestsDir := layout.RequestsDir
+	httpPkg := layout.HTTPPkg
 
 	// 0. Generate config glue if config/ exists
 	if _, err := os.Stat(configDir); err == nil {
@@ -283,7 +283,7 @@ func Generate(project *Project, picklePkgDir string) error {
 
 	// 1. Write pre-tickled core types
 	fmt.Println("  generating pickle_gen.go")
-	if err := writeFile(filepath.Join(project.Dir, "pickle_gen.go"), GenerateCoreHTTP(rootPkg)); err != nil {
+	if err := writeFile(filepath.Join(layout.HTTPDir, "pickle_gen.go"), GenerateCoreHTTP(httpPkg)); err != nil {
 		return err
 	}
 
@@ -304,6 +304,7 @@ func Generate(project *Project, picklePkgDir string) error {
 	var tables []*schema.Table
 	if _, err := os.Stat(migrationsDir); err == nil {
 		fmt.Println("  inspecting schema from migrations")
+		var err error
 		tables, err = RunSchemaInspector(project)
 		if err != nil {
 			return fmt.Errorf("schema inspection: %w", err)
@@ -348,20 +349,20 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 	}
 
-	// 6. Generate bindings into project root
-	requests, err := ScanRequests(project.Dir)
+	// 6. Generate bindings
+	requests, err := ScanRequests(requestsDir)
 	if err != nil {
 		return fmt.Errorf("scanning requests: %w", err)
 	}
 
 	if len(requests) > 0 {
 		fmt.Println("  generating bindings")
-		bindingSrc, err := GenerateBindings(requests, rootPkg)
+		bindingSrc, err := GenerateBindings(requests, "requests")
 		if err != nil {
 			return fmt.Errorf("generating bindings: %w", err)
 		}
 
-		if err := writeFile(filepath.Join(project.Dir, "bindings_gen.go"), bindingSrc); err != nil {
+		if err := writeFile(filepath.Join(requestsDir, "bindings_gen.go"), bindingSrc); err != nil {
 			return err
 		}
 	}

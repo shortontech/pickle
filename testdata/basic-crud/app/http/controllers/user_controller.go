@@ -1,15 +1,18 @@
-package basiccrud
+package controllers
 
 import (
+	pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
+	"github.com/shortontech/pickle/testdata/basic-crud/app/http/requests"
+	"github.com/shortontech/pickle/testdata/basic-crud/app/models"
+
 	"github.com/google/uuid"
-	"github.com/shortontech/pickle/testdata/basic-crud/models"
 )
 
 type UserController struct {
-	Controller
+	pickle.Controller
 }
 
-func (c UserController) Index(ctx *Context) Response {
+func (c UserController) Index(ctx *pickle.Context) pickle.Response {
 	users, err := models.QueryUser().All()
 	if err != nil {
 		return ctx.Error(err)
@@ -18,7 +21,7 @@ func (c UserController) Index(ctx *Context) Response {
 	return ctx.JSON(200, users)
 }
 
-func (c UserController) Show(ctx *Context) Response {
+func (c UserController) Show(ctx *pickle.Context) pickle.Response {
 	user, err := models.QueryUser().
 		WhereID(uuid.MustParse(ctx.Param("id"))).
 		First()
@@ -30,8 +33,8 @@ func (c UserController) Show(ctx *Context) Response {
 	return ctx.JSON(200, user)
 }
 
-func (c UserController) Store(ctx *Context) Response {
-	req, bindErr := BindCreateUserRequest(ctx.Request())
+func (c UserController) Store(ctx *pickle.Context) pickle.Response {
+	req, bindErr := requests.BindCreateUserRequest(ctx.Request())
 	if bindErr != nil {
 		return ctx.JSON(bindErr.Status, bindErr)
 	}
@@ -49,8 +52,8 @@ func (c UserController) Store(ctx *Context) Response {
 	return ctx.JSON(201, user)
 }
 
-func (c UserController) Update(ctx *Context) Response {
-	req, bindErr := BindUpdateUserRequest(ctx.Request())
+func (c UserController) Update(ctx *pickle.Context) pickle.Response {
+	req, bindErr := requests.BindUpdateUserRequest(ctx.Request())
 	if bindErr != nil {
 		return ctx.JSON(bindErr.Status, bindErr)
 	}
@@ -77,7 +80,7 @@ func (c UserController) Update(ctx *Context) Response {
 	return ctx.JSON(200, user)
 }
 
-func (c UserController) Destroy(ctx *Context) Response {
+func (c UserController) Destroy(ctx *pickle.Context) pickle.Response {
 	user, err := models.QueryUser().
 		WhereID(uuid.MustParse(ctx.Param("id"))).
 		First()

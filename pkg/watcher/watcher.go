@@ -10,17 +10,15 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-// WatchDirs are the conventional directories pickle watches for changes.
+// WatchDirs are the directories pickle watches for changes (Laravel layout).
 var WatchDirs = []string{
-	"controllers",
-	"migrations",
-	"requests",
-	"middleware",
-}
-
-// WatchFiles are the conventional root files pickle watches.
-var WatchFiles = []string{
-	"routes.go",
+	"app/http/controllers",
+	"app/http/middleware",
+	"app/http/requests",
+	"app/models",
+	"database/migrations",
+	"routes",
+	"config",
 }
 
 // OnChange is called when relevant files change. The argument is a list
@@ -46,17 +44,6 @@ func Watch(projectDir string, onChange OnChange) error {
 				return fmt.Errorf("watching %s: %w", dir, err)
 			}
 			fmt.Printf("  watching %s/\n", dir)
-		}
-	}
-
-	// Watch root files
-	for _, file := range WatchFiles {
-		path := filepath.Join(projectDir, file)
-		if _, err := os.Stat(path); err == nil {
-			if err := w.Add(path); err != nil {
-				return fmt.Errorf("watching %s: %w", file, err)
-			}
-			fmt.Printf("  watching %s\n", file)
 		}
 	}
 

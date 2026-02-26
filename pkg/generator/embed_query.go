@@ -7,6 +7,7 @@ package __PACKAGE__
 import (
 	"database/sql"
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -14,8 +15,8 @@ import (
 var DB *sql.DB
 
 // Query starts a new query for the given model type.
-func Query[T any]() *QueryBuilder[T] {
-	return &QueryBuilder[T]{}
+func Query[T any](table string) *QueryBuilder[T] {
+	return &QueryBuilder[T]{table: table}
 }
 
 // QueryBuilder is the generic query builder for all models.
@@ -137,8 +138,13 @@ func (q *QueryBuilder[T]) Delete(record *T) error {
 }
 
 func (q *QueryBuilder[T]) buildSelect() (string, []any) {
+	var zero T
+	cols := dbColumns(&zero)
+
 	var b strings.Builder
-	b.WriteString("SELECT * FROM ")
+	b.WriteString("SELECT ")
+	b.WriteString(strings.Join(cols, ", "))
+	b.WriteString(" FROM ")
 	b.WriteString(q.table)
 
 	args := q.appendWhere(&b)
@@ -192,31 +198,141 @@ func (q *QueryBuilder[T]) appendWhere(b *strings.Builder) []any {
 	return args
 }
 
-// scanRow scans a single row into a struct. Placeholder — real implementation
-// uses reflection or generated code to map columns to struct fields.
+// dbColumns returns the db-tagged column names from a struct in field order.
+func dbColumns(v any) []string {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+	}
+	rt := rv.Type()
+	var cols []string
+	for i := 0; i < rt.NumField(); i++ {
+		tag := rt.Field(i).Tag.Get("db")
+		if tag != "" && tag != "-" {
+			cols = append(cols, tag)
+		}
+	}
+	return cols
+}
+
+// dbValues returns field values from a struct in db tag field order.
+func dbValues(v any) []any {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+	}
+	rt := rv.Type()
+	var vals []any
+	for i := 0; i < rt.NumField(); i++ {
+		tag := rt.Field(i).Tag.Get("db")
+		if tag != "" && tag != "-" {
+			vals = append(vals, rv.Field(i).Interface())
+		}
+	}
+	return vals
+}
+
+// dbScanDest returns a slice of field pointers from a struct in db tag field order.
+func dbScanDest(v any) []any {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+	}
+	rt := rv.Type()
+	var ptrs []any
+	for i := 0; i < rt.NumField(); i++ {
+		tag := rt.Field(i).Tag.Get("db")
+		if tag != "" && tag != "-" {
+			ptrs = append(ptrs, rv.Field(i).Addr().Interface())
+		}
+	}
+	return ptrs
+}
+
+// scanRow scans a single row into a struct using db tag field order.
+// buildSelect emits explicit column names in the same order, so positions align.
 func scanRow[T any](row *sql.Row, dest *T) error {
-	// TODO: generated per-model scan function
-	return row.Err()
+	return row.Scan(dbScanDest(dest)...)
 }
 
-// scanRows scans multiple rows into structs.
+// scanRows scans multiple rows into structs using db tag field order.
 func scanRows[T any](rows *sql.Rows) ([]T, error) {
-	// TODO: generated per-model scan function
 	var results []T
-	return results, nil
+	for rows.Next() {
+		var item T
+		if err := rows.Scan(dbScanDest(&item)...); err != nil {
+			return nil, err
+		}
+		results = append(results, item)
+	}
+	return results, rows.Err()
 }
 
-// buildInsert builds an INSERT statement. Placeholder — real implementation
-// uses reflection or generated code to extract column values.
+// buildInsert builds a parameterized INSERT statement from a struct's db tags.
 func buildInsert[T any](table string, record *T) (string, []any) {
-	// TODO: generated per-model insert builder
-	return fmt.Sprintf("INSERT INTO %s DEFAULT VALUES", table), nil
+	cols := dbColumns(record)
+	vals := dbValues(record)
+	placeholders := make([]string, len(cols))
+	for i := range cols {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+	}
+	return fmt.Sprintf(
+		"INSERT INTO %s (%s) VALUES (%s)",
+		table,
+		strings.Join(cols, ", "),
+		strings.Join(placeholders, ", "),
+	), vals
 }
 
-// buildUpdate builds an UPDATE statement. Placeholder.
+// buildUpdate builds a parameterized UPDATE statement from a struct's db tags.
+// The "id" column is excluded from SET and used in WHERE if no conditions are set.
 func buildUpdate[T any](table string, record *T, conditions []condition) (string, []any) {
-	// TODO: generated per-model update builder
-	return fmt.Sprintf("UPDATE %s SET updated_at = NOW()", table), nil
+	rv := reflect.ValueOf(record).Elem()
+	rt := rv.Type()
+
+	var setCols []string
+	var setVals []any
+	var idVal any
+
+	for i := 0; i < rt.NumField(); i++ {
+		tag := rt.Field(i).Tag.Get("db")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		val := rv.Field(i).Interface()
+		if tag == "id" {
+			idVal = val
+			continue
+		}
+		setCols = append(setCols, tag)
+		setVals = append(setVals, val)
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("UPDATE %s SET ", table))
+	setParts := make([]string, len(setCols))
+	for i, col := range setCols {
+		setParts[i] = fmt.Sprintf("%s = $%d", col, i+1)
+	}
+	b.WriteString(strings.Join(setParts, ", "))
+
+	args := append([]any{}, setVals...)
+
+	if len(conditions) > 0 {
+		b.WriteString(" WHERE ")
+		for i, c := range conditions {
+			if i > 0 {
+				b.WriteString(" AND ")
+			}
+			b.WriteString(fmt.Sprintf("%s %s $%d", c.column, c.op, len(args)+1))
+			args = append(args, c.value)
+		}
+	} else if idVal != nil {
+		b.WriteString(fmt.Sprintf(" WHERE id = $%d", len(args)+1))
+		args = append(args, idVal)
+	}
+
+	return b.String(), args
 }
 
 `

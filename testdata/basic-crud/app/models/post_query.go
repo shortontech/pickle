@@ -13,7 +13,7 @@ type PostQuery struct {
 
 // QueryPost starts a new query for Post.
 func QueryPost() *PostQuery {
-	return &PostQuery{QueryBuilder: Query[Post]()}
+	return &PostQuery{QueryBuilder: Query[Post]("posts")}
 }
 
 func (q *PostQuery) WithUser() *PostQuery {

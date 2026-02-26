@@ -20,19 +20,27 @@ You Write (source of truth):              Pickle Generates (don't edit):
 │   └── http/                             │   ├── http/
 │       ├── controllers/                  │   │   ├── pickle_gen.go       ← Context, Response, Router, Middleware
 │       │   ├── user_controller.go        │   │   └── requests/
-│       │   └── post_controller.go        │   │       └── bindings_gen.go ← request deserialization + validation
-│       ├── middleware/                    │   └── models/
-│       │   └── auth.go                   │       ├── pickle_gen.go       ← QueryBuilder[T], DB
-│       └── requests/                     │       ├── user.go             ← struct from migration
-│           ├── create_user.go            │       ├── user_query.go       ← WhereEmail(), etc.
-│           └── update_user.go            │       ├── post.go
-├── routes/                               │       └── post_query.go
-│   └── web.go                            └── database/
-├── database/                                 └── migrations/
-│   └── migrations/                               └── types_gen.go       ← Migration, Table, Column types
-│       ├── 001_create_users.go
-│       └── 002_create_posts.go
+│       │   ├── post_controller.go        │   │       └── bindings_gen.go ← request deserialization + validation
+│       │   └── helpers.go                │   └── models/
+│       ├── middleware/                   │       ├── pickle_gen.go       ← QueryBuilder[T], DB
+│       │   └── auth.go                   │       ├── user.go             ← struct from migration
+│       └── requests/                     │       ├── user_query.go       ← WhereEmail(), etc.
+│           ├── create_user.go            │       ├── post.go
+│           ├── update_user.go            │       └── post_query.go
+│           ├── create_post.go            ├── config/
+│           └── update_post.go            │   └── pickle_gen.go           ← Config loading
+├── cmd/server/                           └── database/
+│   └── main.go                               └── migrations/
+├── routes/                                       └── types_gen.go       ← Migration, Table, Column types
+│   └── web.go
+├── database/
+│   └── migrations/
+│       ├── 2026_02_21_100000_create_users_table.go
+│       └── 2026_02_21_100001_create_posts_table.go
 ├── config/
+│   ├── app.go
+│   └── database.go
+├── .env
 └── go.mod
 ```
 

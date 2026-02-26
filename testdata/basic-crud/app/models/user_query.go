@@ -13,7 +13,7 @@ type UserQuery struct {
 
 // QueryUser starts a new query for User.
 func QueryUser() *UserQuery {
-	return &UserQuery{QueryBuilder: Query[User]()}
+	return &UserQuery{QueryBuilder: Query[User]("users")}
 }
 
 func (q *UserQuery) WhereID(val uuid.UUID) *UserQuery {

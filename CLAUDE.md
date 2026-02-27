@@ -91,7 +91,7 @@ The `Migration`, `Table`, and `Column` types in the `migrations/` package are ge
 
 #### Migration Runner
 
-Pickle scans the `migrations/` directory, sorts files by timestamp prefix, and generates a registry. The runner walks this slice, checks each against the `pickle_migrations` table, and executes pending ones.
+Pickle scans the `migrations/` directory, sorts files by timestamp prefix, and generates a registry. The runner walks this slice, checks each against the `migrations` table, and executes pending ones.
 
 #### Transactional Migrations
 
@@ -107,7 +107,7 @@ func (m *AddSearchIndex_2026_03_01_120000) Transactional() bool { return false }
 
 #### Migration State Machine
 
-Each migration tracks its lifecycle in the `pickle_migrations` table:
+Each migration tracks its lifecycle in the `migrations` table:
 
 ```
 Pending → Running → Applied
@@ -129,8 +129,8 @@ States:
 The runner acquires a database lock before transitioning to Running, preventing concurrent execution. If the process crashes and a migration is stuck in Running, the next run surfaces the issue clearly instead of silently skipping or re-running.
 
 ```go
-// pickle_migrations table
-m.CreateTable("pickle_migrations", func(t *Table) {
+// migrations table
+m.CreateTable("migrations", func(t *Table) {
     t.String("id").PrimaryKey()          // "2026_02_21_143052_create_transfers_table"
     t.Integer("batch").NotNull()
     t.String("state").NotNull()          // pending, running, applied, failed, rolling_back, rolled_back

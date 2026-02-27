@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,6 +9,7 @@ import (
 	"runtime"
 
 	"github.com/shortontech/pickle/pkg/generator"
+	picklemcp "github.com/shortontech/pickle/pkg/mcp"
 	"github.com/shortontech/pickle/pkg/watcher"
 )
 
@@ -28,6 +30,8 @@ func main() {
 	switch os.Args[1] {
 	case "generate":
 		cmdGenerate()
+	case "mcp":
+		cmdMCP()
 	case "migrate", "migrate:rollback", "migrate:fresh", "migrate:status":
 		cmdMigrate()
 	case "make:controller":
@@ -55,6 +59,7 @@ func usage() {
 Commands:
   generate          Generate all files from project sources
   --watch           Watch for changes and regenerate on save
+  mcp               Start the MCP server (stdio transport)
   migrate           Run all pending migrations
   migrate:rollback  Roll back the last batch of migrations
   migrate:fresh     Drop all tables and re-run all migrations
@@ -68,6 +73,28 @@ Options:
   --project <dir>   Project directory (default: current directory)
   --help, -h        Show this help
   --version, -v     Show version`)
+}
+
+func cmdMCP() {
+	projectDir := "."
+	args := os.Args[2:]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--project" && i+1 < len(args) {
+			projectDir = args[i+1]
+			i++
+		}
+	}
+
+	server, err := picklemcp.NewServer(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle mcp: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := server.Run(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "pickle mcp: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func cmdGenerate() {

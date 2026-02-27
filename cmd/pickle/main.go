@@ -27,6 +27,14 @@ func main() {
 	switch os.Args[1] {
 	case "generate":
 		cmdGenerate()
+	case "migrate":
+		cmdMigrate("migrate")
+	case "migrate:rollback":
+		cmdMigrate("rollback")
+	case "migrate:fresh":
+		cmdMigrate("fresh")
+	case "migrate:status":
+		cmdMigrate("status")
 	case "make:controller":
 		fmt.Println("pickle make:controller: not yet implemented")
 	case "make:migration":
@@ -52,10 +60,14 @@ func usage() {
 Commands:
   generate          Generate all files from project sources
   --watch           Watch for changes and regenerate on save
+  migrate           Run all pending migrations
+  migrate:rollback  Roll back the last batch of migrations
+  migrate:fresh     Drop all tables and re-run all migrations
+  migrate:status    Show migration status
   make:controller   Scaffold a new controller
   make:migration    Scaffold a new migration
   make:request      Scaffold a new request class
-  make:middleware    Scaffold a new middleware
+  make:middleware   Scaffold a new middleware
 
 Options:
   --project <dir>   Project directory (default: current directory)
@@ -85,6 +97,39 @@ func cmdGenerate() {
 
 	fmt.Printf("pickle generate: %s\n", project.Dir)
 	if err := generator.Generate(project, picklePkgDir); err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("pickle: done")
+}
+
+func cmdMigrate(subCmd string) {
+	projectDir := "."
+	args := os.Args[2:]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--project" && i+1 < len(args) {
+			projectDir = args[i+1]
+			i++
+		}
+	}
+
+	project, err := generator.DetectProject(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+
+	picklePkgDir := findPicklePkgDir()
+
+	// Always regenerate first so registry_gen.go and runner_gen.go are current
+	fmt.Printf("pickle %s: %s\n", subCmd, project.Dir)
+	fmt.Println("  generating...")
+	if err := generator.Generate(project, picklePkgDir); err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: generate failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := generator.RunMigrations(project, subCmd); err != nil {
 		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
 		os.Exit(1)
 	}

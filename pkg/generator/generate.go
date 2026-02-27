@@ -292,10 +292,28 @@ func Generate(project *Project, picklePkgDir string) error {
 		return err
 	}
 
-	// 2. Write pre-tickled schema types into migrations/
+	// 2. Write pre-tickled schema types and migration runner into migrations/
 	if _, err := os.Stat(migrationsDir); err == nil {
 		fmt.Println("  generating migrations/types_gen.go")
 		if err := writeFile(filepath.Join(migrationsDir, "types_gen.go"), GenerateCoreSchema("migrations")); err != nil {
+			return err
+		}
+
+		fmt.Println("  generating migrations/runner_gen.go")
+		if err := writeFile(filepath.Join(migrationsDir, "runner_gen.go"), GenerateCoreMigration("migrations")); err != nil {
+			return err
+		}
+
+		fmt.Println("  generating migrations/registry_gen.go")
+		migEntries, err := ScanMigrationFiles(migrationsDir)
+		if err != nil {
+			return fmt.Errorf("scanning migration files: %w", err)
+		}
+		registrySrc, err := GenerateRegistry("migrations", migEntries)
+		if err != nil {
+			return fmt.Errorf("generating registry: %w", err)
+		}
+		if err := writeFile(filepath.Join(migrationsDir, "registry_gen.go"), registrySrc); err != nil {
 			return err
 		}
 	}

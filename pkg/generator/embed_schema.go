@@ -167,6 +167,22 @@ func (m *Migration) AddUniqueIndex(table string, columns ...string) {
 	})
 }
 
+// Reset clears recorded operations so the migration struct can be reused.
+func (m *Migration) Reset() {
+	m.Operations = nil
+}
+
+// GetOperations returns the operations recorded by Up() or Down().
+func (m *Migration) GetOperations() []Operation {
+	return m.Operations
+}
+
+// Transactional returns true — migrations run in a transaction by default.
+// Override in concrete migration structs to opt out.
+func (m *Migration) Transactional() bool {
+	return true
+}
+
 // Table collects column definitions for a database table.
 type Table struct {
 	Name    string

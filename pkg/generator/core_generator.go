@@ -27,3 +27,9 @@ func GenerateCoreSchema(packageName string) []byte {
 func GenerateCoreConfig(packageName string) []byte {
 	return []byte(strings.ReplaceAll(embedCONFIG, packagePlaceholder, packageName))
 }
+
+// GenerateCoreMigration returns the migration runner and SQL generators
+// with the package name set to the target package.
+func GenerateCoreMigration(packageName string) []byte {
+	return []byte(strings.ReplaceAll(embedMIGRATION, packagePlaceholder, packageName))
+}

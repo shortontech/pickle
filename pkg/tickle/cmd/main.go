@@ -36,6 +36,10 @@ var templates = []struct {
 		srcDir: "pkg/schema",
 		output: "pkg/generator/embed_schema.go",
 	},
+	{
+		srcDir: "pkg/migration",
+		output: "pkg/generator/embed_migration.go",
+	},
 }
 
 func main() {

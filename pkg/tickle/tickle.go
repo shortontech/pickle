@@ -11,6 +11,7 @@ import (
 var packageLine = regexp.MustCompile(`(?m)^package \w+\s*\n`)
 var importBlock = regexp.MustCompile(`(?ms)^import\s*\(.*?\)\s*\n`)
 var singleImport = regexp.MustCompile(`(?m)^import\s+"[^"]+"\s*\n`)
+var buildConstraint = regexp.MustCompile(`(?m)^//go:build\s+.*\n`)
 
 // Tickle reads Go source files from srcDir and returns their contents
 // with the package declaration replaced to targetPackage.
@@ -127,8 +128,10 @@ func extractImports(src string) []string {
 	return imports
 }
 
-// stripHeaderFull removes package declaration and all import blocks from Go source.
+// stripHeaderFull removes package declaration, build constraints, and all
+// import blocks from Go source.
 func stripHeaderFull(src string) string {
+	src = buildConstraint.ReplaceAllString(src, "")
 	src = packageLine.ReplaceAllString(src, "")
 	src = importBlock.ReplaceAllString(src, "")
 	src = singleImport.ReplaceAllString(src, "")

@@ -13,8 +13,8 @@ func TestScanRequests(t *testing.T) {
 		t.Fatalf("ScanRequests: %v", err)
 	}
 
-	if len(requests) != 4 {
-		t.Fatalf("got %d requests, want 4", len(requests))
+	if len(requests) != 5 {
+		t.Fatalf("got %d requests, want 5", len(requests))
 	}
 
 	// Sorted alphabetically
@@ -22,11 +22,12 @@ func TestScanRequests(t *testing.T) {
 	for i, r := range requests {
 		names[i] = r.Name
 	}
-	want := []string{"CreatePostRequest", "CreateUserRequest", "UpdatePostRequest", "UserRequest"}
+	want := []string{"CreatePostRequest", "CreateUserRequest", "LoginRequest", "UpdatePostRequest", "UpdateUserRequest"}
 	// Filter to only *Request types we expect
 	wantNames := map[string]bool{
 		"CreatePostRequest":  true,
 		"CreateUserRequest":  true,
+		"LoginRequest":       true,
 		"UpdatePostRequest":  true,
 		"UpdateUserRequest":  true,
 	}

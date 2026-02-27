@@ -72,8 +72,8 @@ func (t *Table) Binary(name string) *Column {
 	return t.addColumn(name, Binary)
 }
 
-// Timestamps adds created_at and updated_at columns.
+// Timestamps adds created_at and updated_at columns with NOW() defaults.
 func (t *Table) Timestamps() {
-	t.addColumn("created_at", Timestamp).NotNull()
-	t.addColumn("updated_at", Timestamp).NotNull()
+	t.addColumn("created_at", Timestamp).NotNull().Default("NOW()")
+	t.addColumn("updated_at", Timestamp).NotNull().Default("NOW()")
 }

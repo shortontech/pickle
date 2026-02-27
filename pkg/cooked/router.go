@@ -152,7 +152,7 @@ func (r *Router) RegisterRoutes(mux *http.ServeMux) {
 
 		pattern := route.Method + " " + goPath
 
-		mux.HandleFunc(pattern, func(w http.ResponseWriter, req *http.Request) {
+		handler := func(w http.ResponseWriter, req *http.Request) {
 			ctx := NewContext(w, req)
 			for _, name := range params {
 				ctx.SetParam(name, req.PathValue(name))
@@ -167,7 +167,22 @@ func (r *Router) RegisterRoutes(mux *http.ServeMux) {
 				return route.Handler(ctx)
 			})
 			resp.Write(w)
-		})
+		}
+
+		mux.HandleFunc(pattern, handler)
+
+		// Register the opposite slash variant to prevent ServeMux 301 redirects
+		// that strip headers (e.g. Authorization). Skip paths ending in path params.
+		if !strings.HasSuffix(goPath, "}") {
+			if strings.HasSuffix(goPath, "/") {
+				trimmed := strings.TrimRight(goPath, "/")
+				if trimmed != "" {
+					mux.HandleFunc(route.Method+" "+trimmed, handler)
+				}
+			} else {
+				mux.HandleFunc(route.Method+" "+goPath+"/", handler)
+			}
+		}
 	}
 }
 

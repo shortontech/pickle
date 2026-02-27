@@ -118,6 +118,21 @@ func BindCreateUserRequest(r *http.Request) (CreateUserRequest, *BindingError) {
 	return req, nil
 }
 
+// BindLoginRequest deserializes and validates a LoginRequest from the HTTP request body.
+func BindLoginRequest(r *http.Request) (LoginRequest, *BindingError) {
+	var req LoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return req, &BindingError{
+			Status: 400,
+			Errors: []ValidationError{{Field: "_body", Message: "invalid request body"}},
+		}
+	}
+	if err := validate.Struct(req); err != nil {
+		return req, formatValidationErrors(err)
+	}
+	return req, nil
+}
+
 // BindUpdatePostRequest deserializes and validates a UpdatePostRequest from the HTTP request body.
 func BindUpdatePostRequest(r *http.Request) (UpdatePostRequest, *BindingError) {
 	var req UpdatePostRequest

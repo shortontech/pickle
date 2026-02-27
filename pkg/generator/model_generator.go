@@ -53,7 +53,9 @@ func GenerateModel(table *schema.Table, packageName string) ([]byte, error) {
 		}
 
 		jsonTag := col.Name
-		if col.IsNullable {
+		if col.Name == "password" || col.Name == "password_hash" {
+			jsonTag = "-"
+		} else if col.IsNullable {
 			jsonTag += ",omitempty"
 		}
 

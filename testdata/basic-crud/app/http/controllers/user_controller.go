@@ -42,7 +42,7 @@ func (c UserController) Store(ctx *pickle.Context) pickle.Response {
 	user := &models.User{
 		Name:     req.Name,
 		Email:    req.Email,
-		Password: HashPassword(req.Password),
+		PasswordHash: HashPassword(req.Password),
 	}
 
 	if err := models.QueryUser().Create(user); err != nil {

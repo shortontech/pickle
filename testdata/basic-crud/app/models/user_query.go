@@ -96,33 +96,33 @@ func (q *UserQuery) WhereEmailNotLike(val string) *UserQuery {
 	return q
 }
 
-func (q *UserQuery) WherePassword(val string) *UserQuery {
-	q.Where("password", val)
+func (q *UserQuery) WherePasswordHash(val string) *UserQuery {
+	q.Where("password_hash", val)
 	return q
 }
 
-func (q *UserQuery) WherePasswordNot(val string) *UserQuery {
-	q.WhereOp("password", "!=", val)
+func (q *UserQuery) WherePasswordHashNot(val string) *UserQuery {
+	q.WhereOp("password_hash", "!=", val)
 	return q
 }
 
-func (q *UserQuery) WherePasswordIn(vals []string) *UserQuery {
-	q.WhereIn("password", vals)
+func (q *UserQuery) WherePasswordHashIn(vals []string) *UserQuery {
+	q.WhereIn("password_hash", vals)
 	return q
 }
 
-func (q *UserQuery) WherePasswordNotIn(vals []string) *UserQuery {
-	q.WhereNotIn("password", vals)
+func (q *UserQuery) WherePasswordHashNotIn(vals []string) *UserQuery {
+	q.WhereNotIn("password_hash", vals)
 	return q
 }
 
-func (q *UserQuery) WherePasswordLike(val string) *UserQuery {
-	q.WhereOp("password", "LIKE", val)
+func (q *UserQuery) WherePasswordHashLike(val string) *UserQuery {
+	q.WhereOp("password_hash", "LIKE", val)
 	return q
 }
 
-func (q *UserQuery) WherePasswordNotLike(val string) *UserQuery {
-	q.WhereOp("password", "NOT LIKE", val)
+func (q *UserQuery) WherePasswordHashNotLike(val string) *UserQuery {
+	q.WhereOp("password_hash", "NOT LIKE", val)
 	return q
 }
 

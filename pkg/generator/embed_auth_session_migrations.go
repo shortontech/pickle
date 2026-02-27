@@ -14,7 +14,7 @@ func (m *CreateSessionsTable_2026_02_27_011700) Up() {
 		t.String("id", 255).PrimaryKey()
 		t.String("user_id", 255).NotNull()
 		t.String("role", 50).NotNull().Default("user")
-		t.Text("payload").Nullable()
+		t.JSONB("payload").Nullable()
 		t.Timestamp("expires_at").NotNull()
 		t.Timestamps()
 	})

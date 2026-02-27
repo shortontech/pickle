@@ -8,6 +8,7 @@ import (
 
 var API = pickle.Routes(func(r *pickle.Router) {
 	r.Group("/api", func(r *pickle.Router) {
+		r.Post("/login", controllers.AuthController{}.Login)
 		r.Resource("/users", controllers.UserController{})
 
 		r.Group("/posts", middleware.Auth, func(r *pickle.Router) {

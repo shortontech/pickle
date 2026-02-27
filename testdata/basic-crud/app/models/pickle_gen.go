@@ -113,11 +113,14 @@ func (q *QueryBuilder[T]) Count() (int64, error) {
 	return count, err
 }
 
-// Create inserts a new record.
+// Create inserts a new record and scans the returned row back into the struct,
+// populating DB-generated values (UUIDs, timestamps, defaults).
 func (q *QueryBuilder[T]) Create(record *T) error {
 	query, args := buildInsert(q.table, record)
-	_, err := DB.Exec(query, args...)
-	return err
+	cols := dbColumns(record)
+	query += " RETURNING " + strings.Join(cols, ", ")
+	row := DB.QueryRow(query, args...)
+	return row.Scan(dbScanDest(record)...)
 }
 
 // Update updates an existing record.
@@ -266,9 +269,30 @@ func scanRows[T any](rows *sql.Rows) ([]T, error) {
 }
 
 // buildInsert builds a parameterized INSERT statement from a struct's db tags.
+// Zero-value "id", "created_at", and "updated_at" fields are omitted so that
+// database defaults (gen_random_uuid(), NOW(), etc.) fire.
 func buildInsert[T any](table string, record *T) (string, []any) {
-	cols := dbColumns(record)
-	vals := dbValues(record)
+	rv := reflect.ValueOf(record).Elem()
+	rt := rv.Type()
+
+	// Fields where a zero value means "let the DB default handle it"
+	dbDefaultFields := map[string]bool{"id": true, "created_at": true, "updated_at": true}
+
+	var cols []string
+	var vals []any
+	for i := 0; i < rt.NumField(); i++ {
+		tag := rt.Field(i).Tag.Get("db")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		field := rv.Field(i)
+		if dbDefaultFields[tag] && field.IsZero() {
+			continue
+		}
+		cols = append(cols, tag)
+		vals = append(vals, field.Interface())
+	}
+
 	placeholders := make([]string, len(cols))
 	for i := range cols {
 		placeholders[i] = fmt.Sprintf("$%d", i+1)

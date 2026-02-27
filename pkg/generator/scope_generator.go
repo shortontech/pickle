@@ -71,6 +71,7 @@ func collectScopeImports(table *schema.Table, blocks []tickle.ScopeBlock) []stri
 	hasTimestamp := false
 	hasUUID := false
 	hasDecimal := false
+	hasJSONB := false
 
 	for _, col := range table.Columns {
 		switch col.Type {
@@ -80,6 +81,8 @@ func collectScopeImports(table *schema.Table, blocks []tickle.ScopeBlock) []stri
 			hasUUID = true
 		case schema.Decimal:
 			hasDecimal = true
+		case schema.JSONB:
+			hasJSONB = true
 		}
 	}
 
@@ -99,6 +102,9 @@ func collectScopeImports(table *schema.Table, blocks []tickle.ScopeBlock) []stri
 	}
 	if hasTimestamp {
 		imports["time"] = true
+	}
+	if hasJSONB {
+		imports["encoding/json"] = true
 	}
 
 	var sorted []string

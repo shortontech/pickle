@@ -2,15 +2,16 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 )
 
 type Session struct {
-	ID        string    `json:"id" db:"id"`
-	UserID    string    `json:"user_id" db:"user_id"`
-	Role      string    `json:"role" db:"role"`
-	Payload   *string   `json:"payload,omitempty" db:"payload"`
-	ExpiresAt time.Time `json:"expires_at" db:"expires_at"`
-	CreatedAt time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
+	ID        string           `json:"id" db:"id"`
+	UserID    string           `json:"user_id" db:"user_id"`
+	Role      string           `json:"role" db:"role"`
+	Payload   *json.RawMessage `json:"payload,omitempty" db:"payload"`
+	ExpiresAt time.Time        `json:"expires_at" db:"expires_at"`
+	CreatedAt time.Time        `json:"created_at" db:"created_at"`
+	UpdatedAt time.Time        `json:"updated_at" db:"updated_at"`
 }

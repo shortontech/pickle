@@ -2,6 +2,7 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 )
 
@@ -105,33 +106,23 @@ func (q *SessionQuery) WhereRoleNotLike(val string) *SessionQuery {
 	return q
 }
 
-func (q *SessionQuery) WherePayload(val *string) *SessionQuery {
+func (q *SessionQuery) WherePayload(val *json.RawMessage) *SessionQuery {
 	q.Where("payload", val)
 	return q
 }
 
-func (q *SessionQuery) WherePayloadNot(val *string) *SessionQuery {
+func (q *SessionQuery) WherePayloadNot(val *json.RawMessage) *SessionQuery {
 	q.WhereOp("payload", "!=", val)
 	return q
 }
 
-func (q *SessionQuery) WherePayloadIn(vals []*string) *SessionQuery {
+func (q *SessionQuery) WherePayloadIn(vals []*json.RawMessage) *SessionQuery {
 	q.WhereIn("payload", vals)
 	return q
 }
 
-func (q *SessionQuery) WherePayloadNotIn(vals []*string) *SessionQuery {
+func (q *SessionQuery) WherePayloadNotIn(vals []*json.RawMessage) *SessionQuery {
 	q.WhereNotIn("payload", vals)
-	return q
-}
-
-func (q *SessionQuery) WherePayloadLike(val string) *SessionQuery {
-	q.WhereOp("payload", "LIKE", val)
-	return q
-}
-
-func (q *SessionQuery) WherePayloadNotLike(val string) *SessionQuery {
-	q.WhereOp("payload", "NOT LIKE", val)
 	return q
 }
 

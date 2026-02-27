@@ -52,13 +52,6 @@ func tmplGoMod(mod string) string {
 	return r(`module {{.ModuleName}}
 
 go 1.23
-
-require (
-	github.com/go-playground/validator/v10 v10.25.0
-	github.com/google/uuid v1.6.0
-	github.com/jackc/pgx/v5 v5.7.4
-	github.com/shopspring/decimal v1.4.0
-)
 `, mod)
 }
 

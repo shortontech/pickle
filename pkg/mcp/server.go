@@ -4,17 +4,22 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/shortontech/pickle/pkg/generator"
+	"github.com/shortontech/pickle/pkg/scaffold"
 	"github.com/shortontech/pickle/pkg/schema"
 )
 
 // Server wraps the MCP server with Pickle project context.
 type Server struct {
-	project *generator.Project
-	server  *mcp.Server
+	project    *generator.Project
+	server     *mcp.Server
+	picklePkgDir string
 }
 
 // NewServer creates a Pickle MCP server with all tools registered.
@@ -24,7 +29,7 @@ func NewServer(projectDir string) (*Server, error) {
 		return nil, fmt.Errorf("detecting project: %w", err)
 	}
 
-	s := &Server{project: project}
+	s := &Server{project: project, picklePkgDir: findPicklePkgDir()}
 	s.server = mcp.NewServer(&mcp.Implementation{
 		Name:    "pickle",
 		Version: "v0.1.0",
@@ -74,6 +79,11 @@ func (s *Server) registerTools() {
 		Name:        "docs_show",
 		Description: "Show Pickle framework API documentation. Pass a type name to filter (e.g. Context, Router, Response, QueryBuilder).",
 	}, s.docsShow)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "project_create",
+		Description: "Create a new Pickle project. Scaffolds the full directory structure, generates code, and runs go mod tidy. The name is used as both the directory name and Go module path.",
+	}, s.projectCreate)
 }
 
 type tableInput struct {
@@ -197,6 +207,79 @@ func (s *Server) docsShow(_ context.Context, _ *mcp.CallToolRequest, input docsI
 		return errResult(err.Error()), nil, nil
 	}
 	return textResult(result), nil, nil
+}
+
+type createInput struct {
+	Name   string `json:"name"`
+	Module string `json:"module,omitempty"`
+}
+
+func (s *Server) projectCreate(_ context.Context, _ *mcp.CallToolRequest, input createInput) (*mcp.CallToolResult, any, error) {
+	if input.Name == "" {
+		return errResult("name is required"), nil, nil
+	}
+
+	targetDir, err := filepath.Abs(input.Name)
+	if err != nil {
+		return errResult("invalid path: " + err.Error()), nil, nil
+	}
+
+	if _, err := os.Stat(targetDir); err == nil {
+		return errResult(fmt.Sprintf("directory %q already exists", input.Name)), nil, nil
+	}
+
+	moduleName := input.Name
+	if input.Module != "" {
+		moduleName = input.Module
+	}
+
+	var log strings.Builder
+	fmt.Fprintf(&log, "Creating project %q (module: %s)\n\n", input.Name, moduleName)
+
+	if err := scaffold.Create(moduleName, targetDir); err != nil {
+		return errResult("scaffold failed: " + err.Error()), nil, nil
+	}
+	log.WriteString("Scaffolded project structure.\n")
+
+	// Generate code
+	project, err := generator.DetectProject(targetDir)
+	if err != nil {
+		return errResult("detecting project: " + err.Error()), nil, nil
+	}
+
+	if err := generator.Generate(project, s.picklePkgDir); err != nil {
+		fmt.Fprintf(&log, "Warning: generate failed: %v\n", err)
+	} else {
+		log.WriteString("Generated code.\n")
+	}
+
+	// Run go mod tidy
+	cmd := exec.Command("go", "mod", "tidy")
+	cmd.Dir = targetDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(&log, "Warning: go mod tidy failed: %v\n%s\n", err, out)
+	} else {
+		log.WriteString("Ran go mod tidy.\n")
+	}
+
+	fmt.Fprintf(&log, "\nProject created at %s\n", targetDir)
+	return textResult(log.String()), nil, nil
+}
+
+// findPicklePkgDir locates the pkg/ directory of the pickle installation.
+func findPicklePkgDir() string {
+	// Use runtime.Caller to find this source file's location:
+	// thisFile = .../pkg/mcp/server.go → pkg/ = .../pkg/
+	_, thisFile, _, ok := runtime.Caller(0)
+	if ok {
+		pkgDir := filepath.Join(filepath.Dir(thisFile), "..")
+		if abs, err := filepath.Abs(pkgDir); err == nil {
+			if _, err := os.Stat(filepath.Join(abs, "cooked")); err == nil {
+				return abs
+			}
+		}
+	}
+	return ""
 }
 
 // --- formatting helpers ---

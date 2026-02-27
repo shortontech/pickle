@@ -25,6 +25,11 @@ func Create(moduleName, targetDir string) error {
 		"database/migrations/" + ts + "_create_users_table.go": tmplMigration(ts),
 	}
 
+	// Create app/commands/ directory so the generator emits commands/pickle_gen.go
+	if err := os.MkdirAll(filepath.Join(targetDir, "app", "commands"), 0o755); err != nil {
+		return fmt.Errorf("creating app/commands: %w", err)
+	}
+
 	for relPath, content := range files {
 		absPath := filepath.Join(targetDir, relPath)
 		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
@@ -219,7 +224,7 @@ type %s struct {
 
 func (m *%s) Up() {
 	m.CreateTable("users", func(t *Table) {
-		t.UUID("id").PrimaryKey().Default("uuid_generate_v7()")
+		t.UUID("id").PrimaryKey().Default("gen_random_uuid()")
 		t.String("name").NotNull()
 		t.String("email").NotNull().Unique()
 		t.String("password").NotNull()

@@ -113,18 +113,7 @@ func cmdCreate() {
 		os.Exit(1)
 	}
 
-	// Run go mod tidy
-	fmt.Println("  running go mod tidy...")
-	cmd := exec.Command("go", "mod", "tidy")
-	cmd.Dir = targetDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "pickle: go mod tidy failed: %v\n", err)
-		fmt.Println("  you may need to run 'go mod tidy' manually")
-	}
-
-	// Run generator
+	// Run generator first so all Go files exist before go mod tidy
 	fmt.Println("  generating...")
 	project, err := generator.DetectProject(targetDir)
 	if err != nil {
@@ -136,6 +125,17 @@ func cmdCreate() {
 	if err := generator.Generate(project, picklePkgDir); err != nil {
 		fmt.Fprintf(os.Stderr, "pickle: generate failed: %v\n", err)
 		fmt.Println("  you may need to run 'pickle generate' manually")
+	}
+
+	// Run go mod tidy after generation so all imports are present
+	fmt.Println("  running go mod tidy...")
+	cmd := exec.Command("go", "mod", "tidy")
+	cmd.Dir = targetDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: go mod tidy failed: %v\n", err)
+		fmt.Println("  you may need to run 'go mod tidy' manually")
 	}
 
 	fmt.Printf("\npickle: project %q created successfully!\n", projectName)

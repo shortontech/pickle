@@ -92,9 +92,9 @@ func main() {
 		fmt.Printf("  %s → %s\n", t.srcDir, t.output)
 	}
 
-	// Extract docs from pkg/cooked/ and write embed_docs.go
-	cookedDir := filepath.Join(root, "pkg", "cooked")
-	docs, err := tickle.ExtractDocs(cookedDir)
+	// Extract docs from docs/ directory and write embed_docs.go
+	docsDir := filepath.Join(root, "docs")
+	docs, err := tickle.ExtractDocs(docsDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tickle: extracting docs: %v\n", err)
 		os.Exit(1)
@@ -111,7 +111,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "tickle: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("  pkg/cooked/ → pkg/generator/embed_docs.go (%d types)\n", len(docs))
+	fmt.Printf("  docs/ → pkg/generator/embed_docs.go (%d topics)\n", len(docs))
 
 	fmt.Println("tickle: done")
 }

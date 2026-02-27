@@ -14,8 +14,8 @@ func DocsJSON() string {
 }
 
 // ParseDocs parses the embedded documentation JSON.
-func ParseDocs() ([]tickle.TypeDoc, error) {
-	var docs []tickle.TypeDoc
+func ParseDocs() ([]tickle.DocFile, error) {
+	var docs []tickle.DocFile
 	if err := json.Unmarshal([]byte(embedDOCS), &docs); err != nil {
 		return nil, fmt.Errorf("parsing embedded docs: %w", err)
 	}
@@ -29,30 +29,21 @@ func FormatDocsMarkdown(typeName string) (string, error) {
 		return "", err
 	}
 
-	var b strings.Builder
-	for _, td := range docs {
-		if typeName != "" && !strings.EqualFold(td.Name, typeName) {
-			continue
-		}
-
-		fmt.Fprintf(&b, "## %s\n", td.Name)
-		if td.Doc != "" {
-			fmt.Fprintf(&b, "%s\n", td.Doc)
-		}
-		b.WriteString("\n")
-
-		for _, m := range td.Methods {
-			fmt.Fprintf(&b, "### %s\n", m.Signature)
-			if m.Doc != "" {
-				fmt.Fprintf(&b, "%s\n", m.Doc)
+	if typeName != "" {
+		for _, d := range docs {
+			if strings.EqualFold(d.Name, typeName) {
+				return d.Content, nil
 			}
-			b.WriteString("\n")
 		}
-	}
-
-	result := b.String()
-	if result == "" && typeName != "" {
 		return "", fmt.Errorf("type %q not found in documentation", typeName)
 	}
-	return result, nil
+
+	// No filter — return all doc names with descriptions
+	var b strings.Builder
+	b.WriteString("# Pickle Framework Documentation\n\n")
+	for _, d := range docs {
+		fmt.Fprintf(&b, "- **%s** — %s\n", d.Name, d.Description)
+	}
+	b.WriteString("\nPass a type name to see full documentation (e.g. Context, Router, QueryBuilder).\n")
+	return b.String(), nil
 }

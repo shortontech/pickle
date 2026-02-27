@@ -30,6 +30,9 @@ Thumbs.db
 .env
 .env.local
 
+# Sandbox
+sandbox/
+
 # Specs
 specs/
 testdata/basic-crud/post_controller.go

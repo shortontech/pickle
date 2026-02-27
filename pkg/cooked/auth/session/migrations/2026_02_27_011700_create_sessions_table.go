@@ -1,0 +1,26 @@
+//go:build ignore
+
+package migrations
+
+// CreateSessionsTable_2026_02_27_011700 creates the sessions table for session-based authentication.
+type CreateSessionsTable_2026_02_27_011700 struct {
+	Migration
+}
+
+func (m *CreateSessionsTable_2026_02_27_011700) Up() {
+	m.CreateTable("sessions", func(t *Table) {
+		t.String("id", 255).PrimaryKey()
+		t.String("user_id", 255).NotNull()
+		t.String("role", 50).NotNull().Default("user")
+		t.Text("payload").Nullable()
+		t.Timestamp("expires_at").NotNull()
+		t.Timestamps()
+	})
+
+	m.AddIndex("sessions", "user_id")
+	m.AddIndex("sessions", "expires_at")
+}
+
+func (m *CreateSessionsTable_2026_02_27_011700) Down() {
+	m.DropTableIfExists("sessions")
+}

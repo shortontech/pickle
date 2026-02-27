@@ -1,13 +1,15 @@
 package middleware
 
-import pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
+import (
+	pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
+	"github.com/shortontech/pickle/testdata/basic-crud/app/http/auth"
+)
 
 func Auth(ctx *pickle.Context, next func() pickle.Response) pickle.Response {
-	token := ctx.BearerToken()
-	if token == "" {
-		return ctx.Unauthorized("missing token")
+	info, err := auth.Authenticate(ctx.Request())
+	if err != nil {
+		return ctx.Unauthorized(err.Error())
 	}
-
-	// TODO: validate token and set auth info
+	ctx.SetAuth(info)
 	return next()
 }

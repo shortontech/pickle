@@ -28,6 +28,7 @@ type Layout struct {
 	MigrationsRel string // relative to module root (e.g. "database/migrations")
 	ConfigDir     string // absolute path: where config files live
 	CommandsDir   string // absolute path: where app/commands/ lives
+	AuthDir       string // absolute path: where app/http/auth/ lives
 }
 
 // Project represents a Pickle project layout rooted at a directory.
@@ -61,6 +62,7 @@ func DetectProject(dir string) (*Project, error) {
 			MigrationsRel: "database/migrations",
 			ConfigDir:     filepath.Join(absDir, "config"),
 			CommandsDir:   filepath.Join(absDir, "app", "commands"),
+			AuthDir:       filepath.Join(absDir, "app", "http", "auth"),
 		},
 	}, nil
 }
@@ -292,6 +294,54 @@ func Generate(project *Project, picklePkgDir string) error {
 	fmt.Println("  generating models/pickle_gen.go")
 	if err := writeFile(filepath.Join(modelsDir, "pickle_gen.go"), GenerateCoreQuery("models")); err != nil {
 		return err
+	}
+
+	// 1b. Generate auth drivers if app/http/auth/ exists
+	authDir := layout.AuthDir
+	if _, err := os.Stat(authDir); err == nil {
+		fmt.Println("  scanning auth drivers")
+		drivers, err := ScanAuthDrivers(authDir)
+		if err != nil {
+			return fmt.Errorf("scanning auth drivers: %w", err)
+		}
+
+		httpImport := project.ModulePath + "/app/http"
+		configImport := project.ModulePath + "/config"
+
+		// Write driver_gen.go for built-in drivers that haven't been overridden
+		for _, d := range drivers {
+			if d.NeedsGen {
+				fmt.Printf("  generating auth/%s/driver_gen.go\n", d.Name)
+				src, err := GenerateBuiltinDriver(d, httpImport)
+				if err != nil {
+					return fmt.Errorf("generating auth driver %s: %w", d.Name, err)
+				}
+				if err := writeFile(filepath.Join(d.Dir, "driver_gen.go"), src); err != nil {
+					return err
+				}
+			}
+		}
+
+		// Write driver-specific migrations into database/migrations/
+		for _, d := range drivers {
+			if d.IsBuiltin && d.NeedsGen {
+				if err := WriteDriverMigrations(d.Name, migrationsDir, "migrations"); err != nil {
+					return fmt.Errorf("writing migrations for auth driver %s: %w", d.Name, err)
+				}
+			}
+		}
+
+		// Generate auth/pickle_gen.go with interface + registry
+		if len(drivers) > 0 {
+			fmt.Println("  generating auth/pickle_gen.go")
+			registrySrc, err := GenerateAuthRegistry(drivers, project.ModulePath, httpImport, configImport)
+			if err != nil {
+				return fmt.Errorf("generating auth registry: %w", err)
+			}
+			if err := writeFile(filepath.Join(authDir, "pickle_gen.go"), registrySrc); err != nil {
+				return err
+			}
+		}
 	}
 
 	// 2. Write pre-tickled schema types and migration runner into migrations/

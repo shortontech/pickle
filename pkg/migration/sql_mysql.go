@@ -11,7 +11,7 @@ func (g *mysqlGenerator) CreateTable(t *Table) string {
 }
 
 func (g *mysqlGenerator) DropTableIfExists(name string) string {
-	return fmt.Sprintf("DROP TABLE IF EXISTS %s", name)
+	return fmt.Sprintf("DROP TABLE IF EXISTS `%s`", name)
 }
 
 func (g *mysqlGenerator) AddColumn(table string, col *Column) string {
@@ -19,11 +19,11 @@ func (g *mysqlGenerator) AddColumn(table string, col *Column) string {
 }
 
 func (g *mysqlGenerator) DropColumn(table, column string) string {
-	return fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column)
+	return fmt.Sprintf("ALTER TABLE `%s` DROP COLUMN `%s`", table, column)
 }
 
 func (g *mysqlGenerator) RenameColumn(table, oldName, newName string) string {
-	return fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s", table, oldName, newName)
+	return fmt.Sprintf("ALTER TABLE `%s` RENAME COLUMN `%s` TO `%s`", table, oldName, newName)
 }
 
 func (g *mysqlGenerator) AddIndex(idx *Index) string {
@@ -31,5 +31,5 @@ func (g *mysqlGenerator) AddIndex(idx *Index) string {
 }
 
 func (g *mysqlGenerator) RenameTable(oldName, newName string) string {
-	return fmt.Sprintf("RENAME TABLE %s TO %s", oldName, newName)
+	return fmt.Sprintf("RENAME TABLE `%s` TO `%s`", oldName, newName)
 }

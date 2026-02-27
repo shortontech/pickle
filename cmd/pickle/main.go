@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 
@@ -27,14 +28,8 @@ func main() {
 	switch os.Args[1] {
 	case "generate":
 		cmdGenerate()
-	case "migrate":
-		cmdMigrate("migrate")
-	case "migrate:rollback":
-		cmdMigrate("rollback")
-	case "migrate:fresh":
-		cmdMigrate("fresh")
-	case "migrate:status":
-		cmdMigrate("status")
+	case "migrate", "migrate:rollback", "migrate:fresh", "migrate:status":
+		cmdMigrate()
 	case "make:controller":
 		fmt.Println("pickle make:controller: not yet implemented")
 	case "make:migration":
@@ -67,7 +62,7 @@ Commands:
   make:controller   Scaffold a new controller
   make:migration    Scaffold a new migration
   make:request      Scaffold a new request class
-  make:middleware   Scaffold a new middleware
+  make:middleware    Scaffold a new middleware
 
 Options:
   --project <dir>   Project directory (default: current directory)
@@ -103,7 +98,7 @@ func cmdGenerate() {
 	fmt.Println("pickle: done")
 }
 
-func cmdMigrate(subCmd string) {
+func cmdMigrate() {
 	projectDir := "."
 	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
@@ -122,15 +117,31 @@ func cmdMigrate(subCmd string) {
 	picklePkgDir := findPicklePkgDir()
 
 	// Always regenerate first so registry_gen.go and runner_gen.go are current
-	fmt.Printf("pickle %s: %s\n", subCmd, project.Dir)
+	fmt.Printf("pickle %s: %s\n", os.Args[1], project.Dir)
 	fmt.Println("  generating...")
 	if err := generator.Generate(project, picklePkgDir); err != nil {
 		fmt.Fprintf(os.Stderr, "pickle: generate failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	if err := generator.RunMigrations(project, subCmd); err != nil {
-		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+	// Delegate to the project's own binary via go run
+	// The binary command name matches the pickle CLI command (e.g. "migrate", "migrate:rollback")
+	cmd := exec.Command("go", "run", "./cmd/server/", os.Args[1])
+	cmd.Dir = project.Dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	// Load .env from project root
+	cmd.Env = os.Environ()
+	dotEnv := generator.ParseDotEnv(filepath.Join(project.Dir, ".env"))
+	for k, v := range dotEnv {
+		if os.Getenv(k) == "" {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
+
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %s: %v\n", os.Args[1], err)
 		os.Exit(1)
 	}
 	fmt.Println("pickle: done")

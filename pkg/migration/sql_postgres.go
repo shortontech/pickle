@@ -9,17 +9,22 @@ import (
 
 type postgresGenerator struct{}
 
+// qi quotes a Postgres identifier (table/column name).
+func qi(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
 func (g *postgresGenerator) CreateTable(t *Table) string {
 	var cols []string
 	for _, col := range t.Columns {
 		cols = append(cols, g.columnDef(col))
 	}
-	return fmt.Sprintf("CREATE TABLE %s (\n\t%s\n)", t.Name, strings.Join(cols, ",\n\t"))
+	return fmt.Sprintf("CREATE TABLE %s (\n\t%s\n)", qi(t.Name), strings.Join(cols, ",\n\t"))
 }
 
 func (g *postgresGenerator) columnDef(col *Column) string {
 	var b strings.Builder
-	b.WriteString(col.Name)
+	b.WriteString(qi(col.Name))
 	b.WriteString(" ")
 	b.WriteString(g.columnType(col))
 
@@ -46,7 +51,7 @@ func (g *postgresGenerator) columnDef(col *Column) string {
 		}
 	}
 	if col.ForeignKeyTable != "" {
-		b.WriteString(fmt.Sprintf(" REFERENCES %s(%s)", col.ForeignKeyTable, col.ForeignKeyColumn))
+		b.WriteString(fmt.Sprintf(" REFERENCES %s(%s)", qi(col.ForeignKeyTable), qi(col.ForeignKeyColumn)))
 	}
 	return b.String()
 }
@@ -88,19 +93,19 @@ func (g *postgresGenerator) columnType(col *Column) string {
 }
 
 func (g *postgresGenerator) DropTableIfExists(name string) string {
-	return fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", name)
+	return fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", qi(name))
 }
 
 func (g *postgresGenerator) AddColumn(table string, col *Column) string {
-	return fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", table, g.columnDef(col))
+	return fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", qi(table), g.columnDef(col))
 }
 
 func (g *postgresGenerator) DropColumn(table, column string) string {
-	return fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column)
+	return fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", qi(table), qi(column))
 }
 
 func (g *postgresGenerator) RenameColumn(table, oldName, newName string) string {
-	return fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s", table, oldName, newName)
+	return fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s", qi(table), qi(oldName), qi(newName))
 }
 
 func (g *postgresGenerator) AddIndex(idx *Index) string {
@@ -109,12 +114,16 @@ func (g *postgresGenerator) AddIndex(idx *Index) string {
 		unique = "UNIQUE "
 	}
 	idxName := fmt.Sprintf("%s_%s_idx", idx.Table, strings.Join(idx.Columns, "_"))
+	var quotedCols []string
+	for _, c := range idx.Columns {
+		quotedCols = append(quotedCols, qi(c))
+	}
 	return fmt.Sprintf(
 		"CREATE %sINDEX IF NOT EXISTS %s ON %s (%s)",
-		unique, idxName, idx.Table, strings.Join(idx.Columns, ", "),
+		unique, qi(idxName), qi(idx.Table), strings.Join(quotedCols, ", "),
 	)
 }
 
 func (g *postgresGenerator) RenameTable(oldName, newName string) string {
-	return fmt.Sprintf("ALTER TABLE %s RENAME TO %s", oldName, newName)
+	return fmt.Sprintf("ALTER TABLE %s RENAME TO %s", qi(oldName), qi(newName))
 }

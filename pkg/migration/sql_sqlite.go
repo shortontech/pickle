@@ -11,7 +11,7 @@ func (g *sqliteGenerator) CreateTable(t *Table) string {
 }
 
 func (g *sqliteGenerator) DropTableIfExists(name string) string {
-	return fmt.Sprintf("DROP TABLE IF EXISTS %s", name)
+	return fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, name)
 }
 
 func (g *sqliteGenerator) AddColumn(table string, col *Column) string {
@@ -23,7 +23,7 @@ func (g *sqliteGenerator) DropColumn(table, column string) string {
 }
 
 func (g *sqliteGenerator) RenameColumn(table, oldName, newName string) string {
-	return fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s", table, oldName, newName)
+	return fmt.Sprintf(`ALTER TABLE "%s" RENAME COLUMN "%s" TO "%s"`, table, oldName, newName)
 }
 
 func (g *sqliteGenerator) AddIndex(idx *Index) string {
@@ -31,5 +31,5 @@ func (g *sqliteGenerator) AddIndex(idx *Index) string {
 }
 
 func (g *sqliteGenerator) RenameTable(oldName, newName string) string {
-	return fmt.Sprintf("ALTER TABLE %s RENAME TO %s", oldName, newName)
+	return fmt.Sprintf(`ALTER TABLE "%s" RENAME TO "%s"`, oldName, newName)
 }

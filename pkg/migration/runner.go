@@ -5,7 +5,6 @@ package migration
 import (
 	"database/sql"
 	"fmt"
-	"strings"
 )
 
 // MigrationIface is implemented by all migration structs via embedded Migration.
@@ -302,6 +301,14 @@ func (r *Runner) Rollback(entries []MigrationEntry) error {
 
 // Fresh drops all tables and re-runs all migrations.
 func (r *Runner) Fresh(entries []MigrationEntry) error {
+	if err := r.ensureMigrationsTable(); err != nil {
+		return fmt.Errorf("creating migrations table: %w", err)
+	}
+	if err := r.acquireLock(); err != nil {
+		return fmt.Errorf("acquiring lock: %w", err)
+	}
+	defer r.releaseLock()
+
 	fmt.Println("  dropping all tables...")
 	for i := len(entries) - 1; i >= 0; i-- {
 		entry := entries[i]
@@ -312,6 +319,9 @@ func (r *Runner) Fresh(entries []MigrationEntry) error {
 		entry.Migration.Reset()
 	}
 	r.DB.Exec("DROP TABLE IF EXISTS migrations") //nolint:errcheck
+
+	// Release lock before calling Migrate, which acquires its own
+	r.releaseLock()
 	return r.Migrate(entries)
 }
 
@@ -353,5 +363,4 @@ func PrintStatus(statuses []MigrationStatus) {
 		}
 		fmt.Printf("  %-*s  %s%s\n", maxLen, s.ID, state, batch)
 	}
-	_ = strings.ToLower // satisfy strings import
 }

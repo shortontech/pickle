@@ -27,6 +27,7 @@ type Layout struct {
 	MigrationsDir string // absolute path: where migration files live
 	MigrationsRel string // relative to module root (e.g. "database/migrations")
 	ConfigDir     string // absolute path: where config files live
+	CommandsDir   string // absolute path: where app/commands/ lives
 }
 
 // Project represents a Pickle project layout rooted at a directory.
@@ -59,6 +60,7 @@ func DetectProject(dir string) (*Project, error) {
 			MigrationsDir: filepath.Join(absDir, "database", "migrations"),
 			MigrationsRel: "database/migrations",
 			ConfigDir:     filepath.Join(absDir, "config"),
+			CommandsDir:   filepath.Join(absDir, "app", "commands"),
 		},
 	}, nil
 }
@@ -381,6 +383,23 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 
 		if err := writeFile(filepath.Join(requestsDir, "bindings_gen.go"), bindingSrc); err != nil {
+			return err
+		}
+	}
+
+	// 7. Generate commands glue if app/commands/ exists
+	commandsDir := layout.CommandsDir
+	if _, err := os.Stat(commandsDir); err == nil {
+		fmt.Println("  generating commands/pickle_gen.go")
+		userCmds, err := ScanCommands(commandsDir)
+		if err != nil {
+			return fmt.Errorf("scanning commands: %w", err)
+		}
+		cmdSrc, err := GenerateCommandsGlue(project.ModulePath, layout.MigrationsRel, userCmds)
+		if err != nil {
+			return fmt.Errorf("generating commands glue: %w", err)
+		}
+		if err := writeFile(filepath.Join(commandsDir, "pickle_gen.go"), cmdSrc); err != nil {
 			return err
 		}
 	}

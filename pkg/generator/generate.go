@@ -395,7 +395,15 @@ func Generate(project *Project, picklePkgDir string) error {
 		if err != nil {
 			return fmt.Errorf("scanning commands: %w", err)
 		}
-		cmdSrc, err := GenerateCommandsGlue(project.ModulePath, layout.MigrationsRel, userCmds)
+
+		// Scan routes/ for route vars (e.g. "API")
+		routesDir := filepath.Join(project.Dir, "routes")
+		var routeVars []string
+		if _, err := os.Stat(routesDir); err == nil {
+			routeVars, _ = ScanRouteVars(routesDir)
+		}
+
+		cmdSrc, err := GenerateCommandsGlue(project.ModulePath, layout.MigrationsRel, userCmds, routeVars)
 		if err != nil {
 			return fmt.Errorf("generating commands glue: %w", err)
 		}

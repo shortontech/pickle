@@ -3,6 +3,7 @@ package pickle
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"net/http"
 	"strings"
@@ -17,47 +18,47 @@ type Command interface {
 	Run(args []string) error
 }
 
-// CommandRegistry holds registered commands and dispatches them.
-type CommandRegistry struct {
+// App is the application lifecycle manager. It handles initialization,
+// command dispatch, and HTTP serving.
+type App struct {
 	commands map[string]Command
+	initFn   func()
+	serveFn  func()
 }
 
-// NewCommandRegistry creates an empty command registry.
-func NewCommandRegistry() *CommandRegistry {
-	return &CommandRegistry{commands: map[string]Command{}}
-}
-
-// Register adds a command to the registry.
-func (r *CommandRegistry) Register(cmd Command) {
-	r.commands[cmd.Name()] = cmd
-}
-
-// HasCommand returns true if args[0] matches a registered command.
-func (r *CommandRegistry) HasCommand(args []string) bool {
-	if len(args) == 0 {
-		return false
+// BuildApp creates a new App with the given init, serve, and command functions.
+func BuildApp(initFn func(), serveFn func(), cmds ...Command) *App {
+	a := &App{
+		commands: make(map[string]Command),
+		initFn:   initFn,
+		serveFn:  serveFn,
 	}
-	_, ok := r.commands[args[0]]
-	return ok
+	for _, cmd := range cmds {
+		a.commands[cmd.Name()] = cmd
+	}
+	return a
 }
 
-// Dispatch runs the command matching args[0], passing the remaining args.
-// Returns an error if the command is not found or if Run fails.
-func (r *CommandRegistry) Dispatch(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("no command specified")
+// Run initializes the app, then either dispatches a command or starts HTTP.
+func (a *App) Run(args []string) {
+	a.initFn()
+
+	if len(args) > 0 {
+		if cmd, ok := a.commands[args[0]]; ok {
+			if err := cmd.Run(args[1:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		}
 	}
-	cmd, ok := r.commands[args[0]]
-	if !ok {
-		return fmt.Errorf("unknown command: %s", args[0])
-	}
-	return cmd.Run(args[1:])
+
+	a.serveFn()
 }
 
 // PrintCommands prints available commands to stderr.
-func (r *CommandRegistry) PrintCommands() {
+func (a *App) PrintCommands() {
 	fmt.Fprintln(os.Stderr, "Available commands:")
-	for name, cmd := range r.commands {
+	for name, cmd := range a.commands {
 		fmt.Fprintf(os.Stderr, "  %-25s %s\n", name, cmd.Description())
 	}
 }

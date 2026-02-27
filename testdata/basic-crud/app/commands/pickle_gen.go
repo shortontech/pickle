@@ -2,21 +2,14 @@
 package commands
 
 import (
-	"database/sql"
-	"fmt"
 	"log"
+	"net/http"
 
 	pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
 	"github.com/shortontech/pickle/testdata/basic-crud/app/models"
 	"github.com/shortontech/pickle/testdata/basic-crud/config"
 	"github.com/shortontech/pickle/testdata/basic-crud/database/migrations"
-)
-
-// Ensure imports are used.
-var (
-	_ = fmt.Sprintf
-	_ = log.Fatal
-	_ *sql.DB
+	"github.com/shortontech/pickle/testdata/basic-crud/routes"
 )
 
 // migrateCommand runs pending migrations.
@@ -82,4 +75,21 @@ func UserCommands() []pickle.Command {
 // Commands returns all commands (built-in + user-defined).
 func Commands() []pickle.Command {
 	return append(BuiltinCommands(), UserCommands()...)
+}
+
+// NewApp creates the application with config, database, routes, and commands wired up.
+func NewApp() *pickle.App {
+	return pickle.BuildApp(
+		func() {
+			config.Init()
+			models.DB = config.Database.Open()
+		},
+		func() {
+			mux := http.NewServeMux()
+			routes.API.RegisterRoutes(mux)
+			log.Printf("listening on :%s", config.App.Port)
+			http.ListenAndServe(":"+config.App.Port, mux)
+		},
+		Commands()...,
+	)
 }

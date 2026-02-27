@@ -90,10 +90,9 @@ func GenerateBuiltinDriver(driver AuthDriverInfo, httpImport string) ([]byte, er
 
 // GenerateAuthRegistry produces auth/pickle_gen.go with the AuthDriver interface,
 // driver registry, and default middleware.
-func GenerateAuthRegistry(drivers []AuthDriverInfo, modulePath, httpImport, configImport string) ([]byte, error) {
+func GenerateAuthRegistry(drivers []AuthDriverInfo, modulePath, httpImport string) ([]byte, error) {
 	data := struct {
 		HTTPImport   string
-		ConfigImport string
 		Drivers      []AuthDriverInfo
 		DriverImports []struct {
 			Alias string
@@ -101,7 +100,6 @@ func GenerateAuthRegistry(drivers []AuthDriverInfo, modulePath, httpImport, conf
 		}
 	}{
 		HTTPImport:   httpImport,
-		ConfigImport: configImport,
 		Drivers:      drivers,
 	}
 
@@ -167,12 +165,11 @@ var authRegistryTemplate = template.Must(template.New("auth").Parse(`// Code gen
 package auth
 
 import (
+	"database/sql"
 	"fmt"
 	"net/http"
-	"os"
 
 	pickle "{{ .HTTPImport }}"
-	"{{ .ConfigImport }}"
 {{ range .DriverImports }}	{{ .Alias }} "{{ .Path }}"
 {{ end }})
 
@@ -185,8 +182,13 @@ type AuthDriver interface {
 
 var registry = map[string]AuthDriver{}
 
-func init() {
-{{ range .Drivers }}	registry["{{ .Name }}"] = {{ .Name }}.NewDriver(config.Env)
+var envFunc func(string, string) string
+
+// Init initializes all auth drivers with the given env lookup function and database connection.
+// Must be called after config and database are initialized.
+func Init(env func(string, string) string, db *sql.DB) {
+	envFunc = env
+{{ range .Drivers }}	registry["{{ .Name }}"] = {{ .Name }}.NewDriver(env, db)
 {{ end }}}
 
 // Driver returns the named auth driver, or panics if not found.
@@ -203,27 +205,25 @@ func Driver(name string) AuthDriver {
 }
 
 // ActiveDriver returns the driver selected by AUTH_DRIVER env var.
+// Defaults to "jwt" if AUTH_DRIVER is not set.
 func ActiveDriver() AuthDriver {
-	name := config.Env("AUTH_DRIVER", "")
-	if name == "" {
-		// Default to first available
-		for k := range registry {
-			name = k
-			break
+	name := activeDriverName()
+	return Driver(name)
+}
+
+func activeDriverName() string {
+	if envFunc != nil {
+		name := envFunc("AUTH_DRIVER", "jwt")
+		if name != "" {
+			return name
 		}
 	}
-	return Driver(name)
+	return "jwt"
 }
 
 // ActiveDriverName returns the name of the currently active auth driver.
 func ActiveDriverName() string {
-	name := config.Env("AUTH_DRIVER", "")
-	if name == "" {
-		for k := range registry {
-			return k
-		}
-	}
-	return name
+	return activeDriverName()
 }
 
 // Authenticate is a convenience function that calls Authenticate on the active driver.
@@ -242,9 +242,9 @@ func DefaultAuthMiddleware(ctx *pickle.Context, next func() pickle.Response) pic
 	return next()
 }
 
-// Env reads the AUTH_DRIVER environment variable.
+// Env reads the AUTH_DRIVER setting via the configured env function.
 // Useful for logging or diagnostics.
 func Env() string {
-	return os.Getenv("AUTH_DRIVER")
+	return activeDriverName()
 }
 `))

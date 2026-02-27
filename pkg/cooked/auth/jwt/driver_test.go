@@ -22,7 +22,7 @@ func TestSignAndValidate(t *testing.T) {
 	d := NewDriver(testEnv(map[string]string{
 		"JWT_SECRET": "test-secret-key",
 		"JWT_ISSUER": "test-app",
-	}))
+	}), nil)
 
 	token, err := d.SignToken(Claims{
 		Subject: "user-123",
@@ -48,7 +48,7 @@ func TestSignAndValidate(t *testing.T) {
 func TestExpiredToken(t *testing.T) {
 	d := NewDriver(testEnv(map[string]string{
 		"JWT_SECRET": "test-secret-key",
-	}))
+	}), nil)
 
 	token, err := d.SignToken(Claims{
 		Subject:   "user-123",
@@ -68,8 +68,8 @@ func TestExpiredToken(t *testing.T) {
 }
 
 func TestInvalidSignature(t *testing.T) {
-	d1 := NewDriver(testEnv(map[string]string{"JWT_SECRET": "secret-1"}))
-	d2 := NewDriver(testEnv(map[string]string{"JWT_SECRET": "secret-2"}))
+	d1 := NewDriver(testEnv(map[string]string{"JWT_SECRET": "secret-1"}), nil)
+	d2 := NewDriver(testEnv(map[string]string{"JWT_SECRET": "secret-2"}), nil)
 
 	token, err := d1.SignToken(Claims{Subject: "user-123"})
 	if err != nil {
@@ -89,7 +89,7 @@ func TestInvalidIssuer(t *testing.T) {
 	d := NewDriver(testEnv(map[string]string{
 		"JWT_SECRET": "test-secret",
 		"JWT_ISSUER": "expected-app",
-	}))
+	}), nil)
 
 	token, err := d.SignToken(Claims{
 		Subject: "user-123",
@@ -108,7 +108,7 @@ func TestInvalidIssuer(t *testing.T) {
 func TestAuthenticate(t *testing.T) {
 	d := NewDriver(testEnv(map[string]string{
 		"JWT_SECRET": "test-secret",
-	}))
+	}), nil)
 
 	token, _ := d.SignToken(Claims{Subject: "user-456", Role: "user"})
 
@@ -127,7 +127,7 @@ func TestAuthenticate(t *testing.T) {
 func TestAuthenticateMissingBearer(t *testing.T) {
 	d := NewDriver(testEnv(map[string]string{
 		"JWT_SECRET": "test-secret",
-	}))
+	}), nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	_, err := d.Authenticate(req)
@@ -140,7 +140,7 @@ func TestHS384(t *testing.T) {
 	d := NewDriver(testEnv(map[string]string{
 		"JWT_SECRET":    "test-secret",
 		"JWT_ALGORITHM": "HS384",
-	}))
+	}), nil)
 
 	token, err := d.SignToken(Claims{Subject: "user-789"})
 	if err != nil {
@@ -160,7 +160,7 @@ func TestHS512(t *testing.T) {
 	d := NewDriver(testEnv(map[string]string{
 		"JWT_SECRET":    "test-secret",
 		"JWT_ALGORITHM": "HS512",
-	}))
+	}), nil)
 
 	token, err := d.SignToken(Claims{Subject: "user-000"})
 	if err != nil {
@@ -180,7 +180,7 @@ func TestHS512(t *testing.T) {
 func TestAuthInfoType(t *testing.T) {
 	d := NewDriver(testEnv(map[string]string{
 		"JWT_SECRET": "test-secret",
-	}))
+	}), nil)
 
 	token, _ := d.SignToken(Claims{Subject: "u1", Role: "admin"})
 	info, _ := d.ValidateToken(token)
@@ -190,7 +190,7 @@ func TestAuthInfoType(t *testing.T) {
 }
 
 func TestNoSecret(t *testing.T) {
-	d := NewDriver(testEnv(map[string]string{}))
+	d := NewDriver(testEnv(map[string]string{}), nil)
 
 	_, err := d.SignToken(Claims{Subject: "user"})
 	if err == nil {

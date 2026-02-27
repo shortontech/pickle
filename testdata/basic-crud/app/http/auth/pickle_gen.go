@@ -2,14 +2,13 @@
 package auth
 
 import (
+	"database/sql"
 	"fmt"
 	"net/http"
-	"os"
 
 	pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
 	jwt "github.com/shortontech/pickle/testdata/basic-crud/app/http/auth/jwt"
 	session "github.com/shortontech/pickle/testdata/basic-crud/app/http/auth/session"
-	"github.com/shortontech/pickle/testdata/basic-crud/config"
 )
 
 // AuthDriver is the interface every auth driver implements.
@@ -21,9 +20,14 @@ type AuthDriver interface {
 
 var registry = map[string]AuthDriver{}
 
-func init() {
-	registry["jwt"] = jwt.NewDriver(config.Env)
-	registry["session"] = session.NewDriver(config.Env)
+var envFunc func(string, string) string
+
+// Init initializes all auth drivers with the given env lookup function and database connection.
+// Must be called after config and database are initialized.
+func Init(env func(string, string) string, db *sql.DB) {
+	envFunc = env
+	registry["jwt"] = jwt.NewDriver(env, db)
+	registry["session"] = session.NewDriver(env, db)
 }
 
 // Driver returns the named auth driver, or panics if not found.
@@ -40,27 +44,25 @@ func Driver(name string) AuthDriver {
 }
 
 // ActiveDriver returns the driver selected by AUTH_DRIVER env var.
+// Defaults to "jwt" if AUTH_DRIVER is not set.
 func ActiveDriver() AuthDriver {
-	name := config.Env("AUTH_DRIVER", "")
-	if name == "" {
-		// Default to first available
-		for k := range registry {
-			name = k
-			break
+	name := activeDriverName()
+	return Driver(name)
+}
+
+func activeDriverName() string {
+	if envFunc != nil {
+		name := envFunc("AUTH_DRIVER", "jwt")
+		if name != "" {
+			return name
 		}
 	}
-	return Driver(name)
+	return "jwt"
 }
 
 // ActiveDriverName returns the name of the currently active auth driver.
 func ActiveDriverName() string {
-	name := config.Env("AUTH_DRIVER", "")
-	if name == "" {
-		for k := range registry {
-			return k
-		}
-	}
-	return name
+	return activeDriverName()
 }
 
 // Authenticate is a convenience function that calls Authenticate on the active driver.
@@ -79,8 +81,8 @@ func DefaultAuthMiddleware(ctx *pickle.Context, next func() pickle.Response) pic
 	return next()
 }
 
-// Env reads the AUTH_DRIVER environment variable.
+// Env reads the AUTH_DRIVER setting via the configured env function.
 // Useful for logging or diagnostics.
 func Env() string {
-	return os.Getenv("AUTH_DRIVER")
+	return activeDriverName()
 }

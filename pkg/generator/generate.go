@@ -306,7 +306,7 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 
 		httpImport := project.ModulePath + "/app/http"
-		configImport := project.ModulePath + "/config"
+
 
 		// Write driver_gen.go for built-in drivers that haven't been overridden
 		for _, d := range drivers {
@@ -334,7 +334,7 @@ func Generate(project *Project, picklePkgDir string) error {
 		// Generate auth/pickle_gen.go with interface + registry
 		if len(drivers) > 0 {
 			fmt.Println("  generating auth/pickle_gen.go")
-			registrySrc, err := GenerateAuthRegistry(drivers, project.ModulePath, httpImport, configImport)
+			registrySrc, err := GenerateAuthRegistry(drivers, project.ModulePath, httpImport)
 			if err != nil {
 				return fmt.Errorf("generating auth registry: %w", err)
 			}
@@ -453,7 +453,13 @@ func Generate(project *Project, picklePkgDir string) error {
 			routeVars, _ = ScanRouteVars(routesDir)
 		}
 
-		cmdSrc, err := GenerateCommandsGlue(project.ModulePath, layout.MigrationsRel, userCmds, routeVars)
+		// Check if auth directory exists
+		hasAuth := false
+		if _, err := os.Stat(layout.AuthDir); err == nil {
+			hasAuth = true
+		}
+
+		cmdSrc, err := GenerateCommandsGlue(project.ModulePath, layout.MigrationsRel, userCmds, routeVars, hasAuth)
 		if err != nil {
 			return fmt.Errorf("generating commands glue: %w", err)
 		}

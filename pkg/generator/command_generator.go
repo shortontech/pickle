@@ -170,7 +170,8 @@ import (
 	"{{ .MigrationsImport }}"
 	"{{ .ConfigImport }}"
 	"{{ .RoutesImport }}"
-)
+{{ if .HasAuth }}	"{{ .AuthImport }}"
+{{ end }})
 
 // migrateCommand runs pending migrations.
 type migrateCommand struct{}
@@ -245,7 +246,8 @@ func NewApp() *pickle.App {
 		func() {
 			config.Init()
 			models.DB = config.Database.Open()
-		},
+{{ if .HasAuth }}			auth.Init(config.Env, models.DB)
+{{ end }}		},
 		func() {
 			mux := http.NewServeMux()
 {{ range .RouteVars }}			routes.{{ . }}.RegisterRoutes(mux)
@@ -258,7 +260,7 @@ func NewApp() *pickle.App {
 `))
 
 // GenerateCommandsGlue produces app/commands/pickle_gen.go.
-func GenerateCommandsGlue(modulePath string, migrationsRel string, userCommands []string, routeVars []string) ([]byte, error) {
+func GenerateCommandsGlue(modulePath string, migrationsRel string, userCommands []string, routeVars []string, hasAuth bool) ([]byte, error) {
 	// Default to "API" if no route vars found
 	if len(routeVars) == 0 {
 		routeVars = []string{"API"}
@@ -270,16 +272,20 @@ func GenerateCommandsGlue(modulePath string, migrationsRel string, userCommands 
 		MigrationsImport string
 		ConfigImport     string
 		RoutesImport     string
+		AuthImport       string
 		UserCommands     []string
 		RouteVars        []string
+		HasAuth          bool
 	}{
 		HTTPImport:       modulePath + "/app/http",
 		ModelsImport:     modulePath + "/app/models",
 		MigrationsImport: modulePath + "/" + migrationsRel,
 		ConfigImport:     modulePath + "/config",
 		RoutesImport:     modulePath + "/routes",
+		AuthImport:       modulePath + "/app/http/auth",
 		UserCommands:     userCommands,
 		RouteVars:        routeVars,
+		HasAuth:          hasAuth,
 	}
 
 	var buf bytes.Buffer

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
+	"github.com/shortontech/pickle/testdata/basic-crud/app/http/auth"
 	"github.com/shortontech/pickle/testdata/basic-crud/app/models"
 	"github.com/shortontech/pickle/testdata/basic-crud/config"
 	"github.com/shortontech/pickle/testdata/basic-crud/database/migrations"
@@ -83,6 +84,7 @@ func NewApp() *pickle.App {
 		func() {
 			config.Init()
 			models.DB = config.Database.Open()
+			auth.Init(config.Env, models.DB)
 		},
 		func() {
 			mux := http.NewServeMux()

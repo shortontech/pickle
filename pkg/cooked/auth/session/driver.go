@@ -22,8 +22,7 @@ type Driver struct {
 //   - SESSION_COOKIE: cookie name (default: "session_id")
 //   - SESSION_TTL: session lifetime in seconds (default: 86400)
 //
-// The db parameter must be set via SetDB before Authenticate is called.
-func NewDriver(env func(string, string) string) *Driver {
+func NewDriver(env func(string, string) string, db *sql.DB) *Driver {
 	ttl := 86400
 	if v := env("SESSION_TTL", ""); v != "" {
 		n := 0
@@ -38,15 +37,10 @@ func NewDriver(env func(string, string) string) *Driver {
 	}
 
 	return &Driver{
+		db:         db,
 		cookieName: env("SESSION_COOKIE", "session_id"),
 		ttl:        ttl,
 	}
-}
-
-// SetDB sets the database connection for session lookups.
-// Must be called before Authenticate.
-func (d *Driver) SetDB(db *sql.DB) {
-	d.db = db
 }
 
 // Authenticate reads the session cookie, looks up the session in the database,

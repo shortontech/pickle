@@ -126,7 +126,6 @@ func TestGenerateAuthRegistry(t *testing.T) {
 		drivers,
 		"myapp",
 		"myapp/app/http",
-		"myapp/config",
 	)
 	if err != nil {
 		t.Fatalf("GenerateAuthRegistry: %v", err)
@@ -138,8 +137,8 @@ func TestGenerateAuthRegistry(t *testing.T) {
 	if !strings.Contains(content, `pickle "myapp/app/http"`) {
 		t.Error("missing pickle import")
 	}
-	if !strings.Contains(content, `"myapp/config"`) {
-		t.Error("missing config import")
+	if !strings.Contains(content, `"database/sql"`) {
+		t.Error("missing database/sql import")
 	}
 	if !strings.Contains(content, `jwt "myapp/app/http/auth/jwt"`) {
 		t.Error("missing jwt driver import")

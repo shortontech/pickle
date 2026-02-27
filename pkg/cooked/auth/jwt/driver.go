@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/sha512"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -29,7 +30,7 @@ type Driver struct {
 //   - JWT_ISSUER: expected issuer claim (optional)
 //   - JWT_EXPIRY: token lifetime in seconds (default: 3600)
 //   - JWT_ALGORITHM: HS256, HS384, or HS512 (default: HS256)
-func NewDriver(env func(string, string) string) *Driver {
+func NewDriver(env func(string, string) string, _ *sql.DB) *Driver {
 	expiry := 3600
 	if v := env("JWT_EXPIRY", ""); v != "" {
 		// Simple atoi without importing strconv

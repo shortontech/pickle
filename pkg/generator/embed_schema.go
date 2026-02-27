@@ -279,4 +279,26 @@ const (
 	Binary
 )
 
+var columnTypeNames = [...]string{
+	UUID:       "uuid",
+	String:     "string",
+	Text:       "text",
+	Integer:    "integer",
+	BigInteger: "bigint",
+	Decimal:    "decimal",
+	Boolean:    "boolean",
+	Timestamp:  "timestamp",
+	JSONB:      "jsonb",
+	Date:       "date",
+	Time:       "time",
+	Binary:     "binary",
+}
+
+func (t ColumnType) String() string {
+	if int(t) < len(columnTypeNames) {
+		return columnTypeNames[t]
+	}
+	return "unknown"
+}
+
 `

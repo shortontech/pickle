@@ -10,6 +10,7 @@ import (
 
 	"github.com/shortontech/pickle/pkg/generator"
 	picklemcp "github.com/shortontech/pickle/pkg/mcp"
+	"github.com/shortontech/pickle/pkg/scaffold"
 	"github.com/shortontech/pickle/pkg/watcher"
 )
 
@@ -28,6 +29,8 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "create":
+		cmdCreate()
 	case "generate":
 		cmdGenerate()
 	case "mcp":
@@ -57,6 +60,7 @@ func usage() {
 	fmt.Println(`Usage: pickle <command>
 
 Commands:
+  create <name>     Create a new Pickle project
   generate          Generate all files from project sources
   --watch           Watch for changes and regenerate on save
   mcp               Start the MCP server (stdio transport)
@@ -73,6 +77,69 @@ Options:
   --project <dir>   Project directory (default: current directory)
   --help, -h        Show this help
   --version, -v     Show version`)
+}
+
+func cmdCreate() {
+	if len(os.Args) < 3 {
+		fmt.Fprintf(os.Stderr, "Usage: pickle create <project-name>\n")
+		os.Exit(1)
+	}
+
+	projectName := os.Args[2]
+	targetDir, err := filepath.Abs(projectName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Use project name as module name, allow override with --module
+	moduleName := projectName
+	args := os.Args[3:]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--module" && i+1 < len(args) {
+			moduleName = args[i+1]
+			i++
+		}
+	}
+
+	if _, err := os.Stat(targetDir); err == nil {
+		fmt.Fprintf(os.Stderr, "pickle: directory %q already exists\n", projectName)
+		os.Exit(1)
+	}
+
+	fmt.Printf("pickle create: %s\n", projectName)
+	if err := scaffold.Create(moduleName, targetDir); err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Run go mod tidy
+	fmt.Println("  running go mod tidy...")
+	cmd := exec.Command("go", "mod", "tidy")
+	cmd.Dir = targetDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: go mod tidy failed: %v\n", err)
+		fmt.Println("  you may need to run 'go mod tidy' manually")
+	}
+
+	// Run generator
+	fmt.Println("  generating...")
+	project, err := generator.DetectProject(targetDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+
+	picklePkgDir := findPicklePkgDir()
+	if err := generator.Generate(project, picklePkgDir); err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: generate failed: %v\n", err)
+		fmt.Println("  you may need to run 'pickle generate' manually")
+	}
+
+	fmt.Printf("\npickle: project %q created successfully!\n", projectName)
+	fmt.Printf("  cd %s && pickle --watch\n", projectName)
 }
 
 func cmdMCP() {

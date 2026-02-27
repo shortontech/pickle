@@ -69,6 +69,11 @@ func (s *Server) registerTools() {
 		Name:        "config_list",
 		Description: "Show application config structure.",
 	}, s.configList)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "docs_show",
+		Description: "Show Pickle framework API documentation. Pass a type name to filter (e.g. Context, Router, Response, QueryBuilder).",
+	}, s.docsShow)
 }
 
 type tableInput struct {
@@ -180,6 +185,18 @@ func (s *Server) configList(_ context.Context, _ *mcp.CallToolRequest, _ any) (*
 		fmt.Fprintf(&b, "%s → %s\n", c.VarName, c.ReturnType)
 	}
 	return textResult(b.String()), nil, nil
+}
+
+type docsInput struct {
+	Type string `json:"type,omitempty"`
+}
+
+func (s *Server) docsShow(_ context.Context, _ *mcp.CallToolRequest, input docsInput) (*mcp.CallToolResult, any, error) {
+	result, err := generator.FormatDocsMarkdown(input.Type)
+	if err != nil {
+		return errResult(err.Error()), nil, nil
+	}
+	return textResult(result), nil, nil
 }
 
 // --- formatting helpers ---

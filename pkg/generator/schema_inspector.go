@@ -36,6 +36,9 @@ type columnInfo struct {
 	Length           int    ` + "`" + `json:"length,omitempty"` + "`" + `
 	Precision        int    ` + "`" + `json:"precision,omitempty"` + "`" + `
 	Scale            int    ` + "`" + `json:"scale,omitempty"` + "`" + `
+	Public           bool   ` + "`" + `json:"public,omitempty"` + "`" + `
+	OwnerSees        bool   ` + "`" + `json:"owner_sees,omitempty"` + "`" + `
+	OwnerColumn      bool   ` + "`" + `json:"owner_column,omitempty"` + "`" + `
 }
 
 type tableInfo struct {
@@ -128,6 +131,9 @@ func processOps(ops []{{ .TypesPkg }}.Operation, tables map[string]*tableInfo, o
 					Length:           col.Length,
 					Precision:        col.Precision,
 					Scale:            col.Scale,
+					Public:           col.IsPublic,
+					OwnerSees:        col.IsOwnerSees,
+					OwnerColumn:      col.IsOwnerColumn,
 				})
 			}
 			tables[op.Table] = ti

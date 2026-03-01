@@ -3,6 +3,8 @@ package cooked
 import (
 	"net/http"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // AuthInfo holds authentication state set by middleware.
@@ -47,6 +49,11 @@ func (c *Context) Param(name string) string {
 // SetParam sets a URL path parameter. Used by the generated route handler.
 func (c *Context) SetParam(name, value string) {
 	c.params[name] = value
+}
+
+// ParamUUID returns a URL path parameter parsed as a UUID.
+func (c *Context) ParamUUID(name string) uuid.UUID {
+	return uuid.MustParse(c.params[name])
 }
 
 // Query returns a query string parameter by name.

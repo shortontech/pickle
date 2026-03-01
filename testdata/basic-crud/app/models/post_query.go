@@ -21,6 +21,12 @@ func (q *PostQuery) WithUser() *PostQuery {
 	return q
 }
 
+// WhereOwnedBy filters records by the ownership column.
+func (q *PostQuery) WhereOwnedBy(ownerID uuid.UUID) *PostQuery {
+	q.Where("user_id", ownerID)
+	return q
+}
+
 func (q *PostQuery) WhereID(val uuid.UUID) *PostQuery {
 	q.Where("id", val)
 	return q

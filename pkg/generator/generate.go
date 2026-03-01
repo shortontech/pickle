@@ -152,6 +152,9 @@ type inspectorColumnInfo struct {
 	Length           int    `json:"length,omitempty"`
 	Precision        int    `json:"precision,omitempty"`
 	Scale            int    `json:"scale,omitempty"`
+	Public           bool   `json:"public,omitempty"`
+	OwnerSees        bool   `json:"owner_sees,omitempty"`
+	OwnerColumn      bool   `json:"owner_column,omitempty"`
 }
 
 type inspectorIndexInfo struct {
@@ -267,6 +270,9 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, erro
 				Length:           ci.Length,
 				Precision:        ci.Precision,
 				Scale:            ci.Scale,
+				IsPublic:         ci.Public,
+				IsOwnerSees:      ci.OwnerSees,
+				IsOwnerColumn:    ci.OwnerColumn,
 			}
 			if ci.Default != nil {
 				col.DefaultValue = ci.Default
@@ -452,6 +458,23 @@ func Generate(project *Project, picklePkgDir string) error {
 			filename := toLowerFirst(tableToStructName(tbl.Name)) + ".go"
 			if err := writeFile(filepath.Join(modelsDir, filename), src); err != nil {
 				return err
+			}
+		}
+	}
+
+	// 4b. Generate response structs for models with ownership
+	if len(tables) > 0 {
+		for _, tbl := range tables {
+			if HasOwnership(tbl) {
+				fmt.Printf("  generating responses: %s\n", tbl.Name)
+				src, err := GenerateResponses(tbl, "models")
+				if err != nil {
+					return fmt.Errorf("generating responses for %s: %w", tbl.Name, err)
+				}
+				filename := toLowerFirst(tableToStructName(tbl.Name)) + "_responses.go"
+				if err := writeFile(filepath.Join(modelsDir, filename), src); err != nil {
+					return err
+				}
 			}
 		}
 	}

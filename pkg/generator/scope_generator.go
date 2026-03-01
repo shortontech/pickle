@@ -54,6 +54,20 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 		}
 	}
 
+	// Generate ownership scope if table has an owner column
+	for _, col := range table.Columns {
+		if col.IsOwnerColumn {
+			goType := columnGoType(col)
+			paramName := "ownerID"
+			b.WriteString(fmt.Sprintf("// WhereOwnedBy filters records by the ownership column.\n"))
+			b.WriteString(fmt.Sprintf("func (q *%s) WhereOwnedBy(%s %s) *%s {\n", queryType, paramName, goType, queryType))
+			b.WriteString(fmt.Sprintf("\tq.Where(%q, %s)\n", col.Name, paramName))
+			b.WriteString(fmt.Sprintf("\treturn q\n"))
+			b.WriteString("}\n\n")
+			break
+		}
+	}
+
 	b.WriteString(scopeBody)
 
 	formatted, err := format.Source(b.Bytes())

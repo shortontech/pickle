@@ -48,6 +48,9 @@ func Create(moduleName, targetDir string) error {
 
 // MakeController scaffolds a new controller file.
 func MakeController(name, projectDir, moduleName string) (string, error) {
+	if err := sanitizeName(name); err != nil {
+		return "", err
+	}
 	name = strings.TrimSuffix(name, "Controller")
 	structName := names.SnakeToPascal(name) + "Controller"
 	snake := names.PascalToSnake(name)
@@ -62,6 +65,9 @@ func MakeController(name, projectDir, moduleName string) (string, error) {
 
 // MakeMiddleware scaffolds a new middleware file.
 func MakeMiddleware(name, projectDir, moduleName string) (string, error) {
+	if err := sanitizeName(name); err != nil {
+		return "", err
+	}
 	pascal := names.SnakeToPascal(name)
 	snake := names.PascalToSnake(pascal)
 	fileName := snake + ".go"
@@ -71,6 +77,9 @@ func MakeMiddleware(name, projectDir, moduleName string) (string, error) {
 
 // MakeRequest scaffolds a new request file.
 func MakeRequest(name, projectDir, moduleName string) (string, error) {
+	if err := sanitizeName(name); err != nil {
+		return "", err
+	}
 	name = strings.TrimSuffix(name, "Request")
 	pascal := names.SnakeToPascal(name)
 	snake := names.PascalToSnake(pascal)
@@ -85,6 +94,9 @@ func MakeRequest(name, projectDir, moduleName string) (string, error) {
 
 // MakeMigration scaffolds a new migration file.
 func MakeMigration(name, projectDir string) (string, error) {
+	if err := sanitizeName(name); err != nil {
+		return "", err
+	}
 	snake := names.PascalToSnake(name)
 	if strings.Contains(name, "_") {
 		snake = strings.ToLower(name)
@@ -100,8 +112,25 @@ func MakeMigration(name, projectDir string) (string, error) {
 	return writeScaffold(projectDir, relPath, tmplMakeMigration(structName, tableName))
 }
 
+// sanitizeName rejects names containing path traversal or separator characters.
+func sanitizeName(name string) error {
+	if strings.Contains(name, "..") || strings.ContainsAny(name, "/\\") {
+		return fmt.Errorf("invalid name %q: must not contain path separators or '..'", name)
+	}
+	if name == "" || name == "." {
+		return fmt.Errorf("invalid name: must not be empty")
+	}
+	return nil
+}
+
 func writeScaffold(projectDir, relPath, content string) (string, error) {
 	absPath := filepath.Join(projectDir, relPath)
+	// Ensure the resolved path is inside the project directory.
+	absProject, _ := filepath.Abs(projectDir)
+	absTarget, _ := filepath.Abs(absPath)
+	if !strings.HasPrefix(absTarget, absProject+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q escapes project directory", relPath)
+	}
 	if _, err := os.Stat(absPath); err == nil {
 		return "", fmt.Errorf("%s already exists", relPath)
 	}

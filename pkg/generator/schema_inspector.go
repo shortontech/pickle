@@ -103,6 +103,8 @@ func processOps(ops []migrations.Operation, tables map[string]*tableInfo, order 
 			}
 			tables[op.Table] = ti
 			*order = append(*order, op.Table)
+		case migrations.OpDropTableIfExists:
+			delete(tables, op.Table)
 		case migrations.OpAddIndex, migrations.OpAddUniqueIndex:
 			if ti, ok := tables[op.Table]; ok {
 				ti.Indexes = append(ti.Indexes, indexInfo{

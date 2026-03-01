@@ -27,6 +27,24 @@ func (q *PostQuery) WhereOwnedBy(ownerID uuid.UUID) *PostQuery {
 	return q
 }
 
+// FetchResource fetches a single Post and serializes it based on ownership.
+func (q *PostQuery) FetchResource(ownerID string) (any, error) {
+	record, err := q.First()
+	if err != nil {
+		return nil, err
+	}
+	return SerializePost(record, ownerID), nil
+}
+
+// FetchResources fetches all matching Post records and serializes them based on ownership.
+func (q *PostQuery) FetchResources(ownerID string) (any, error) {
+	records, err := q.All()
+	if err != nil {
+		return nil, err
+	}
+	return SerializePosts(records, ownerID), nil
+}
+
 func (q *PostQuery) WhereID(val uuid.UUID) *PostQuery {
 	q.Where("id", val)
 	return q

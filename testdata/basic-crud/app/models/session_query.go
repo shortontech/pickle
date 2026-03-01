@@ -16,6 +16,16 @@ func QuerySession() *SessionQuery {
 	return &SessionQuery{QueryBuilder: Query[Session]("sessions")}
 }
 
+// FetchResource fetches a single Session.
+func (q *SessionQuery) FetchResource(_ string) (any, error) {
+	return q.First()
+}
+
+// FetchResources fetches all matching Session records.
+func (q *SessionQuery) FetchResources(_ string) (any, error) {
+	return q.All()
+}
+
 func (q *SessionQuery) WhereID(val string) *SessionQuery {
 	q.Where("id", val)
 	return q

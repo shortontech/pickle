@@ -142,6 +142,46 @@ func (c *Context) Auth() *AuthInfo {
 	return c.auth
 }
 
+// ResourceQuery is implemented by generated query types to support ctx.Resource().
+// It fetches a single record and returns it serialized for the given owner.
+type ResourceQuery interface {
+	FetchResource(ownerID string) (any, error)
+}
+
+// ResourceListQuery is implemented by generated query types to support ctx.Resources().
+// It fetches all matching records and returns them serialized for the given owner.
+type ResourceListQuery interface {
+	FetchResources(ownerID string) (any, error)
+}
+
+// Resource executes a query that returns a single record, serialized based on
+// the authenticated user's ownership. Returns 404 if the record is not found.
+func (c *Context) Resource(q ResourceQuery) Response {
+	ownerID := ""
+	if c.auth != nil {
+		ownerID = c.auth.UserID
+	}
+	result, err := q.FetchResource(ownerID)
+	if err != nil {
+		return c.NotFound("not found")
+	}
+	return c.JSON(http.StatusOK, result)
+}
+
+// Resources executes a query that returns a collection of records, serialized
+// based on the authenticated user's ownership.
+func (c *Context) Resources(q ResourceListQuery) Response {
+	ownerID := ""
+	if c.auth != nil {
+		ownerID = c.auth.UserID
+	}
+	result, err := q.FetchResources(ownerID)
+	if err != nil {
+		return c.Error(err)
+	}
+	return c.JSON(http.StatusOK, result)
+}
+
 // JSON returns a JSON response with the given status code and data.
 func (c *Context) JSON(status int, data any) Response {
 	return Response{

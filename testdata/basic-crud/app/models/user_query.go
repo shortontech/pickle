@@ -16,6 +16,16 @@ func QueryUser() *UserQuery {
 	return &UserQuery{QueryBuilder: Query[User]("users")}
 }
 
+// FetchResource fetches a single User.
+func (q *UserQuery) FetchResource(_ string) (any, error) {
+	return q.First()
+}
+
+// FetchResources fetches all matching User records.
+func (q *UserQuery) FetchResources(_ string) (any, error) {
+	return q.All()
+}
+
 func (q *UserQuery) WhereID(val uuid.UUID) *UserQuery {
 	q.Where("id", val)
 	return q

@@ -114,6 +114,9 @@ func GenerateScopes(blocks []ScopeBlock, columns []ColumnDef, modelName string) 
 
 	for _, col := range columns {
 		for _, block := range blocks {
+			if IsTableScope(block.Scope) {
+				continue
+			}
 			if !scopeMatches(block.Scope, col.Scope) {
 				continue
 			}
@@ -127,6 +130,37 @@ func GenerateScopes(blocks []ScopeBlock, columns []ColumnDef, modelName string) 
 			b.WriteString(expanded)
 			b.WriteString("\n\n")
 		}
+	}
+
+	return b.String()
+}
+
+// IsTableScope returns true if the scope is a table-level scope (not per-column).
+func IsTableScope(scope string) bool {
+	return scope == "table" || scope == "table_owned"
+}
+
+// GenerateTableScopes stamps out table-level scope functions for a model.
+// "table" blocks are emitted for non-owned tables, "table_owned" for owned tables.
+func GenerateTableScopes(blocks []ScopeBlock, modelName string, owned bool) string {
+	var b strings.Builder
+
+	wantScope := "table"
+	if owned {
+		wantScope = "table_owned"
+	}
+
+	for _, block := range blocks {
+		if block.Scope != wantScope {
+			continue
+		}
+
+		expanded := block.Body
+		expanded = strings.ReplaceAll(expanded, "QueryBuilder[T]", modelName+"Query")
+		expanded = strings.ReplaceAll(expanded, "__Model__", modelName)
+
+		b.WriteString(expanded)
+		b.WriteString("\n\n")
 	}
 
 	return b.String()

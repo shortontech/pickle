@@ -83,4 +83,36 @@ func (q *QueryBuilder[T]) Where__Column__Between(start, end time.Time) *QueryBui
 	return q
 }
 
+// pickle:scope table
+// FetchResource fetches a single __Model__.
+func (q *QueryBuilder[T]) FetchResource(_ string) (any, error) {
+	return q.First()
+}
+
+// pickle:scope table
+// FetchResources fetches all matching __Model__ records.
+func (q *QueryBuilder[T]) FetchResources(_ string) (any, error) {
+	return q.All()
+}
+
+// pickle:scope table_owned
+// FetchResource fetches a single __Model__ and serializes it based on ownership.
+func (q *QueryBuilder[T]) FetchResource(ownerID string) (any, error) {
+	record, err := q.First()
+	if err != nil {
+		return nil, err
+	}
+	return Serialize__Model__(record, ownerID), nil
+}
+
+// pickle:scope table_owned
+// FetchResources fetches all matching __Model__ records and serializes them based on ownership.
+func (q *QueryBuilder[T]) FetchResources(ownerID string) (any, error) {
+	records, err := q.All()
+	if err != nil {
+		return nil, err
+	}
+	return Serialize__Model__s(records, ownerID), nil
+}
+
 // pickle:end

@@ -68,6 +68,10 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 		}
 	}
 
+	// Generate table-level scopes (FetchResource / FetchResources)
+	tableScopeBody := tickle.GenerateTableScopes(blocks, structName, HasOwnership(table))
+	b.WriteString(tableScopeBody)
+
 	b.WriteString(scopeBody)
 
 	formatted, err := format.Source(b.Bytes())

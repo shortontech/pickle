@@ -9,7 +9,14 @@ import (
 var API = pickle.Routes(func(r *pickle.Router) {
 	r.Group("/api", func(r *pickle.Router) {
 		r.Post("/login", controllers.AuthController{}.Login)
-		r.Resource("/users", controllers.UserController{})
+		r.Post("/users", controllers.UserController{}.Store)
+
+		r.Group("/users", func(r *pickle.Router) {
+			r.Get("/", controllers.UserController{}.Index)
+			r.Get("/:id", controllers.UserController{}.Show)
+			r.Put("/:id", controllers.UserController{}.Update)
+			r.Delete("/:id", controllers.UserController{}.Destroy)
+		}, middleware.Auth)
 
 		r.Group("/posts", func(r *pickle.Router) {
 			r.Get("/", controllers.PostController{}.Index)

@@ -3,12 +3,13 @@ package models
 
 import (
 	"encoding/json"
+	"github.com/google/uuid"
 	"time"
 )
 
 type Session struct {
 	ID        string           `json:"id" db:"id"`
-	UserID    string           `json:"user_id" db:"user_id"`
+	UserID    uuid.UUID        `json:"user_id" db:"user_id"`
 	Role      string           `json:"role" db:"role"`
 	Payload   *json.RawMessage `json:"payload,omitempty" db:"payload"`
 	ExpiresAt time.Time        `json:"expires_at" db:"expires_at"`

@@ -3,6 +3,7 @@ package models
 
 import (
 	"encoding/json"
+	"github.com/google/uuid"
 	"time"
 )
 
@@ -56,33 +57,23 @@ func (q *SessionQuery) WhereIDNotLike(val string) *SessionQuery {
 	return q
 }
 
-func (q *SessionQuery) WhereUserID(val string) *SessionQuery {
+func (q *SessionQuery) WhereUserID(val uuid.UUID) *SessionQuery {
 	q.Where("user_id", val)
 	return q
 }
 
-func (q *SessionQuery) WhereUserIDNot(val string) *SessionQuery {
+func (q *SessionQuery) WhereUserIDNot(val uuid.UUID) *SessionQuery {
 	q.WhereOp("user_id", "!=", val)
 	return q
 }
 
-func (q *SessionQuery) WhereUserIDIn(vals []string) *SessionQuery {
+func (q *SessionQuery) WhereUserIDIn(vals []uuid.UUID) *SessionQuery {
 	q.WhereIn("user_id", vals)
 	return q
 }
 
-func (q *SessionQuery) WhereUserIDNotIn(vals []string) *SessionQuery {
+func (q *SessionQuery) WhereUserIDNotIn(vals []uuid.UUID) *SessionQuery {
 	q.WhereNotIn("user_id", vals)
-	return q
-}
-
-func (q *SessionQuery) WhereUserIDLike(val string) *SessionQuery {
-	q.WhereOp("user_id", "LIKE", val)
-	return q
-}
-
-func (q *SessionQuery) WhereUserIDNotLike(val string) *SessionQuery {
-	q.WhereOp("user_id", "NOT LIKE", val)
 	return q
 }
 

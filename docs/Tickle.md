@@ -1,21 +1,21 @@
-# Tickler
+# Tickle
 
 > The thing that tickles the pickle.
 
-## What Is Tickler?
+## What Is Tickle?
 
-Tickler is Pickle's preprocessor. It takes the idiomatic Go you write — controllers, migrations, requests, routes — and transforms it into code that compiles alongside Pickle's generated output.
+Tickle is Pickle's preprocessor. It takes the idiomatic Go you write — controllers, migrations, requests, routes — and transforms it into code that compiles alongside Pickle's generated output.
 
 The problem: you write `Query[User]()` in a controller, but `Query[T]` doesn't exist until Pickle generates it. Your linter screams. Your IDE is useless. You can't run `go vet` on code that references types that don't exist yet.
 
-Tickler bridges that gap. It processes your source files, resolves references to generated types, adds the correct imports, and produces compilable Go. You develop against real, lintable code. Tickler makes it build.
+Tickle bridges that gap. It processes your source files, resolves references to generated types, adds the correct imports, and produces compilable Go. You develop against real, lintable code. Tickle makes it build.
 
 ## The Pipeline
 
 ```
 You write idiomatic Go
         ↓
-   tickler runs
+   tickle runs
         ↓
 Pickle-compatible source (compiles with generated output)
         ↓
@@ -30,14 +30,14 @@ Static binary
 
 ## Why?
 
-Without Tickler, you have two bad options:
+Without Tickle, you have two bad options:
 
 1. **Write against generated types** — your code doesn't lint or compile until after `pickle generate` runs. No IDE support, no `go vet`, no feedback loop while writing.
 2. **Maintain stub types** — manually keep dummy type definitions in sync with what Pickle generates. Tedious, error-prone, defeats the purpose.
 
-Tickler gives you a third option: write normal Go that references `Query[T]`, `Context`, `Response`, etc. as if they exist. Tickler knows what Pickle will generate and transforms your code to work with it.
+Tickle gives you a third option: write normal Go that references `Query[T]`, `Context`, `Response`, etc. as if they exist. Tickle knows what Pickle will generate and transforms your code to work with it.
 
-## What Tickler Does
+## What Tickle Does
 
 - Resolves references to generated types (`Query[T]`, `Context`, `Response`, `Router`, middleware types)
 - Adds correct import paths pointing to the `generated/` package
@@ -45,11 +45,11 @@ Tickler gives you a third option: write normal Go that references `Query[T]`, `C
 - Validates that migration DSL calls use known methods and column types
 - Ensures `routes.go` references valid controller methods
 
-## What Tickler Does NOT Do
+## What Tickle Does NOT Do
 
 - Generate models, queries, or route wiring — that's Pickle's job
-- Modify your source files in place — Tickler outputs to a staging directory
-- Run at runtime — Tickler is a build step, like Pickle itself
+- Modify your source files in place — Tickle outputs to a staging directory
+- Run at runtime — Tickle is a build step, like Pickle itself
 
 ## Usage
 
@@ -70,7 +70,7 @@ Tickle always runs before generation. There is no way to generate without tickli
 
 ```
 File saved
-  → Tickler processes changed file
+  → Tickle processes changed file
     → Pickle regenerates affected output
       → go build
         → Binary restarted

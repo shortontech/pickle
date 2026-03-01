@@ -41,6 +41,25 @@ This is the main advantage of code generation over using runtime frameworks. A s
 
 ## Getting Started: Unboxing Your First Pickle
 
+See the [Getting Started guide](docs/GettingStarted.md) to create your first Pickle project.
+
+## Documentation
+
+| Topic | Description |
+|-------|-------------|
+| [Getting Started](docs/GettingStarted.md) | Create your first Pickle project |
+| [Controllers](docs/Controller.md) | Handling requests and returning responses |
+| [Middleware](docs/Middleware.md) | Auth, rate limiting, and request pipeline |
+| [Requests](docs/Requests.md) | Validation and deserialization |
+| [Migrations](docs/Migrations.md) | Database schema as code |
+| [Router](docs/Router.md) | Route definitions and groups |
+| [Context](docs/Context.md) | The request context object |
+| [Response](docs/Response.md) | Building HTTP responses |
+| [QueryBuilder](docs/QueryBuilder.md) | Typed database queries |
+| [Config](docs/Config.md) | Application configuration |
+| [Commands](docs/Commands.md) | CLI commands reference |
+| [Tickle](docs/Tickle.md) | The preprocessor pipeline |
+
 ## Middleware Stack
 
 **Authentication:** "Wrap It Before They Hack It"

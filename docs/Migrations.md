@@ -74,6 +74,40 @@ t.Text("notes").Nullable()
 | `.Unique()` | UNIQUE constraint |
 | `.Default(value)` | Set default value |
 | `.ForeignKey(table, column)` | Add foreign key reference |
+| `.Public()` | Mark as visible to anyone (ownership system) |
+| `.OwnerSees()` | Mark as visible only to the row's owner |
+| `.IsOwner()` | Mark as the ownership column for the table |
+
+## Ownership & visibility
+
+Declare field visibility tiers and row ownership directly in your migration. Pickle generates `PublicResponse` and `OwnerResponse` structs, a `Serialize` function, and a `WhereOwnedBy` query scope.
+
+```go
+m.CreateTable("posts", func(t *Table) {
+    t.UUID("id").PrimaryKey().Default("uuid_generate_v7()").Public()
+    t.UUID("user_id").NotNull().ForeignKey("users", "id").IsOwner()
+    t.String("title").NotNull().Public()
+    t.Text("body").NotNull().OwnerSees()
+    t.String("draft_notes").Nullable().OwnerSees()
+    t.Timestamps()
+})
+```
+
+| Modifier | Effect |
+|----------|--------|
+| `.Public()` | Field appears in both `PostPublicResponse` and `PostOwnerResponse` |
+| `.OwnerSees()` | Field appears only in `PostOwnerResponse` |
+| `.IsOwner()` | Column used to determine ownership — generates `WhereOwnedBy` scope |
+
+Pickle generates:
+
+- `PostPublicResponse` struct — only `.Public()` fields
+- `PostOwnerResponse` struct — `.Public()` + `.OwnerSees()` fields
+- `SerializePost(record, ownerID)` — returns the appropriate response based on ownership match
+- `SerializePosts(records, ownerID)` — slice variant
+- `WhereOwnedBy(ownerID)` — query scope filtering by the owner column
+
+Only one column per table may be marked `.IsOwner()`. Tables without any ownership modifiers generate no response structs.
 
 ## Migration operations
 

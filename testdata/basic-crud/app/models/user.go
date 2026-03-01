@@ -14,3 +14,32 @@ type User struct {
 	CreatedAt    time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at" db:"updated_at"`
 }
+
+// UserPublic is a projection of User without sensitive fields.
+type UserPublic struct {
+	ID        uuid.UUID `json:"id"`
+	Name      string    `json:"name"`
+	Email     string    `json:"email"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Public returns a UserPublic with sensitive fields stripped.
+func (m *User) Public() UserPublic {
+	return UserPublic{
+		ID:        m.ID,
+		Name:      m.Name,
+		Email:     m.Email,
+		CreatedAt: m.CreatedAt,
+		UpdatedAt: m.UpdatedAt,
+	}
+}
+
+// PublicUsers converts a slice of User to a slice of UserPublic.
+func PublicUsers(records []User) []UserPublic {
+	result := make([]UserPublic, len(records))
+	for i := range records {
+		result[i] = records[i].Public()
+	}
+	return result
+}

@@ -392,6 +392,15 @@ func formatTable(t *schema.Table) string {
 		if c.ForeignKeyTable != "" {
 			attrs = append(attrs, fmt.Sprintf("FK→%s.%s", c.ForeignKeyTable, c.ForeignKeyColumn))
 		}
+		if c.IsPublic {
+			attrs = append(attrs, "PUBLIC")
+		}
+		if c.IsOwnerSees {
+			attrs = append(attrs, "OWNER_SEES")
+		}
+		if c.IsOwnerColumn {
+			attrs = append(attrs, "OWNER")
+		}
 
 		attrStr := ""
 		if len(attrs) > 0 {

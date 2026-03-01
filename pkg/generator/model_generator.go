@@ -25,13 +25,40 @@ type {{ .StructName }} struct {
 	{{ .Name }} {{ .Type }} ` + "`" + `json:"{{ .JSONTag }}" db:"{{ .DBTag }}"` + "`" + `
 {{- end }}
 }
+{{ if .PublicFields }}
+// {{ .StructName }}Public is a projection of {{ .StructName }} without sensitive fields.
+type {{ .StructName }}Public struct {
+{{- range .PublicFields }}
+	{{ .Name }} {{ .Type }} ` + "`" + `json:"{{ .JSONTag }}"` + "`" + `
+{{- end }}
+}
+
+// Public returns a {{ .StructName }}Public with sensitive fields stripped.
+func (m *{{ .StructName }}) Public() {{ .StructName }}Public {
+	return {{ .StructName }}Public{
+{{- range .PublicFields }}
+		{{ .Name }}: m.{{ .Name }},
+{{- end }}
+	}
+}
+
+// Public{{ .StructName }}s converts a slice of {{ .StructName }} to a slice of {{ .StructName }}Public.
+func Public{{ .StructName }}s(records []{{ .StructName }}) []{{ .StructName }}Public {
+	result := make([]{{ .StructName }}Public, len(records))
+	for i := range records {
+		result[i] = records[i].Public()
+	}
+	return result
+}
+{{ end }}
 `))
 
 type modelData struct {
-	Package    string
-	StructName string
-	Imports    []string
-	Fields     []fieldData
+	Package      string
+	StructName   string
+	Imports      []string
+	Fields       []fieldData
+	PublicFields []fieldData // non-nil only when model has hidden fields
 }
 
 type fieldData struct {
@@ -84,11 +111,25 @@ func GenerateModel(table *schema.Table, packageName string) ([]byte, error) {
 	}
 	orderedImports := append(stdImports, extImports...)
 
+	// Collect public (non-hidden) fields for the Public projection
+	var publicFields []fieldData
+	hasHidden := false
+	for _, f := range fields {
+		if f.JSONTag == "-" {
+			hasHidden = true
+		} else {
+			publicFields = append(publicFields, f)
+		}
+	}
+
 	data := modelData{
 		Package:    packageName,
 		StructName: tableToStructName(table.Name),
 		Imports:    orderedImports,
 		Fields:     fields,
+	}
+	if hasHidden {
+		data.PublicFields = publicFields
 	}
 
 	var buf bytes.Buffer

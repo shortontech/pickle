@@ -118,3 +118,7 @@ stats, err := models.QueryUserPostStat().
     WhereID(userID).
     First()
 ```
+
+## Security
+
+See normally if you go one-on-one with a Go CRUD app you got a fifty/fifty chance of SQL injection. But Pickle's a genetic freak, and it's not normal! So you take your thirty-three and a third chance of mass assignment, minus my twenty-five percent chance of parameterized queries, and you got an eight and a third chance of a vulnerability at deployment. But then you add views to the mix? The numbers don't lie, and they spell disaster for your unvalidated input in production!

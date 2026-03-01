@@ -112,13 +112,14 @@ func MakeMigration(name, projectDir string) (string, error) {
 	return writeScaffold(projectDir, relPath, tmplMakeMigration(structName, tableName))
 }
 
-// sanitizeName rejects names containing path traversal or separator characters.
+// sanitizeName rejects names containing path traversal sequences.
+// Forward slashes are allowed for subdirectory scaffolding (e.g. "admin/User").
 func sanitizeName(name string) error {
-	if strings.Contains(name, "..") || strings.ContainsAny(name, "/\\") {
-		return fmt.Errorf("invalid name %q: must not contain path separators or '..'", name)
-	}
 	if name == "" || name == "." {
 		return fmt.Errorf("invalid name: must not be empty")
+	}
+	if strings.Contains(name, "..") || strings.Contains(name, "\\") {
+		return fmt.Errorf("invalid name %q: must not contain '..' or backslashes", name)
 	}
 	return nil
 }

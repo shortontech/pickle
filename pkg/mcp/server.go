@@ -3,6 +3,7 @@ package picklemcp
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +45,16 @@ func (s *Server) Run(ctx context.Context) error {
 	return s.server.Run(ctx, &mcp.StdioTransport{})
 }
 
+// RunHTTP starts the MCP server as a Streamable HTTP server on the given address.
+func (s *Server) RunHTTP(addr string) error {
+	handler := mcp.NewStreamableHTTPHandler(func(_ *http.Request) *mcp.Server {
+		return s.server
+	}, nil)
+
+	fmt.Fprintf(os.Stderr, "pickle mcp: listening on %s\n", addr)
+	return http.ListenAndServe(addr, handler)
+}
+
 func (s *Server) registerTools() {
 	mcp.AddTool(s.server, &mcp.Tool{
 		Name:        "schema_show",
@@ -81,6 +92,26 @@ func (s *Server) registerTools() {
 	}, s.docsShow)
 
 	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "make_controller",
+		Description: "Scaffold a new controller. Pass a name like 'User' or 'UserController'.",
+	}, s.makeController)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "make_migration",
+		Description: "Scaffold a new migration. Pass a name like 'create_posts_table'.",
+	}, s.makeMigration)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "make_request",
+		Description: "Scaffold a new request class. Pass a name like 'CreateUser' or 'CreateUserRequest'.",
+	}, s.makeRequest)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "make_middleware",
+		Description: "Scaffold a new middleware. Pass a name like 'RateLimit'.",
+	}, s.makeMiddleware)
+
+	mcp.AddTool(s.server, &mcp.Tool{
 		Name:        "project_create",
 		Description: "Create a new Pickle project. Scaffolds the full directory structure, generates code, and runs go mod tidy. The name is used as both the directory name and Go module path.",
 	}, s.projectCreate)
@@ -91,7 +122,7 @@ type tableInput struct {
 }
 
 func (s *Server) schemaShow(_ context.Context, _ *mcp.CallToolRequest, input tableInput) (*mcp.CallToolResult, any, error) {
-	tables, err := generator.RunSchemaInspector(s.project)
+	tables, views, err := generator.RunSchemaInspector(s.project)
 	if err != nil {
 		return errResult("schema inspection failed: " + err.Error()), nil, nil
 	}
@@ -102,7 +133,12 @@ func (s *Server) schemaShow(_ context.Context, _ *mcp.CallToolRequest, input tab
 				return textResult(formatTable(t)), nil, nil
 			}
 		}
-		return errResult(fmt.Sprintf("table %q not found", input.Table)), nil, nil
+		for _, v := range views {
+			if v.Name == input.Table {
+				return textResult(formatView(v)), nil, nil
+			}
+		}
+		return errResult(fmt.Sprintf("table or view %q not found", input.Table)), nil, nil
 	}
 
 	var b strings.Builder
@@ -111,6 +147,10 @@ func (s *Server) schemaShow(_ context.Context, _ *mcp.CallToolRequest, input tab
 			b.WriteString("\n")
 		}
 		b.WriteString(formatTable(t))
+	}
+	for _, v := range views {
+		b.WriteString("\n")
+		b.WriteString(formatView(v))
 	}
 	return textResult(b.String()), nil, nil
 }
@@ -266,6 +306,54 @@ func (s *Server) projectCreate(_ context.Context, _ *mcp.CallToolRequest, input 
 	return textResult(log.String()), nil, nil
 }
 
+type makeInput struct {
+	Name string `json:"name"`
+}
+
+func (s *Server) makeController(_ context.Context, _ *mcp.CallToolRequest, input makeInput) (*mcp.CallToolResult, any, error) {
+	if input.Name == "" {
+		return errResult("name is required"), nil, nil
+	}
+	relPath, err := scaffold.MakeController(input.Name, s.project.Dir, s.project.ModulePath)
+	if err != nil {
+		return errResult(err.Error()), nil, nil
+	}
+	return textResult("Created " + relPath), nil, nil
+}
+
+func (s *Server) makeMigration(_ context.Context, _ *mcp.CallToolRequest, input makeInput) (*mcp.CallToolResult, any, error) {
+	if input.Name == "" {
+		return errResult("name is required"), nil, nil
+	}
+	relPath, err := scaffold.MakeMigration(input.Name, s.project.Dir)
+	if err != nil {
+		return errResult(err.Error()), nil, nil
+	}
+	return textResult("Created " + relPath), nil, nil
+}
+
+func (s *Server) makeRequest(_ context.Context, _ *mcp.CallToolRequest, input makeInput) (*mcp.CallToolResult, any, error) {
+	if input.Name == "" {
+		return errResult("name is required"), nil, nil
+	}
+	relPath, err := scaffold.MakeRequest(input.Name, s.project.Dir, s.project.ModulePath)
+	if err != nil {
+		return errResult(err.Error()), nil, nil
+	}
+	return textResult("Created " + relPath), nil, nil
+}
+
+func (s *Server) makeMiddleware(_ context.Context, _ *mcp.CallToolRequest, input makeInput) (*mcp.CallToolResult, any, error) {
+	if input.Name == "" {
+		return errResult("name is required"), nil, nil
+	}
+	relPath, err := scaffold.MakeMiddleware(input.Name, s.project.Dir, s.project.ModulePath)
+	if err != nil {
+		return errResult(err.Error()), nil, nil
+	}
+	return textResult("Created " + relPath), nil, nil
+}
+
 // findPicklePkgDir locates the pkg/ directory of the pickle installation.
 func findPicklePkgDir() string {
 	// Use runtime.Caller to find this source file's location:
@@ -311,6 +399,37 @@ func formatTable(t *schema.Table) string {
 		}
 		fmt.Fprintf(&b, "  %s %s%s\n", c.Name, c.Type, attrStr)
 	}
+	return b.String()
+}
+
+func formatView(v *schema.View) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "## %s (view)\n", v.Name)
+
+	// Sources
+	for _, src := range v.Sources {
+		if src.JoinType == "" {
+			fmt.Fprintf(&b, "  FROM %s %s\n", src.Table, src.Alias)
+		} else {
+			fmt.Fprintf(&b, "  %s %s %s ON %s\n", src.JoinType, src.Table, src.Alias, src.JoinCondition)
+		}
+	}
+
+	// Columns
+	for _, c := range v.Columns {
+		source := ""
+		if c.RawExpr != "" {
+			source = fmt.Sprintf(" = %s", c.RawExpr)
+		} else if c.SourceAlias != "" {
+			source = fmt.Sprintf(" (%s.%s)", c.SourceAlias, c.SourceColumn)
+		}
+		fmt.Fprintf(&b, "  %s %s%s\n", c.OutputName(), c.Type, source)
+	}
+
+	if len(v.GroupByCols) > 0 {
+		fmt.Fprintf(&b, "  GROUP BY %s\n", strings.Join(v.GroupByCols, ", "))
+	}
+
 	return b.String()
 }
 

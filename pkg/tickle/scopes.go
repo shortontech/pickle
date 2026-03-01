@@ -23,8 +23,8 @@ type ColumnDef struct {
 	Scope      string // "all", "string", "numeric", "timestamp"
 }
 
-// scopeForType maps schema column types to their scope category.
-func scopeForType(colType schema.ColumnType) string {
+// ScopeForType maps schema column types to their scope category.
+func ScopeForType(colType schema.ColumnType) string {
 	switch colType {
 	case schema.String, schema.Text:
 		return "string"
@@ -102,7 +102,7 @@ func ColumnsFromTable(table *schema.Table) []ColumnDef {
 			PascalName: names.SnakeToPascal(col.Name),
 			SnakeName:  col.Name,
 			GoType:     names.ColumnGoType(col),
-			Scope:      scopeForType(col.Type),
+			Scope:      ScopeForType(col.Type),
 		})
 	}
 	return cols

@@ -28,17 +28,15 @@ var builtinAuthDrivers = map[string]string{
 	"session": embedAUTHSESSION,
 }
 
-// builtinAuthMigrations maps driver names to a list of (filename, embed content) pairs.
-// Filenames follow the standard migration naming convention with timestamps.
+// builtinAuthMigrations maps driver names to a list of (filename, embed) pairs.
+// Each entry corresponds to one migration file. Filenames use the standard
+// timestamp prefix convention.
 var builtinAuthMigrations = map[string][]struct {
 	Filename string
 	Embed    string
 }{
 	"session": {
-		{
-			Filename: "2026_02_27_011700_create_sessions_table_gen.go",
-			Embed:    embedAUTHSESSIONMIGRATIONS,
-		},
+		{Filename: "2026_02_27_011700_create_sessions_table", Embed: embed_2026_02_27_011700_create_sessions_table},
 	},
 }
 
@@ -131,21 +129,30 @@ func GenerateAuthRegistry(drivers []AuthDriverInfo, modulePath, httpImport strin
 }
 
 // WriteDriverMigrations writes migration files for a built-in auth driver
-// into the project's database/migrations/ directory. Files use _gen.go suffix
-// so they're recognized as Pickle-owned.
+// into the project's database/migrations/ directory. Each migration is written
+// as an individual _gen.go file with a proper timestamp prefix. If the user has
+// created a .go override (same name without _gen), the _gen.go version is skipped.
 func WriteDriverMigrations(driverName, migrationsDir, migrationsPkg string) error {
 	migrations, ok := builtinAuthMigrations[driverName]
 	if !ok {
 		return nil // no migrations for this driver
 	}
 
+	if err := os.MkdirAll(migrationsDir, 0o755); err != nil {
+		return err
+	}
+
 	for _, m := range migrations {
-		src := strings.ReplaceAll(m.Embed, packagePlaceholder, migrationsPkg)
-		path := filepath.Join(migrationsDir, m.Filename)
-		if err := os.MkdirAll(migrationsDir, 0o755); err != nil {
-			return err
+		genFilename := m.Filename + "_gen.go"
+		userFilename := m.Filename + ".go"
+
+		// Skip if user has an override
+		if _, exists := statFile(filepath.Join(migrationsDir, userFilename)); exists {
+			continue
 		}
-		if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+
+		src := strings.ReplaceAll(m.Embed, packagePlaceholder, migrationsPkg)
+		if err := os.WriteFile(filepath.Join(migrationsDir, genFilename), []byte(src), 0o644); err != nil {
 			return err
 		}
 	}

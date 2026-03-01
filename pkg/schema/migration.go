@@ -19,6 +19,8 @@ const (
 	OpRenameColumn
 	OpAddIndex
 	OpAddUniqueIndex
+	OpCreateView
+	OpDropView
 )
 
 // Operation records a single schema change.
@@ -26,6 +28,7 @@ type Operation struct {
 	Type         TableOperation
 	Table        string
 	TableDef     *Table
+	ViewDef      *View
 	Index        *Index
 	NewName      string // for rename operations
 	OldName      string // for rename operations
@@ -112,6 +115,23 @@ func (m *Migration) AddUniqueIndex(table string, columns ...string) {
 			Columns: columns,
 			Unique:  true,
 		},
+	})
+}
+
+func (m *Migration) CreateView(name string, fn func(*View)) {
+	v := &View{Name: name}
+	fn(v)
+	m.Operations = append(m.Operations, Operation{
+		Type:    OpCreateView,
+		Table:   name,
+		ViewDef: v,
+	})
+}
+
+func (m *Migration) DropView(name string) {
+	m.Operations = append(m.Operations, Operation{
+		Type:  OpDropView,
+		Table: name,
 	})
 }
 

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/shortontech/pickle/pkg/generator"
 	picklemcp "github.com/shortontech/pickle/pkg/mcp"
@@ -38,13 +39,13 @@ func main() {
 	case "migrate", "migrate:rollback", "migrate:fresh", "migrate:status":
 		cmdMigrate()
 	case "make:controller":
-		fmt.Println("pickle make:controller: not yet implemented")
+		cmdMakeController()
 	case "make:migration":
-		fmt.Println("pickle make:migration: not yet implemented")
+		cmdMakeMigration()
 	case "make:request":
-		fmt.Println("pickle make:request: not yet implemented")
+		cmdMakeRequest()
 	case "make:middleware":
-		fmt.Println("pickle make:middleware: not yet implemented")
+		cmdMakeMiddleware()
 	case "--help", "-h", "help":
 		usage()
 	case "--version", "-v", "version":
@@ -64,6 +65,7 @@ Commands:
   generate          Generate all files from project sources
   --watch           Watch for changes and regenerate on save
   mcp               Start the MCP server (stdio transport)
+  mcp --http :9921  Start the MCP server (SSE over HTTP)
   migrate           Run all pending migrations
   migrate:rollback  Roll back the last batch of migrations
   migrate:fresh     Drop all tables and re-run all migrations
@@ -144,11 +146,20 @@ func cmdCreate() {
 
 func cmdMCP() {
 	projectDir := "."
+	httpAddr := ""
 	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--project" && i+1 < len(args) {
-			projectDir = args[i+1]
-			i++
+		switch args[i] {
+		case "--project":
+			if i+1 < len(args) {
+				projectDir = args[i+1]
+				i++
+			}
+		case "--http":
+			if i+1 < len(args) {
+				httpAddr = args[i+1]
+				i++
+			}
 		}
 	}
 
@@ -158,9 +169,16 @@ func cmdMCP() {
 		os.Exit(1)
 	}
 
-	if err := server.Run(context.Background()); err != nil {
-		fmt.Fprintf(os.Stderr, "pickle mcp: %v\n", err)
-		os.Exit(1)
+	if httpAddr != "" {
+		if err := server.RunHTTP(httpAddr); err != nil {
+			fmt.Fprintf(os.Stderr, "pickle mcp: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		if err := server.Run(context.Background()); err != nil {
+			fmt.Fprintf(os.Stderr, "pickle mcp: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }
 
@@ -287,6 +305,96 @@ func cmdWatch() {
 		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func parseMakeArgs() (name, projectDir string) {
+	projectDir = "."
+	args := os.Args[2:]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--project" && i+1 < len(args) {
+			projectDir = args[i+1]
+			i++
+		} else if !strings.HasPrefix(args[i], "-") && name == "" {
+			name = args[i]
+		}
+	}
+	return
+}
+
+func cmdMakeController() {
+	name, projectDir := parseMakeArgs()
+	if name == "" {
+		fmt.Fprintf(os.Stderr, "Usage: pickle make:controller <Name>\n")
+		os.Exit(1)
+	}
+	project, err := generator.DetectProject(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	relPath, err := scaffold.MakeController(name, project.Dir, project.ModulePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("  created %s\n", relPath)
+}
+
+func cmdMakeMigration() {
+	name, projectDir := parseMakeArgs()
+	if name == "" {
+		fmt.Fprintf(os.Stderr, "Usage: pickle make:migration <name>\n")
+		os.Exit(1)
+	}
+	project, err := generator.DetectProject(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	relPath, err := scaffold.MakeMigration(name, project.Dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("  created %s\n", relPath)
+}
+
+func cmdMakeRequest() {
+	name, projectDir := parseMakeArgs()
+	if name == "" {
+		fmt.Fprintf(os.Stderr, "Usage: pickle make:request <Name>\n")
+		os.Exit(1)
+	}
+	project, err := generator.DetectProject(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	relPath, err := scaffold.MakeRequest(name, project.Dir, project.ModulePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("  created %s\n", relPath)
+}
+
+func cmdMakeMiddleware() {
+	name, projectDir := parseMakeArgs()
+	if name == "" {
+		fmt.Fprintf(os.Stderr, "Usage: pickle make:middleware <Name>\n")
+		os.Exit(1)
+	}
+	project, err := generator.DetectProject(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	relPath, err := scaffold.MakeMiddleware(name, project.Dir, project.ModulePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("  created %s\n", relPath)
 }
 
 // findPicklePkgDir locates the pkg/ directory of the pickle installation.

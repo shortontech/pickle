@@ -7,11 +7,11 @@ import (
 
 func TestGenerateSchemaInspector(t *testing.T) {
 	migrations := []MigrationEntry{
-		{StructName: "CreateUsersTable_2026_02_21_100000"},
-		{StructName: "CreatePostsTable_2026_02_21_100001"},
+		{StructName: "CreateUsersTable_2026_02_21_100000", ImportPath: "github.com/example/myapp/migrations"},
+		{StructName: "CreatePostsTable_2026_02_21_100001", ImportPath: "github.com/example/myapp/migrations"},
 	}
 
-	out, err := GenerateSchemaInspector("github.com/example/myapp/migrations", migrations)
+	out, err := GenerateSchemaInspector(migrations)
 	if err != nil {
 		t.Fatalf("GenerateSchemaInspector: %v", err)
 	}
@@ -42,13 +42,13 @@ func TestGenerateSchemaInspector(t *testing.T) {
 	}
 }
 
-func TestGenerateSchemaInspectorSortsAlphabetically(t *testing.T) {
+func TestGenerateSchemaInspectorSortsByTimestamp(t *testing.T) {
 	migrations := []MigrationEntry{
-		{StructName: "CreatePostsTable_2026_02_21_100001"},
-		{StructName: "CreateUsersTable_2026_02_21_100000"},
+		{StructName: "CreatePostsTable_2026_02_21_100001", ImportPath: "github.com/example/myapp/migrations"},
+		{StructName: "CreateUsersTable_2026_02_21_100000", ImportPath: "github.com/example/myapp/migrations"},
 	}
 
-	out, err := GenerateSchemaInspector("github.com/example/myapp/migrations", migrations)
+	out, err := GenerateSchemaInspector(migrations)
 	if err != nil {
 		t.Fatalf("GenerateSchemaInspector: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestGenerateSchemaInspectorSortsAlphabetically(t *testing.T) {
 	usersIdx := strings.Index(src, "CreateUsersTable")
 	postsIdx := strings.Index(src, "CreatePostsTable")
 
-	if postsIdx > usersIdx {
-		t.Error("migrations should be sorted alphabetically (posts before users)")
+	if usersIdx > postsIdx {
+		t.Error("migrations should be sorted by timestamp (users_100000 before posts_100001)")
 	}
 }

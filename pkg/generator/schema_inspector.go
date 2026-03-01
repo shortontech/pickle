@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/format"
 	"sort"
+	"strings"
 	"text/template"
 )
 
@@ -15,9 +16,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
-
-	"{{ .MigrationsImport }}"
+{{ range .Imports }}
+	{{ .Alias }} "{{ .Path }}"
+{{- end }}
 )
 
 type columnInfo struct {
@@ -46,40 +49,66 @@ type indexInfo struct {
 	Unique  bool     ` + "`" + `json:"unique"` + "`" + `
 }
 
-var typeNames = map[migrations.ColumnType]string{
-	migrations.UUID:       "uuid",
-	migrations.String:     "string",
-	migrations.Text:       "text",
-	migrations.Integer:    "integer",
-	migrations.BigInteger: "biginteger",
-	migrations.Decimal:    "decimal",
-	migrations.Boolean:    "boolean",
-	migrations.Timestamp:  "timestamp",
-	migrations.JSONB:      "jsonb",
-	migrations.Date:       "date",
-	migrations.Time:       "time",
-	migrations.Binary:     "binary",
+type viewColumnInfo struct {
+	Name         string ` + "`" + `json:"name"` + "`" + `
+	Type         string ` + "`" + `json:"type"` + "`" + `
+	GoType       string ` + "`" + `json:"go_type"` + "`" + `
+	Nullable     bool   ` + "`" + `json:"nullable"` + "`" + `
+	SourceAlias  string ` + "`" + `json:"source_alias,omitempty"` + "`" + `
+	SourceColumn string ` + "`" + `json:"source_column,omitempty"` + "`" + `
+	RawExpr      string ` + "`" + `json:"raw_expr,omitempty"` + "`" + `
+	Precision    int    ` + "`" + `json:"precision,omitempty"` + "`" + `
+	Scale        int    ` + "`" + `json:"scale,omitempty"` + "`" + `
 }
 
-var goTypeNames = map[migrations.ColumnType]string{
-	migrations.UUID:       "uuid.UUID",
-	migrations.String:     "string",
-	migrations.Text:       "string",
-	migrations.Integer:    "int",
-	migrations.BigInteger: "int64",
-	migrations.Decimal:    "decimal.Decimal",
-	migrations.Boolean:    "bool",
-	migrations.Timestamp:  "time.Time",
-	migrations.JSONB:      "json.RawMessage",
-	migrations.Date:       "time.Time",
-	migrations.Time:       "string",
-	migrations.Binary:     "[]byte",
+type viewSourceInfo struct {
+	Table         string ` + "`" + `json:"table"` + "`" + `
+	Alias         string ` + "`" + `json:"alias"` + "`" + `
+	JoinType      string ` + "`" + `json:"join_type,omitempty"` + "`" + `
+	JoinCondition string ` + "`" + `json:"join_condition,omitempty"` + "`" + `
 }
 
-func processOps(ops []migrations.Operation, tables map[string]*tableInfo, order *[]string) {
+type viewInfo struct {
+	Name    string           ` + "`" + `json:"name"` + "`" + `
+	Sources []viewSourceInfo ` + "`" + `json:"sources"` + "`" + `
+	Columns []viewColumnInfo ` + "`" + `json:"columns"` + "`" + `
+	GroupBy []string         ` + "`" + `json:"group_by,omitempty"` + "`" + `
+}
+
+var typeNames = map[{{ .TypesPkg }}.ColumnType]string{
+	{{ .TypesPkg }}.UUID:       "uuid",
+	{{ .TypesPkg }}.String:     "string",
+	{{ .TypesPkg }}.Text:       "text",
+	{{ .TypesPkg }}.Integer:    "integer",
+	{{ .TypesPkg }}.BigInteger: "biginteger",
+	{{ .TypesPkg }}.Decimal:    "decimal",
+	{{ .TypesPkg }}.Boolean:    "boolean",
+	{{ .TypesPkg }}.Timestamp:  "timestamp",
+	{{ .TypesPkg }}.JSONB:      "jsonb",
+	{{ .TypesPkg }}.Date:       "date",
+	{{ .TypesPkg }}.Time:       "time",
+	{{ .TypesPkg }}.Binary:     "binary",
+}
+
+var goTypeNames = map[{{ .TypesPkg }}.ColumnType]string{
+	{{ .TypesPkg }}.UUID:       "uuid.UUID",
+	{{ .TypesPkg }}.String:     "string",
+	{{ .TypesPkg }}.Text:       "string",
+	{{ .TypesPkg }}.Integer:    "int",
+	{{ .TypesPkg }}.BigInteger: "int64",
+	{{ .TypesPkg }}.Decimal:    "decimal.Decimal",
+	{{ .TypesPkg }}.Boolean:    "bool",
+	{{ .TypesPkg }}.Timestamp:  "time.Time",
+	{{ .TypesPkg }}.JSONB:      "json.RawMessage",
+	{{ .TypesPkg }}.Date:       "time.Time",
+	{{ .TypesPkg }}.Time:       "string",
+	{{ .TypesPkg }}.Binary:     "[]byte",
+}
+
+func processOps(ops []{{ .TypesPkg }}.Operation, tables map[string]*tableInfo, order *[]string, views map[string]*viewInfo, viewOrder *[]string) {
 	for _, op := range ops {
 		switch op.Type {
-		case migrations.OpCreateTable:
+		case {{ .TypesPkg }}.OpCreateTable:
 			ti := &tableInfo{Name: op.Table}
 			for _, col := range op.TableDef.Columns {
 				goType := goTypeNames[col.Type]
@@ -103,15 +132,70 @@ func processOps(ops []migrations.Operation, tables map[string]*tableInfo, order 
 			}
 			tables[op.Table] = ti
 			*order = append(*order, op.Table)
-		case migrations.OpDropTableIfExists:
+		case {{ .TypesPkg }}.OpDropTableIfExists:
 			delete(tables, op.Table)
-		case migrations.OpAddIndex, migrations.OpAddUniqueIndex:
+		case {{ .TypesPkg }}.OpAddIndex, {{ .TypesPkg }}.OpAddUniqueIndex:
 			if ti, ok := tables[op.Table]; ok {
 				ti.Indexes = append(ti.Indexes, indexInfo{
 					Columns: op.Index.Columns,
 					Unique:  op.Index.Unique,
 				})
 			}
+		case {{ .TypesPkg }}.OpCreateView:
+			vd := op.ViewDef
+			vi := &viewInfo{Name: vd.Name, GroupBy: vd.GroupByCols}
+			for _, src := range vd.Sources {
+				vi.Sources = append(vi.Sources, viewSourceInfo{
+					Table:         src.Table,
+					Alias:         src.Alias,
+					JoinType:      src.JoinType,
+					JoinCondition: src.JoinCondition,
+				})
+			}
+			// Build alias→table lookup for resolving plain column types
+			aliasTable := map[string]string{}
+			for _, src := range vd.Sources {
+				aliasTable[src.Alias] = src.Table
+			}
+			for _, vc := range vd.Columns {
+				vci := viewColumnInfo{
+					Name:         vc.OutputName(),
+					SourceAlias:  vc.SourceAlias,
+					SourceColumn: vc.SourceColumn,
+					RawExpr:      vc.RawExpr,
+					Nullable:     vc.IsNullable,
+					Precision:    vc.Precision,
+					Scale:        vc.Scale,
+				}
+				if vc.RawExpr != "" {
+					// SelectRaw — type explicitly declared
+					vci.Type = typeNames[vc.Type]
+					vci.GoType = goTypeNames[vc.Type]
+				} else {
+					// Plain column — resolve from source table
+					srcTable := aliasTable[vc.SourceAlias]
+					if ti, ok := tables[srcTable]; ok {
+						for _, tc := range ti.Columns {
+							if tc.Name == vc.SourceColumn {
+								vci.Type = tc.Type
+								vci.GoType = tc.GoType
+								vci.Nullable = tc.Nullable
+								vci.Precision = tc.Precision
+								vci.Scale = tc.Scale
+								break
+							}
+						}
+					}
+				}
+				if vci.Nullable && vci.GoType != "" && vci.GoType != "[]byte" && !strings.HasPrefix(vci.GoType, "*") {
+					vci.GoType = "*" + vci.GoType
+				}
+				vi.Columns = append(vi.Columns, vci)
+			}
+			views[vd.Name] = vi
+			*viewOrder = append(*viewOrder, vd.Name)
+		case {{ .TypesPkg }}.OpDropView:
+			delete(views, op.Table)
 		}
 	}
 }
@@ -162,6 +246,40 @@ func printTable(ti tableInfo) {
 	fmt.Println()
 }
 
+func printView(vi viewInfo) {
+	fmt.Printf("\n  %s (view)\n", vi.Name)
+	fmt.Println("  " + repeat("─", 70))
+
+	fmt.Println("  Sources:")
+	for _, src := range vi.Sources {
+		if src.JoinType == "" {
+			fmt.Printf("    FROM %s %s\n", src.Table, src.Alias)
+		} else {
+			fmt.Printf("    %s %s %s ON %s\n", src.JoinType, src.Table, src.Alias, src.JoinCondition)
+		}
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(w, "\n  COLUMN\tTYPE\tGO TYPE\tSOURCE\n")
+	fmt.Fprintf(w, "  ──────\t────\t───────\t──────\n")
+
+	for _, col := range vi.Columns {
+		source := ""
+		if col.RawExpr != "" {
+			source = col.RawExpr
+		} else if col.SourceAlias != "" {
+			source = col.SourceAlias + "." + col.SourceColumn
+		}
+		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", col.Name, col.Type, col.GoType, source)
+	}
+	w.Flush()
+
+	if len(vi.GroupBy) > 0 {
+		fmt.Printf("\n  GROUP BY: %s\n", strings.Join(vi.GroupBy, ", "))
+	}
+	fmt.Println()
+}
+
 func repeat(s string, n int) string {
 	result := ""
 	for i := 0; i < n; i++ {
@@ -170,14 +288,21 @@ func repeat(s string, n int) string {
 	return result
 }
 
+type inspectorOutput struct {
+	Tables []tableInfo ` + "`" + `json:"tables"` + "`" + `
+	Views  []viewInfo  ` + "`" + `json:"views,omitempty"` + "`" + `
+}
+
 func main() {
 	tables := map[string]*tableInfo{}
 	var order []string
+	views := map[string]*viewInfo{}
+	var viewOrder []string
 
 {{ range .Migrations }}	{
-		m := migrations.{{ .StructName }}{}
+		m := {{ .PkgAlias }}.{{ .StructName }}{}
 		m.Up()
-		processOps(m.Operations, tables, &order)
+		processOps(m.Operations, tables, &order, views, &viewOrder)
 	}
 {{ end }}
 	// Parse args: [--json] [table_name]
@@ -191,27 +316,45 @@ func main() {
 		}
 	}
 
-	var output []tableInfo
-	if filter != "" {
-		if ti, ok := tables[filter]; ok {
-			output = append(output, *ti)
-		} else {
-			fmt.Fprintf(os.Stderr, "table %q not found\n", filter)
-			os.Exit(1)
-		}
-	} else {
-		for _, name := range order {
-			output = append(output, *tables[name])
-		}
-	}
-
 	if jsonOutput {
+		out := inspectorOutput{}
+		if filter != "" {
+			if ti, ok := tables[filter]; ok {
+				out.Tables = append(out.Tables, *ti)
+			} else if vi, ok := views[filter]; ok {
+				out.Views = append(out.Views, *vi)
+			} else {
+				fmt.Fprintf(os.Stderr, "table or view %q not found\n", filter)
+				os.Exit(1)
+			}
+		} else {
+			for _, name := range order {
+				out.Tables = append(out.Tables, *tables[name])
+			}
+			for _, name := range viewOrder {
+				out.Views = append(out.Views, *views[name])
+			}
+		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		enc.Encode(output)
+		enc.Encode(out)
 	} else {
-		for _, ti := range output {
-			printTable(ti)
+		if filter != "" {
+			if ti, ok := tables[filter]; ok {
+				printTable(*ti)
+			} else if vi, ok := views[filter]; ok {
+				printView(*vi)
+			} else {
+				fmt.Fprintf(os.Stderr, "table or view %q not found\n", filter)
+				os.Exit(1)
+			}
+		} else {
+			for _, name := range order {
+				printTable(*tables[name])
+			}
+			for _, name := range viewOrder {
+				printView(*views[name])
+			}
 		}
 	}
 }
@@ -220,23 +363,69 @@ func main() {
 // MigrationEntry holds info needed to generate the inspector program.
 type MigrationEntry struct {
 	StructName string
+	ImportPath string // Go import path for this migration's package
+	PkgAlias   string // import alias used in generated code
 }
 
 // GenerateSchemaInspector produces a temporary Go program that imports the
 // project's migrations package, runs each migration's Up() method, and
 // outputs the schema as JSON. The migrations package contains tickled copies
 // of the schema types — no dependency on pickle.
-func GenerateSchemaInspector(migrationsImport string, migrations []MigrationEntry) ([]byte, error) {
+// extractTimestampSuffix extracts the timestamp suffix from a migration struct name.
+// e.g. "CreateUsersTable_2026_02_21_100000" → "2026_02_21_100000"
+func extractTimestampSuffix(name string) string {
+	parts := strings.Split(name, "_")
+	if len(parts) >= 4 {
+		return strings.Join(parts[len(parts)-4:], "_")
+	}
+	return name
+}
+
+type inspectorImport struct {
+	Alias string
+	Path  string
+}
+
+func GenerateSchemaInspector(migrations []MigrationEntry) ([]byte, error) {
 	sort.Slice(migrations, func(i, j int) bool {
-		return migrations[i].StructName < migrations[j].StructName
+		return extractTimestampSuffix(migrations[i].StructName) < extractTimestampSuffix(migrations[j].StructName)
 	})
 
+	// Collect unique imports and assign aliases
+	seen := map[string]string{}
+	var imports []inspectorImport
+	counter := 0
+	for i := range migrations {
+		ip := migrations[i].ImportPath
+		alias, ok := seen[ip]
+		if !ok {
+			if counter == 0 {
+				alias = "migrations"
+			} else {
+				parts := strings.Split(ip, "/")
+				alias = fmt.Sprintf("mig%s", parts[len(parts)-1])
+			}
+			seen[ip] = alias
+			imports = append(imports, inspectorImport{Alias: alias, Path: ip})
+			counter++
+		}
+		migrations[i].PkgAlias = alias
+	}
+
+	// TypesPkg is the alias of the main migrations package (has the type constants)
+	typesPkg := "migrations"
+	if len(imports) > 0 {
+		typesPkg = imports[0].Alias
+	}
+
 	data := struct {
-		MigrationsImport string
-		Migrations       []MigrationEntry
+		Imports    []inspectorImport
+		Migrations []MigrationEntry
+		TypesPkg   string
 	}{
-		MigrationsImport: migrationsImport,
-		Migrations:       migrations,
+		Imports:    imports,
+		Migrations: migrations,
+		TypesPkg:   typesPkg,
 	}
 
 	var buf bytes.Buffer

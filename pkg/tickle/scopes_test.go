@@ -132,9 +132,9 @@ func TestScopeForType(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := scopeForType(tt.colType)
+		got := ScopeForType(tt.colType)
 		if got != tt.want {
-			t.Errorf("scopeForType(%v) = %q, want %q", tt.colType, got, tt.want)
+			t.Errorf("ScopeForType(%v) = %q, want %q", tt.colType, got, tt.want)
 		}
 	}
 }

@@ -2,6 +2,7 @@ package names
 
 import (
 	"strings"
+	"unicode"
 
 	"github.com/shortontech/pickle/pkg/schema"
 )
@@ -43,6 +44,28 @@ func SnakeToPascal(s string) string {
 			b.WriteString(upper)
 		} else {
 			b.WriteString(strings.ToUpper(part[:1]) + part[1:])
+		}
+	}
+	return b.String()
+}
+
+// PascalToSnake converts PascalCase to snake_case.
+// UserController → user_controller, CreateUser → create_user, HTTPServer → http_server.
+func PascalToSnake(s string) string {
+	var b strings.Builder
+	for i, r := range s {
+		if unicode.IsUpper(r) {
+			if i > 0 {
+				prev := rune(s[i-1])
+				if unicode.IsLower(prev) {
+					b.WriteRune('_')
+				} else if unicode.IsUpper(prev) && i+1 < len(s) && unicode.IsLower(rune(s[i+1])) {
+					b.WriteRune('_')
+				}
+			}
+			b.WriteRune(unicode.ToLower(r))
+		} else {
+			b.WriteRune(r)
 		}
 	}
 	return b.String()

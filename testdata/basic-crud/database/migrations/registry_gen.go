@@ -6,5 +6,6 @@ package migrations
 var Registry = []MigrationEntry{
 	{ID: "2026_02_21_100000_create_users_table", Migration: &CreateUsersTable_2026_02_21_100000{}},
 	{ID: "2026_02_21_100001_create_posts_table", Migration: &CreatePostsTable_2026_02_21_100001{}},
-	{ID: "2026_02_27_011700_create_sessions_table_gen", Migration: &CreateSessionsTable_2026_02_27_011700{}},
+	{ID: "2026_02_27_011700_create_sessions_table", Migration: &CreateSessionsTable_2026_02_27_011700{}},
+	{ID: "2026_02_28_100000_create_user_post_stats_view", Migration: &CreateUserPostStatsView_2026_02_28_100000{}},
 }

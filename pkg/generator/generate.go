@@ -159,6 +159,37 @@ type inspectorIndexInfo struct {
 	Unique  bool     `json:"unique"`
 }
 
+type inspectorViewInfo struct {
+	Name    string                    `json:"name"`
+	Sources []inspectorViewSourceInfo `json:"sources"`
+	Columns []inspectorViewColumnInfo `json:"columns"`
+	GroupBy []string                  `json:"group_by,omitempty"`
+}
+
+type inspectorViewSourceInfo struct {
+	Table         string `json:"table"`
+	Alias         string `json:"alias"`
+	JoinType      string `json:"join_type,omitempty"`
+	JoinCondition string `json:"join_condition,omitempty"`
+}
+
+type inspectorViewColumnInfo struct {
+	Name         string `json:"name"`
+	Type         string `json:"type"`
+	GoType       string `json:"go_type"`
+	Nullable     bool   `json:"nullable"`
+	SourceAlias  string `json:"source_alias,omitempty"`
+	SourceColumn string `json:"source_column,omitempty"`
+	RawExpr      string `json:"raw_expr,omitempty"`
+	Precision    int    `json:"precision,omitempty"`
+	Scale        int    `json:"scale,omitempty"`
+}
+
+type inspectorOutput struct {
+	Tables []inspectorTableInfo `json:"tables"`
+	Views  []inspectorViewInfo  `json:"views,omitempty"`
+}
+
 var typeNameToColumnType = map[string]schema.ColumnType{
 	"uuid":       schema.UUID,
 	"string":     schema.String,
@@ -175,27 +206,27 @@ var typeNameToColumnType = map[string]schema.ColumnType{
 }
 
 // RunSchemaInspector generates a temp inspector program, compiles and runs it,
-// and returns the parsed schema tables.
-func RunSchemaInspector(project *Project) ([]*schema.Table, error) {
+// and returns the parsed schema tables and views.
+func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, error) {
 	migrationsDir := project.Layout.MigrationsDir
 	structNames, err := ScanMigrationStructs(migrationsDir)
 	if err != nil {
-		return nil, fmt.Errorf("scanning migrations: %w", err)
+		return nil, nil, fmt.Errorf("scanning migrations: %w", err)
 	}
 
 	if len(structNames) == 0 {
-		return nil, nil
-	}
-
-	var entries []MigrationEntry
-	for _, name := range structNames {
-		entries = append(entries, MigrationEntry{StructName: name})
+		return nil, nil, nil
 	}
 
 	migrationsImport := project.ModulePath + "/" + project.Layout.MigrationsRel
-	inspectorSrc, err := GenerateSchemaInspector(migrationsImport, entries)
+	var entries []MigrationEntry
+	for _, name := range structNames {
+		entries = append(entries, MigrationEntry{StructName: name, ImportPath: migrationsImport})
+	}
+
+	inspectorSrc, err := GenerateSchemaInspector(entries)
 	if err != nil {
-		return nil, fmt.Errorf("generating inspector: %w", err)
+		return nil, nil, fmt.Errorf("generating inspector: %w", err)
 	}
 
 	// Write to a temp directory inside the project so it can resolve local imports
@@ -205,24 +236,24 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, error) {
 
 	inspectorPath := filepath.Join(tmpDir, "main.go")
 	if err := os.WriteFile(inspectorPath, inspectorSrc, 0o644); err != nil {
-		return nil, fmt.Errorf("writing inspector: %w", err)
+		return nil, nil, fmt.Errorf("writing inspector: %w", err)
 	}
 
 	cmd := exec.Command("go", "run", inspectorPath, "--json")
 	cmd.Dir = project.Dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("running inspector: %w\n%s", err, output)
+		return nil, nil, fmt.Errorf("running inspector: %w\n%s", err, output)
 	}
 
-	var tableInfos []inspectorTableInfo
-	if err := json.Unmarshal(output, &tableInfos); err != nil {
-		return nil, fmt.Errorf("parsing inspector output: %w\n%s", err, output)
+	var result inspectorOutput
+	if err := json.Unmarshal(output, &result); err != nil {
+		return nil, nil, fmt.Errorf("parsing inspector output: %w\n%s", err, output)
 	}
 
 	// Convert to schema.Table
 	var tables []*schema.Table
-	for _, ti := range tableInfos {
+	for _, ti := range result.Tables {
 		t := &schema.Table{Name: ti.Name}
 		for _, ci := range ti.Columns {
 			col := &schema.Column{
@@ -245,7 +276,35 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, error) {
 		tables = append(tables, t)
 	}
 
-	return tables, nil
+	// Convert to schema.View
+	var views []*schema.View
+	for _, vi := range result.Views {
+		v := &schema.View{Name: vi.Name, GroupByCols: vi.GroupBy}
+		for _, src := range vi.Sources {
+			v.Sources = append(v.Sources, schema.ViewSource{
+				Table:         src.Table,
+				Alias:         src.Alias,
+				JoinType:      src.JoinType,
+				JoinCondition: src.JoinCondition,
+			})
+		}
+		for _, ci := range vi.Columns {
+			vc := &schema.ViewColumn{
+				SourceAlias:  ci.SourceAlias,
+				SourceColumn: ci.SourceColumn,
+				RawExpr:      ci.RawExpr,
+			}
+			vc.Name = ci.Name
+			vc.Type = typeNameToColumnType[ci.Type]
+			vc.IsNullable = ci.Nullable
+			vc.Precision = ci.Precision
+			vc.Scale = ci.Scale
+			v.Columns = append(v.Columns, vc)
+		}
+		views = append(views, v)
+	}
+
+	return tables, views, nil
 }
 
 
@@ -322,7 +381,7 @@ func Generate(project *Project, picklePkgDir string) error {
 			}
 		}
 
-		// Write driver-specific migrations into database/migrations/
+		// Write driver-specific migrations into database/migrations/ as _gen.go files
 		for _, d := range drivers {
 			if d.IsBuiltin && d.NeedsGen {
 				if err := WriteDriverMigrations(d.Name, migrationsDir, "migrations"); err != nil {
@@ -357,11 +416,11 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 
 		fmt.Println("  generating migrations/registry_gen.go")
-		migEntries, err := ScanMigrationFiles(migrationsDir)
+		localMigEntries, err := ScanMigrationFiles(migrationsDir)
 		if err != nil {
 			return fmt.Errorf("scanning migration files: %w", err)
 		}
-		registrySrc, err := GenerateRegistry("migrations", migEntries)
+		registrySrc, err := GenerateRegistry("migrations", localMigEntries)
 		if err != nil {
 			return fmt.Errorf("generating registry: %w", err)
 		}
@@ -370,12 +429,13 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 	}
 
-	// 3. Run schema inspector to get tables from migrations
+	// 3. Run schema inspector to get tables and views from migrations
 	var tables []*schema.Table
+	var views []*schema.View
 	if _, err := os.Stat(migrationsDir); err == nil {
 		fmt.Println("  inspecting schema from migrations")
 		var err error
-		tables, err = RunSchemaInspector(project)
+		tables, views, err = RunSchemaInspector(project)
 		if err != nil {
 			return fmt.Errorf("schema inspection: %w", err)
 		}
@@ -412,6 +472,44 @@ func Generate(project *Project, picklePkgDir string) error {
 					return fmt.Errorf("generating scopes for %s: %w", tbl.Name, err)
 				}
 				filename := toLowerFirst(tableToStructName(tbl.Name)) + "_query.go"
+				if err := writeFile(filepath.Join(modelsDir, filename), src); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	// 5b. Generate view models into models/
+	if len(views) > 0 {
+		for _, view := range views {
+			fmt.Printf("  generating view model: %s\n", view.Name)
+			src, err := GenerateViewModel(view, "models")
+			if err != nil {
+				return fmt.Errorf("generating view model for %s: %w", view.Name, err)
+			}
+			filename := toLowerFirst(tableToStructName(view.Name)) + ".go"
+			if err := writeFile(filepath.Join(modelsDir, filename), src); err != nil {
+				return err
+			}
+		}
+	}
+
+	// 5c. Generate view query scopes into models/
+	if len(views) > 0 {
+		scopesPath := filepath.Join(picklePkgDir, "cooked", "scopes.go")
+		if _, err := os.Stat(scopesPath); err == nil {
+			blocks, err := tickle.ParseScopeBlocks(scopesPath)
+			if err != nil {
+				return fmt.Errorf("parsing scope blocks: %w", err)
+			}
+
+			for _, view := range views {
+				fmt.Printf("  generating view queries: %s\n", view.Name)
+				src, err := GenerateViewQueryScopes(view, blocks, "models")
+				if err != nil {
+					return fmt.Errorf("generating view scopes for %s: %w", view.Name, err)
+				}
+				filename := toLowerFirst(tableToStructName(view.Name)) + "_query.go"
 				if err := writeFile(filepath.Join(modelsDir, filename), src); err != nil {
 					return err
 				}

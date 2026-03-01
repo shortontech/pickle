@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/shortontech/pickle/pkg/names"
 )
 
 // Create scaffolds a new Pickle project in targetDir with the given module name.
@@ -42,6 +44,164 @@ func Create(moduleName, targetDir string) error {
 	}
 
 	return nil
+}
+
+// MakeController scaffolds a new controller file.
+func MakeController(name, projectDir, moduleName string) (string, error) {
+	name = strings.TrimSuffix(name, "Controller")
+	structName := names.SnakeToPascal(name) + "Controller"
+	snake := names.PascalToSnake(name)
+	if strings.Contains(name, "_") {
+		snake = strings.ToLower(name)
+		structName = names.SnakeToPascal(name) + "Controller"
+	}
+	fileName := snake + "_controller.go"
+	relPath := filepath.Join("app", "http", "controllers", fileName)
+	return writeScaffold(projectDir, relPath, tmplMakeController(structName, moduleName))
+}
+
+// MakeMiddleware scaffolds a new middleware file.
+func MakeMiddleware(name, projectDir, moduleName string) (string, error) {
+	pascal := names.SnakeToPascal(name)
+	snake := names.PascalToSnake(pascal)
+	fileName := snake + ".go"
+	relPath := filepath.Join("app", "http", "middleware", fileName)
+	return writeScaffold(projectDir, relPath, tmplMakeMiddleware(pascal, moduleName))
+}
+
+// MakeRequest scaffolds a new request file.
+func MakeRequest(name, projectDir, moduleName string) (string, error) {
+	name = strings.TrimSuffix(name, "Request")
+	pascal := names.SnakeToPascal(name)
+	snake := names.PascalToSnake(pascal)
+	if strings.Contains(name, "_") {
+		snake = strings.ToLower(name)
+		pascal = names.SnakeToPascal(name)
+	}
+	fileName := snake + ".go"
+	relPath := filepath.Join("app", "http", "requests", fileName)
+	return writeScaffold(projectDir, relPath, tmplMakeRequest(pascal+"Request"))
+}
+
+// MakeMigration scaffolds a new migration file.
+func MakeMigration(name, projectDir string) (string, error) {
+	snake := names.PascalToSnake(name)
+	if strings.Contains(name, "_") {
+		snake = strings.ToLower(name)
+	}
+	ts := time.Now().Format("2006_01_02_150405")
+	structName := names.SnakeToPascal(snake) + "_" + ts
+	fileName := ts + "_" + snake + ".go"
+	relPath := filepath.Join("database", "migrations", fileName)
+
+	// Infer table name from description like "create_posts_table" → "posts"
+	tableName := inferTableName(snake)
+
+	return writeScaffold(projectDir, relPath, tmplMakeMigration(structName, tableName))
+}
+
+func writeScaffold(projectDir, relPath, content string) (string, error) {
+	absPath := filepath.Join(projectDir, relPath)
+	if _, err := os.Stat(absPath); err == nil {
+		return "", fmt.Errorf("%s already exists", relPath)
+	}
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		return "", fmt.Errorf("creating directory: %w", err)
+	}
+	if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
+		return "", err
+	}
+	return relPath, nil
+}
+
+func inferTableName(snake string) string {
+	// create_posts_table → posts, add_index_to_users → users
+	s := strings.TrimPrefix(snake, "create_")
+	s = strings.TrimSuffix(s, "_table")
+	if s != snake {
+		return s
+	}
+	// Fallback: use the last word pluralized
+	parts := strings.Split(snake, "_")
+	return parts[len(parts)-1]
+}
+
+func tmplMakeController(structName, moduleName string) string {
+	return r(`package controllers
+
+import pickle "{{.ModuleName}}/app/http"
+
+type `+structName+` struct {
+	pickle.Controller
+}
+
+func (c `+structName+`) Index(ctx *pickle.Context) pickle.Response {
+	// TODO: list resources
+	return ctx.JSON(200, map[string]string{"status": "ok"})
+}
+
+func (c `+structName+`) Show(ctx *pickle.Context) pickle.Response {
+	// TODO: show resource by ctx.Param("id")
+	return ctx.JSON(200, nil)
+}
+
+func (c `+structName+`) Store(ctx *pickle.Context) pickle.Response {
+	// TODO: create resource
+	return ctx.JSON(201, nil)
+}
+
+func (c `+structName+`) Update(ctx *pickle.Context) pickle.Response {
+	// TODO: update resource
+	return ctx.JSON(200, nil)
+}
+
+func (c `+structName+`) Destroy(ctx *pickle.Context) pickle.Response {
+	// TODO: delete resource
+	return ctx.NoContent()
+}
+`, moduleName)
+}
+
+func tmplMakeMiddleware(funcName, moduleName string) string {
+	return r(`package middleware
+
+import pickle "{{.ModuleName}}/app/http"
+
+func `+funcName+`(ctx *pickle.Context, next func() pickle.Response) pickle.Response {
+	// TODO: implement middleware logic
+	return next()
+}
+`, moduleName)
+}
+
+func tmplMakeRequest(structName string) string {
+	return `package requests
+
+type ` + structName + ` struct {
+	// Example:
+	// Name string ` + "`" + `json:"name" validate:"required"` + "`" + `
+}
+`
+}
+
+func tmplMakeMigration(structName, tableName string) string {
+	return fmt.Sprintf(`package migrations
+
+type %s struct {
+	Migration
+}
+
+func (m *%s) Up() {
+	m.CreateTable("%s", func(t *Table) {
+		t.UUID("id").PrimaryKey().Default("gen_random_uuid()")
+		t.Timestamps()
+	})
+}
+
+func (m *%s) Down() {
+	m.DropTableIfExists("%s")
+}
+`, structName, structName, tableName, structName, tableName)
 }
 
 func r(tmpl, moduleName string) string {

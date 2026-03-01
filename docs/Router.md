@@ -20,11 +20,11 @@ var API = pickle.Routes(func(r *pickle.Router) {
     r.Group("/api", func(r *pickle.Router) {
         r.Post("/login", controllers.AuthController{}.Login)
 
-        r.Group("/users", middleware.Auth, func(r *pickle.Router) {
+        r.Group("/users", func(r *pickle.Router) {
             r.Get("/", controllers.UserController{}.Index)
             r.Get("/:id", controllers.UserController{}.Show)
             r.Post("/", controllers.UserController{}.Store)
-        })
+        }, middleware.Auth)
     })
 })
 ```
@@ -54,13 +54,13 @@ Internally, `:id` is converted to Go 1.22+ `{id}` patterns.
 
 ## Groups
 
-Groups share a path prefix and middleware. The last `func(*Router)` argument is the group body; all arguments before it are middleware:
+Groups share a path prefix and middleware. The body function comes second; middleware follows as variadic arguments:
 
 ```go
-r.Group("/admin", middleware.Auth, middleware.RequireRole("admin"), func(r *pickle.Router) {
+r.Group("/admin", func(r *pickle.Router) {
     r.Get("/dashboard", controllers.AdminController{}.Dashboard)
     r.Get("/users", controllers.AdminController{}.Users)
-})
+}, middleware.Auth, middleware.RequireRole("admin"))
 ```
 
 Groups nest. Middleware cascades from outer to inner groups.
@@ -116,7 +116,7 @@ routes.API.ListenAndServe(":8080")
 |--------|-------------|
 | `Routes(fn)` | Create a new Router via a configuration function |
 | `Get/Post/Put/Patch/Delete(path, handler, ...mw)` | Register a route |
-| `Group(prefix, ...mw, fn)` | Create a sub-router with shared prefix and middleware |
+| `Group(prefix, fn, ...mw)` | Create a sub-router with shared prefix and middleware |
 | `Resource(prefix, controller, ...mw)` | Register CRUD routes for a ResourceController |
 | `AllRoutes()` | Return flattened list of all routes with resolved prefixes/middleware |
 | `RegisterRoutes(mux)` | Wire all routes onto an `*http.ServeMux` |

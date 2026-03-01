@@ -147,9 +147,9 @@ var API = pickle.Routes(func(r *pickle.Router) {
     r.Group("/api", func(r *pickle.Router) {
         r.Get("/posts", controllers.PostController{}.Index)
 
-        r.Group("/posts", middleware.Auth, func(r *pickle.Router) {
+        r.Group("/posts", func(r *pickle.Router) {
             r.Post("/", controllers.PostController{}.Store)
-        })
+        }, middleware.Auth)
     })
 })
 ```

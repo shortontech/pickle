@@ -63,9 +63,9 @@ func RequestTimer(ctx *pickle.Context, next func() pickle.Response) pickle.Respo
 **To a group** — all routes in the group inherit it:
 
 ```go
-r.Group("/admin", middleware.Auth, middleware.RequireRole("admin"), func(r *pickle.Router) {
+r.Group("/admin", func(r *pickle.Router) {
     r.Get("/dashboard", controllers.AdminController{}.Dashboard)
-})
+}, middleware.Auth, middleware.RequireRole("admin"))
 ```
 
 **To a single route:**

@@ -26,12 +26,12 @@ func TestRoutesGroup(t *testing.T) {
 	mw := MiddlewareFunc(func(ctx *Context, next func() Response) Response { return next() })
 
 	r := Routes(func(r *Router) {
-		r.Group("/api", mw, func(r *Router) {
+		r.Group("/api", func(r *Router) {
 			r.Get("/users", noop)
 			r.Group("/admin", func(r *Router) {
 				r.Delete("/users/:id", noop)
 			})
-		})
+		}, mw)
 	})
 
 	routes := r.AllRoutes()
@@ -57,9 +57,9 @@ func TestRoutesPerRouteMiddleware(t *testing.T) {
 	mw2 := MiddlewareFunc(func(ctx *Context, next func() Response) Response { return next() })
 
 	r := Routes(func(r *Router) {
-		r.Group("/api", mw1, func(r *Router) {
+		r.Group("/api", func(r *Router) {
 			r.Post("/transfers", noop, mw2)
-		})
+		}, mw1)
 	})
 
 	routes := r.AllRoutes()

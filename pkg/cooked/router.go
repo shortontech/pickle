@@ -70,22 +70,9 @@ func (r *Router) Delete(path string, handler HandlerFunc, mw ...MiddlewareFunc) 
 }
 
 // Group creates a sub-router with a shared prefix and optional middleware.
-// The last func(*Router) argument is the group body; all other arguments
-// before it are treated as MiddlewareFunc.
-func (r *Router) Group(prefix string, args ...any) {
-	g := &Router{prefix: prefix}
-
-	for _, arg := range args {
-		switch v := arg.(type) {
-		case MiddlewareFunc:
-			g.middleware = append(g.middleware, v)
-		case func(*Context, func() Response) Response:
-			g.middleware = append(g.middleware, v)
-		case func(r *Router):
-			v(g)
-		}
-	}
-
+func (r *Router) Group(prefix string, body func(*Router), mw ...MiddlewareFunc) {
+	g := &Router{prefix: prefix, middleware: mw}
+	body(g)
 	r.groups = append(r.groups, g)
 }
 

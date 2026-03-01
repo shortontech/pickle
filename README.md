@@ -1,41 +1,113 @@
 # Pickle 🥒
 
-**Laravel's developer experience. Go's deployment story. Security by construction.**
+**Minimal context. Maximum security. Ship a Go binary.**
 
-Pickle is a code generation framework for Go. You write controllers, migrations, request classes, and middleware using a Laravel-inspired syntax. Pickle watches your project and generates all the boilerplate — models, route bindings, query scopes, handler wiring, request deserialization — as plain, idiomatic Go. The output compiles to a single static binary with no runtime dependency on Pickle.
+Pickle is a code generation framework for Go that makes secure applications trivial to build — for humans and AI alike. You write controllers, migrations, request classes, and middleware using a Laravel-inspired syntax. Pickle generates plain, idiomatic Go. The output compiles to a single static binary with no runtime dependency on Pickle.
+
+Using Anthropic's cheapest model (Haiku) and Pickle's MCP server, I built a working app with zero vulnerabilities in under 5 minutes. Not a demo. Not a toy. Production-grade code with parameterized queries, request validation, ownership scoping, and middleware enforcement — all generated from a handful of intent files.
+
+That's not a speed trick. That's context management.
+
+### Why Pickle Exists
+
+Code reviews are fifteen files deep, full of hard-to-detect security vulnerabilities and duplicated features. Go makes this worse, not better. Go libraries are built to be flexible rather than opinionated — which means there's no way to do a sniff test. No conventions to check against. No structure that tells you something is wrong just by looking at it.
+
+Pickle fixes this by reducing the code you actually write — and review — to pure intent. A functioning app is ~2,000 tokens of source. Even with a large feature set, a Pickle project has far less code than the same thing built with existing Go libraries. And because Pickle is opinionated, every file follows the same conventions. You can sniff-test a PR in seconds.
 
 ```
 You write controllers.     Pickle generates models.
 You write migrations.      Pickle generates query builders.
 You write request classes.  Pickle generates validation + deserialization.
-You write routes.go.       Pickle generates handler registration.
+You write routes.go.       Pickle wires it all together.
 ```
 
-The generated code is readable, debuggable, and `grep` friendly. It's not magical. It's just code you didn't have to type.
+The generated code is readable, debuggable, and `grep`-friendly. It's not magic. It's just code you didn't have to type.
 
-### Why Pickle Exists
+### Context Management, Not Just Code Generation
 
-Go makes you write 200 lines to do what Laravel does in 3. The GoLang community thinks this is a feature. I think it's a security nightmare not. It's boilerplate, and boilerplate is where bugs and exploits hide.
+Pickle isn't opinionated for the sake of it. Every convention serves two audiences: the developer who needs to ship, and the AI model that needs to help.
 
-Pickle takes the position that if code can be generated from your intent, it should be. You keep the control. You lose the tedium.
+**Migrations are the single source of truth.** You write the schema once. Pickle derives models, query builders, typed scopes, and struct tags from it. There's exactly one place to look for what a table contains.
 
-### Security by Design, Not by Discipline
+**Controllers are pure intent.** No boilerplate to read past. A 20-line controller is 20 lines of business logic. An AI model doesn't need to parse framework wiring to understand what your endpoint does.
 
-Most frameworks treat security as a best practice.
+**Routes are one file.** Open `routes/web.go` and see every endpoint, its middleware stack, and its grouping. One file, entire API surface. For a human, that's a 30-second security review. For a model, that's a few hundred tokens.
 
-Pickle treats it as a structural property.
+**Request classes are self-documenting contracts.** Struct fields + validation tags = the complete API contract. No documentation drift. No guessing what a request accepts.
 
-**SQL injection is impossible.** The generated query builder uses parameterized queries exclusively. There is no API for string interpolation. No developer discipline required — the unsafe path doesn't exist.
+### MCP Server: AI Discovers Your Constraints
+
+Pickle ships an MCP server that gives AI models queryable access to your project's structure — without dumping source files into context.
+
+```
+pickle schema:show transfers    → exact table structure, no reading migrations
+pickle routes:list              → every endpoint, middleware, request class
+pickle requests:list            → all validation rules at a glance
+pickle make:controller          → scaffold via tooling, not by writing boilerplate
+```
+
+The model doesn't read your code. It queries your constraints. It discovers what fields exist, what's validated, what middleware protects each route, what relationships are defined — all through structured tool calls. The result: even lightweight models produce code that respects your schema, validation rules, and security boundaries.
+
+This is why Pickle can do in 5 minutes what takes other frameworks hours. It's not faster typing. It's less context required to make correct decisions.
+
+### Security by Construction: Wrap It Before They Hack It
+
+Most frameworks treat security as a best practice. Pickle treats it as a structural property.
+
+A properly wrapped pickle:
+
+```
+Request → RateLimit → CORS → Auth → RBAC → Validation → Controller
+```
+
+An unwrapped pickle (DO NOT DO THIS):
+
+```
+Request → Controller
+```
+
+> Never deploy an unwrapped pickle. An unwrapped pickle exposed to the open internet is a liability.
+
+**SQL injection is impossible.** The generated query builder uses parameterized queries exclusively. There is no API for string interpolation. The unsafe path doesn't exist.
 
 **Mass assignment is impossible.** Request structs define exactly which fields are accepted. If `CreateUserRequest` doesn't have a `Role` field, POSTing `{"role": "admin"}` does nothing. The model never sees unvalidated input.
 
 **Validation cannot be bypassed.** Controllers receive pre-validated, typed request structs. The generated binding layer runs validation before your code executes. There is no code path around it.
 
-**Authorization gaps are visible.** Every endpoint, its middleware stack, and its grouping are defined in a single `routes.go` file. A missing `Auth` or `RequireRole` middleware is immediately obvious. Security review is a 30-second read, not a codebase-wide audit.
+**Authorization gaps are visible.** Every endpoint and its middleware stack are in `routes.go`. A missing `Auth` or `RequireRole` is immediately obvious — to you and to any AI reviewing your code.
 
-**Standard security tooling works out of the box.** Generated code is plain Go — `go vet`, `gosec`, `staticcheck`, Snyk, and Semgrep work with zero configuration. No framework abstractions to unwrap, no `interface{}` soup, no runtime reflection. Security scanners see exactly what runs in production.
+**Standard security tooling works out of the box.** Generated code is plain Go — `go vet`, `gosec`, `staticcheck`, Snyk, and Semgrep work with zero configuration. No framework abstractions to unwrap. Security scanners see exactly what runs in production.
 
-This is the main advantage of code generation over using runtime frameworks. A scanner can't reason about magic method resolution or custom middleware abstractions. It can reason about a struct, a function, and a parameterized query — because that's just Go.
+This is the advantage of code generation over runtime frameworks. A scanner can't reason about magic method resolution. It can reason about a struct, a function, and a parameterized query — because that's just Go.
+
+### Squeeze: Make Sure Nothing's Oozing
+
+`pickle squeeze` validates your entire project in one command — schema integrity, model correctness, route wiring, request validation, and middleware enforcement.
+
+```bash
+pickle squeeze              # Run full validation
+pickle squeeze --hard       # Strict mode: warnings become failures
+```
+
+```
+🥒 Squeezing your pickle...
+   Schemas:    ✅ 12 migrations (forward + rollback)
+   Models:     ✅ 8 models in sync
+   Routes:     ✅ 23 endpoints wired
+   Requests:   ✅ 14 request classes validated
+   Middleware:  ✅ 6 middleware chains verified
+🥒 Your pickle is crunchy.
+```
+
+If a migration adds a column the model doesn't reflect — your pickle is oozing. If a route references a missing controller method — oozing. If a protected endpoint is missing auth middleware — definitely oozing. If a request struct allows an undeclared field — something is very wrong with your pickle.
+
+No pickle ships without being squeezed first. That's just good hygiene.
+
+```yaml
+# .github/workflows/squeeze.yml
+- name: Squeeze the pickle
+  run: pickle squeeze --hard
+```
 
 ---
 
@@ -61,116 +133,17 @@ See the [Getting Started guide](docs/GettingStarted.md) to create your first Pic
 | [Commands](docs/Commands.md) | CLI commands reference |
 | [Tickle](docs/Tickle.md) | The preprocessor pipeline |
 
-## Middleware Stack
+## The Stack
 
-**Authentication:** "Wrap It Before They Hack It"
-
-### Wrap it before they hack it.
-
-Pickle middleware forms a protective layer around your 
-application. Each middleware wraps the next, creating 
-a thick, secure barrier between the internet and your 
-business logic.
-
-## A properly wrapped Pickle
-
-Request → RateLimit → CORS → Auth → RBAC → Validation → Controller
-
-An unwrapped pickle (DO NOT DO THIS):
-
-Request → Controller
-
-> ⚠️ **WARNING:** Never deploy an unwrapped pickle. An unwrapped 
-> Pickle exposed to the open internet is a liability.
-
-## Database (What's Inside Your Pickle):
-
-
-## Deployment (Putting Your Pickle In Production):
-
-
-## Scaling (Your Pickle Grows As You Scale):
-
-
-## Monitoring (Keeping An Eye On Your Pickle):
-
-
-## Testing (Poking Your Pickle):
-
-It's not complicated.
-
-Compile → Tickle → Compile → Squeeze → Pickle.
-
-* **Compile the tickler** — a generator for generating generators used within Pickle, so that pickle's generators are plain idiomatic .go files.
-* **Tickle your pickle** — this processes the idiomatic Go to store as templates in .go files.
-* **Then you compile your pickle.**
-* **Squeeze your pickle** — run the test suite. Make sure nothing's oozing.
-* **Whip out your pickle** — pickle one of our test apps.
-
-It's so easy. Anyone can play with their pickle.
-
-### Squeeze: Automated Testing 🥒
-
-`pickle squeeze` is Pickle's built-in test runner. It validates your entire project — generated code, migrations, route wiring, request validation — in one command.
-
-```bash
-pickle squeeze              # Run full test suite
-pickle squeeze --hard       # Strict mode: warnings become failures
-pickle squeeze --dry        # Dry run: show what would be tested without executing
-pickle squeeze --only=routes # Target a specific layer
+```
+Migrations → Models → Query Builders → Controllers → Routes
+     ↑ single source of truth              ↑ pure intent
 ```
 
-#### What Gets Squeezed
+Everything flows from migrations. Everything is queryable via MCP. Everything is verifiable via squeeze. The generated output is plain Go with zero dependency on Pickle.
 
-**Schema integrity** — Every migration is parsed forward and backward. If your `Up()` creates something your `Down()` doesn't clean up, the squeezer catches it. Migrations are tested in sequence *and* in reverse to verify rollback safety.
-
-**Model correctness** — Generated models are diffed against their source migrations. If a migration adds a column and the model doesn't reflect it, your pickle is oozing. If struct tags don't match column types, your pickle is oozing.
-
-**Route completeness** — Every controller method referenced in `routes.go` must exist. Every request class referenced in a controller must exist. Every middleware referenced in a route group must exist. Dead references are oozing. Unreachable handlers are oozing.
-
-**Request validation** — Squeeze generates mock requests for each endpoint: valid payloads that should pass, malformed payloads that should fail, and boundary payloads that test edge cases. If a request with `{"role": "admin"}` gets through a struct that doesn't define `Role`, something is very wrong with your pickle.
-
-**Middleware chain verification** — Protected routes are tested without auth tokens to verify they actually reject. RBAC routes are tested with wrong roles. Rate limit middleware is tested with burst traffic. If any middleware is a no-op, the squeezer finds it.
-
-#### Squeeze Output
-
-A healthy pickle:
-```
-🥒 Squeezing your pickle...
-   Schemas:    ✅ 12 migrations (forward + rollback)
-   Models:     ✅ 8 models in sync
-   Routes:     ✅ 23 endpoints wired
-   Requests:   ✅ 14 request classes validated
-   Middleware:  ✅ 6 middleware chains verified
-🥒 Your pickle is crunchy.
-```
-
-A problematic pickle:
-```
-🥒 Squeezing your pickle...
-   Schemas:    ✅ 12 migrations
-   Models:     ❌ Transfer model missing 'currency' field
-   Routes:     ⚠️  UserController.Destroy referenced but not implemented
-   Requests:   ❌ CreateTransferRequest allows undeclared field 'processor_id'
-   Middleware:  ❌ POST /api/transfers missing Auth middleware
-⚠️  Your pickle is oozing. Check squeeze logs.
-```
-
-#### CI/CD
-
-Always squeeze before you ship.
-
-```yaml
-# .github/workflows/squeeze.yml
-- name: Squeeze the pickle
-  run: pickle squeeze --hard
-```
-
-No pickle gets deployed without being squeezed first. That's just good hygiene.
-
-
-## Contributing (Pickle Enhancement):
-
-## Core rules.
+## Contributing
 
 I don't want anything the user apps do to expose their pickle. That's public indecency.
+
+**Laravel DX. Go binary. No runtime. 🥒**

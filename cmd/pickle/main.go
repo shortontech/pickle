@@ -12,6 +12,7 @@ import (
 	"github.com/shortontech/pickle/pkg/generator"
 	picklemcp "github.com/shortontech/pickle/pkg/mcp"
 	"github.com/shortontech/pickle/pkg/scaffold"
+	"github.com/shortontech/pickle/pkg/squeeze"
 	"github.com/shortontech/pickle/pkg/watcher"
 )
 
@@ -46,6 +47,8 @@ func main() {
 		cmdMakeRequest()
 	case "make:middleware":
 		cmdMakeMiddleware()
+	case "squeeze":
+		cmdSqueeze()
 	case "--help", "-h", "help":
 		usage()
 	case "--version", "-v", "version":
@@ -74,6 +77,7 @@ Commands:
   make:migration    Scaffold a new migration
   make:request      Scaffold a new request class
   make:middleware    Scaffold a new middleware
+  squeeze            Run static analysis on your Pickle project
 
 Options:
   --project <dir>   Project directory (default: current directory)
@@ -395,6 +399,53 @@ func cmdMakeMiddleware() {
 		os.Exit(1)
 	}
 	fmt.Printf("  created %s\n", relPath)
+}
+
+func cmdSqueeze() {
+	projectDir := "."
+	args := os.Args[2:]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--project" && i+1 < len(args) {
+			projectDir = args[i+1]
+			i++
+		}
+	}
+
+	fmt.Printf("pickle squeeze: %s\n", projectDir)
+	findings, err := squeeze.Run(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(findings) == 0 {
+		fmt.Println("\n  \033[32m✓ No findings\033[0m")
+		return
+	}
+
+	// Print findings grouped by file
+	currentFile := ""
+	errors, warnings := 0, 0
+	for _, f := range findings {
+		if f.File != currentFile {
+			currentFile = f.File
+			fmt.Printf("\n  %s\n", currentFile)
+		}
+
+		color := "\033[33m" // yellow for warning
+		if f.Severity == squeeze.SeverityError {
+			color = "\033[31m" // red for error
+			errors++
+		} else {
+			warnings++
+		}
+		fmt.Printf("    %sline %d\033[0m [%s] %s\n", color, f.Line, f.Rule, f.Message)
+	}
+
+	fmt.Printf("\n  %d error(s), %d warning(s)\n", errors, warnings)
+	if errors > 0 {
+		os.Exit(1)
+	}
 }
 
 // findPicklePkgDir locates the pkg/ directory of the pickle installation.

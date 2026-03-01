@@ -14,6 +14,7 @@ import (
 	"github.com/shortontech/pickle/pkg/generator"
 	"github.com/shortontech/pickle/pkg/scaffold"
 	"github.com/shortontech/pickle/pkg/schema"
+	"github.com/shortontech/pickle/pkg/squeeze"
 )
 
 // Server wraps the MCP server with Pickle project context.
@@ -115,6 +116,11 @@ func (s *Server) registerTools() {
 		Name:        "project_create",
 		Description: "Create a new Pickle project. Scaffolds the full directory structure, generates code, and runs go mod tidy. The name is used as both the directory name and Go module path.",
 	}, s.projectCreate)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "squeeze",
+		Description: "Run static analysis on the project. Returns security and correctness findings that generic linters miss: ownership scoping, enum validation, UUID error handling, public projections, required fields, and printf usage in controllers.",
+	}, s.squeeze)
 }
 
 type tableInput struct {
@@ -368,6 +374,30 @@ func findPicklePkgDir() string {
 		}
 	}
 	return ""
+}
+
+func (s *Server) squeeze(_ context.Context, _ *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+	findings, err := squeeze.Run(s.project.Dir)
+	if err != nil {
+		return errResult("squeeze failed: " + err.Error()), nil, nil
+	}
+
+	if len(findings) == 0 {
+		return textResult("No findings."), nil, nil
+	}
+
+	var b strings.Builder
+	errors, warnings := 0, 0
+	for _, f := range findings {
+		if f.Severity == squeeze.SeverityError {
+			errors++
+		} else {
+			warnings++
+		}
+		fmt.Fprintf(&b, "%s\n", f)
+	}
+	fmt.Fprintf(&b, "\n%d error(s), %d warning(s)\n", errors, warnings)
+	return textResult(b.String()), nil, nil
 }
 
 // --- formatting helpers ---

@@ -1,0 +1,11 @@
+squeeze:
+  middleware:
+    auth: [Auth]
+    admin: [RequireRole]
+  rules:
+    no_printf: true
+    ownership_scoping: true
+    enum_validation: true
+    uuid_error_handling: true
+    public_projection: true
+    required_fields: true

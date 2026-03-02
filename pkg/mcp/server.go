@@ -388,7 +388,7 @@ func (s *Server) squeeze(_ context.Context, _ *mcp.CallToolRequest, _ any) (*mcp
 	}
 
 	if len(findings) == 0 {
-		return textResult("No findings."), nil, nil
+		return textResult("Your pickle is crunchy. No findings."), nil, nil
 	}
 
 	var b strings.Builder
@@ -401,7 +401,7 @@ func (s *Server) squeeze(_ context.Context, _ *mcp.CallToolRequest, _ any) (*mcp
 		}
 		fmt.Fprintf(&b, "%s\n", f)
 	}
-	fmt.Fprintf(&b, "\n%d error(s), %d warning(s)\n", errors, warnings)
+	fmt.Fprintf(&b, "\nYour pickle is oozing. %d error(s), %d warning(s)\n", errors, warnings)
 	return textResult(b.String()), nil, nil
 }
 

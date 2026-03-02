@@ -421,7 +421,7 @@ func cmdSqueeze() {
 		}
 	}
 
-	fmt.Printf("pickle squeeze: %s\n", projectDir)
+	fmt.Println("\n🥒 Squeezing your pickle...")
 	findings, err := squeeze.Run(projectDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
@@ -429,7 +429,7 @@ func cmdSqueeze() {
 	}
 
 	if len(findings) == 0 {
-		fmt.Println("\n  \033[32m✓ No findings\033[0m")
+		fmt.Println("🥒 Your pickle is crunchy.")
 		return
 	}
 
@@ -452,7 +452,7 @@ func cmdSqueeze() {
 		fmt.Printf("    %sline %d\033[0m [%s] %s\n", color, f.Line, f.Rule, f.Message)
 	}
 
-	fmt.Printf("\n  %d error(s), %d warning(s)\n", errors, warnings)
+	fmt.Printf("\n🥒 Your pickle is oozing. %d error(s), %d warning(s)\n", errors, warnings)
 	if errors > 0 {
 		os.Exit(1)
 	}

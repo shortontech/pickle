@@ -69,6 +69,13 @@ user, err := models.QueryUser().
     First()
 ```
 
+If the endpoint intentionally allows access to any user's data (e.g., an admin panel), call `.AnyOwner()` to signal the opt-out:
+
+```go
+// Explicit: this endpoint serves all resources regardless of owner
+posts, err := models.QueryPost().AnyOwner().WhereStatus("published").All()
+```
+
 ### read_scoping
 
 **Severity:** warning
@@ -91,7 +98,14 @@ posts, err := models.QueryPost().
     All()
 ```
 
-This is a warning (not an error) because some read endpoints intentionally serve data to any authenticated user — e.g., a user directory. Suppress with `read_scoping: false` in `pickle.yaml` if your design requires it.
+This is a warning (not an error) because some read endpoints intentionally serve data to any authenticated user — e.g., a user directory. To suppress the warning for a specific query, call `.AnyOwner()`:
+
+```go
+// User directory — intentionally shows all users
+users, err := models.QueryUser().AnyOwner().All()
+```
+
+You can also disable the rule globally with `read_scoping: false` in `pickle.yaml`.
 
 ### public_projection
 
@@ -116,11 +130,11 @@ return ctx.JSON(200, models.PublicUsers(users))
 
 ### unbounded_query
 
-**Severity:** error
+**Severity:** error (unauthenticated), warning (authenticated)
 
-**What it catches:** Unauthenticated routes that call `.All()` without `.Limit()`. Without a limit, anyone on the internet can dump your entire table in one request — a denial-of-service vector.
+**What it catches:** Routes that call `.All()` without `.Limit()`. On unauthenticated routes, anyone on the internet can dump your entire table in one request — a denial-of-service vector. On authenticated routes, a single request can still return megabytes of data.
 
-**How to fix:** Add `.Limit()` or `.Paginate()` to any query on a public route:
+**How to fix:** Add `.Limit()` or `.Paginate()` to any query that calls `.All()`:
 
 ```go
 // BEFORE — returns every row in the table

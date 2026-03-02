@@ -202,9 +202,10 @@ func (c *Context) NoContent() Response {
 
 // Error returns a 500 Internal Server Error response.
 func (c *Context) Error(err error) Response {
+	log.Printf("internal error: %v", err)
 	return Response{
 		StatusCode: http.StatusInternalServerError,
-		Body:       map[string]string{"error": err.Error()},
+		Body:       map[string]string{"error": "internal server error"},
 		Headers:    map[string]string{"Content-Type": "application/json"},
 	}
 }

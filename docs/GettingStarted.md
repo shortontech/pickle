@@ -207,6 +207,18 @@ DB_USERNAME=postgres
 DB_PASSWORD=secret
 ```
 
+## Squeeze your pickle
+
+Run `pickle squeeze` to check your project for security vulnerabilities. Squeeze understands Pickle's framework semantics — routes, middleware stacks, migrations, request validation — and catches issues that generic Go linters can't see:
+
+```bash
+pickle squeeze
+```
+
+This catches IDOR vulnerabilities, missing rate limiting on auth endpoints, unbounded public queries, sensitive field leakage, unsafe UUID parsing, and more. See the **Squeeze** documentation for the full rule list and how to fix each finding.
+
+Run squeeze as part of your CI pipeline. A project that doesn't squeeze doesn't know if it's secure.
+
 ## The exit route
 
 If you stop using Pickle, everything still works. The generated code is plain Go with zero dependency on Pickle. Delete the `pickle` binary, stop running the generator, and your project compiles exactly as before. Edit the generated files directly if you want — they're yours now.

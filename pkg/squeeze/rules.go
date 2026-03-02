@@ -25,10 +25,13 @@ func AllRules() map[string]Rule {
 	return map[string]Rule{
 		"no_printf":           ruleNoPrintf,
 		"ownership_scoping":   ruleOwnershipScoping,
+		"read_scoping":        ruleReadScoping,
 		"enum_validation":     ruleEnumValidation,
 		"uuid_error_handling": ruleUUIDErrorHandling,
 		"public_projection":   rulePublicProjection,
 		"required_fields":     ruleRequiredFields,
+		"unbounded_query":     ruleUnboundedQuery,
+		"rate_limit_auth":     ruleRateLimitAuth,
 	}
 }
 
@@ -293,6 +296,160 @@ func ruleRequiredFields(ctx *AnalysisContext) []Finding {
 				}
 			}
 		}
+	}
+
+	return findings
+}
+
+// ruleReadScoping flags GET routes behind auth that query models without scoping by the authenticated user.
+func ruleReadScoping(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+
+	for _, route := range ctx.Routes {
+		if route.Method != "GET" {
+			continue
+		}
+
+		// Admin routes are exempt
+		if route.HasAdminMiddleware(ctx.Config.Middleware) {
+			continue
+		}
+
+		// Must have auth middleware — unauth reads are a different concern
+		if !route.HasAuthMiddleware(ctx.Config.Middleware) {
+			continue
+		}
+
+		key := route.ControllerType + "." + route.MethodName
+		method, ok := ctx.Methods[key]
+		if !ok {
+			continue
+		}
+
+		chains := ExtractCallChains(method.Body, method.Fset)
+		authVars := FindAuthTaintedVars(method.Body)
+
+		hasOwnershipScope := false
+		for _, chain := range chains {
+			chainNames := chain.Names()
+			isQueryChain := false
+			for _, name := range chainNames {
+				if strings.HasPrefix(name, "Query") {
+					isQueryChain = true
+					break
+				}
+			}
+			if !isQueryChain {
+				continue
+			}
+
+			if chain.HasSegmentWithAuthArgTainted("Where", authVars) {
+				hasOwnershipScope = true
+				break
+			}
+		}
+
+		if !hasOwnershipScope {
+			findings = append(findings, Finding{
+				Rule:     "read_scoping",
+				Severity: SeverityWarning,
+				File:     method.File,
+				Line:     method.Line,
+				Message:  route.Method + " " + route.Path + " — authenticated read does not scope by user (possible IDOR)",
+			})
+		}
+	}
+
+	return findings
+}
+
+// ruleUnboundedQuery flags unauthenticated routes that call .All() without .Limit().
+func ruleUnboundedQuery(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+
+	for _, route := range ctx.Routes {
+		// Only check unauthenticated routes — authenticated routes are lower risk
+		if route.HasAuthMiddleware(ctx.Config.Middleware) {
+			continue
+		}
+
+		key := route.ControllerType + "." + route.MethodName
+		method, ok := ctx.Methods[key]
+		if !ok {
+			continue
+		}
+
+		chains := ExtractCallChains(method.Body, method.Fset)
+
+		for _, chain := range chains {
+			chainNames := chain.Names()
+
+			isQueryChain := false
+			hasAll := false
+			hasLimit := false
+			for _, name := range chainNames {
+				if strings.HasPrefix(name, "Query") {
+					isQueryChain = true
+				}
+				if name == "All" {
+					hasAll = true
+				}
+				if name == "Limit" || name == "Paginate" {
+					hasLimit = true
+				}
+			}
+
+			if isQueryChain && hasAll && !hasLimit {
+				findings = append(findings, Finding{
+					Rule:     "unbounded_query",
+					Severity: SeverityError,
+					File:     method.File,
+					Line:     method.Line,
+					Message:  route.Method + " " + route.Path + " — unauthenticated route calls .All() without .Limit() (DoS vector)",
+				})
+			}
+		}
+	}
+
+	return findings
+}
+
+// authMethodNames are controller method names that handle credential-based authentication.
+var authMethodNames = map[string]bool{
+	"Login":    true,
+	"Register": true,
+	"Store":    true, // on AuthController — registration
+}
+
+// ruleRateLimitAuth flags authentication routes (login, register) that lack rate limiting middleware.
+func ruleRateLimitAuth(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+
+	for _, route := range ctx.Routes {
+		if route.Method != "POST" {
+			continue
+		}
+
+		// Only check auth-related controllers
+		if !strings.Contains(route.ControllerType, "Auth") {
+			continue
+		}
+
+		if !authMethodNames[route.MethodName] {
+			continue
+		}
+
+		if route.HasRateLimitMiddleware(ctx.Config.Middleware) {
+			continue
+		}
+
+		findings = append(findings, Finding{
+			Rule:     "rate_limit_auth",
+			Severity: SeverityError,
+			File:     route.File,
+			Line:     route.Line,
+			Message:  route.Method + " " + route.Path + " — auth endpoint without rate limiting (brute force vector)",
+		})
 	}
 
 	return findings

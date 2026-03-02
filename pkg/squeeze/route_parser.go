@@ -40,6 +40,16 @@ func (r AnalyzedRoute) HasAdminMiddleware(mc MiddlewareConfig) bool {
 	return false
 }
 
+// HasRateLimitMiddleware returns true if any middleware on this route is classified as rate limiting.
+func (r AnalyzedRoute) HasRateLimitMiddleware(mc MiddlewareConfig) bool {
+	for _, mw := range r.Middleware {
+		if mc.IsRateLimitMiddleware(mw) {
+			return true
+		}
+	}
+	return false
+}
+
 var httpMethods = map[string]string{
 	"Get":    "GET",
 	"Post":   "POST",

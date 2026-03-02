@@ -20,8 +20,9 @@ type SqueezeConfig struct {
 
 // MiddlewareConfig classifies middleware by role.
 type MiddlewareConfig struct {
-	Auth  []string `yaml:"auth"`  // middleware that provides authentication
-	Admin []string `yaml:"admin"` // middleware that provides admin access (implies auth)
+	Auth      []string `yaml:"auth"`       // middleware that provides authentication
+	Admin     []string `yaml:"admin"`      // middleware that provides admin access (implies auth)
+	RateLimit []string `yaml:"rate_limit"` // middleware that provides rate limiting
 }
 
 // IsAuthMiddleware returns true if the given middleware name is classified as auth.
@@ -43,6 +44,16 @@ func (mc MiddlewareConfig) IsAuthMiddleware(name string) bool {
 // IsAdminMiddleware returns true if the given middleware name is classified as admin.
 func (mc MiddlewareConfig) IsAdminMiddleware(name string) bool {
 	for _, m := range mc.Admin {
+		if m == name {
+			return true
+		}
+	}
+	return false
+}
+
+// IsRateLimitMiddleware returns true if the given middleware name is classified as rate limiting.
+func (mc MiddlewareConfig) IsRateLimitMiddleware(name string) bool {
+	for _, m := range mc.RateLimit {
 		if m == name {
 			return true
 		}

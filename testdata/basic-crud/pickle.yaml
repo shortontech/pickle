@@ -2,6 +2,7 @@ squeeze:
   middleware:
     auth: [Auth]
     admin: [RequireRole]
+    rate_limit: [RateLimit]
   rules:
     no_printf: true
     ownership_scoping: true
@@ -9,3 +10,6 @@ squeeze:
     uuid_error_handling: true
     public_projection: true
     required_fields: true
+    read_scoping: true
+    unbounded_query: true
+    rate_limit_auth: true

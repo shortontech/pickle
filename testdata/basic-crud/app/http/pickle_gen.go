@@ -137,8 +137,12 @@ func (c *Context) SetAuth(claims any) {
 	}
 }
 
-// Auth returns the authenticated user info, or nil if not authenticated.
+// Auth returns the authenticated user info. Panics if no auth middleware ran —
+// calling Auth() on an unauthenticated route is a programming error.
 func (c *Context) Auth() *AuthInfo {
+	if c.auth == nil {
+		panic("pickle: ctx.Auth() called without auth middleware — add Auth middleware to this route")
+	}
 	return c.auth
 }
 

@@ -29,6 +29,7 @@ squeeze:
     enum_validation: true
     uuid_error_handling: true
     required_fields: true
+    auth_without_middleware: true
     no_printf: true
 ```
 
@@ -175,6 +176,23 @@ squeeze:
   middleware:
     rate_limit: [RateLimit]
 ```
+
+### auth_without_middleware
+
+**Severity:** error
+
+**What it catches:** Controllers on unauthenticated routes that call `ctx.Auth()`. Without auth middleware, `ctx.Auth()` panics — the auth info was never set.
+
+**How to fix:** Either add auth middleware to the route, or remove the `ctx.Auth()` call:
+
+```go
+// Option 1 — add auth middleware to the route
+r.Get("/profile", controllers.UserController{}.Show, middleware.Auth)
+
+// Option 2 — remove ctx.Auth() from the controller if it doesn't need auth
+```
+
+This is always a bug. If a controller needs auth info, the route must have auth middleware.
 
 ### enum_validation
 

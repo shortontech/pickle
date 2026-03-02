@@ -32,6 +32,7 @@ func AllRules() map[string]Rule {
 		"required_fields":     ruleRequiredFields,
 		"unbounded_query":     ruleUnboundedQuery,
 		"rate_limit_auth":     ruleRateLimitAuth,
+		"auth_without_middleware": ruleAuthWithoutMiddleware,
 	}
 }
 
@@ -456,6 +457,36 @@ func ruleRateLimitAuth(ctx *AnalysisContext) []Finding {
 			Line:     route.Line,
 			Message:  route.Method + " " + route.Path + " — auth endpoint without rate limiting (brute force vector)",
 		})
+	}
+
+	return findings
+}
+
+// ruleAuthWithoutMiddleware flags controllers on unauthenticated routes that call ctx.Auth().
+// Without auth middleware, ctx.Auth() panics. This is always a bug.
+func ruleAuthWithoutMiddleware(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+
+	for _, route := range ctx.Routes {
+		if route.HasAuthMiddleware(ctx.Config.Middleware) {
+			continue
+		}
+
+		key := route.ControllerType + "." + route.MethodName
+		method, ok := ctx.Methods[key]
+		if !ok {
+			continue
+		}
+
+		if bodyContainsAuthCall(method.Body) {
+			findings = append(findings, Finding{
+				Rule:     "auth_without_middleware",
+				Severity: SeverityError,
+				File:     method.File,
+				Line:     method.Line,
+				Message:  route.Method + " " + route.Path + " — calls ctx.Auth() without auth middleware (will panic)",
+			})
+		}
 	}
 
 	return findings

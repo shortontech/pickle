@@ -430,6 +430,22 @@ func exprContainsParamCall(expr ast.Expr) bool {
 	return found
 }
 
+// bodyContainsAuthCall checks if a method body contains any ctx.Auth() call.
+func bodyContainsAuthCall(body *ast.BlockStmt) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if expr, ok := n.(ast.Expr); ok && exprContainsAuthCall(expr) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 // exprContainsAuthCall checks if an expression contains ctx.Auth().
 func exprContainsAuthCall(expr ast.Expr) bool {
 	found := false

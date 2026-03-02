@@ -55,9 +55,15 @@ func TestContextBearerToken(t *testing.T) {
 func TestContextAuth(t *testing.T) {
 	ctx := NewContext(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
 
-	if ctx.Auth() != nil {
-		t.Error("Auth() should be nil before SetAuth")
-	}
+	// Auth() should panic before SetAuth (no auth middleware ran)
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("Auth() should panic before SetAuth")
+			}
+		}()
+		ctx.Auth()
+	}()
 
 	ctx.SetAuth(&AuthInfo{UserID: "u1", Role: "admin"})
 	if ctx.Auth().UserID != "u1" || ctx.Auth().Role != "admin" {

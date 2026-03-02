@@ -78,7 +78,7 @@ posts, err := models.QueryPost().AnyOwner().WhereStatus("published").All()
 
 ### read_scoping
 
-**Severity:** warning
+**Severity:** error
 
 **What it catches:** GET routes behind auth that query models without scoping by the authenticated user. This is a read-side IDOR — a user can view another user's private data.
 
@@ -98,14 +98,12 @@ posts, err := models.QueryPost().
     All()
 ```
 
-This is a warning (not an error) because some read endpoints intentionally serve data to any authenticated user — e.g., a user directory. To suppress the warning for a specific query, call `.AnyOwner()`:
+If the endpoint intentionally serves data to any authenticated user (e.g., a user directory), call `.AnyOwner()` to opt out:
 
 ```go
 // User directory — intentionally shows all users
 users, err := models.QueryUser().AnyOwner().All()
 ```
-
-You can also disable the rule globally with `read_scoping: false` in `pickle.yaml`.
 
 ### public_projection
 

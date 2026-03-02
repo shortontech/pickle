@@ -362,7 +362,7 @@ func ruleReadScoping(ctx *AnalysisContext) []Finding {
 		if !hasOwnershipScope {
 			findings = append(findings, Finding{
 				Rule:     "read_scoping",
-				Severity: SeverityWarning,
+				Severity: SeverityError,
 				File:     method.File,
 				Line:     method.Line,
 				Message:  route.Method + " " + route.Path + " — authenticated read does not scope by user (possible IDOR)",

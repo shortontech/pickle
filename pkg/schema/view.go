@@ -38,6 +38,9 @@ func (vc *ViewColumn) OutputName() string {
 
 // From sets the primary source table for the view.
 func (v *View) From(table, alias string) {
+	if table == "" || alias == "" {
+		panic("pickle: View.From requires non-empty table and alias")
+	}
 	v.Sources = append(v.Sources, ViewSource{
 		Table: table,
 		Alias: alias,
@@ -46,6 +49,9 @@ func (v *View) From(table, alias string) {
 
 // Join adds an INNER JOIN to the view.
 func (v *View) Join(table, alias, on string) {
+	if table == "" || alias == "" || on == "" {
+		panic("pickle: View.Join requires non-empty table, alias, and ON condition")
+	}
 	v.Sources = append(v.Sources, ViewSource{
 		Table:         table,
 		Alias:         alias,
@@ -56,6 +62,9 @@ func (v *View) Join(table, alias, on string) {
 
 // LeftJoin adds a LEFT JOIN to the view.
 func (v *View) LeftJoin(table, alias, on string) {
+	if table == "" || alias == "" || on == "" {
+		panic("pickle: View.LeftJoin requires non-empty table, alias, and ON condition")
+	}
 	v.Sources = append(v.Sources, ViewSource{
 		Table:         table,
 		Alias:         alias,
@@ -84,6 +93,9 @@ func (v *View) Column(ref string, alias ...string) {
 // SelectRaw adds a computed column with a raw SQL expression.
 // Returns the ViewColumn so the caller can chain type builder methods.
 func (v *View) SelectRaw(name, expr string) *ViewColumn {
+	if name == "" || expr == "" {
+		panic("pickle: SelectRaw requires non-empty name and expression")
+	}
 	vc := &ViewColumn{
 		RawExpr: expr,
 	}
@@ -158,5 +170,5 @@ func parseColumnRef(ref string) (alias, column string) {
 			return ref[:i], ref[i+1:]
 		}
 	}
-	return "", ref
+	panic("pickle: column reference must be in 'alias.column' format, got: " + ref)
 }

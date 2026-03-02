@@ -69,13 +69,14 @@ func main() {
 
 		// If filtering, copy to a temp dir with only the wanted files
 		dir := srcDir
+		needsCleanup := false
 		if t.skip != nil || t.only != nil {
 			dir, err = filterDir(srcDir, t.skip, t.only)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "tickle: %v\n", err)
 				os.Exit(1)
 			}
-			defer os.RemoveAll(dir)
+			needsCleanup = true
 		}
 
 		outputPath := filepath.Join(root, t.output)
@@ -83,6 +84,9 @@ func main() {
 		if t.perFile {
 			// Emit one constant per source file
 			files, err := tickle.Tickle(dir, placeholder)
+			if needsCleanup {
+				os.RemoveAll(dir)
+			}
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "tickle: %v\n", err)
 				os.Exit(1)
@@ -94,6 +98,9 @@ func main() {
 			fmt.Printf("  %s → %s (%d files)\n", t.srcDir, t.output, len(files))
 		} else {
 			merged, err := tickle.Merge(dir, placeholder)
+			if needsCleanup {
+				os.RemoveAll(dir)
+			}
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "tickle: %v\n", err)
 				os.Exit(1)

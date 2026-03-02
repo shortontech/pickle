@@ -265,6 +265,11 @@ func (s *Server) projectCreate(_ context.Context, _ *mcp.CallToolRequest, input 
 		return errResult("name is required"), nil, nil
 	}
 
+	// Validate project name: must be a simple name, not a path
+	if strings.Contains(input.Name, "..") || strings.ContainsAny(input.Name, "/\\") {
+		return errResult(fmt.Sprintf("project name %q must not contain path separators or '..'", input.Name)), nil, nil
+	}
+
 	targetDir, err := filepath.Abs(input.Name)
 	if err != nil {
 		return errResult("invalid path: " + err.Error()), nil, nil

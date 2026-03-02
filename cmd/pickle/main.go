@@ -92,6 +92,13 @@ func cmdCreate() {
 	}
 
 	projectName := os.Args[2]
+
+	// Validate project name: must be a simple name, not a path
+	if strings.Contains(projectName, "..") || strings.ContainsAny(projectName, "/\\") {
+		fmt.Fprintf(os.Stderr, "pickle: project name %q must not contain path separators or '..'\n", projectName)
+		os.Exit(1)
+	}
+
 	targetDir, err := filepath.Abs(projectName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
@@ -318,7 +325,10 @@ func parseMakeArgs() (name, projectDir string) {
 		if args[i] == "--project" && i+1 < len(args) {
 			projectDir = args[i+1]
 			i++
-		} else if !strings.HasPrefix(args[i], "-") && name == "" {
+		} else if strings.HasPrefix(args[i], "-") {
+			fmt.Fprintf(os.Stderr, "pickle: unknown flag %q\n", args[i])
+			os.Exit(1)
+		} else if name == "" {
 			name = args[i]
 		}
 	}
@@ -464,14 +474,9 @@ func findPicklePkgDir() string {
 		}
 	}
 
-	// Fallback: look in GOPATH/pkg/mod for the pickle module
-	gopath := os.Getenv("GOPATH")
-	if gopath == "" {
-		home, _ := os.UserHomeDir()
-		gopath = filepath.Join(home, "go")
-	}
-
-	// This is a simplification — in practice we'd need the exact version
-	fmt.Fprintf(os.Stderr, "pickle: warning: could not locate pkg/ directory, some generators may be skipped\n")
-	return filepath.Join(gopath, "pkg", "mod", "github.com", "pickle-framework", "pickle", "pkg")
+	// Fallback: could not locate the pickle source tree
+	fmt.Fprintf(os.Stderr, "pickle: error: could not locate pkg/ directory — generators will not work\n")
+	fmt.Fprintf(os.Stderr, "pickle: ensure you are running from the pickle source tree or have pickle installed via go install\n")
+	os.Exit(1)
+	return "" // unreachable
 }

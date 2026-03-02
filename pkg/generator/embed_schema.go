@@ -118,6 +118,9 @@ type Migration struct {
 }
 
 func (m *Migration) CreateTable(name string, fn func(*Table)) {
+	if name == "" {
+		panic("pickle: table name must not be empty")
+	}
 	t := &Table{Name: name}
 	fn(t)
 	m.Operations = append(m.Operations, Operation{
@@ -135,6 +138,9 @@ func (m *Migration) DropTableIfExists(name string) {
 }
 
 func (m *Migration) RenameTable(oldName, newName string) {
+	if oldName == "" || newName == "" {
+		panic("pickle: RenameTable requires non-empty old and new names")
+	}
 	m.Operations = append(m.Operations, Operation{
 		Type:    OpRenameTable,
 		Table:   oldName,
@@ -160,6 +166,9 @@ func (m *Migration) DropColumn(table, column string) {
 }
 
 func (m *Migration) RenameColumn(table, oldName, newName string) {
+	if table == "" || oldName == "" || newName == "" {
+		panic("pickle: RenameColumn requires non-empty table, old, and new names")
+	}
 	m.Operations = append(m.Operations, Operation{
 		Type:       OpRenameColumn,
 		Table:      table,
@@ -170,6 +179,9 @@ func (m *Migration) RenameColumn(table, oldName, newName string) {
 }
 
 func (m *Migration) AddIndex(table string, columns ...string) {
+	if len(columns) == 0 {
+		panic("pickle: AddIndex requires at least one column")
+	}
 	m.Operations = append(m.Operations, Operation{
 		Type:  OpAddIndex,
 		Table: table,
@@ -182,6 +194,9 @@ func (m *Migration) AddIndex(table string, columns ...string) {
 }
 
 func (m *Migration) AddUniqueIndex(table string, columns ...string) {
+	if len(columns) == 0 {
+		panic("pickle: AddUniqueIndex requires at least one column")
+	}
 	m.Operations = append(m.Operations, Operation{
 		Type:  OpAddUniqueIndex,
 		Table: table,
@@ -233,6 +248,9 @@ type Table struct {
 }
 
 func (t *Table) addColumn(name string, colType ColumnType) *Column {
+	if name == "" {
+		panic("pickle: column name must not be empty")
+	}
 	c := &Column{
 		Name: name,
 		Type: colType,
@@ -248,6 +266,9 @@ func (t *Table) UUID(name string) *Column {
 func (t *Table) String(name string, length ...int) *Column {
 	c := t.addColumn(name, String)
 	if len(length) > 0 {
+		if length[0] < 1 {
+			panic("pickle: string length must be >= 1")
+		}
 		c.Length = length[0]
 	} else {
 		c.Length = 255
@@ -268,6 +289,15 @@ func (t *Table) BigInteger(name string) *Column {
 }
 
 func (t *Table) Decimal(name string, precision, scale int) *Column {
+	if precision < 1 {
+		panic("pickle: decimal precision must be >= 1")
+	}
+	if scale < 0 {
+		panic("pickle: decimal scale must be >= 0")
+	}
+	if scale > precision {
+		panic("pickle: decimal scale must not exceed precision")
+	}
 	c := t.addColumn(name, Decimal)
 	c.Precision = precision
 	c.Scale = scale
@@ -339,7 +369,9 @@ var columnTypeNames = [...]string{
 
 func (t ColumnType) String() string {
 	if int(t) < len(columnTypeNames) {
-		return columnTypeNames[t]
+		if name := columnTypeNames[t]; name != "" {
+			return name
+		}
 	}
 	return "unknown"
 }
@@ -382,6 +414,9 @@ func (vc *ViewColumn) OutputName() string {
 
 // From sets the primary source table for the view.
 func (v *View) From(table, alias string) {
+	if table == "" || alias == "" {
+		panic("pickle: View.From requires non-empty table and alias")
+	}
 	v.Sources = append(v.Sources, ViewSource{
 		Table: table,
 		Alias: alias,
@@ -390,6 +425,9 @@ func (v *View) From(table, alias string) {
 
 // Join adds an INNER JOIN to the view.
 func (v *View) Join(table, alias, on string) {
+	if table == "" || alias == "" || on == "" {
+		panic("pickle: View.Join requires non-empty table, alias, and ON condition")
+	}
 	v.Sources = append(v.Sources, ViewSource{
 		Table:         table,
 		Alias:         alias,
@@ -400,6 +438,9 @@ func (v *View) Join(table, alias, on string) {
 
 // LeftJoin adds a LEFT JOIN to the view.
 func (v *View) LeftJoin(table, alias, on string) {
+	if table == "" || alias == "" || on == "" {
+		panic("pickle: View.LeftJoin requires non-empty table, alias, and ON condition")
+	}
 	v.Sources = append(v.Sources, ViewSource{
 		Table:         table,
 		Alias:         alias,
@@ -428,6 +469,9 @@ func (v *View) Column(ref string, alias ...string) {
 // SelectRaw adds a computed column with a raw SQL expression.
 // Returns the ViewColumn so the caller can chain type builder methods.
 func (v *View) SelectRaw(name, expr string) *ViewColumn {
+	if name == "" || expr == "" {
+		panic("pickle: SelectRaw requires non-empty name and expression")
+	}
 	vc := &ViewColumn{
 		RawExpr: expr,
 	}
@@ -502,7 +546,7 @@ func parseColumnRef(ref string) (alias, column string) {
 			return ref[:i], ref[i+1:]
 		}
 	}
-	return "", ref
+	panic("pickle: column reference must be in 'alias.column' format, got: " + ref)
 }
 
 `

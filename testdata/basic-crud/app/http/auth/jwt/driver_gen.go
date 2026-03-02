@@ -124,16 +124,31 @@ func (d *Driver) ValidateToken(tokenStr string) (*pickle.AuthInfo, error) {
 		return nil, errors.New("jwt: malformed token")
 	}
 
-	// Verify signature
-	signingInput := parts[0] + "." + parts[1]
-	sig, err := base64URLDecode(parts[2])
+	// Decode header and verify algorithm matches
+	headerJSON, err := base64URLDecode(parts[0])
 	if err != nil {
-		return nil, errors.New("jwt: invalid signature encoding")
+		return nil, errors.New("jwt: invalid header encoding")
+	}
+	var header struct {
+		Alg string `json:"alg"`
+	}
+	if err := json.Unmarshal(headerJSON, &header); err != nil {
+		return nil, errors.New("jwt: invalid header")
 	}
 
 	alg := d.algorithm
 	if alg == "" {
 		alg = "HS256"
+	}
+	if header.Alg != alg {
+		return nil, errors.New("jwt: algorithm mismatch (header=" + header.Alg + ", expected=" + alg + ")")
+	}
+
+	// Verify signature
+	signingInput := parts[0] + "." + parts[1]
+	sig, err := base64URLDecode(parts[2])
+	if err != nil {
+		return nil, errors.New("jwt: invalid signature encoding")
 	}
 	if !hmacVerify([]byte(signingInput), sig, []byte(d.secret), alg) {
 		return nil, errors.New("jwt: invalid signature")
@@ -186,7 +201,10 @@ func hmacSign(input, secret []byte, alg string) ([]byte, error) {
 }
 
 func hmacVerify(input, sig, secret []byte, alg string) bool {
-	expected, _ := hmacSign(input, secret, alg)
+	expected, err := hmacSign(input, secret, alg)
+	if err != nil {
+		return false
+	}
 	return hmac.Equal(sig, expected)
 }
 

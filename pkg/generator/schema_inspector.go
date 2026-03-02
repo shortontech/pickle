@@ -380,9 +380,9 @@ type MigrationEntry struct {
 // extractTimestampSuffix extracts the timestamp suffix from a migration struct name.
 // e.g. "CreateUsersTable_2026_02_21_100000" → "2026_02_21_100000"
 func extractTimestampSuffix(name string) string {
-	parts := strings.Split(name, "_")
-	if len(parts) >= 4 {
-		return strings.Join(parts[len(parts)-4:], "_")
+	match := migrationTimestampSuffix.FindStringSubmatch(name)
+	if match != nil {
+		return match[1]
 	}
 	return name
 }

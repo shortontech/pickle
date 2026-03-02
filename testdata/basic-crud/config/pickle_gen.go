@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -86,10 +87,10 @@ func (c ConnectionConfig) DSN() string {
 	switch c.Driver {
 	case "pgsql":
 		return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
-			c.User, c.Password, c.Host, c.Port, c.Name)
+			url.PathEscape(c.User), url.PathEscape(c.Password), c.Host, c.Port, c.Name)
 	case "mysql":
 		return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true",
-			c.User, c.Password, c.Host, c.Port, c.Name)
+			url.PathEscape(c.User), url.PathEscape(c.Password), c.Host, c.Port, c.Name)
 	case "sqlite":
 		return c.Name
 	default:
@@ -145,7 +146,7 @@ func (d DatabaseConfig) Connection(name ...string) ConnectionConfig {
 	}
 	conn, ok := d.Connections[key]
 	if !ok {
-		panic("unknown database connection: " + key)
+		log.Fatalf("pickle: unknown database connection: %s", key)
 	}
 	return conn
 }

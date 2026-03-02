@@ -154,7 +154,7 @@ func (d DatabaseConfig) Connection(name ...string) ConnectionConfig {
 	}
 	conn, ok := d.Connections[key]
 	if !ok {
-		panic("unknown database connection: " + key)
+		log.Fatalf("pickle: unknown database connection: %s", key)
 	}
 	return conn
 }

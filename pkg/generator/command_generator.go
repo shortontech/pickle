@@ -34,7 +34,7 @@ func ScanCommands(commandsDir string) ([]string, error) {
 		fset := token.NewFileSet()
 		f, err := parser.ParseFile(fset, commandsDir+"/"+e.Name(), nil, 0)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("parsing %s: %w", e.Name(), err)
 		}
 
 		commands = append(commands, findCommandTypes(f)...)
@@ -124,7 +124,7 @@ func ScanRouteVars(routesDir string) ([]string, error) {
 		fset := token.NewFileSet()
 		f, err := parser.ParseFile(fset, routesDir+"/"+e.Name(), nil, 0)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("parsing %s: %w", e.Name(), err)
 		}
 
 		for _, decl := range f.Decls {
@@ -295,7 +295,7 @@ func GenerateCommandsGlue(modulePath string, migrationsRel string, userCommands 
 
 	formatted, err := format.Source(buf.Bytes())
 	if err != nil {
-		return buf.Bytes(), err
+		return buf.Bytes(), fmt.Errorf("go format commands glue: %w\n%s", err, buf.String())
 	}
 	return formatted, nil
 }

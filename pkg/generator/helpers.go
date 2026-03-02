@@ -1,6 +1,9 @@
 package generator
 
 import (
+	"unicode"
+	"unicode/utf8"
+
 	"github.com/shortontech/pickle/pkg/names"
 	"github.com/shortontech/pickle/pkg/schema"
 )
@@ -22,8 +25,9 @@ func columnImport(col *schema.Column) string {
 }
 
 func toLowerFirst(s string) string {
-	if len(s) == 0 {
+	if s == "" {
 		return s
 	}
-	return string(s[0]+32) + s[1:]
+	r, size := utf8.DecodeRuneInString(s)
+	return string(unicode.ToLower(r)) + s[size:]
 }

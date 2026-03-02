@@ -91,6 +91,10 @@ func ParseScopeBlocks(path string) ([]ScopeBlock, error) {
 		}
 	}
 
+	if currentScope != "" {
+		return nil, fmt.Errorf("unclosed pickle:scope %q (missing pickle:end)", currentScope)
+	}
+
 	return blocks, nil
 }
 

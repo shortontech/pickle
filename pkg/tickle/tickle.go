@@ -56,6 +56,10 @@ func Merge(srcDir, targetPackage string) (string, error) {
 		return "", err
 	}
 
+	if len(files) == 0 {
+		return "", fmt.Errorf("no .go files found in %s", srcDir)
+	}
+
 	names := sortedKeys(files)
 
 	var imports []string

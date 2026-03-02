@@ -18,6 +18,7 @@ import (
 type RequestDef struct {
 	Name   string         // e.g. CreateUserRequest
 	Fields []RequestField // struct fields in order
+	File   string         // source file path (for diagnostics)
 }
 
 // RequestField describes a single field in a request struct.
@@ -75,7 +76,7 @@ func ScanRequests(dir string) ([]RequestDef, error) {
 					continue
 				}
 
-				req := RequestDef{Name: ts.Name.Name}
+				req := RequestDef{Name: ts.Name.Name, File: path}
 
 				for _, field := range st.Fields.List {
 					if len(field.Names) == 0 {

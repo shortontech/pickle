@@ -2,6 +2,7 @@ package cooked
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 )
 
@@ -42,7 +43,9 @@ func (r Response) Write(w http.ResponseWriter) {
 	data, err := json.Marshal(r.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error":"internal server error"}`))
+		if _, writeErr := w.Write([]byte(`{"error":"internal server error"}`)); writeErr != nil {
+			log.Printf("pickle: failed to write error response: %v", writeErr)
+		}
 		return
 	}
 
@@ -50,5 +53,7 @@ func (r Response) Write(w http.ResponseWriter) {
 		w.Header().Set("Content-Type", "application/json")
 	}
 	w.WriteHeader(r.StatusCode)
-	w.Write(data)
+	if _, err := w.Write(data); err != nil {
+		log.Printf("pickle: failed to write response: %v", err)
+	}
 }

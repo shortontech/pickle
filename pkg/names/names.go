@@ -77,6 +77,45 @@ func TableToStructName(name string) string {
 	return SnakeToPascal(singular)
 }
 
+// irregularPlurals maps singular words to their plural forms.
+var irregularPlurals = map[string]string{
+	"person":   "people",
+	"child":    "children",
+	"man":      "men",
+	"woman":    "women",
+	"mouse":    "mice",
+	"goose":    "geese",
+	"tooth":    "teeth",
+	"foot":     "feet",
+	"datum":    "data",
+	"medium":   "media",
+	"analysis": "analyses",
+	"basis":    "bases",
+	"crisis":   "crises",
+}
+
+// Pluralize converts a singular lowercase word to its plural form.
+// Handles common irregular plurals and English pluralization rules.
+func Pluralize(s string) string {
+	lower := strings.ToLower(s)
+	if p, ok := irregularPlurals[lower]; ok {
+		return p
+	}
+	if strings.HasSuffix(lower, "s") || strings.HasSuffix(lower, "x") ||
+		strings.HasSuffix(lower, "z") || strings.HasSuffix(lower, "ch") ||
+		strings.HasSuffix(lower, "sh") {
+		return lower + "es"
+	}
+	if strings.HasSuffix(lower, "y") && len(lower) > 1 && !isVowel(lower[len(lower)-2]) {
+		return lower[:len(lower)-1] + "ies"
+	}
+	return lower + "s"
+}
+
+func isVowel(b byte) bool {
+	return b == 'a' || b == 'e' || b == 'i' || b == 'o' || b == 'u'
+}
+
 // ColumnGoType returns the Go type string for a column.
 func ColumnGoType(col *schema.Column) string {
 	base := ColumnBaseGoType(col)

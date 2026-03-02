@@ -43,6 +43,9 @@ type Migration struct {
 }
 
 func (m *Migration) CreateTable(name string, fn func(*Table)) {
+	if name == "" {
+		panic("pickle: table name must not be empty")
+	}
 	t := &Table{Name: name}
 	fn(t)
 	m.Operations = append(m.Operations, Operation{
@@ -60,6 +63,9 @@ func (m *Migration) DropTableIfExists(name string) {
 }
 
 func (m *Migration) RenameTable(oldName, newName string) {
+	if oldName == "" || newName == "" {
+		panic("pickle: RenameTable requires non-empty old and new names")
+	}
 	m.Operations = append(m.Operations, Operation{
 		Type:    OpRenameTable,
 		Table:   oldName,
@@ -85,6 +91,9 @@ func (m *Migration) DropColumn(table, column string) {
 }
 
 func (m *Migration) RenameColumn(table, oldName, newName string) {
+	if table == "" || oldName == "" || newName == "" {
+		panic("pickle: RenameColumn requires non-empty table, old, and new names")
+	}
 	m.Operations = append(m.Operations, Operation{
 		Type:       OpRenameColumn,
 		Table:      table,
@@ -95,6 +104,9 @@ func (m *Migration) RenameColumn(table, oldName, newName string) {
 }
 
 func (m *Migration) AddIndex(table string, columns ...string) {
+	if len(columns) == 0 {
+		panic("pickle: AddIndex requires at least one column")
+	}
 	m.Operations = append(m.Operations, Operation{
 		Type:  OpAddIndex,
 		Table: table,
@@ -107,6 +119,9 @@ func (m *Migration) AddIndex(table string, columns ...string) {
 }
 
 func (m *Migration) AddUniqueIndex(table string, columns ...string) {
+	if len(columns) == 0 {
+		panic("pickle: AddUniqueIndex requires at least one column")
+	}
 	m.Operations = append(m.Operations, Operation{
 		Type:  OpAddUniqueIndex,
 		Table: table,

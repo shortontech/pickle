@@ -7,6 +7,9 @@ type Table struct {
 }
 
 func (t *Table) addColumn(name string, colType ColumnType) *Column {
+	if name == "" {
+		panic("pickle: column name must not be empty")
+	}
 	c := &Column{
 		Name: name,
 		Type: colType,
@@ -22,6 +25,9 @@ func (t *Table) UUID(name string) *Column {
 func (t *Table) String(name string, length ...int) *Column {
 	c := t.addColumn(name, String)
 	if len(length) > 0 {
+		if length[0] < 1 {
+			panic("pickle: string length must be >= 1")
+		}
 		c.Length = length[0]
 	} else {
 		c.Length = 255
@@ -42,6 +48,15 @@ func (t *Table) BigInteger(name string) *Column {
 }
 
 func (t *Table) Decimal(name string, precision, scale int) *Column {
+	if precision < 1 {
+		panic("pickle: decimal precision must be >= 1")
+	}
+	if scale < 0 {
+		panic("pickle: decimal scale must be >= 0")
+	}
+	if scale > precision {
+		panic("pickle: decimal scale must not exceed precision")
+	}
 	c := t.addColumn(name, Decimal)
 	c.Precision = precision
 	c.Scale = scale

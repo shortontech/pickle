@@ -156,7 +156,7 @@ func ruleEnumValidation(ctx *AnalysisContext) []Finding {
 			findings = append(findings, Finding{
 				Rule:     "enum_validation",
 				Severity: SeverityError,
-				File:     "", // we don't have file info from ScanRequests — filled in by orchestrator
+				File:     req.File,
 				Line:     0,
 				Message:  req.Name + "." + field.Name + " — state/role field missing oneof= validation (allows arbitrary values like \"god_mode\")",
 			})
@@ -262,8 +262,8 @@ func ruleRequiredFields(ctx *AnalysisContext) []Finding {
 			}
 
 			// Map model type name to table name
-			// Post -> posts (simple pluralization)
-			tableName := strings.ToLower(lit.TypeName) + "s"
+			// Post -> posts, Category -> categories
+			tableName := names.Pluralize(lit.TypeName)
 			required, ok := requiredByTable[tableName]
 			if !ok {
 				continue
@@ -429,6 +429,26 @@ var authMethodNames = map[string]bool{
 	"Store":    true, // on AuthController — registration
 }
 
+// authPathSegments are URL path segments that indicate an auth endpoint.
+var authPathSegments = []string{"/login", "/register", "/signup", "/auth"}
+
+// isAuthRoute returns true if the route looks like an authentication endpoint,
+// based on controller name, method name, or path pattern.
+func isAuthRoute(route AnalyzedRoute) bool {
+	// Controller name contains "Auth"
+	if strings.Contains(route.ControllerType, "Auth") && authMethodNames[route.MethodName] {
+		return true
+	}
+	// Path contains auth-related segments
+	pathLower := strings.ToLower(route.Path)
+	for _, seg := range authPathSegments {
+		if strings.HasSuffix(pathLower, seg) || strings.Contains(pathLower, seg+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 // ruleRateLimitAuth flags authentication routes (login, register) that lack rate limiting middleware.
 func ruleRateLimitAuth(ctx *AnalysisContext) []Finding {
 	var findings []Finding
@@ -438,12 +458,7 @@ func ruleRateLimitAuth(ctx *AnalysisContext) []Finding {
 			continue
 		}
 
-		// Only check auth-related controllers
-		if !strings.Contains(route.ControllerType, "Auth") {
-			continue
-		}
-
-		if !authMethodNames[route.MethodName] {
+		if !isAuthRoute(route) {
 			continue
 		}
 

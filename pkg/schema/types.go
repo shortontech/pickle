@@ -35,7 +35,9 @@ var columnTypeNames = [...]string{
 
 func (t ColumnType) String() string {
 	if int(t) < len(columnTypeNames) {
-		return columnTypeNames[t]
+		if name := columnTypeNames[t]; name != "" {
+			return name
+		}
 	}
 	return "unknown"
 }

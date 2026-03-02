@@ -76,7 +76,10 @@ func ScanMigrationFiles(migrationsDir string) ([]MigrationFileEntry, error) {
 		}
 
 		structNames, err := findMigrationStructs(migrationsDir, e.Name())
-		if err != nil || len(structNames) == 0 {
+		if err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", e.Name(), err)
+		}
+		if len(structNames) == 0 {
 			continue
 		}
 

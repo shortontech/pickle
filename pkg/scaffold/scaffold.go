@@ -121,6 +121,22 @@ func sanitizeName(name string) error {
 	if strings.Contains(name, "..") || strings.Contains(name, "\\") {
 		return fmt.Errorf("invalid name %q: must not contain '..' or backslashes", name)
 	}
+	// Validate each path segment produces a valid Go identifier
+	// Forward slashes are allowed for subdirectory scaffolding (e.g. "admin/User")
+	segments := strings.Split(name, "/")
+	base := segments[len(segments)-1]
+	base = strings.TrimSuffix(strings.TrimSuffix(base, "Controller"), "Request")
+	for _, seg := range strings.Split(base, "_") {
+		if seg == "" {
+			continue
+		}
+		if seg[0] >= '0' && seg[0] <= '9' {
+			return fmt.Errorf("invalid name %q: must start with a letter, not a digit", name)
+		}
+		if strings.ContainsAny(seg, "-+!@#$%^&*()=[]{}|;:',.<>?~` ") {
+			return fmt.Errorf("invalid name %q: contains invalid characters for a Go identifier", name)
+		}
+	}
 	return nil
 }
 
@@ -132,13 +148,19 @@ func writeScaffold(projectDir, relPath, content string) (string, error) {
 	if !strings.HasPrefix(absTarget, absProject+string(filepath.Separator)) {
 		return "", fmt.Errorf("path %q escapes project directory", relPath)
 	}
-	if _, err := os.Stat(absPath); err == nil {
-		return "", fmt.Errorf("%s already exists", relPath)
-	}
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 		return "", fmt.Errorf("creating directory: %w", err)
 	}
-	if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
+	// Use O_CREATE|O_EXCL for atomic create-if-not-exists (no TOCTOU race)
+	f, err := os.OpenFile(absPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if os.IsExist(err) {
+			return "", fmt.Errorf("%s already exists", relPath)
+		}
+		return "", err
+	}
+	defer f.Close()
+	if _, err := f.WriteString(content); err != nil {
 		return "", err
 	}
 	return relPath, nil

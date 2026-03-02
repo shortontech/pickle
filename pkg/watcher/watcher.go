@@ -37,6 +37,7 @@ func Watch(projectDir string, onChange OnChange) error {
 	defer w.Close()
 
 	// Watch conventional directories
+	watchedCount := 0
 	for _, dir := range WatchDirs {
 		path := filepath.Join(projectDir, dir)
 		if info, err := os.Stat(path); err == nil && info.IsDir() {
@@ -44,7 +45,12 @@ func Watch(projectDir string, onChange OnChange) error {
 				return fmt.Errorf("watching %s: %w", dir, err)
 			}
 			fmt.Printf("  watching %s/\n", dir)
+			watchedCount++
 		}
+	}
+
+	if watchedCount == 0 {
+		return fmt.Errorf("no watchable directories found in %s (expected: %v)", projectDir, WatchDirs)
 	}
 
 	// Debounce: collect changes over 100ms before triggering
@@ -65,12 +71,20 @@ func Watch(projectDir string, onChange OnChange) error {
 			}
 
 			pending[event.Name] = true
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 			timer.Reset(debounce)
 
 			// If a new directory was created, start watching it
 			if event.Has(fsnotify.Create) {
 				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-					addRecursive(w, event.Name)
+					if err := addRecursive(w, event.Name); err != nil {
+						fmt.Fprintf(os.Stderr, "pickle watch: failed to watch new directory %s: %v\n", event.Name, err)
+					}
 				}
 			}
 

@@ -116,7 +116,10 @@ func (c *Context) Resource(q ResourceQuery) Response {
 	}
 	result, err := q.FetchResource(ownerID)
 	if err != nil {
-		return c.NotFound("not found")
+		if err.Error() == "sql: no rows in result set" {
+			return c.NotFound("not found")
+		}
+		return c.Error(err)
 	}
 	return c.JSON(http.StatusOK, result)
 }

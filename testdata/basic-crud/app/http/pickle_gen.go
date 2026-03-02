@@ -172,7 +172,10 @@ func (c *Context) Resource(q ResourceQuery) Response {
 	}
 	result, err := q.FetchResource(ownerID)
 	if err != nil {
-		return c.NotFound("not found")
+		if err.Error() == "sql: no rows in result set" {
+			return c.NotFound("not found")
+		}
+		return c.Error(err)
 	}
 	return c.JSON(http.StatusOK, result)
 }
@@ -303,7 +306,9 @@ func (r Response) Write(w http.ResponseWriter) {
 	data, err := json.Marshal(r.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error":"internal server error"}`))
+		if _, writeErr := w.Write([]byte(`{"error":"internal server error"}`)); writeErr != nil {
+			log.Printf("pickle: failed to write error response: %v", writeErr)
+		}
 		return
 	}
 
@@ -311,7 +316,9 @@ func (r Response) Write(w http.ResponseWriter) {
 		w.Header().Set("Content-Type", "application/json")
 	}
 	w.WriteHeader(r.StatusCode)
-	w.Write(data)
+	if _, err := w.Write(data); err != nil {
+		log.Printf("pickle: failed to write response: %v", err)
+	}
 }
 
 // MiddlewareFunc is the signature for middleware functions.
@@ -433,6 +440,7 @@ var paramPattern = regexp.MustCompile(`:(\w+)`)
 
 // RegisterRoutes wires all routes onto the given ServeMux.
 func (r *Router) RegisterRoutes(mux *http.ServeMux) {
+	registered := map[string]bool{}
 	for _, route := range r.AllRoutes() {
 		route := route // capture
 
@@ -464,18 +472,27 @@ func (r *Router) RegisterRoutes(mux *http.ServeMux) {
 			resp.Write(w)
 		}
 
+		if registered[pattern] {
+			panic("pickle: duplicate route registered: " + pattern)
+		}
+		registered[pattern] = true
 		mux.HandleFunc(pattern, handler)
 
 		// Register the opposite slash variant to prevent ServeMux 301 redirects
 		// that strip headers (e.g. Authorization). Skip paths ending in path params.
 		if !strings.HasSuffix(goPath, "}") {
+			var alt string
 			if strings.HasSuffix(goPath, "/") {
 				trimmed := strings.TrimRight(goPath, "/")
 				if trimmed != "" {
-					mux.HandleFunc(route.Method+" "+trimmed, handler)
+					alt = route.Method + " " + trimmed
 				}
 			} else {
-				mux.HandleFunc(route.Method+" "+goPath+"/", handler)
+				alt = route.Method + " " + goPath + "/"
+			}
+			if alt != "" && !registered[alt] {
+				registered[alt] = true
+				mux.HandleFunc(alt, handler)
 			}
 		}
 	}
@@ -486,13 +503,5 @@ func (r *Router) ListenAndServe(addr string) error {
 	mux := http.NewServeMux()
 	r.RegisterRoutes(mux)
 	return http.ListenAndServe(addr, mux)
-}
-
-// trimTrailingSlash normalizes paths.
-func trimTrailingSlash(s string) string {
-	if len(s) > 1 {
-		return strings.TrimRight(s, "/")
-	}
-	return s
 }
 

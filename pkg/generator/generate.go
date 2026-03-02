@@ -234,7 +234,9 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, erro
 
 	// Write to a temp directory inside the project so it can resolve local imports
 	tmpDir := filepath.Join(project.Dir, ".pickle-tmp")
-	os.MkdirAll(tmpDir, 0o755)
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return nil, nil, fmt.Errorf("creating temp directory: %w", err)
+	}
 	defer os.RemoveAll(tmpDir)
 
 	inspectorPath := filepath.Join(tmpDir, "main.go")
@@ -259,9 +261,13 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, erro
 	for _, ti := range result.Tables {
 		t := &schema.Table{Name: ti.Name}
 		for _, ci := range ti.Columns {
+			colType, ok := typeNameToColumnType[ci.Type]
+			if !ok {
+				return nil, nil, fmt.Errorf("unknown column type %q for column %s.%s", ci.Type, ti.Name, ci.Name)
+			}
 			col := &schema.Column{
 				Name:             ci.Name,
-				Type:             typeNameToColumnType[ci.Type],
+				Type:             colType,
 				IsNullable:       ci.Nullable,
 				IsPrimaryKey:     ci.PrimaryKey,
 				IsUnique:         ci.Unique,
@@ -571,7 +577,11 @@ func Generate(project *Project, picklePkgDir string) error {
 		routesDir := filepath.Join(project.Dir, "routes")
 		var routeVars []string
 		if _, err := os.Stat(routesDir); err == nil {
-			routeVars, _ = ScanRouteVars(routesDir)
+			var scanErr error
+			routeVars, scanErr = ScanRouteVars(routesDir)
+			if scanErr != nil {
+				return fmt.Errorf("scanning route vars: %w", scanErr)
+			}
 		}
 
 		// Check if auth directory exists

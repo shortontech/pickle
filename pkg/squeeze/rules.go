@@ -81,8 +81,10 @@ func ruleOwnershipScoping(ctx *AnalysisContext) []Finding {
 		}
 
 		chains := ExtractCallChains(method.Body, method.Fset)
+		authVars := FindAuthTaintedVars(method.Body)
 
 		// Look for query chains that include a Where* with ctx.Auth() in args
+		// (either directly or via a local variable derived from ctx.Auth())
 		hasOwnershipScope := false
 		for _, chain := range chains {
 			chainNames := chain.Names()
@@ -98,7 +100,7 @@ func ruleOwnershipScoping(ctx *AnalysisContext) []Finding {
 				continue
 			}
 
-			if chain.HasSegmentWithAuthArg("Where") {
+			if chain.HasSegmentWithAuthArgTainted("Where", authVars) {
 				hasOwnershipScope = true
 				break
 			}
@@ -200,9 +202,10 @@ func rulePublicProjection(ctx *AnalysisContext) []Finding {
 			continue
 		}
 
+		modelVars := FindModelVars(method.Body)
 		jsonCalls := FindCtxJSONCalls(method.Body, method.Fset)
 		for _, jc := range jsonCalls {
-			if PayloadIsModelWithoutPublic(jc.PayloadExpr) {
+			if PayloadIsModelWithoutPublic(jc.PayloadExpr, modelVars) {
 				findings = append(findings, Finding{
 					Rule:     "public_projection",
 					Severity: SeverityError,

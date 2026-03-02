@@ -58,9 +58,9 @@ func (c UserController) Store(ctx *pickle.Context) pickle.Response {
 }
 
 func (c UserController) Update(ctx *pickle.Context) pickle.Response {
-	id, err := uuid.Parse(ctx.Param("id"))
+	authID, err := uuid.Parse(ctx.Auth().UserID)
 	if err != nil {
-		return ctx.JSON(400, map[string]string{"error": "invalid id"})
+		return ctx.Unauthorized("invalid auth")
 	}
 
 	req, bindErr := requests.BindUpdateUserRequest(ctx.Request())
@@ -69,7 +69,7 @@ func (c UserController) Update(ctx *pickle.Context) pickle.Response {
 	}
 
 	user, err := models.QueryUser().
-		WhereID(id).
+		WhereID(authID).
 		First()
 
 	if err != nil {
@@ -91,13 +91,13 @@ func (c UserController) Update(ctx *pickle.Context) pickle.Response {
 }
 
 func (c UserController) Destroy(ctx *pickle.Context) pickle.Response {
-	id, err := uuid.Parse(ctx.Param("id"))
+	authID, err := uuid.Parse(ctx.Auth().UserID)
 	if err != nil {
-		return ctx.JSON(400, map[string]string{"error": "invalid id"})
+		return ctx.Unauthorized("invalid auth")
 	}
 
 	user, err := models.QueryUser().
-		WhereID(id).
+		WhereID(authID).
 		First()
 
 	if err != nil {

@@ -38,10 +38,6 @@ func (c AuthController) Login(ctx *pickle.Context) pickle.Response {
 
 	return ctx.JSON(200, map[string]any{
 		"token": token,
-		"user": map[string]any{
-			"id":    user.ID,
-			"name":  user.Name,
-			"email": user.Email,
-		},
+		"user":  user.Public(),
 	})
 }

@@ -13,8 +13,13 @@ type PostController struct {
 }
 
 func (c PostController) Index(ctx *pickle.Context) pickle.Response {
+	authID, err := uuid.Parse(ctx.Auth().UserID)
+	if err != nil {
+		return ctx.Unauthorized("invalid auth")
+	}
+
 	posts, err := models.QueryPost().
-		WhereUserID(uuid.MustParse(ctx.Auth().UserID)).
+		WhereOwnedBy(authID).
 		WithUser().
 		All()
 
@@ -31,9 +36,14 @@ func (c PostController) Show(ctx *pickle.Context) pickle.Response {
 		return ctx.JSON(400, map[string]string{"error": "invalid id"})
 	}
 
+	authID, err := uuid.Parse(ctx.Auth().UserID)
+	if err != nil {
+		return ctx.Unauthorized("invalid auth")
+	}
+
 	post, err := models.QueryPost().
 		WhereID(id).
-		WhereUserID(uuid.MustParse(ctx.Auth().UserID)).
+		WhereOwnedBy(authID).
 		WithUser().
 		First()
 
@@ -45,13 +55,18 @@ func (c PostController) Show(ctx *pickle.Context) pickle.Response {
 }
 
 func (c PostController) Store(ctx *pickle.Context) pickle.Response {
+	authID, err := uuid.Parse(ctx.Auth().UserID)
+	if err != nil {
+		return ctx.Unauthorized("invalid auth")
+	}
+
 	req, bindErr := requests.BindCreatePostRequest(ctx.Request())
 	if bindErr != nil {
 		return ctx.JSON(bindErr.Status, bindErr)
 	}
 
 	post := &models.Post{
-		UserID: uuid.MustParse(ctx.Auth().UserID),
+		UserID: authID,
 		Title:  req.Title,
 		Body:   req.Body,
 		Status: "draft",
@@ -75,9 +90,14 @@ func (c PostController) Update(ctx *pickle.Context) pickle.Response {
 		return ctx.JSON(bindErr.Status, bindErr)
 	}
 
+	authID, err := uuid.Parse(ctx.Auth().UserID)
+	if err != nil {
+		return ctx.Unauthorized("invalid auth")
+	}
+
 	post, err := models.QueryPost().
 		WhereID(id).
-		WhereUserID(uuid.MustParse(ctx.Auth().UserID)).
+		WhereOwnedBy(authID).
 		First()
 
 	if err != nil {
@@ -107,9 +127,14 @@ func (c PostController) Destroy(ctx *pickle.Context) pickle.Response {
 		return ctx.JSON(400, map[string]string{"error": "invalid id"})
 	}
 
+	authID, err := uuid.Parse(ctx.Auth().UserID)
+	if err != nil {
+		return ctx.Unauthorized("invalid auth")
+	}
+
 	post, err := models.QueryPost().
 		WhereID(id).
-		WhereUserID(uuid.MustParse(ctx.Auth().UserID)).
+		WhereOwnedBy(authID).
 		First()
 
 	if err != nil {

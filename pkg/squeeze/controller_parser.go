@@ -40,8 +40,15 @@ func (cc CallChain) Names() []string {
 	return names
 }
 
-// HasSegmentWithAuthArg returns true if any segment has an argument containing ctx.Auth().
+// HasSegmentWithAuthArg returns true if any segment has an argument containing ctx.Auth()
+// either directly or via a local variable that was assigned from a ctx.Auth() expression.
 func (cc CallChain) HasSegmentWithAuthArg(prefix string) bool {
+	return cc.HasSegmentWithAuthArgTainted(prefix, nil)
+}
+
+// HasSegmentWithAuthArgTainted is like HasSegmentWithAuthArg but also accepts a set of
+// local variable names known to carry auth-derived values (e.g. authID from uuid.Parse(ctx.Auth().UserID)).
+func (cc CallChain) HasSegmentWithAuthArgTainted(prefix string, authVars map[string]bool) bool {
 	for _, seg := range cc.Segments {
 		if !strings.HasPrefix(seg.Name, prefix) {
 			continue
@@ -50,9 +57,62 @@ func (cc CallChain) HasSegmentWithAuthArg(prefix string) bool {
 			if exprContainsAuthCall(arg) {
 				return true
 			}
+			if len(authVars) > 0 && exprIsAuthVar(arg, authVars) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// FindAuthTaintedVars walks a method body and finds local variables assigned from expressions
+// that contain ctx.Auth(). For example:
+//
+//	authID, err := uuid.Parse(ctx.Auth().UserID)
+//
+// returns {"authID": true}.
+func FindAuthTaintedVars(body *ast.BlockStmt) map[string]bool {
+	vars := make(map[string]bool)
+	ast.Inspect(body, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		// Check if any RHS expression contains ctx.Auth()
+		hasAuth := false
+		for _, rhs := range assign.Rhs {
+			if exprContainsAuthCall(rhs) {
+				hasAuth = true
+				break
+			}
+		}
+		if !hasAuth {
+			return true
+		}
+		// Taint the first LHS identifier (the value, not the error)
+		for _, lhs := range assign.Lhs {
+			if ident, ok := lhs.(*ast.Ident); ok && ident.Name != "err" && ident.Name != "_" {
+				vars[ident.Name] = true
+			}
+		}
+		return true
+	})
+	return vars
+}
+
+// exprIsAuthVar checks if an expression is (or contains) one of the auth-tainted variable names.
+func exprIsAuthVar(expr ast.Expr, authVars map[string]bool) bool {
+	found := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if ident, ok := n.(*ast.Ident); ok && authVars[ident.Name] {
+			found = true
+		}
+		return true
+	})
+	return found
 }
 
 // CompositeLitInfo describes a model struct literal found in a controller method.
@@ -388,8 +448,9 @@ func exprContainsAuthCall(expr ast.Expr) bool {
 }
 
 // PayloadIsModelWithoutPublic checks if a ctx.JSON payload is a model variable
-// that wasn't accessed via .Public().
-func PayloadIsModelWithoutPublic(expr ast.Expr) bool {
+// that wasn't accessed via .Public(). Uses modelVars to identify which local
+// variables hold model-typed values.
+func PayloadIsModelWithoutPublic(expr ast.Expr, modelVars map[string]bool) bool {
 	// If it's model.Public() or models.PublicXxx(...), it's fine
 	if call, ok := expr.(*ast.CallExpr); ok {
 		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
@@ -400,13 +461,95 @@ func PayloadIsModelWithoutPublic(expr ast.Expr) bool {
 		}
 	}
 
-	// If it's a bare identifier (e.g. `user`, `posts`), check if it could be a model
-	// We can't know for sure without type info, but this is a heuristic
-	// The rules layer will cross-reference with routes that lack auth
-	switch expr.(type) {
-	case *ast.Ident:
-		return true // could be a model variable — the rule will decide
+	// If it's a bare identifier, only flag it if it's a known model variable
+	if ident, ok := expr.(*ast.Ident); ok {
+		return modelVars[ident.Name]
 	}
 
 	return false
+}
+
+// FindModelVars walks a method body and finds local variables assigned from model sources:
+//   - models.QueryX().First() or .All() (query results)
+//   - &models.X{} (struct literals)
+func FindModelVars(body *ast.BlockStmt) map[string]bool {
+	vars := make(map[string]bool)
+	ast.Inspect(body, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok || len(assign.Lhs) == 0 || len(assign.Rhs) == 0 {
+			return true
+		}
+
+		rhs := assign.Rhs[0]
+
+		// Check for &models.X{...}
+		if unary, ok := rhs.(*ast.UnaryExpr); ok {
+			if cl, ok := unary.X.(*ast.CompositeLit); ok {
+				if isModelsType(cl.Type) {
+					addFirstIdent(assign.Lhs, vars)
+					return true
+				}
+			}
+		}
+
+		// Check for models.X{...} (without &)
+		if cl, ok := rhs.(*ast.CompositeLit); ok {
+			if isModelsType(cl.Type) {
+				addFirstIdent(assign.Lhs, vars)
+				return true
+			}
+		}
+
+		// Check for call chains ending in First()/All() on a models.Query*() chain
+		if exprIsModelQuery(rhs) {
+			addFirstIdent(assign.Lhs, vars)
+		}
+
+		return true
+	})
+	return vars
+}
+
+// isModelsType checks if a type expression is models.Something.
+func isModelsType(expr ast.Expr) bool {
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	return ok && ident.Name == "models"
+}
+
+// exprIsModelQuery checks if an expression is a call chain containing models.Query*().
+func exprIsModelQuery(expr ast.Expr) bool {
+	found := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		// Check for models.QueryX()
+		if ident, ok := sel.X.(*ast.Ident); ok && ident.Name == "models" && strings.HasPrefix(sel.Sel.Name, "Query") {
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
+// addFirstIdent adds the first non-error, non-blank identifier from an LHS list.
+func addFirstIdent(lhs []ast.Expr, vars map[string]bool) {
+	for _, l := range lhs {
+		if ident, ok := l.(*ast.Ident); ok && ident.Name != "err" && ident.Name != "_" {
+			vars[ident.Name] = true
+			return
+		}
+	}
 }

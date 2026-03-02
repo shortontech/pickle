@@ -74,6 +74,12 @@ func (q *QueryBuilder[T]) Offset(n int) *QueryBuilder[T] {
 	return q
 }
 
+// AnyOwner signals that this query intentionally does not scope by ownership.
+// It is a no-op — it exists so that Squeeze recognizes the explicit opt-out.
+func (q *QueryBuilder[T]) AnyOwner() *QueryBuilder[T] {
+	return q
+}
+
 // EagerLoad marks a relationship for eager loading.
 func (q *QueryBuilder[T]) EagerLoad(relation string) *QueryBuilder[T] {
 	q.eagerLoads = append(q.eagerLoads, relation)

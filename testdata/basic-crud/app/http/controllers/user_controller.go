@@ -13,7 +13,7 @@ type UserController struct {
 }
 
 func (c UserController) Index(ctx *pickle.Context) pickle.Response {
-	users, err := models.QueryUser().All()
+	users, err := models.QueryUser().AnyOwner().All()
 	if err != nil {
 		return ctx.Error(err)
 	}
@@ -28,6 +28,7 @@ func (c UserController) Show(ctx *pickle.Context) pickle.Response {
 	}
 
 	user, err := models.QueryUser().
+		AnyOwner().
 		WhereID(id).
 		First()
 

@@ -107,6 +107,11 @@ func ruleOwnershipScoping(ctx *AnalysisContext) []Finding {
 				hasOwnershipScope = true
 				break
 			}
+			// AnyOwner() is an explicit opt-out of ownership scoping
+			if chain.HasSegment("AnyOwner") {
+				hasOwnershipScope = true
+				break
+			}
 		}
 
 		if !hasOwnershipScope {
@@ -347,6 +352,11 @@ func ruleReadScoping(ctx *AnalysisContext) []Finding {
 				hasOwnershipScope = true
 				break
 			}
+			// AnyOwner() is an explicit opt-out of ownership scoping
+			if chain.HasSegment("AnyOwner") {
+				hasOwnershipScope = true
+				break
+			}
 		}
 
 		if !hasOwnershipScope {
@@ -363,21 +373,19 @@ func ruleReadScoping(ctx *AnalysisContext) []Finding {
 	return findings
 }
 
-// ruleUnboundedQuery flags unauthenticated routes that call .All() without .Limit().
+// ruleUnboundedQuery flags routes that call .All() without .Limit().
+// Unauthenticated routes are errors (DoS vector). Authenticated routes are warnings (resource waste).
 func ruleUnboundedQuery(ctx *AnalysisContext) []Finding {
 	var findings []Finding
 
 	for _, route := range ctx.Routes {
-		// Only check unauthenticated routes — authenticated routes are lower risk
-		if route.HasAuthMiddleware(ctx.Config.Middleware) {
-			continue
-		}
-
 		key := route.ControllerType + "." + route.MethodName
 		method, ok := ctx.Methods[key]
 		if !ok {
 			continue
 		}
+
+		isAuthed := route.HasAuthMiddleware(ctx.Config.Middleware)
 
 		chains := ExtractCallChains(method.Body, method.Fset)
 
@@ -400,12 +408,18 @@ func ruleUnboundedQuery(ctx *AnalysisContext) []Finding {
 			}
 
 			if isQueryChain && hasAll && !hasLimit {
+				severity := SeverityError
+				msg := route.Method + " " + route.Path + " — unauthenticated route calls .All() without .Limit() (DoS vector)"
+				if isAuthed {
+					severity = SeverityWarning
+					msg = route.Method + " " + route.Path + " — .All() without .Limit() (unbounded response size)"
+				}
 				findings = append(findings, Finding{
 					Rule:     "unbounded_query",
-					Severity: SeverityError,
+					Severity: severity,
 					File:     method.File,
 					Line:     method.Line,
-					Message:  route.Method + " " + route.Path + " — unauthenticated route calls .All() without .Limit() (DoS vector)",
+					Message:  msg,
 				})
 			}
 		}

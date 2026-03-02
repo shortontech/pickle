@@ -40,6 +40,16 @@ func (cc CallChain) Names() []string {
 	return names
 }
 
+// HasSegment returns true if any segment in the chain has the given name.
+func (cc CallChain) HasSegment(name string) bool {
+	for _, seg := range cc.Segments {
+		if seg.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // HasSegmentWithAuthArg returns true if any segment has an argument containing ctx.Auth()
 // either directly or via a local variable that was assigned from a ctx.Auth() expression.
 func (cc CallChain) HasSegmentWithAuthArg(prefix string) bool {

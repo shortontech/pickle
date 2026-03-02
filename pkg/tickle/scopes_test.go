@@ -79,7 +79,10 @@ func TestGenerateScopes(t *testing.T) {
 	tbl.Timestamp("created_at").NotNull()
 
 	columns := ColumnsFromTable(tbl)
-	output := GenerateScopes(blocks, columns, "User")
+	output, err := GenerateScopes(blocks, columns, "User")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// email should get "all" + "string" scopes
 	if !strings.Contains(output, "WhereEmail(val string)") {

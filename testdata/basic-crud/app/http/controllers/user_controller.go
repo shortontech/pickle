@@ -13,7 +13,7 @@ type UserController struct {
 }
 
 func (c UserController) Index(ctx *pickle.Context) pickle.Response {
-	users, err := models.QueryUser().AnyOwner().All()
+	users, err := models.QueryUser().AnyOwner().Limit(100).All()
 	if err != nil {
 		return ctx.Error(err)
 	}

@@ -113,8 +113,14 @@ func ColumnsFromTable(table *schema.Table) []ColumnDef {
 }
 
 // GenerateScopes stamps out scope functions for each column of a table.
-func GenerateScopes(blocks []ScopeBlock, columns []ColumnDef, modelName string) string {
+// Returns an error if blocks are provided but none match any column.
+func GenerateScopes(blocks []ScopeBlock, columns []ColumnDef, modelName string) (string, error) {
+	if len(blocks) == 0 {
+		return "", fmt.Errorf("no scope blocks provided for model %s", modelName)
+	}
+
 	var b strings.Builder
+	matched := 0
 
 	for _, col := range columns {
 		for _, block := range blocks {
@@ -133,10 +139,15 @@ func GenerateScopes(blocks []ScopeBlock, columns []ColumnDef, modelName string) 
 
 			b.WriteString(expanded)
 			b.WriteString("\n\n")
+			matched++
 		}
 	}
 
-	return b.String()
+	if matched == 0 {
+		return "", fmt.Errorf("no scope blocks matched any column for model %s", modelName)
+	}
+
+	return b.String(), nil
 }
 
 // IsTableScope returns true if the scope is a table-level scope (not per-column).

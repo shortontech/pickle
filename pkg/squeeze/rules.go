@@ -269,12 +269,15 @@ func ruleRequiredFields(ctx *AnalysisContext) []Finding {
 				continue
 			}
 
-			// Check if there's a Create call nearby using this literal
+			// Check if there's a Create call on the specific model's query builder
+			// e.g. models.QueryPost().Create(&post) — chain contains ["models", "QueryPost", "Create"]
 			chains := ExtractCallChains(m.Body, m.Fset)
+			expectedQuery := "Query" + lit.TypeName
 			hasCreate := false
 			for _, chain := range chains {
-				for _, name := range chain.Names() {
-					if name == "Create" {
+				chainNames := chain.Names()
+				for i, name := range chainNames {
+					if name == "Create" && i > 0 && chainNames[i-1] == expectedQuery {
 						hasCreate = true
 						break
 					}

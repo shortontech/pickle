@@ -1,6 +1,7 @@
 package squeeze
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -138,7 +139,7 @@ func ParseControllers(controllersDir string) (map[string]*ControllerMethod, erro
 	entries, err := os.ReadDir(controllersDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, fmt.Errorf("controllers directory not found: %s", controllersDir)
 		}
 		return nil, err
 	}

@@ -21,6 +21,7 @@ func (c PostController) Index(ctx *pickle.Context) pickle.Response {
 	posts, err := models.QueryPost().
 		WhereOwnedBy(authID).
 		WithUser().
+		Limit(100).
 		All()
 
 	if err != nil {

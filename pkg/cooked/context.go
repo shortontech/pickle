@@ -1,6 +1,7 @@
 package cooked
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -77,12 +78,13 @@ func (c *Context) BearerToken() string {
 }
 
 // SetAuth stores authentication info (called by auth middleware).
+// Panics if claims is not *AuthInfo — use &AuthInfo{UserID: ..., Claims: ...} instead of a raw type.
 func (c *Context) SetAuth(claims any) {
 	switch v := claims.(type) {
 	case *AuthInfo:
 		c.auth = v
 	default:
-		c.auth = &AuthInfo{Claims: v}
+		panic(fmt.Sprintf("pickle: SetAuth() requires *AuthInfo, got %T — wrap your claims: &pickle.AuthInfo{UserID: id, Claims: v}", claims))
 	}
 }
 

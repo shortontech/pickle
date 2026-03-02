@@ -76,11 +76,14 @@ func TestContextAuth(t *testing.T) {
 		t.Errorf("Auth() = %+v, want UserID=u1 Role=admin", ctx.Auth())
 	}
 
-	// SetAuth with raw claims
+	// SetAuth with non-AuthInfo panics
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Error("SetAuth with non-*AuthInfo should panic")
+		}
+	}()
 	ctx.SetAuth("raw-claims")
-	if ctx.Auth().Claims != "raw-claims" {
-		t.Errorf("Auth().Claims = %v, want raw-claims", ctx.Auth().Claims)
-	}
 }
 
 func TestContextResponseHelpers(t *testing.T) {

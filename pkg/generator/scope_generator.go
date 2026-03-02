@@ -15,7 +15,10 @@ import (
 func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packageName string) ([]byte, error) {
 	columns := tickle.ColumnsFromTable(table)
 	structName := tableToStructName(table.Name)
-	scopeBody := tickle.GenerateScopes(blocks, columns, structName)
+	scopeBody, err := tickle.GenerateScopes(blocks, columns, structName)
+	if err != nil {
+		return nil, fmt.Errorf("generating scopes for %s: %w", structName, err)
+	}
 
 	// Collect imports needed by the generated scopes
 	imports := collectScopeImports(table, blocks)
@@ -99,7 +102,10 @@ func GenerateViewQueryScopes(view *schema.View, blocks []tickle.ScopeBlock, pack
 	}
 
 	structName := tableToStructName(view.Name)
-	scopeBody := tickle.GenerateScopes(blocks, columns, structName)
+	scopeBody, err := tickle.GenerateScopes(blocks, columns, structName)
+	if err != nil {
+		return nil, fmt.Errorf("generating scopes for view %s: %w", structName, err)
+	}
 
 	imports := collectViewScopeImports(view, blocks)
 

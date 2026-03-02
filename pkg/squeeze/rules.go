@@ -385,8 +385,6 @@ func ruleUnboundedQuery(ctx *AnalysisContext) []Finding {
 			continue
 		}
 
-		isAuthed := route.HasAuthMiddleware(ctx.Config.Middleware)
-
 		chains := ExtractCallChains(method.Body, method.Fset)
 
 		for _, chain := range chains {
@@ -408,18 +406,12 @@ func ruleUnboundedQuery(ctx *AnalysisContext) []Finding {
 			}
 
 			if isQueryChain && hasAll && !hasLimit {
-				severity := SeverityError
-				msg := route.Method + " " + route.Path + " — unauthenticated route calls .All() without .Limit() (DoS vector)"
-				if isAuthed {
-					severity = SeverityWarning
-					msg = route.Method + " " + route.Path + " — .All() without .Limit() (unbounded response size)"
-				}
 				findings = append(findings, Finding{
 					Rule:     "unbounded_query",
-					Severity: severity,
+					Severity: SeverityError,
 					File:     method.File,
 					Line:     method.Line,
-					Message:  msg,
+					Message:  route.Method + " " + route.Path + " — .All() without .Limit() (unbounded response size)",
 				})
 			}
 		}

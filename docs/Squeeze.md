@@ -130,7 +130,7 @@ return ctx.JSON(200, models.PublicUsers(users))
 
 ### unbounded_query
 
-**Severity:** error (unauthenticated), warning (authenticated)
+**Severity:** error
 
 **What it catches:** Routes that call `.All()` without `.Limit()`. On unauthenticated routes, anyone on the internet can dump your entire table in one request — a denial-of-service vector. On authenticated routes, a single request can still return megabytes of data.
 

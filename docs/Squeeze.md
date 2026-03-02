@@ -30,6 +30,7 @@ squeeze:
     uuid_error_handling: true
     required_fields: true
     auth_without_middleware: true
+    param_mismatch: true
     no_printf: true
 ```
 
@@ -175,6 +176,24 @@ Then classify it in `pickle.yaml`:
 squeeze:
   middleware:
     rate_limit: [RateLimit]
+```
+
+### param_mismatch
+
+**Severity:** error
+
+**What it catches:** `ctx.Param()` or `ctx.ParamUUID()` calls where the parameter name doesn't match any parameter in the route definition. This is usually a typo — `ctx.Param("idd")` instead of `ctx.Param("id")` — and will panic at runtime.
+
+**How to fix:** Match the param name to your route definition:
+
+```go
+// Route: r.Get("/users/:id", ...)
+
+// BEFORE — typo, will panic
+id := ctx.Param("idd")
+
+// AFTER — matches route parameter
+id := ctx.Param("id")
 ```
 
 ### auth_without_middleware

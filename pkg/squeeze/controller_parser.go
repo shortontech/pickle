@@ -473,6 +473,58 @@ func exprContainsAuthCall(expr ast.Expr) bool {
 	return found
 }
 
+// FindParamNames returns all string literal arguments to ctx.Param() and ctx.ParamUUID() calls in a method body.
+func FindParamNames(body *ast.BlockStmt, fset *token.FileSet) []ParamCall {
+	var calls []ParamCall
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := sel.X.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if ident.Name != "ctx" || (sel.Sel.Name != "Param" && sel.Sel.Name != "ParamUUID") {
+			return true
+		}
+		if len(call.Args) != 1 {
+			return true
+		}
+		lit, ok := call.Args[0].(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		// Strip quotes
+		name := strings.Trim(lit.Value, "\"")
+		pos := fset.Position(call.Pos())
+		calls = append(calls, ParamCall{Name: name, Line: pos.Line})
+		return true
+	})
+	return calls
+}
+
+// ParamCall represents a ctx.Param("name") call found in a controller.
+type ParamCall struct {
+	Name string
+	Line int
+}
+
+// RouteParams extracts parameter names from a route path (e.g., "/users/:id" -> ["id"]).
+func RouteParams(path string) []string {
+	var params []string
+	for _, seg := range strings.Split(path, "/") {
+		if strings.HasPrefix(seg, ":") {
+			params = append(params, seg[1:])
+		}
+	}
+	return params
+}
+
 // PayloadIsModelWithoutPublic checks if a ctx.JSON payload is a model variable
 // that wasn't accessed via .Public(). Uses modelVars to identify which local
 // variables hold model-typed values.

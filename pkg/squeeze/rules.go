@@ -33,6 +33,7 @@ func AllRules() map[string]Rule {
 		"unbounded_query":     ruleUnboundedQuery,
 		"rate_limit_auth":     ruleRateLimitAuth,
 		"auth_without_middleware": ruleAuthWithoutMiddleware,
+		"param_mismatch":          ruleParamMismatch,
 	}
 }
 
@@ -457,6 +458,39 @@ func ruleRateLimitAuth(ctx *AnalysisContext) []Finding {
 			Line:     route.Line,
 			Message:  route.Method + " " + route.Path + " — auth endpoint without rate limiting (brute force vector)",
 		})
+	}
+
+	return findings
+}
+
+// ruleParamMismatch flags ctx.Param() calls where the param name doesn't match any route parameter.
+func ruleParamMismatch(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+
+	for _, route := range ctx.Routes {
+		key := route.ControllerType + "." + route.MethodName
+		method, ok := ctx.Methods[key]
+		if !ok {
+			continue
+		}
+
+		routeParams := make(map[string]bool)
+		for _, p := range RouteParams(route.Path) {
+			routeParams[p] = true
+		}
+
+		paramCalls := FindParamNames(method.Body, method.Fset)
+		for _, pc := range paramCalls {
+			if !routeParams[pc.Name] {
+				findings = append(findings, Finding{
+					Rule:     "param_mismatch",
+					Severity: SeverityError,
+					File:     method.File,
+					Line:     pc.Line,
+					Message:  route.Method + " " + route.Path + " — ctx.Param(\"" + pc.Name + "\") does not match any route parameter (will panic)",
+				})
+			}
+		}
 	}
 
 	return findings

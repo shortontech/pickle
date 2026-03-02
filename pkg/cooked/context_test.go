@@ -13,9 +13,15 @@ func TestContextParam(t *testing.T) {
 	if got := ctx.Param("id"); got != "abc-123" {
 		t.Errorf("Param(id) = %q, want %q", got, "abc-123")
 	}
-	if got := ctx.Param("missing"); got != "" {
-		t.Errorf("Param(missing) = %q, want empty", got)
-	}
+	// Param() should panic for missing params
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("Param(missing) should panic for undefined param")
+			}
+		}()
+		ctx.Param("missing")
+	}()
 }
 
 func TestContextQuery(t *testing.T) {

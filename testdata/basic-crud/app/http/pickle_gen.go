@@ -100,7 +100,11 @@ func (c *Context) ResponseWriter() http.ResponseWriter {
 
 // Param returns a URL path parameter by name (e.g. :id).
 func (c *Context) Param(name string) string {
-	return c.params[name]
+	val, ok := c.params[name]
+	if !ok {
+		panic("pickle: ctx.Param(\"" + name + "\") — no such route parameter (check route definition and spelling)")
+	}
+	return val
 }
 
 // SetParam sets a URL path parameter. Used by the generated route handler.
@@ -109,8 +113,9 @@ func (c *Context) SetParam(name, value string) {
 }
 
 // ParamUUID returns a URL path parameter parsed as a UUID.
-func (c *Context) ParamUUID(name string) uuid.UUID {
-	return uuid.MustParse(c.params[name])
+// Returns the parsed UUID and an error if the param is not a valid UUID.
+func (c *Context) ParamUUID(name string) (uuid.UUID, error) {
+	return uuid.Parse(c.Param(name))
 }
 
 // Query returns a query string parameter by name.

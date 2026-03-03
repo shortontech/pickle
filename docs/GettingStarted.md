@@ -217,7 +217,37 @@ pickle squeeze
 
 This catches IDOR vulnerabilities, missing rate limiting on auth endpoints, unbounded public queries, sensitive field leakage, unsafe UUID parsing, and more. See the **Squeeze** documentation for the full rule list and how to fix each finding.
 
-Run squeeze as part of your CI pipeline. A project that doesn't squeeze doesn't know if it's secure.
+Use `--hard` in CI to treat warnings as errors:
+
+```bash
+pickle squeeze --hard
+```
+
+A project that doesn't squeeze doesn't know if it's secure.
+
+## Installation
+
+```bash
+go install github.com/shortontech/pickle/cmd/pickle@latest
+```
+
+Source: [github.com/shortontech/pickle](https://github.com/shortontech/pickle)
+
+## Onboarding your team
+
+Anyone working on your project needs Pickle installed to regenerate code after changes. Add something like this to your project's README:
+
+```markdown
+## Setup
+
+Install [Pickle](https://github.com/shortontech/pickle):
+
+    go install github.com/shortontech/pickle/cmd/pickle@latest
+
+Generate code and start developing:
+
+    pickle --watch
+```
 
 ## The exit route
 

@@ -421,11 +421,14 @@ func cmdMakeMiddleware() {
 
 func cmdSqueeze() {
 	projectDir := "."
+	hard := false
 	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--project" && i+1 < len(args) {
 			projectDir = args[i+1]
 			i++
+		} else if args[i] == "--hard" {
+			hard = true
 		}
 	}
 
@@ -434,6 +437,13 @@ func cmdSqueeze() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
 		os.Exit(1)
+	}
+
+	// In --hard mode, promote all warnings to errors
+	if hard {
+		for i := range findings {
+			findings[i].Severity = squeeze.SeverityError
+		}
 	}
 
 	if len(findings) == 0 {

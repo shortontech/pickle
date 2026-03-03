@@ -1,6 +1,6 @@
 # Auth
 
-Pickle ships two auth drivers: **JWT** (default) and **Sessions**. Both implement the same `AuthDriver` interface. Set `AUTH_DRIVER` in your `.env` to choose.
+Pickle ships three auth drivers: **JWT** (default), **Sessions**, and **OAuth2 Client Credentials**. All implement the same `AuthDriver` interface. Set `AUTH_DRIVER` in your `.env` to choose.
 
 ## JWT
 
@@ -147,9 +147,63 @@ CSRF_COOKIE=csrf_token
 
 `SESSION_SECRET` is required for CSRF protection.
 
+## OAuth2 Client Credentials
+
+Machine-to-machine authentication using the OAuth2 client credentials grant. The driver acts as an OAuth2 provider — issuing opaque tokens at a token endpoint and validating Bearer tokens on protected routes.
+
+### Token endpoint
+
+Wire the token endpoint into your routes:
+
+```go
+// routes/web.go
+driver := auth.Driver("oauth").(*oauth.Driver)
+r.Post("/oauth2/token", driver.TokenEndpoint)
+```
+
+Clients authenticate with HTTP Basic auth and request a token:
+
+```
+POST /oauth2/token
+Authorization: Basic base64(client_id:client_secret)
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+```
+
+Response:
+
+```json
+{"access_token": "...", "token_type": "bearer", "expires_in": 3600}
+```
+
+### Validating tokens
+
+When `AUTH_DRIVER=oauth`, the auth middleware validates Bearer tokens against the `oauth_tokens` table and checks expiry. `ctx.Auth()` returns `UserID` set to the client ID and `Role` set to `"client"`.
+
+### Configuration
+
+```
+AUTH_DRIVER=oauth
+OAUTH_CLIENT_ID=my-client-id
+OAUTH_CLIENT_SECRET=my-client-secret
+OAUTH_TOKEN_EXPIRY=3600
+```
+
+### Migration
+
+Pickle generates `database/migrations/2026_03_03_200000_create_oauth_tokens_table_gen.go`:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `token` | `string(255)` | Primary key, the opaque token |
+| `client_id` | `string(255)` | Which client owns this token |
+| `expires_at` | `timestamp` | Token expiry |
+| `created_at` | `timestamp` | When the token was issued |
+
 ## Auth middleware
 
-Both drivers work with the same middleware. Use `auth.DefaultAuthMiddleware` or write your own:
+All drivers work with the same middleware. Use `auth.DefaultAuthMiddleware` or write your own:
 
 ```go
 // routes/web.go

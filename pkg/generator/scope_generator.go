@@ -71,6 +71,20 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 		}
 	}
 
+	// Generate chainable wrappers for base QueryBuilder methods so they
+	// return the typed query wrapper instead of *QueryBuilder[T].
+	for _, m := range []struct{ name, sig, call string }{
+		{"AnyOwner", "", "AnyOwner()"},
+		{"Limit", "n int", "Limit(n)"},
+		{"Offset", "n int", "Offset(n)"},
+		{"OrderBy", "column, direction string", "OrderBy(column, direction)"},
+	} {
+		b.WriteString(fmt.Sprintf("func (q *%s) %s(%s) *%s {\n", queryType, m.name, m.sig, queryType))
+		b.WriteString(fmt.Sprintf("\tq.QueryBuilder.%s\n", m.call))
+		b.WriteString(fmt.Sprintf("\treturn q\n"))
+		b.WriteString("}\n\n")
+	}
+
 	// Generate table-level scopes (FetchResource / FetchResources)
 	tableScopeBody := tickle.GenerateTableScopes(blocks, structName, HasOwnership(table))
 	b.WriteString(tableScopeBody)
@@ -129,6 +143,18 @@ func GenerateViewQueryScopes(view *schema.View, blocks []tickle.ScopeBlock, pack
 	b.WriteString(fmt.Sprintf("func Query%s() *%s {\n", structName, queryType))
 	b.WriteString(fmt.Sprintf("\treturn &%s{QueryBuilder: Query[%s](%q)}\n", queryType, structName, view.Name))
 	b.WriteString("}\n\n")
+
+	// Generate chainable wrappers for base QueryBuilder methods.
+	for _, m := range []struct{ name, sig, call string }{
+		{"Limit", "n int", "Limit(n)"},
+		{"Offset", "n int", "Offset(n)"},
+		{"OrderBy", "column, direction string", "OrderBy(column, direction)"},
+	} {
+		b.WriteString(fmt.Sprintf("func (q *%s) %s(%s) *%s {\n", queryType, m.name, m.sig, queryType))
+		b.WriteString(fmt.Sprintf("\tq.QueryBuilder.%s\n", m.call))
+		b.WriteString(fmt.Sprintf("\treturn q\n"))
+		b.WriteString("}\n\n")
+	}
 
 	b.WriteString(scopeBody)
 

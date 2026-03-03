@@ -12,7 +12,12 @@
 # Go build cache
 *.out
 
-# Generated output in test apps
+# Tickle-generated embeds (run: go run ./pkg/tickle/cmd/)
+pkg/generator/embed_*.go
+
+# Generated output in test apps (run: pickle generate --project ./testdata/basic-crud/)
+testdata/**/*_gen.go
+testdata/*/app/models/
 testdata/*/generated/
 
 # IDE

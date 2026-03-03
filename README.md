@@ -140,6 +140,32 @@ Everything flows from migrations. Everything is queryable via MCP. Everything is
 
 ## Contributing
 
-I don't want anything the user apps do to expose their pickle. That's public indecency.
+Pickle is open to contributions. Here's how to get started:
+
+```bash
+git clone https://github.com/shortontech/pickle.git
+cd pickle
+go run ./pkg/tickle/cmd/                                        # tickle your pickle
+go build ./...                                                   # build
+go run ./cmd/pickle/ generate --project ./testdata/basic-crud/   # pickle the test app
+go run ./cmd/pickle/ squeeze --project ./testdata/basic-crud/    # squeeze it
+go test ./...                                                    # test
+```
+
+Tickle-generated embeds and testdata output are gitignored. You generate them locally.
+
+**Before submitting a PR:**
+
+1. Run `go run ./pkg/tickle/cmd/` — always, not just if you think you changed something
+2. Run `go run ./cmd/pickle/ generate --project ./testdata/basic-crud/`
+3. Run `go run ./cmd/pickle/ squeeze --project ./testdata/basic-crud/` — must pass clean
+4. Run `go test ./...` — all tests must pass
+
+**Guidelines:**
+
+- Generated files (`*_gen.go`) are never edited by hand. Change the source in `pkg/cooked/`, `pkg/schema/`, or the generator, then regenerate.
+- Squeeze rules should have zero false positives. If a rule fires, it should be a real problem. Noisy rules get disabled by users and stop providing value.
+- Security is the priority. If a change weakens any security guarantee — even for convenience — it won't be merged.
+- Keep the dependency list minimal. Pickle's output has zero dependency on Pickle. New runtime dependencies need strong justification.
 
 **Laravel DX. Go binary. No runtime. 🥒**

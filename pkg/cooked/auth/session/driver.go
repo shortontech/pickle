@@ -18,6 +18,9 @@ type Driver struct {
 	ttl        int // seconds
 }
 
+// activeDriver holds the initialized driver instance for use by session helpers.
+var activeDriver *Driver
+
 // NewDriver creates a session auth driver. Config is read from environment:
 //   - SESSION_COOKIE: cookie name (default: "session_id")
 //   - SESSION_TTL: session lifetime in seconds (default: 86400)
@@ -42,11 +45,13 @@ func NewDriver(env func(string, string) string, db *sql.DB) *Driver {
 	sessionCookieName = cookieName
 	initCSRF(env)
 
-	return &Driver{
+	d := &Driver{
 		db:         db,
 		cookieName: cookieName,
 		ttl:        ttl,
 	}
+	activeDriver = d
+	return d
 }
 
 // Authenticate reads the session cookie, looks up the session in the database,

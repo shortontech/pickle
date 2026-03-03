@@ -23,6 +23,7 @@ type MiddlewareConfig struct {
 	Auth      []string `yaml:"auth"`       // middleware that provides authentication
 	Admin     []string `yaml:"admin"`      // middleware that provides admin access (implies auth)
 	RateLimit []string `yaml:"rate_limit"` // middleware that provides rate limiting
+	CSRF      []string `yaml:"csrf"`       // middleware that provides CSRF protection
 }
 
 // IsAuthMiddleware returns true if the given middleware name is classified as auth.
@@ -54,6 +55,20 @@ func (mc MiddlewareConfig) IsAdminMiddleware(name string) bool {
 // IsRateLimitMiddleware returns true if the given middleware name is classified as rate limiting.
 func (mc MiddlewareConfig) IsRateLimitMiddleware(name string) bool {
 	for _, m := range mc.RateLimit {
+		if m == name {
+			return true
+		}
+	}
+	return false
+}
+
+// IsCSRFMiddleware returns true if the given middleware name is classified as CSRF protection.
+// Defaults to matching "CSRF" if no CSRF middleware is configured.
+func (mc MiddlewareConfig) IsCSRFMiddleware(name string) bool {
+	if len(mc.CSRF) == 0 {
+		return name == "CSRF"
+	}
+	for _, m := range mc.CSRF {
 		if m == name {
 			return true
 		}

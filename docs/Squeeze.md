@@ -20,6 +20,7 @@ squeeze:
     auth: [Auth]
     admin: [RequireRole]
     rate_limit: [RateLimit]
+    csrf: [CSRF]
   rules:
     ownership_scoping: true
     read_scoping: true
@@ -31,6 +32,7 @@ squeeze:
     required_fields: true
     auth_without_middleware: true
     param_mismatch: true
+    csrf_missing: true
     no_printf: true
 ```
 
@@ -177,6 +179,31 @@ squeeze:
   middleware:
     rate_limit: [RateLimit]
 ```
+
+### csrf_missing
+
+**Severity:** error
+
+**What it catches:** POST, PUT, PATCH, and DELETE routes without CSRF middleware. Only fires when your project uses sessions (i.e., any controller or helper calls `session.Create`). Without CSRF protection, an attacker's website can submit forms to your app using the victim's session cookie.
+
+**How to fix:** Add `session.CSRF` to your route groups:
+
+```go
+r.Group("/app", session.CSRF, func(r *pickle.Router) {
+    r.Post("/register", controllers.AuthController{}.Register)
+    r.Post("/transfers", controllers.TransferController{}.Store, middleware.Auth)
+})
+```
+
+If you have a custom CSRF middleware, classify it in `pickle.yaml`:
+
+```yaml
+squeeze:
+  middleware:
+    csrf: [MyCSRF]
+```
+
+The default middleware name is `CSRF`. Requires `SESSION_SECRET` in your `.env`.
 
 ### param_mismatch
 

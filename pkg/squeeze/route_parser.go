@@ -50,6 +50,16 @@ func (r AnalyzedRoute) HasRateLimitMiddleware(mc MiddlewareConfig) bool {
 	return false
 }
 
+// HasCSRFMiddleware returns true if any middleware on this route is classified as CSRF protection.
+func (r AnalyzedRoute) HasCSRFMiddleware(mc MiddlewareConfig) bool {
+	for _, mw := range r.Middleware {
+		if mc.IsCSRFMiddleware(mw) {
+			return true
+		}
+	}
+	return false
+}
+
 var httpMethods = map[string]string{
 	"Get":    "GET",
 	"Post":   "POST",

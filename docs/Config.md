@@ -85,6 +85,32 @@ type ConnectionConfig struct {
 
 It has a `DSN()` method that returns the driver-specific connection string, and is used by `OpenDB()` to establish the database connection at startup.
 
+## Auth configuration
+
+Auth drivers are configured via environment variables. Set `AUTH_DRIVER` to choose the active driver.
+
+### JWT (default)
+
+```
+AUTH_DRIVER=jwt
+JWT_SECRET=your-secret-key
+JWT_ISSUER=myapp
+JWT_EXPIRY=3600
+JWT_ALGORITHM=HS256
+```
+
+### Sessions
+
+```
+AUTH_DRIVER=session
+SESSION_COOKIE=session_id
+SESSION_TTL=86400
+SESSION_SECRET=your-csrf-secret
+CSRF_COOKIE=csrf_token
+```
+
+`SESSION_SECRET` is required when using CSRF middleware. `SESSION_COOKIE` and `CSRF_COOKIE` have sensible defaults.
+
 ## .env file
 
 The `.env` file at your project root sets defaults for local development:
@@ -98,6 +124,8 @@ DB_PORT=5432
 DB_DATABASE=myapp
 DB_USERNAME=postgres
 DB_PASSWORD=secret
+AUTH_DRIVER=jwt
+JWT_SECRET=change-me
 ```
 
 Lines starting with `#` are comments. Values can be quoted with single or double quotes.

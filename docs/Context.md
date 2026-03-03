@@ -16,6 +16,9 @@ page := ctx.Query("page")
 // Bearer token from Authorization header
 token := ctx.BearerToken()
 
+// Cookie value by name
+csrfToken, err := ctx.Cookie("csrf_token")
+
 // Raw *http.Request for anything else
 req := ctx.Request()
 ```
@@ -75,6 +78,7 @@ All JSON responses set `Content-Type: application/json` automatically.
 | `Param(name)` | `string` | URL path parameter by name |
 | `Query(name)` | `string` | Query string parameter by name |
 | `BearerToken()` | `string` | Token from `Authorization: Bearer` header |
+| `Cookie(name)` | `string, error` | Cookie value by name |
 | `SetAuth(claims)` | — | Store auth info (called by middleware) |
 | `Auth()` | `*AuthInfo` | Retrieve auth info, nil if unauthenticated |
 | `JSON(status, data)` | `Response` | JSON response |

@@ -1,12 +1,9 @@
 # Pickle 🥒
 
-**Minimal context. Maximum security. Ship a Go binary.**
+**The world's most secure web framework.**
 
-Pickle is a code generation framework for Go that makes secure applications trivial to build — for humans and AI alike. You write controllers, migrations, request classes, and middleware using a Laravel-inspired syntax. Pickle generates plain, idiomatic Go. The output compiles to a single static binary with no runtime dependency on Pickle.
+Pickle is a code generation framework for Go that makes secure applications trivial to build — for humans and AI alike. You write controllers, migrations, request classes, and middleware. Pickle generates plain, idiomatic Go. The output compiles to a single static binary with no runtime dependency on Pickle.
 
-Using Anthropic's cheapest model (Haiku) and Pickle's MCP server, I built a working app with zero vulnerabilities in under 5 minutes. Not a demo. Not a toy. Production-grade code with parameterized queries, request validation, ownership scoping, and middleware enforcement — all generated from a handful of intent files.
-
-That's not a speed trick. That's context management.
 
 ### Why Pickle Exists
 
@@ -82,7 +79,7 @@ This is the advantage of code generation over runtime frameworks. A scanner can'
 
 ### Squeeze: Make Sure Nothing's Oozing
 
-`pickle squeeze` validates your entire project in one command — schema integrity, model correctness, route wiring, request validation, and middleware enforcement.
+`pickle squeeze` is static security analysis that understands your framework — routes, middleware, migrations, request classes — and catches vulnerabilities that generic linters can't see.
 
 ```bash
 pickle squeeze              # Run full validation
@@ -91,17 +88,39 @@ pickle squeeze --hard       # Strict mode: warnings become failures
 
 ```
 🥒 Squeezing your pickle...
-   Schemas:    ✅ 12 migrations (forward + rollback)
-   Models:     ✅ 8 models in sync
-   Routes:     ✅ 23 endpoints wired
-   Requests:   ✅ 14 request classes validated
-   Middleware:  ✅ 6 middleware chains verified
 🥒 Your pickle is crunchy.
 ```
 
-If a migration adds a column the model doesn't reflect — your pickle is oozing. If a route references a missing controller method — oozing. If a protected endpoint is missing auth middleware — definitely oozing. If a request struct allows an undeclared field — something is very wrong with your pickle.
+If something's wrong, Squeeze tells you exactly where:
 
-No pickle ships without being squeezed first. That's just good hygiene.
+```
+🥒 Squeezing your pickle...
+
+  app/http/controllers/post_controller.go
+    line 28 [ownership_scoping] PUT /api/posts/:id — query not scoped by owner (IDOR)
+
+🥒 Your pickle is oozing. 1 error(s), 0 warning(s)
+```
+
+#### Rules
+
+| Rule | Severity | What it catches |
+|------|----------|----------------|
+| `ownership_scoping` | error | Write routes (PUT/PATCH/DELETE) behind auth that don't scope queries by owner — IDOR vulnerabilities |
+| `read_scoping` | error | Read routes (GET) behind auth that don't scope queries by owner — data leakage |
+| `public_projection` | error | Unauthenticated routes returning model data without `.Public()` — leaks sensitive fields |
+| `unbounded_query` | error | `.All()` without `.Limit()` — denial-of-service vector |
+| `rate_limit_auth` | error | Auth endpoints (login, register) without rate limiting middleware |
+| `enum_validation` | error | Status/role/type fields without `oneof=` validation — accepts arbitrary values |
+| `uuid_error_handling` | error | `uuid.MustParse()` on user input — panics crash the server |
+| `required_fields` | error | `Create()` calls missing NOT NULL fields — database rejects the insert |
+| `no_printf` | warning | `fmt.Print*` in controllers — use structured logging |
+| `param_mismatch` | error | Route parameters (`:id`) with no corresponding `ctx.Param()` call, or vice versa |
+| `auth_without_middleware` | error | `ctx.Auth()` called in a controller without auth middleware on the route |
+
+Squeeze can catch IDOR at build time because Pickle controls the full pipeline — migrations define ownership columns, the router defines middleware, controllers use generated query scopes. Squeeze traces route → middleware → controller → query and verifies the chain is scoped. No other framework does this because no other framework owns all three layers at build time.
+
+No pickle ships without being squeezed first.
 
 ```yaml
 # .github/workflows/squeeze.yml

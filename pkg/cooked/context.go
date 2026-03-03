@@ -63,6 +63,15 @@ func (c *Context) ParamUUID(name string) (uuid.UUID, error) {
 	return uuid.Parse(c.Param(name))
 }
 
+// Cookie returns the value of the named cookie, or an error if not present.
+func (c *Context) Cookie(name string) (string, error) {
+	cookie, err := c.request.Cookie(name)
+	if err != nil {
+		return "", err
+	}
+	return cookie.Value, nil
+}
+
 // Query returns a query string parameter by name.
 func (c *Context) Query(name string) string {
 	return c.request.URL.Query().Get(name)

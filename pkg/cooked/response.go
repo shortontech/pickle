@@ -11,6 +11,7 @@ type Response struct {
 	StatusCode int
 	Body       any
 	Headers    map[string]string
+	Cookies    []*http.Cookie
 }
 
 // Header returns a copy of the response with an additional header set.
@@ -22,8 +23,17 @@ func (r Response) Header(key, value string) Response {
 	return r
 }
 
+// WithCookie returns a copy of the response with an additional cookie to set.
+func (r Response) WithCookie(c *http.Cookie) Response {
+	r.Cookies = append(r.Cookies, c)
+	return r
+}
+
 // Write serializes the response to an http.ResponseWriter.
 func (r Response) Write(w http.ResponseWriter) {
+	for _, c := range r.Cookies {
+		http.SetCookie(w, c)
+	}
 	for k, v := range r.Headers {
 		w.Header().Set(k, v)
 	}

@@ -36,9 +36,15 @@ func NewDriver(env func(string, string) string, db *sql.DB) *Driver {
 		}
 	}
 
+	cookieName := env("SESSION_COOKIE", "session_id")
+
+	// Configure CSRF middleware with access to session cookie name.
+	sessionCookieName = cookieName
+	initCSRF(env)
+
 	return &Driver{
 		db:         db,
-		cookieName: env("SESSION_COOKIE", "session_id"),
+		cookieName: cookieName,
 		ttl:        ttl,
 	}
 }

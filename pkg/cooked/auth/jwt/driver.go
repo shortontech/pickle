@@ -8,17 +8,22 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	pickle "github.com/shortontech/pickle/pkg/cooked"
 )
 
 // Driver implements JWT-based authentication using HMAC signing (HS256/HS384/HS512).
 // All crypto uses Go's stdlib — no third-party JWT library.
+// Tokens are tracked in a jwt_tokens table for revocation support.
 type Driver struct {
+	db        *sql.DB
 	secret    string
 	issuer    string
 	expiry    int // seconds
@@ -30,7 +35,7 @@ type Driver struct {
 //   - JWT_ISSUER: expected issuer claim (optional)
 //   - JWT_EXPIRY: token lifetime in seconds (default: 3600)
 //   - JWT_ALGORITHM: HS256, HS384, or HS512 (default: HS256)
-func NewDriver(env func(string, string) string, _ *sql.DB) *Driver {
+func NewDriver(env func(string, string) string, db *sql.DB) *Driver {
 	expiry := 3600
 	if v := env("JWT_EXPIRY", ""); v != "" {
 		// Simple atoi without importing strconv
@@ -46,6 +51,7 @@ func NewDriver(env func(string, string) string, _ *sql.DB) *Driver {
 	}
 
 	return &Driver{
+		db:        db,
 		secret:    env("JWT_SECRET", ""),
 		issuer:    env("JWT_ISSUER", ""),
 		expiry:    expiry,
@@ -55,6 +61,7 @@ func NewDriver(env func(string, string) string, _ *sql.DB) *Driver {
 
 // Claims represents standard + custom JWT claims.
 type Claims struct {
+	JTI       string         `json:"jti,omitempty"`
 	Subject   string         `json:"sub,omitempty"`
 	Issuer    string         `json:"iss,omitempty"`
 	ExpiresAt int64          `json:"exp,omitempty"`
@@ -74,10 +81,15 @@ func (d *Driver) Authenticate(r *http.Request) (*pickle.AuthInfo, error) {
 	return d.ValidateToken(token)
 }
 
-// SignToken creates a signed JWT from the given claims.
+// SignToken creates a signed JWT from the given claims and registers it in the
+// jwt_tokens table for revocation tracking. The token is not valid unless it
+// exists in the table.
 func (d *Driver) SignToken(claims Claims) (string, error) {
 	if d.secret == "" {
 		return "", errors.New("jwt: secret not configured")
+	}
+	if d.db == nil {
+		return "", errors.New("jwt: database not configured")
 	}
 
 	now := time.Now().Unix()
@@ -89,6 +101,9 @@ func (d *Driver) SignToken(claims Claims) (string, error) {
 	}
 	if claims.Issuer == "" && d.issuer != "" {
 		claims.Issuer = d.issuer
+	}
+	if claims.JTI == "" {
+		claims.JTI = uuid.New().String()
 	}
 
 	alg := d.algorithm
@@ -108,6 +123,16 @@ func (d *Driver) SignToken(claims Claims) (string, error) {
 	sig, err := hmacSign([]byte(signingInput), []byte(d.secret), alg)
 	if err != nil {
 		return "", err
+	}
+
+	// Register the token in the allowlist.
+	expiresAt := time.Unix(claims.ExpiresAt, 0)
+	_, err = d.db.Exec(
+		"INSERT INTO jwt_tokens (jti, user_id, expires_at, created_at) VALUES ($1, $2, $3, NOW())",
+		claims.JTI, claims.Subject, expiresAt,
+	)
+	if err != nil {
+		return "", fmt.Errorf("jwt: failed to register token: %w", err)
 	}
 
 	return signingInput + "." + base64URLEncode(sig), nil
@@ -174,11 +199,53 @@ func (d *Driver) ValidateToken(tokenStr string) (*pickle.AuthInfo, error) {
 		return nil, errors.New("jwt: invalid issuer")
 	}
 
+	// Check revocation allowlist
+	if d.db != nil && claims.JTI != "" {
+		var revokedAt sql.NullTime
+		err := d.db.QueryRow(
+			"SELECT revoked_at FROM jwt_tokens WHERE jti = $1",
+			claims.JTI,
+		).Scan(&revokedAt)
+		if err == sql.ErrNoRows {
+			return nil, errors.New("jwt: token not found (revoked or never issued)")
+		}
+		if err != nil {
+			return nil, errors.New("jwt: database error")
+		}
+		if revokedAt.Valid {
+			return nil, errors.New("jwt: token revoked")
+		}
+	}
+
 	return &pickle.AuthInfo{
 		UserID: claims.Subject,
 		Role:   claims.Role,
 		Claims: claims,
 	}, nil
+}
+
+// RevokeToken revokes a single token by JTI.
+func (d *Driver) RevokeToken(jti string) error {
+	if d.db == nil {
+		return errors.New("jwt: database not configured")
+	}
+	_, err := d.db.Exec("UPDATE jwt_tokens SET revoked_at = NOW() WHERE jti = $1", jti)
+	if err != nil {
+		return fmt.Errorf("jwt: revoke token: %w", err)
+	}
+	return nil
+}
+
+// RevokeAllForUser revokes all tokens for the given user ID.
+func (d *Driver) RevokeAllForUser(userID string) error {
+	if d.db == nil {
+		return errors.New("jwt: database not configured")
+	}
+	_, err := d.db.Exec("UPDATE jwt_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL", userID)
+	if err != nil {
+		return fmt.Errorf("jwt: revoke all for user: %w", err)
+	}
+	return nil
 }
 
 // --- internal helpers ---

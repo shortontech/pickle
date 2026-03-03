@@ -5,6 +5,7 @@ go 1.25.7
 require github.com/fsnotify/fsnotify v1.9.0
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/modelcontextprotocol/go-sdk v1.3.1 // indirect

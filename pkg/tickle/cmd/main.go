@@ -55,6 +55,11 @@ var templates = []struct {
 		output:  "pkg/generator/embed_auth_session_migrations.go",
 		perFile: true,
 	},
+	{
+		srcDir:  "pkg/cooked/auth/jwt/migrations",
+		output:  "pkg/generator/embed_auth_jwt_migrations.go",
+		perFile: true,
+	},
 }
 
 func main() {

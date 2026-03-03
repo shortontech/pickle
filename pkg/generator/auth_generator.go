@@ -35,6 +35,9 @@ var builtinAuthMigrations = map[string][]struct {
 	Filename string
 	Embed    string
 }{
+	"jwt": {
+		{Filename: "2026_03_03_100000_create_jwt_tokens_table", Embed: embed_2026_03_03_100000_create_jwt_tokens_table},
+	},
 	"session": {
 		{Filename: "2026_02_27_011700_create_sessions_table", Embed: embed_2026_02_27_011700_create_sessions_table},
 	},

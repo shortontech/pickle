@@ -32,6 +32,13 @@ func Create(moduleName, targetDir string) error {
 		return fmt.Errorf("creating app/commands: %w", err)
 	}
 
+	// Create auth driver directories for all built-in drivers
+	for _, driver := range []string{"jwt", "session", "oauth"} {
+		if err := os.MkdirAll(filepath.Join(targetDir, "app", "http", "auth", driver), 0o755); err != nil {
+			return fmt.Errorf("creating app/http/auth/%s: %w", driver, err)
+		}
+	}
+
 	for relPath, content := range files {
 		absPath := filepath.Join(targetDir, relPath)
 		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {

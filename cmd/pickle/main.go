@@ -218,6 +218,14 @@ func cmdGenerate() {
 		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Run go mod tidy so new imports (e.g. shopspring/decimal) get resolved
+	cmd := exec.Command("go", "mod", "tidy")
+	cmd.Dir = project.Dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: go mod tidy failed: %v\n%s", err, out)
+	}
+
 	fmt.Println("pickle: done")
 }
 

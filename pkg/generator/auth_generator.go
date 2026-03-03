@@ -53,6 +53,9 @@ var builtinAuthMigrations = map[string][]struct {
 func ScanAuthDrivers(authDir string) ([]AuthDriverInfo, error) {
 	entries, err := os.ReadDir(authDir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 

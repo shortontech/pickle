@@ -367,9 +367,14 @@ func Generate(project *Project, picklePkgDir string) error {
 		return err
 	}
 
-	// 1b. Generate auth drivers if app/http/auth/ exists
+	// 1b. Generate all built-in auth drivers (always present, user overrides via driver.go)
 	authDir := layout.AuthDir
-	if _, err := os.Stat(authDir); err == nil {
+	for name := range builtinAuthDrivers {
+		if err := os.MkdirAll(filepath.Join(authDir, name), 0o755); err != nil {
+			return fmt.Errorf("creating auth dir for %s: %w", name, err)
+		}
+	}
+	{
 		fmt.Println("  scanning auth drivers")
 		drivers, err := ScanAuthDrivers(authDir)
 		if err != nil {

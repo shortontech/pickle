@@ -6,6 +6,10 @@ Everything you need to go from zero to a running Pickle app.
 
 You write controllers, migrations, request classes, and middleware in a Laravel-like syntax. Pickle watches your project and generates all the Go boilerplate — models, query builders, request bindings, config glue, and the app entrypoint. The output is plain Go. No runtime dependency, no reflection magic, just a static binary.
 
+## Prerequisites
+
+Go 1.23+ and PostgreSQL running locally.
+
 ## Creating a project
 
 ```bash
@@ -106,7 +110,7 @@ type PostController struct {
 }
 
 func (c PostController) Index(ctx *pickle.Context) pickle.Response {
-    posts, err := models.QueryPost().All()
+    posts, err := models.QueryPost().Limit(50).All()
     if err != nil {
         return ctx.Error(err)
     }
@@ -119,8 +123,13 @@ func (c PostController) Store(ctx *pickle.Context) pickle.Response {
         return ctx.JSON(bindErr.Status, bindErr)
     }
 
+    authID, err := uuid.Parse(ctx.Auth().UserID)
+    if err != nil {
+        return ctx.Unauthorized("invalid auth")
+    }
+
     post := &models.Post{
-        UserID: uuid.MustParse(ctx.Auth().UserID),
+        UserID: authID,
         Title:  req.Title,
         Body:   req.Body,
     }
@@ -221,6 +230,13 @@ Use `--hard` in CI to treat warnings as errors:
 
 ```bash
 pickle squeeze --hard
+```
+
+Add it to your CI pipeline:
+
+```yaml
+- name: Squeeze the pickle
+  run: pickle squeeze --hard
 ```
 
 A project that doesn't squeeze doesn't know if it's secure.

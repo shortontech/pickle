@@ -12,6 +12,7 @@ import (
     pickle "myapp/app/http"
     "myapp/app/http/requests"
     "myapp/app/models"
+    "github.com/google/uuid"
 )
 
 type UserController struct {
@@ -19,7 +20,7 @@ type UserController struct {
 }
 
 func (c UserController) Index(ctx *pickle.Context) pickle.Response {
-    users, err := models.QueryUser().All()
+    users, err := models.QueryUser().Limit(50).All()
     if err != nil {
         return ctx.Error(err)
     }
@@ -27,9 +28,12 @@ func (c UserController) Index(ctx *pickle.Context) pickle.Response {
 }
 
 func (c UserController) Show(ctx *pickle.Context) pickle.Response {
-    user, err := models.QueryUser().
-        WhereID(uuid.MustParse(ctx.Param("id"))).
-        First()
+    id, err := uuid.Parse(ctx.Param("id"))
+    if err != nil {
+        return ctx.JSON(400, map[string]string{"error": "invalid id"})
+    }
+
+    user, err := models.QueryUser().WhereID(id).First()
     if err != nil {
         return ctx.NotFound("user not found")
     }

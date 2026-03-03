@@ -10,11 +10,12 @@ import (
 
 // AnalysisContext holds all parsed project data for rules to inspect.
 type AnalysisContext struct {
-	Routes     []AnalyzedRoute
-	Methods    map[string]*ControllerMethod
-	Requests   []generator.RequestDef
-	Tables     []*schema.Table
-	Config     SqueezeConfig
+	Routes       []AnalyzedRoute
+	Methods      map[string]*ControllerMethod
+	Requests     []generator.RequestDef
+	Tables       []*schema.Table
+	Config       SqueezeConfig
+	FuncRegistry FuncRegistry
 }
 
 // Rule is a function that inspects the analysis context and returns findings.
@@ -85,8 +86,8 @@ func ruleOwnershipScoping(ctx *AnalysisContext) []Finding {
 			continue
 		}
 
-		chains := ExtractCallChains(method.Body, method.Fset)
 		authVars := FindAuthTaintedVars(method.Body)
+		chains := ExtractCallChainsRecursive(method.Body, method.Fset, ctx.FuncRegistry, authVars)
 
 		// Look for query chains that include a Where* with ctx.Auth() in args
 		// (either directly or via a local variable derived from ctx.Auth())
@@ -254,8 +255,8 @@ func ruleRequiredFields(ctx *AnalysisContext) []Finding {
 	}
 
 	for _, m := range ctx.Methods {
-		// Find composite literals in the method
-		lits := FindCompositeLiterals(m.Body, m.Fset)
+		// Find composite literals in the method (and recursively in called functions)
+		lits := FindCompositeLiteralsRecursive(m.Body, m.Fset, ctx.FuncRegistry)
 		for _, lit := range lits {
 			if lit.PackageName != "models" {
 				continue
@@ -271,7 +272,8 @@ func ruleRequiredFields(ctx *AnalysisContext) []Finding {
 
 			// Check if there's a Create call on the specific model's query builder
 			// e.g. models.QueryPost().Create(&post) — chain contains ["models", "QueryPost", "Create"]
-			chains := ExtractCallChains(m.Body, m.Fset)
+			authVarsReq := FindAuthTaintedVars(m.Body)
+			chains := ExtractCallChainsRecursive(m.Body, m.Fset, ctx.FuncRegistry, authVarsReq)
 			expectedQuery := "Query" + lit.TypeName
 			hasCreate := false
 			for _, chain := range chains {
@@ -336,8 +338,8 @@ func ruleReadScoping(ctx *AnalysisContext) []Finding {
 			continue
 		}
 
-		chains := ExtractCallChains(method.Body, method.Fset)
 		authVars := FindAuthTaintedVars(method.Body)
+		chains := ExtractCallChainsRecursive(method.Body, method.Fset, ctx.FuncRegistry, authVars)
 
 		hasOwnershipScope := false
 		for _, chain := range chains {
@@ -390,7 +392,8 @@ func ruleUnboundedQuery(ctx *AnalysisContext) []Finding {
 			continue
 		}
 
-		chains := ExtractCallChains(method.Body, method.Fset)
+		authVarsUnbounded := FindAuthTaintedVars(method.Body)
+		chains := ExtractCallChainsRecursive(method.Body, method.Fset, ctx.FuncRegistry, authVarsUnbounded)
 
 		for _, chain := range chains {
 			chainNames := chain.Names()

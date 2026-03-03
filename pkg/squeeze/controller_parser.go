@@ -24,6 +24,7 @@ type ControllerMethod struct {
 type CallChain struct {
 	Segments []ChainSegment
 	Line     int
+	AuthVars map[string]bool // auth-tainted variable names in scope for this chain
 }
 
 // ChainSegment is one link in a call chain.
@@ -60,6 +61,18 @@ func (cc CallChain) HasSegmentWithAuthArg(prefix string) bool {
 // HasSegmentWithAuthArgTainted is like HasSegmentWithAuthArg but also accepts a set of
 // local variable names known to carry auth-derived values (e.g. authID from uuid.Parse(ctx.Auth().UserID)).
 func (cc CallChain) HasSegmentWithAuthArgTainted(prefix string, authVars map[string]bool) bool {
+	// Merge caller-provided authVars with chain-specific authVars
+	merged := authVars
+	if len(cc.AuthVars) > 0 {
+		merged = make(map[string]bool)
+		for v := range authVars {
+			merged[v] = true
+		}
+		for v := range cc.AuthVars {
+			merged[v] = true
+		}
+	}
+
 	for _, seg := range cc.Segments {
 		if !strings.HasPrefix(seg.Name, prefix) {
 			continue
@@ -68,7 +81,7 @@ func (cc CallChain) HasSegmentWithAuthArgTainted(prefix string, authVars map[str
 			if exprContainsAuthCall(arg) {
 				return true
 			}
-			if len(authVars) > 0 && exprIsAuthVar(arg, authVars) {
+			if len(merged) > 0 && exprIsAuthVar(arg, merged) {
 				return true
 			}
 		}
@@ -315,22 +328,24 @@ func FindMustParseCalls(body *ast.BlockStmt, fset *token.FileSet) []MustParseCal
 // FindCompositeLiterals finds &models.Type{...} composite literals in a method body.
 func FindCompositeLiterals(body *ast.BlockStmt, fset *token.FileSet) []CompositeLitInfo {
 	var lits []CompositeLitInfo
+	// Track composite lits we've already seen via &expr to avoid double-counting
+	seen := make(map[*ast.CompositeLit]bool)
 	ast.Inspect(body, func(n ast.Node) bool {
 		// Look for &models.Post{...}
 		unary, ok := n.(*ast.UnaryExpr)
-		if !ok || unary.Op != token.AND {
-			// Also check direct composite lit (without &)
-			cl, ok := n.(*ast.CompositeLit)
-			if !ok {
-				return true
-			}
-			if info, ok := parseCompositeLit(cl, fset); ok {
-				lits = append(lits, info)
+		if ok && unary.Op == token.AND {
+			cl, ok := unary.X.(*ast.CompositeLit)
+			if ok {
+				seen[cl] = true
+				if info, ok := parseCompositeLit(cl, fset); ok {
+					lits = append(lits, info)
+				}
 			}
 			return true
 		}
-		cl, ok := unary.X.(*ast.CompositeLit)
-		if !ok {
+		// Also check direct composite lit (without &)
+		cl, ok := n.(*ast.CompositeLit)
+		if !ok || seen[cl] {
 			return true
 		}
 		if info, ok := parseCompositeLit(cl, fset); ok {
@@ -524,6 +539,181 @@ func RouteParams(path string) []string {
 		}
 	}
 	return params
+}
+
+// ParsedFunc represents a parsed project-local function for inlining.
+type ParsedFunc struct {
+	Body   *ast.BlockStmt
+	Fset   *token.FileSet
+	Params []*ast.Field
+}
+
+// FuncRegistry maps "pkg.FuncName" to parsed function info.
+type FuncRegistry map[string]*ParsedFunc
+
+// ParseProjectFunctions walks the app/ directory and indexes all top-level functions
+// (excluding _gen.go and _test.go files) by "packageName.FuncName".
+func ParseProjectFunctions(projectDir string) FuncRegistry {
+	registry := make(FuncRegistry)
+	appDir := filepath.Join(projectDir, "app")
+
+	_ = filepath.Walk(appDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") ||
+			strings.HasSuffix(path, "_gen.go") ||
+			strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		// Skip controllers — they're already parsed separately
+		if strings.Contains(path, filepath.Join("http", "controllers")) {
+			return nil
+		}
+
+		fset := token.NewFileSet()
+		f, parseErr := parser.ParseFile(fset, path, nil, 0)
+		if parseErr != nil {
+			return nil
+		}
+
+		pkgName := f.Name.Name
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil || fn.Body == nil {
+				continue
+			}
+			key := pkgName + "." + fn.Name.Name
+			registry[key] = &ParsedFunc{
+				Body:   fn.Body,
+				Fset:   fset,
+				Params: fn.Type.Params.List,
+			}
+		}
+		return nil
+	})
+
+	return registry
+}
+
+// ExtractCallChainsRecursive extracts call chains from a method body, recursively
+// inlining project-local function calls to discover chains inside service functions.
+func ExtractCallChainsRecursive(body *ast.BlockStmt, fset *token.FileSet, registry FuncRegistry, authVars map[string]bool) []CallChain {
+	chains := ExtractCallChains(body, fset)
+
+	if len(registry) == 0 {
+		return chains
+	}
+
+	// Find project-local calls and inline them
+	visited := make(map[string]bool)
+	var inlineFrom func(body *ast.BlockStmt, fset *token.FileSet, authVars map[string]bool)
+	inlineFrom = func(body *ast.BlockStmt, fset *token.FileSet, authVars map[string]bool) {
+		ast.Inspect(body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			// Look for pkg.Func() calls
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			pkgIdent, ok := sel.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+
+			key := pkgIdent.Name + "." + sel.Sel.Name
+			fn, ok := registry[key]
+			if !ok || visited[key] {
+				return true
+			}
+			visited[key] = true
+
+			// Build auth vars scoped to the inner function — only from:
+			// 1. Argument-to-parameter mapping (auth taint flows through call args)
+			// 2. Auth-tainted assignments inside the function body itself
+			// NOT from outer variable names (prevents name collision false positives)
+			innerAuthVars := make(map[string]bool)
+
+			// Map call args to function params for auth taint
+			argIdx := 0
+			for _, field := range fn.Params {
+				for _, paramName := range field.Names {
+					if argIdx < len(call.Args) {
+						if exprIsAuthVar(call.Args[argIdx], authVars) || exprContainsAuthCall(call.Args[argIdx]) {
+							innerAuthVars[paramName.Name] = true
+						}
+					}
+					argIdx++
+				}
+			}
+
+			// Also find auth tainted vars inside the function body
+			for v := range FindAuthTaintedVars(fn.Body) {
+				innerAuthVars[v] = true
+			}
+
+			// Extract chains from the inlined function and tag with scoped auth vars
+			innerChains := ExtractCallChains(fn.Body, fn.Fset)
+			for i := range innerChains {
+				innerChains[i].AuthVars = innerAuthVars
+				chains = append(chains, innerChains[i])
+			}
+
+			// Recurse into the function body (with scoped auth vars, not outer)
+			inlineFrom(fn.Body, fn.Fset, innerAuthVars)
+
+			visited[key] = false // allow re-expansion from different call sites
+			return true
+		})
+	}
+
+	inlineFrom(body, fset, authVars)
+	return chains
+}
+
+// FindCompositeLiteralsRecursive finds composite literals in a method body and
+// recursively in any project-local functions called from it.
+func FindCompositeLiteralsRecursive(body *ast.BlockStmt, fset *token.FileSet, registry FuncRegistry) []CompositeLitInfo {
+	lits := FindCompositeLiterals(body, fset)
+
+	if len(registry) == 0 {
+		return lits
+	}
+
+	visited := make(map[string]bool)
+	var findInBody func(body *ast.BlockStmt, fset *token.FileSet)
+	findInBody = func(body *ast.BlockStmt, fset *token.FileSet) {
+		ast.Inspect(body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			pkgIdent, ok := sel.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			key := pkgIdent.Name + "." + sel.Sel.Name
+			fn, ok := registry[key]
+			if !ok || visited[key] {
+				return true
+			}
+			visited[key] = true
+			lits = append(lits, FindCompositeLiterals(fn.Body, fn.Fset)...)
+			findInBody(fn.Body, fn.Fset)
+			visited[key] = false
+			return true
+		})
+	}
+	findInBody(body, fset)
+
+	return lits
 }
 
 // PayloadIsModelWithoutPublic checks if a ctx.JSON payload is a model variable

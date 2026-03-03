@@ -4,6 +4,7 @@ import (
 	pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
 	"github.com/shortontech/pickle/testdata/basic-crud/app/http/requests"
 	"github.com/shortontech/pickle/testdata/basic-crud/app/models"
+	"github.com/shortontech/pickle/testdata/basic-crud/app/services"
 
 	"github.com/google/uuid"
 )
@@ -66,14 +67,8 @@ func (c PostController) Store(ctx *pickle.Context) pickle.Response {
 		return ctx.JSON(bindErr.Status, bindErr)
 	}
 
-	post := &models.Post{
-		UserID: authID,
-		Title:  req.Title,
-		Body:   req.Body,
-		Status: "draft",
-	}
-
-	if err := models.QueryPost().Create(post); err != nil {
+	post, err := services.CreatePost(authID, req.Title, req.Body)
+	if err != nil {
 		return ctx.Error(err)
 	}
 

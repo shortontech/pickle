@@ -50,13 +50,17 @@ func Run(projectDir string) ([]Finding, error) {
 		tables = nil
 	}
 
+	// 6b. Build function registry for recursive inlining
+	funcRegistry := ParseProjectFunctions(project.Dir)
+
 	// 7. Build analysis context
 	actx := &AnalysisContext{
-		Routes:   routes,
-		Methods:  methods,
-		Requests: requests,
-		Tables:   tables,
-		Config:   cfg.Squeeze,
+		Routes:       routes,
+		Methods:      methods,
+		Requests:     requests,
+		Tables:       tables,
+		Config:       cfg.Squeeze,
+		FuncRegistry: funcRegistry,
 	}
 
 	// 8. Run enabled rules

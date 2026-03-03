@@ -60,6 +60,15 @@ var templates = []struct {
 		output:  "pkg/generator/embed_auth_jwt_migrations.go",
 		perFile: true,
 	},
+	{
+		srcDir: "pkg/cooked/auth/oauth",
+		output: "pkg/generator/embed_auth_oauth.go",
+	},
+	{
+		srcDir:  "pkg/cooked/auth/oauth/migrations",
+		output:  "pkg/generator/embed_auth_oauth_migrations.go",
+		perFile: true,
+	},
 }
 
 func main() {

@@ -1,0 +1,186 @@
+package oauth
+
+import (
+	"crypto/rand"
+	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	pickle "github.com/shortontech/pickle/pkg/cooked"
+)
+
+// Driver implements OAuth2 client credentials authentication.
+// Tokens are opaque strings stored in the oauth_tokens table.
+type Driver struct {
+	db           *sql.DB
+	clientID     string
+	clientSecret string
+	expiry       int // seconds
+}
+
+// NewDriver creates an OAuth2 client credentials auth driver. Config is read from environment:
+//   - OAUTH_CLIENT_ID: expected client ID (required)
+//   - OAUTH_CLIENT_SECRET: expected client secret (required)
+//   - OAUTH_TOKEN_EXPIRY: token lifetime in seconds (default: 3600)
+func NewDriver(env func(string, string) string, db *sql.DB) *Driver {
+	expiry := 3600
+	if v := env("OAUTH_TOKEN_EXPIRY", ""); v != "" {
+		n := 0
+		for _, c := range v {
+			if c >= '0' && c <= '9' {
+				n = n*10 + int(c-'0')
+			}
+		}
+		if n > 0 {
+			expiry = n
+		}
+	}
+
+	return &Driver{
+		db:           db,
+		clientID:     env("OAUTH_CLIENT_ID", ""),
+		clientSecret: env("OAUTH_CLIENT_SECRET", ""),
+		expiry:       expiry,
+	}
+}
+
+// Authenticate extracts the Bearer token from the request, validates it
+// against the oauth_tokens table, and returns AuthInfo on success.
+func (d *Driver) Authenticate(r *http.Request) (*pickle.AuthInfo, error) {
+	h := r.Header.Get("Authorization")
+	if !strings.HasPrefix(h, "Bearer ") {
+		return nil, errors.New("missing bearer token")
+	}
+	token := h[7:]
+	return d.ValidateToken(token)
+}
+
+// ValidateToken checks an opaque token against the oauth_tokens table.
+func (d *Driver) ValidateToken(token string) (*pickle.AuthInfo, error) {
+	if d.db == nil {
+		return nil, errors.New("oauth: database not configured")
+	}
+
+	var clientID string
+	var expiresAt time.Time
+	err := d.db.QueryRow(
+		"SELECT client_id, expires_at FROM oauth_tokens WHERE token = $1",
+		token,
+	).Scan(&clientID, &expiresAt)
+	if err == sql.ErrNoRows {
+		return nil, errors.New("oauth: invalid token")
+	}
+	if err != nil {
+		return nil, errors.New("oauth: database error")
+	}
+
+	if time.Now().After(expiresAt) {
+		return nil, errors.New("oauth: token expired")
+	}
+
+	return &pickle.AuthInfo{
+		UserID: clientID,
+		Role:   "client",
+	}, nil
+}
+
+// TokenEndpoint is a handler for POST /oauth2/token that implements the
+// OAuth2 client credentials grant. Wire it into your routes:
+//
+//	r.Post("/oauth2/token", oauth.TokenEndpoint)
+func (d *Driver) TokenEndpoint(ctx *pickle.Context) pickle.Response {
+	r := ctx.Request()
+
+	// Validate content type
+	ct := r.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/x-www-form-urlencoded") {
+		return ctx.JSON(400, map[string]string{
+			"error":             "invalid_request",
+			"error_description": "Content-Type must be application/x-www-form-urlencoded",
+		})
+	}
+
+	// Validate grant type
+	if err := r.ParseForm(); err != nil {
+		return ctx.JSON(400, map[string]string{
+			"error":             "invalid_request",
+			"error_description": "malformed form body",
+		})
+	}
+	if r.FormValue("grant_type") != "client_credentials" {
+		return ctx.JSON(400, map[string]string{
+			"error":             "unsupported_grant_type",
+			"error_description": "only client_credentials grant type is supported",
+		})
+	}
+
+	// Decode Basic auth
+	clientID, clientSecret, ok := parseBasicAuth(r.Header.Get("Authorization"))
+	if !ok {
+		return ctx.JSON(401, map[string]string{
+			"error":             "invalid_client",
+			"error_description": "missing or malformed Authorization header",
+		})
+	}
+
+	// Validate credentials
+	if clientID != d.clientID || clientSecret != d.clientSecret {
+		return ctx.JSON(401, map[string]string{
+			"error":             "invalid_client",
+			"error_description": "invalid client credentials",
+		})
+	}
+
+	// Generate opaque token
+	token, err := generateToken()
+	if err != nil {
+		return ctx.Error(err)
+	}
+
+	expiresAt := time.Now().Add(time.Duration(d.expiry) * time.Second)
+
+	// Store token
+	_, err = d.db.Exec(
+		"INSERT INTO oauth_tokens (token, client_id, expires_at, created_at) VALUES ($1, $2, $3, NOW())",
+		token, clientID, expiresAt,
+	)
+	if err != nil {
+		return ctx.Error(fmt.Errorf("oauth: failed to store token: %w", err))
+	}
+
+	return ctx.JSON(200, map[string]any{
+		"access_token": token,
+		"token_type":   "bearer",
+		"expires_in":   d.expiry,
+	})
+}
+
+// parseBasicAuth decodes an "Authorization: Basic <base64>" header.
+func parseBasicAuth(header string) (string, string, bool) {
+	if !strings.HasPrefix(header, "Basic ") {
+		return "", "", false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(header[6:])
+	if err != nil {
+		return "", "", false
+	}
+	parts := strings.SplitN(string(decoded), ":", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+// generateToken creates a cryptographically random opaque token.
+func generateToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}

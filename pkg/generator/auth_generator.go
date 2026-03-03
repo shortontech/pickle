@@ -26,6 +26,7 @@ type AuthDriverInfo struct {
 var builtinAuthDrivers = map[string]string{
 	"jwt":     embedAUTHJWT,
 	"session": embedAUTHSESSION,
+	"oauth":   embedAUTHOAUTH,
 }
 
 // builtinAuthMigrations maps driver names to a list of (filename, embed) pairs.
@@ -40,6 +41,9 @@ var builtinAuthMigrations = map[string][]struct {
 	},
 	"session": {
 		{Filename: "2026_02_27_011700_create_sessions_table", Embed: embed_2026_02_27_011700_create_sessions_table},
+	},
+	"oauth": {
+		{Filename: "2026_03_03_200000_create_oauth_tokens_table", Embed: embed_2026_03_03_200000_create_oauth_tokens_table},
 	},
 }
 

@@ -64,7 +64,7 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 			paramName := "ownerID"
 			b.WriteString(fmt.Sprintf("// WhereOwnedBy filters records by the ownership column.\n"))
 			b.WriteString(fmt.Sprintf("func (q *%s) WhereOwnedBy(%s %s) *%s {\n", queryType, paramName, goType, queryType))
-			b.WriteString(fmt.Sprintf("\tq.Where(%q, %s)\n", col.Name, paramName))
+			b.WriteString(fmt.Sprintf("\tq.where(%q, %s)\n", col.Name, paramName))
 			b.WriteString(fmt.Sprintf("\treturn q\n"))
 			b.WriteString("}\n\n")
 			break
@@ -85,11 +85,76 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 		b.WriteString("}\n\n")
 	}
 
+	// Generate per-column Select methods
+	for _, col := range table.Columns {
+		pascal := snakeToPascal(col.Name)
+		b.WriteString(fmt.Sprintf("func (q *%s) Select%s() *%s {\n", queryType, pascal, queryType))
+		b.WriteString(fmt.Sprintf("\tq.addSelect(%q)\n", col.Name))
+		b.WriteString(fmt.Sprintf("\treturn q\n"))
+		b.WriteString("}\n\n")
+	}
+
+	// Generate visibility scope methods (SelectPublic, SelectOwner, SelectAll)
+	hasVisibility := false
+	var publicCols, ownerCols []string
+	for _, col := range table.Columns {
+		if col.IsPublic {
+			publicCols = append(publicCols, col.Name)
+			ownerCols = append(ownerCols, col.Name)
+			hasVisibility = true
+		} else if col.IsOwnerSees {
+			ownerCols = append(ownerCols, col.Name)
+			hasVisibility = true
+		}
+	}
+
+	if hasVisibility {
+		// SelectPublic
+		b.WriteString(fmt.Sprintf("// SelectPublic selects only columns marked Public().\n"))
+		b.WriteString(fmt.Sprintf("func (q *%s) SelectPublic() *%s {\n", queryType, queryType))
+		b.WriteString(fmt.Sprintf("\tq.selectedCols = []string{"))
+		for i, c := range publicCols {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(fmt.Sprintf("%q", c))
+		}
+		b.WriteString("}\n")
+		b.WriteString("\tq.setVisibility(visibilityPublic)\n")
+		b.WriteString(fmt.Sprintf("\treturn q\n"))
+		b.WriteString("}\n\n")
+
+		// SelectOwner
+		b.WriteString(fmt.Sprintf("// SelectOwner selects columns visible to the resource owner.\n"))
+		b.WriteString(fmt.Sprintf("func (q *%s) SelectOwner() *%s {\n", queryType, queryType))
+		b.WriteString(fmt.Sprintf("\tq.selectedCols = []string{"))
+		for i, c := range ownerCols {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(fmt.Sprintf("%q", c))
+		}
+		b.WriteString("}\n")
+		b.WriteString("\tq.setVisibility(visibilityOwner)\n")
+		b.WriteString(fmt.Sprintf("\treturn q\n"))
+		b.WriteString("}\n\n")
+	}
+
+	// SelectAll — always generated
+	b.WriteString(fmt.Sprintf("// SelectAll selects all columns. Use for internal/admin queries.\n"))
+	b.WriteString(fmt.Sprintf("func (q *%s) SelectAll() *%s {\n", queryType, queryType))
+	b.WriteString("\tq.setVisibility(visibilityAll)\n")
+	b.WriteString(fmt.Sprintf("\treturn q\n"))
+	b.WriteString("}\n\n")
+
 	// Generate table-level scopes (FetchResource / FetchResources)
 	tableScopeBody := tickle.GenerateTableScopes(blocks, structName, HasOwnership(table))
 	b.WriteString(tableScopeBody)
 
 	b.WriteString(scopeBody)
+
+	// Generate Search methods
+	generateSearchMethods(&b, table, queryType, structName)
 
 	formatted, err := format.Source(b.Bytes())
 	if err != nil {
@@ -224,6 +289,18 @@ func collectViewScopeImports(view *schema.View, blocks []tickle.ScopeBlock) []st
 
 func collectScopeImports(table *schema.Table, blocks []tickle.ScopeBlock) []string {
 	imports := map[string]bool{}
+
+	// Search methods always need fmt and net/http
+	imports["fmt"] = true
+	imports["net/http"] = true
+
+	// Only need strconv if there are numeric or boolean columns
+	for _, col := range table.Columns {
+		switch col.Type {
+		case schema.Integer, schema.BigInteger, schema.Boolean:
+			imports["strconv"] = true
+		}
+	}
 
 	// Check if any timestamp columns exist and timestamp scopes are used
 	hasTimestamp := false

@@ -199,3 +199,12 @@ func (c *Context) Forbidden(msg string) Response {
 		Headers:    map[string]string{"Content-Type": "application/json"},
 	}
 }
+
+// BadRequest returns a 400 response with a message.
+func (c *Context) BadRequest(msg string) Response {
+	return Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       map[string]string{"error": msg},
+		Headers:    map[string]string{"Content-Type": "application/json"},
+	}
+}

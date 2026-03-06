@@ -3,7 +3,9 @@ package cooked
 import (
 	"database/sql"
 	"fmt"
+	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 )
 
@@ -15,14 +17,26 @@ func Query[T any](table string) *QueryBuilder[T] {
 	return &QueryBuilder[T]{table: table}
 }
 
+// visibilityMode controls which columns a query may return.
+type visibilityMode int
+
+const (
+	visibilityNone   visibilityMode = iota // no scope set
+	visibilityPublic                       // only Public columns
+	visibilityOwner                        // Public + OwnerSees columns
+	visibilityAll                          // all columns
+)
+
 // QueryBuilder is the generic query builder for all models.
 type QueryBuilder[T any] struct {
-	table      string
-	conditions []condition
-	orderBy    []string
-	limit      int
-	offset     int
-	eagerLoads []string
+	table        string
+	conditions   []condition
+	orderBy      []string
+	limit        int
+	offset       int
+	eagerLoads   []string
+	selectedCols []string
+	visibility   visibilityMode
 }
 
 type condition struct {
@@ -31,26 +45,26 @@ type condition struct {
 	value  any
 }
 
-// Where adds a condition to the query.
-func (q *QueryBuilder[T]) Where(column string, value any) *QueryBuilder[T] {
+// where adds a condition to the query.
+func (q *QueryBuilder[T]) where(column string, value any) *QueryBuilder[T] {
 	q.conditions = append(q.conditions, condition{column: column, op: "=", value: value})
 	return q
 }
 
-// WhereOp adds a condition with a custom operator.
-func (q *QueryBuilder[T]) WhereOp(column, op string, value any) *QueryBuilder[T] {
+// whereOp adds a condition with a custom operator.
+func (q *QueryBuilder[T]) whereOp(column, op string, value any) *QueryBuilder[T] {
 	q.conditions = append(q.conditions, condition{column: column, op: op, value: value})
 	return q
 }
 
-// WhereIn adds a column IN (...) condition.
-func (q *QueryBuilder[T]) WhereIn(column string, values any) *QueryBuilder[T] {
+// whereIn adds a column IN (...) condition.
+func (q *QueryBuilder[T]) whereIn(column string, values any) *QueryBuilder[T] {
 	q.conditions = append(q.conditions, condition{column: column, op: "IN", value: values})
 	return q
 }
 
-// WhereNotIn adds a column NOT IN (...) condition.
-func (q *QueryBuilder[T]) WhereNotIn(column string, values any) *QueryBuilder[T] {
+// whereNotIn adds a column NOT IN (...) condition.
+func (q *QueryBuilder[T]) whereNotIn(column string, values any) *QueryBuilder[T] {
 	q.conditions = append(q.conditions, condition{column: column, op: "NOT IN", value: values})
 	return q
 }
@@ -79,11 +93,24 @@ func (q *QueryBuilder[T]) AnyOwner() *QueryBuilder[T] {
 	return q
 }
 
+// addSelect adds a column to the explicit select list.
+func (q *QueryBuilder[T]) addSelect(col string) {
+	q.selectedCols = append(q.selectedCols, col)
+}
+
+// setVisibility sets the visibility mode for the query.
+func (q *QueryBuilder[T]) setVisibility(v visibilityMode) {
+	q.visibility = v
+}
+
 // EagerLoad marks a relationship for eager loading.
 func (q *QueryBuilder[T]) EagerLoad(relation string) *QueryBuilder[T] {
 	q.eagerLoads = append(q.eagerLoads, relation)
 	return q
 }
+
+// ErrNoVisibilityScope is returned when a fetch method is called without setting a visibility scope.
+var ErrNoVisibilityScope = fmt.Errorf("no visibility scope set — call SelectPublic(), SelectOwner(), or SelectAll()")
 
 // First returns the first matching record.
 func (q *QueryBuilder[T]) First() (*T, error) {
@@ -143,8 +170,13 @@ func (q *QueryBuilder[T]) Delete(record *T) error {
 }
 
 func (q *QueryBuilder[T]) buildSelect() (string, []any) {
-	var zero T
-	cols := dbColumns(&zero)
+	var cols []string
+	if len(q.selectedCols) > 0 {
+		cols = q.selectedCols
+	} else {
+		var zero T
+		cols = dbColumns(&zero)
+	}
 
 	var b strings.Builder
 	b.WriteString("SELECT ")
@@ -359,4 +391,89 @@ func buildUpdate[T any](table string, record *T, conditions []condition) (string
 	}
 
 	return b.String(), args
+}
+
+// Pagination holds pagination metadata for search results.
+type Pagination struct {
+	Total    int64 `json:"total"`
+	Page     int   `json:"page"`
+	PageSize int   `json:"page_size"`
+	Pages    int   `json:"pages"`
+}
+
+// FilterOp represents a filter with an operator: filter[column][op]=value.
+type FilterOp struct {
+	Column   string
+	Operator string
+	Value    string
+}
+
+// parseQueryFilters returns filter[key]=value pairs from the query string.
+func parseQueryFilters(r *http.Request) map[string]string {
+	filters := make(map[string]string)
+	for key, vals := range r.URL.Query() {
+		if !strings.HasPrefix(key, "filter[") || !strings.HasSuffix(key, "]") {
+			continue
+		}
+		inner := key[7 : len(key)-1]
+		if strings.Contains(inner, "][") {
+			continue
+		}
+		if len(vals) > 0 {
+			filters[inner] = vals[0]
+		}
+	}
+	return filters
+}
+
+// parseQueryFilterOps returns filter[key][op]=value triples from the query string.
+func parseQueryFilterOps(r *http.Request) []FilterOp {
+	var ops []FilterOp
+	for key, vals := range r.URL.Query() {
+		if !strings.HasPrefix(key, "filter[") || !strings.HasSuffix(key, "]") {
+			continue
+		}
+		inner := key[7 : len(key)-1]
+		parts := strings.SplitN(inner, "][", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if len(vals) > 0 {
+			ops = append(ops, FilterOp{Column: parts[0], Operator: parts[1], Value: vals[0]})
+		}
+	}
+	return ops
+}
+
+// parseQuerySort returns the sort column and direction from ?sort=col or ?sort=-col.
+func parseQuerySort(r *http.Request) (column, direction string) {
+	s := r.URL.Query().Get("sort")
+	if s == "" {
+		return "", ""
+	}
+	if strings.HasPrefix(s, "-") {
+		return s[1:], "DESC"
+	}
+	return s, "ASC"
+}
+
+// parseQueryPage returns page number and page size from ?page[number]=N&page[size]=N.
+func parseQueryPage(r *http.Request) (page, size int) {
+	page = 1
+	size = 25
+	q := r.URL.Query()
+	if v := q.Get("page[number]"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			page = n
+		}
+	}
+	if v := q.Get("page[size]"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			size = n
+			if size > 100 {
+				size = 100
+			}
+		}
+	}
+	return page, size
 }

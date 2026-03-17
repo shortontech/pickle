@@ -44,10 +44,12 @@ type columnInfo struct {
 }
 
 type tableInfo struct {
-	Name       string       ` + "`" + `json:"name"` + "`" + `
-	Connection string       ` + "`" + `json:"connection,omitempty"` + "`" + `
-	Columns    []columnInfo ` + "`" + `json:"columns"` + "`" + `
-	Indexes    []indexInfo  ` + "`" + `json:"indexes,omitempty"` + "`" + `
+	Name        string       ` + "`" + `json:"name"` + "`" + `
+	Connection  string       ` + "`" + `json:"connection,omitempty"` + "`" + `
+	Columns     []columnInfo ` + "`" + `json:"columns"` + "`" + `
+	Indexes     []indexInfo  ` + "`" + `json:"indexes,omitempty"` + "`" + `
+	IsImmutable bool         ` + "`" + `json:"is_immutable,omitempty"` + "`" + `
+	HasSoftDelete bool       ` + "`" + `json:"has_soft_delete,omitempty"` + "`" + `
 }
 
 type indexInfo struct {
@@ -135,7 +137,12 @@ func processOps(ops []{{ .TypesPkg }}.Operation, tables map[string]*tableInfo, o
 	for _, op := range ops {
 		switch op.Type {
 		case {{ .TypesPkg }}.OpCreateTable:
-			ti := &tableInfo{Name: op.Table, Connection: conn}
+			ti := &tableInfo{
+				Name:          op.Table,
+				Connection:    conn,
+				IsImmutable:   op.TableDef.IsImmutable,
+				HasSoftDelete: op.TableDef.HasSoftDelete,
+			}
 			for _, col := range op.TableDef.Columns {
 				goType := goTypeNames[col.Type]
 				if col.IsNullable && goType != "[]byte" {

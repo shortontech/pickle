@@ -34,6 +34,8 @@ type Table struct {
 	Connection    string // database connection name ("" = default)
 	Columns       []*Column
 	Relationships []*Relationship
+	IsImmutable   bool // set by Immutable() — append-only, (id, version_id) composite PK
+	HasSoftDelete bool // set by SoftDeletes() — adds deleted_at nullable column
 }
 
 func (t *Table) addColumn(name string, colType ColumnType) *Column {
@@ -148,7 +150,39 @@ func (t *Table) HasOne(name string, fn func(*Table)) *Relationship {
 }
 
 // Timestamps adds created_at and updated_at columns with NOW() defaults.
+// Panics if called on an immutable table — use Immutable() instead,
+// which derives created_at and updated_at from UUID v7 timestamps.
 func (t *Table) Timestamps() {
+	if t.IsImmutable {
+		panic("pickle: Timestamps() must not be called on immutable table \"" + t.Name + "\" — CreatedAt and UpdatedAt are derived from UUID v7 timestamps in id and version_id")
+	}
 	t.addColumn("created_at", Timestamp).NotNull().Default("NOW()")
 	t.addColumn("updated_at", Timestamp).NotNull().Default("NOW()")
+}
+
+// Immutable marks this table as append-only. Pickle injects id and version_id
+// as a composite primary key and generates insert-on-update query behaviour.
+// Do not call Timestamps() on an immutable table — created_at and updated_at
+// are derived from the UUID v7 timestamps embedded in id and version_id.
+func (t *Table) Immutable() {
+	t.IsImmutable = true
+	id := &Column{
+		Name:         "id",
+		Type:         UUID,
+		IsPrimaryKey: true,
+	}
+	versionID := &Column{
+		Name:         "version_id",
+		Type:         UUID,
+		IsPrimaryKey: true,
+	}
+	t.Columns = append([]*Column{id, versionID}, t.Columns...)
+}
+
+// SoftDeletes adds a nullable deleted_at timestamp column.
+// On an immutable table, Delete() inserts a new version with deleted_at set.
+// On a mutable table, Delete() issues a standard soft-delete UPDATE.
+func (t *Table) SoftDeletes() {
+	t.HasSoftDelete = true
+	t.addColumn("deleted_at", Timestamp).Nullable()
 }

@@ -1,6 +1,8 @@
 package squeeze
 
 import (
+	"go/ast"
+	"go/token"
 	"strings"
 
 	"github.com/shortontech/pickle/pkg/generator"
@@ -37,8 +39,12 @@ func AllRules() map[string]Rule {
 		"auth_without_middleware":  ruleAuthWithoutMiddleware,
 		"param_mismatch":           ruleParamMismatch,
 		"csrf_missing":             ruleCsrfMissing,
-		"sensitive_field_encryption": ruleSensitiveFieldEncryption,
-		"public_sensitive_conflict":  rulePublicSensitiveConflict,
+		"sensitive_field_encryption":           ruleSensitiveFieldEncryption,
+		"public_sensitive_conflict":             rulePublicSensitiveConflict,
+		"immutable_raw_update":                  ruleImmutableRawUpdate,
+		"immutable_raw_insert_missing_version":  ruleImmutableRawInsertMissingVersion,
+		"immutable_timestamps_call":             ruleImmutableTimestampsCall,
+		"immutable_direct_delete":               ruleImmutableDirectDelete,
 	}
 }
 
@@ -696,6 +702,165 @@ func ruleCsrfMissing(ctx *AnalysisContext) []Finding {
 		})
 	}
 
+	return findings
+}
+
+// immutableTableNames returns a set of table names that are marked immutable.
+func immutableTableNames(ctx *AnalysisContext) map[string]bool {
+	names := map[string]bool{}
+	for _, tbl := range ctx.Tables {
+		if tbl.IsImmutable {
+			names[tbl.Name] = true
+		}
+	}
+	return names
+}
+
+// findRawSQLStrings walks an AST block and returns all string literal values
+// along with their source line numbers.
+func findRawSQLStrings(body *ast.BlockStmt, fset *token.FileSet) []struct {
+	Value string
+	Line  int
+} {
+	var results []struct {
+		Value string
+		Line  int
+	}
+	ast.Inspect(body, func(n ast.Node) bool {
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		val := strings.Trim(lit.Value, "`\"")
+		results = append(results, struct {
+			Value string
+			Line  int
+		}{Value: val, Line: fset.Position(lit.Pos()).Line})
+		return true
+	})
+	return results
+}
+
+// ruleImmutableRawUpdate flags raw UPDATE SQL statements targeting immutable tables.
+func ruleImmutableRawUpdate(ctx *AnalysisContext) []Finding {
+	immutable := immutableTableNames(ctx)
+	if len(immutable) == 0 {
+		return nil
+	}
+	var findings []Finding
+	for _, m := range ctx.Methods {
+		for _, s := range findRawSQLStrings(m.Body, m.Fset) {
+			upper := strings.ToUpper(s.Value)
+			for tbl := range immutable {
+				if strings.Contains(upper, "UPDATE "+strings.ToUpper(tbl)) {
+					findings = append(findings, Finding{
+						Rule:     "immutable_raw_update",
+						Severity: SeverityError,
+						File:     m.File,
+						Line:     s.Line,
+						Message:  `raw UPDATE on immutable table "` + tbl + `" — call Query` + names.TableToStructName(tbl) + `().Update() instead, which inserts a new version`,
+					})
+				}
+			}
+		}
+	}
+	return findings
+}
+
+// ruleImmutableRawInsertMissingVersion flags raw INSERT statements into immutable
+// tables that name explicit columns but omit version_id.
+func ruleImmutableRawInsertMissingVersion(ctx *AnalysisContext) []Finding {
+	immutable := immutableTableNames(ctx)
+	if len(immutable) == 0 {
+		return nil
+	}
+	var findings []Finding
+	for _, m := range ctx.Methods {
+		for _, s := range findRawSQLStrings(m.Body, m.Fset) {
+			upper := strings.ToUpper(s.Value)
+			for tbl := range immutable {
+				if !strings.Contains(upper, "INSERT INTO "+strings.ToUpper(tbl)) {
+					continue
+				}
+				// Only flag if the INSERT names explicit columns (has a "(") but omits version_id
+				parenIdx := strings.Index(upper, "(")
+				valuesIdx := strings.Index(upper, "VALUES")
+				if parenIdx < 0 || (valuesIdx > 0 && parenIdx > valuesIdx) {
+					continue
+				}
+				if !strings.Contains(upper, "VERSION_ID") {
+					findings = append(findings, Finding{
+						Rule:     "immutable_raw_insert_missing_version",
+						Severity: SeverityError,
+						File:     m.File,
+						Line:     s.Line,
+						Message:  `raw INSERT into immutable table "` + tbl + `" omits version_id — use Query` + names.TableToStructName(tbl) + `().Create() which generates a UUID v7 in Go`,
+					})
+				}
+			}
+		}
+	}
+	return findings
+}
+
+// ruleImmutableTimestampsCall flags t.Timestamps() called alongside t.Immutable()
+// in migration files. Since squeeze currently parses controller code, this rule
+// inspects the Tables slice for the post-generation anomaly (both IsImmutable and
+// a created_at column present — which only happens if Timestamps() didn't panic).
+// In practice the generator panics at build time; this rule adds a belt-and-suspenders
+// check for any table that somehow has both.
+func ruleImmutableTimestampsCall(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+	for _, tbl := range ctx.Tables {
+		if !tbl.IsImmutable {
+			continue
+		}
+		for _, col := range tbl.Columns {
+			if col.Name == "created_at" || col.Name == "updated_at" {
+				findings = append(findings, Finding{
+					Rule:     "immutable_timestamps_call",
+					Severity: SeverityError,
+					File:     "database/migrations",
+					Line:     0,
+					Message:  `immutable table "` + tbl.Name + `" has a ` + col.Name + ` column — Timestamps() must not be called on immutable tables; CreatedAt and UpdatedAt are derived from UUID v7 timestamps`,
+				})
+				break
+			}
+		}
+	}
+	return findings
+}
+
+// ruleImmutableDirectDelete flags raw DELETE SQL statements targeting immutable
+// tables that have no SoftDeletes column.
+func ruleImmutableDirectDelete(ctx *AnalysisContext) []Finding {
+	// Build set of immutable tables without soft deletes
+	hardImmutable := map[string]bool{}
+	for _, tbl := range ctx.Tables {
+		if tbl.IsImmutable && !tbl.HasSoftDelete {
+			hardImmutable[tbl.Name] = true
+		}
+	}
+	if len(hardImmutable) == 0 {
+		return nil
+	}
+	var findings []Finding
+	for _, m := range ctx.Methods {
+		for _, s := range findRawSQLStrings(m.Body, m.Fset) {
+			upper := strings.ToUpper(s.Value)
+			for tbl := range hardImmutable {
+				if strings.Contains(upper, "DELETE FROM "+strings.ToUpper(tbl)) {
+					findings = append(findings, Finding{
+						Rule:     "immutable_direct_delete",
+						Severity: SeverityError,
+						File:     m.File,
+						Line:     s.Line,
+						Message:  `raw DELETE on immutable table "` + tbl + `" — this table has no SoftDeletes(); only perform deliberate data erasure (e.g. GDPR) via raw SQL and document why`,
+					})
+				}
+			}
+		}
+	}
 	return findings
 }
 

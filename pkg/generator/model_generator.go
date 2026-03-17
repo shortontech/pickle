@@ -25,6 +25,19 @@ type {{ .StructName }} struct {
 	{{ .Name }} {{ .Type }} ` + "`" + `json:"{{ .JSONTag }}" db:"{{ .DBTag }}"` + "`" + `
 {{- end }}
 }
+{{ if .IsImmutable }}
+// CreatedAt returns the time this record was first created, extracted from
+// the UUID v7 timestamp in ID. Not a database column — never stored.
+func (m *{{ .StructName }}) CreatedAt() time.Time {
+	return uuidV7Time([16]byte(m.ID))
+}
+
+// UpdatedAt returns the time this version was created, extracted from
+// the UUID v7 timestamp in VersionID. Not a database column — never stored.
+func (m *{{ .StructName }}) UpdatedAt() time.Time {
+	return uuidV7Time([16]byte(m.VersionID))
+}
+{{ end }}
 {{ if .PublicFields }}
 // {{ .StructName }}Public is a projection of {{ .StructName }} without sensitive fields.
 type {{ .StructName }}Public struct {
@@ -59,6 +72,7 @@ type modelData struct {
 	Imports      []string
 	Fields       []fieldData
 	PublicFields []fieldData // non-nil only when model has hidden fields
+	IsImmutable  bool
 }
 
 type fieldData struct {
@@ -94,6 +108,11 @@ func GenerateModel(table *schema.Table, packageName string) ([]byte, error) {
 		})
 	}
 
+	// Immutable tables need time for CreatedAt()/UpdatedAt() methods
+	if table.IsImmutable {
+		imports["time"] = true
+	}
+
 	var sortedImports []string
 	for imp := range imports {
 		sortedImports = append(sortedImports, imp)
@@ -123,10 +142,11 @@ func GenerateModel(table *schema.Table, packageName string) ([]byte, error) {
 	}
 
 	data := modelData{
-		Package:    packageName,
-		StructName: tableToStructName(table.Name),
-		Imports:    orderedImports,
-		Fields:     fields,
+		Package:     packageName,
+		StructName:  tableToStructName(table.Name),
+		Imports:     orderedImports,
+		Fields:      fields,
+		IsImmutable: table.IsImmutable,
 	}
 	if hasHidden {
 		data.PublicFields = publicFields

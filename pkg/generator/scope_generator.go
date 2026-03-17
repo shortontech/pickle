@@ -38,7 +38,11 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 	// Generate the model-specific query wrapper type
 	queryType := structName + "Query"
 	b.WriteString(fmt.Sprintf("// %s provides typed query methods for %s.\n", queryType, structName))
-	b.WriteString(fmt.Sprintf("type %s struct {\n\t*QueryBuilder[%s]\n}\n\n", queryType, structName))
+	if table.IsImmutable {
+		b.WriteString(fmt.Sprintf("type %s struct {\n\t*QueryBuilder[%s]\n\tallVersions bool\n}\n\n", queryType, structName))
+	} else {
+		b.WriteString(fmt.Sprintf("type %s struct {\n\t*QueryBuilder[%s]\n}\n\n", queryType, structName))
+	}
 
 	// Generate a typed Query constructor
 	b.WriteString(fmt.Sprintf("// Query%s starts a new query for %s.\n", structName, structName))
@@ -160,12 +164,64 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 	// Generate Search methods
 	generateSearchMethods(&b, table, queryType, structName)
 
+	// Generate immutable table methods
+	if table.IsImmutable {
+		generateImmutableMethods(&b, table, queryType, structName)
+	}
+
 	formatted, err := format.Source(b.Bytes())
 	if err != nil {
 		return b.Bytes(), fmt.Errorf("go format: %w\n%s", err, b.String())
 	}
 
 	return formatted, nil
+}
+
+// generateImmutableMethods emits Create, Update, Delete (if SoftDeletes), All,
+// First, Count, and AllVersions overrides for an immutable table's query type.
+func generateImmutableMethods(b *bytes.Buffer, table *schema.Table, queryType, structName string) {
+	// Collect all db column names in order
+	var cols []string
+	for _, col := range table.Columns {
+		cols = append(cols, fmt.Sprintf("%q", col.Name))
+	}
+	colsLiteral := "[]string{" + strings.Join(cols, ", ") + "}"
+	softDeletes := table.HasSoftDelete
+
+	// AllVersions — bypass deduplication
+	b.WriteString(fmt.Sprintf("// AllVersions bypasses deduplication and returns the full version history.\n"))
+	b.WriteString(fmt.Sprintf("func (q *%s) AllVersions() *%s {\n\tq.allVersions = true\n\treturn q\n}\n\n", queryType, queryType))
+
+	// All override
+	b.WriteString(fmt.Sprintf("func (q *%s) All() ([]%s, error) {\n", queryType, structName))
+	b.WriteString(fmt.Sprintf("\treturn q.immutableAll(%s, %v, q.allVersions)\n}\n\n", colsLiteral, softDeletes))
+
+	// First override
+	b.WriteString(fmt.Sprintf("func (q *%s) First() (*%s, error) {\n", queryType, structName))
+	b.WriteString(fmt.Sprintf("\treturn q.immutableFirst(%s, %v, q.allVersions)\n}\n\n", colsLiteral, softDeletes))
+
+	// Count override
+	b.WriteString(fmt.Sprintf("func (q *%s) Count() (int64, error) {\n", queryType))
+	b.WriteString(fmt.Sprintf("\treturn q.immutableCount(%v)\n}\n\n", softDeletes))
+
+	// Create override — generates id and version_id
+	b.WriteString(fmt.Sprintf("func (q *%s) Create(model *%s) error {\n", queryType, structName))
+	b.WriteString("\tif model.ID == (uuid.UUID{}) {\n\t\tmodel.ID = uuid.New()\n\t}\n")
+	b.WriteString("\tmodel.VersionID = uuid.New()\n")
+	b.WriteString("\treturn q.QueryBuilder.Create(model)\n}\n\n")
+
+	// Update override — inserts new version with same id
+	b.WriteString(fmt.Sprintf("func (q *%s) Update(model *%s) error {\n", queryType, structName))
+	b.WriteString("\tmodel.VersionID = uuid.New()\n")
+	b.WriteString("\treturn q.QueryBuilder.Create(model)\n}\n\n")
+
+	// Delete override — only if SoftDeletes
+	if softDeletes {
+		b.WriteString(fmt.Sprintf("func (q *%s) Delete(model *%s) error {\n", queryType, structName))
+		b.WriteString("\tnow := time.Now()\n\tmodel.DeletedAt = &now\n")
+		b.WriteString("\tmodel.VersionID = uuid.New()\n")
+		b.WriteString("\treturn q.QueryBuilder.Create(model)\n}\n\n")
+	}
 }
 
 // GenerateViewQueryScopes produces a Go source file with typed Where* methods
@@ -297,6 +353,14 @@ func collectScopeImports(table *schema.Table, blocks []tickle.ScopeBlock) []stri
 	// Search methods always need fmt and net/http
 	imports["fmt"] = true
 	imports["net/http"] = true
+
+	// Immutable tables need uuid and time for Create/Update/Delete overrides
+	if table.IsImmutable {
+		imports["github.com/google/uuid"] = true
+		if table.HasSoftDelete {
+			imports["time"] = true
+		}
+	}
 
 	// Only need strconv if there are numeric or boolean columns
 	for _, col := range table.Columns {

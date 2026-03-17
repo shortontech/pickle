@@ -224,3 +224,10 @@ func (m *Migration) GetOperations() []Operation {
 func (m *Migration) Transactional() bool {
 	return true
 }
+
+// Connection returns the database connection name this migration targets.
+// Returns "" to use the default connection. Override in concrete migration
+// structs to target a specific named connection from config/database.go.
+func (m *Migration) Connection() string {
+	return ""
+}

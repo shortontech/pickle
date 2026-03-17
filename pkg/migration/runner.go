@@ -14,6 +14,7 @@ type MigrationIface interface {
 	Down()
 	GetOperations() []Operation
 	Transactional() bool
+	Connection() string
 }
 
 // MigrationEntry pairs a string ID with a migration instance.

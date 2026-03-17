@@ -134,9 +134,10 @@ func ScanMigrationStructs(migrationsDir string) ([]string, error) {
 
 // inspectorTableInfo mirrors the JSON output from the schema inspector program.
 type inspectorTableInfo struct {
-	Name    string                `json:"name"`
-	Columns []inspectorColumnInfo `json:"columns"`
-	Indexes []inspectorIndexInfo  `json:"indexes,omitempty"`
+	Name       string                `json:"name"`
+	Connection string                `json:"connection,omitempty"`
+	Columns    []inspectorColumnInfo `json:"columns"`
+	Indexes    []inspectorIndexInfo  `json:"indexes,omitempty"`
 }
 
 type inspectorColumnInfo struct {
@@ -270,7 +271,7 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, erro
 	// Convert to schema.Table
 	var tables []*schema.Table
 	for _, ti := range result.Tables {
-		t := &schema.Table{Name: ti.Name}
+		t := &schema.Table{Name: ti.Name, Connection: ti.Connection}
 		for _, ci := range ti.Columns {
 			colType, ok := typeNameToColumnType[ci.Type]
 			if !ok {

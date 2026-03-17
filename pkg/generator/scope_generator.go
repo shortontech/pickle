@@ -43,7 +43,11 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 	// Generate a typed Query constructor
 	b.WriteString(fmt.Sprintf("// Query%s starts a new query for %s.\n", structName, structName))
 	b.WriteString(fmt.Sprintf("func Query%s() *%s {\n", structName, queryType))
-	b.WriteString(fmt.Sprintf("\treturn &%s{QueryBuilder: Query[%s](%q)}\n", queryType, structName, table.Name))
+	if table.Connection != "" {
+		b.WriteString(fmt.Sprintf("\treturn &%s{QueryBuilder: Query[%s](%q, %q)}\n", queryType, structName, table.Name, table.Connection))
+	} else {
+		b.WriteString(fmt.Sprintf("\treturn &%s{QueryBuilder: Query[%s](%q)}\n", queryType, structName, table.Name))
+	}
 	b.WriteString("}\n\n")
 
 	// Generate eager loading methods from foreign keys

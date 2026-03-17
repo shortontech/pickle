@@ -31,6 +31,7 @@ func (r *Relationship) TopLevelModel() *Relationship {
 // Table collects column definitions for a database table.
 type Table struct {
 	Name          string
+	Connection    string // database connection name ("" = default)
 	Columns       []*Column
 	Relationships []*Relationship
 }

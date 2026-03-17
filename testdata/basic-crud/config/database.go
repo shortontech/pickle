@@ -17,6 +17,7 @@ func database() DatabaseConfig {
 				Name:     Env("DB_DATABASE", "basic_crud"),
 				User:     Env("DB_USERNAME", "postgres"),
 				Password: Env("DB_PASSWORD", ""),
+				Options:  map[string]string{"sslmode": "disable"},
 			},
 			"sqlite": {
 				Driver: "sqlite",

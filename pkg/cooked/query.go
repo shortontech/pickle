@@ -12,9 +12,17 @@ import (
 // DB is the package-level database connection. Set during app initialization.
 var DB *sql.DB
 
+// Connections holds named database connections for multi-connection support.
+// Keyed by connection name from config/database.go.
+var Connections = map[string]*sql.DB{}
+
 // Query starts a new query for the given model type.
-func Query[T any](table string) *QueryBuilder[T] {
-	return &QueryBuilder[T]{table: table}
+func Query[T any](table string, connection ...string) *QueryBuilder[T] {
+	q := &QueryBuilder[T]{table: table}
+	if len(connection) > 0 {
+		q.connection = connection[0]
+	}
+	return q
 }
 
 // visibilityMode controls which columns a query may return.
@@ -30,6 +38,7 @@ const (
 // QueryBuilder is the generic query builder for all models.
 type QueryBuilder[T any] struct {
 	table        string
+	connection   string // named connection ("" = default DB)
 	conditions   []condition
 	orderBy      []string
 	limit        int
@@ -103,6 +112,16 @@ func (q *QueryBuilder[T]) setVisibility(v visibilityMode) {
 	q.visibility = v
 }
 
+// db returns the *sql.DB for this query's connection.
+func (q *QueryBuilder[T]) db() *sql.DB {
+	if q.connection != "" {
+		if conn, ok := Connections[q.connection]; ok {
+			return conn
+		}
+	}
+	return DB
+}
+
 // EagerLoad marks a relationship for eager loading.
 func (q *QueryBuilder[T]) EagerLoad(relation string) *QueryBuilder[T] {
 	q.eagerLoads = append(q.eagerLoads, relation)
@@ -116,7 +135,7 @@ var ErrNoVisibilityScope = fmt.Errorf("no visibility scope set — call SelectPu
 func (q *QueryBuilder[T]) First() (*T, error) {
 	q.limit = 1
 	query, args := q.buildSelect()
-	row := DB.QueryRow(query, args...)
+	row := q.db().QueryRow(query, args...)
 
 	var result T
 	if err := scanRow(row, &result); err != nil {
@@ -128,7 +147,7 @@ func (q *QueryBuilder[T]) First() (*T, error) {
 // All returns all matching records.
 func (q *QueryBuilder[T]) All() ([]T, error) {
 	query, args := q.buildSelect()
-	rows, err := DB.Query(query, args...)
+	rows, err := q.db().Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +160,7 @@ func (q *QueryBuilder[T]) All() ([]T, error) {
 func (q *QueryBuilder[T]) Count() (int64, error) {
 	query, args := q.buildCount()
 	var count int64
-	err := DB.QueryRow(query, args...).Scan(&count)
+	err := q.db().QueryRow(query, args...).Scan(&count)
 	return count, err
 }
 
@@ -151,21 +170,21 @@ func (q *QueryBuilder[T]) Create(record *T) error {
 	query, args := buildInsert(q.table, record)
 	cols := dbColumns(record)
 	query += " RETURNING " + strings.Join(cols, ", ")
-	row := DB.QueryRow(query, args...)
+	row := q.db().QueryRow(query, args...)
 	return row.Scan(dbScanDest(record)...)
 }
 
 // Update updates an existing record.
 func (q *QueryBuilder[T]) Update(record *T) error {
 	query, args := buildUpdate(q.table, record, q.conditions)
-	_, err := DB.Exec(query, args...)
+	_, err := q.db().Exec(query, args...)
 	return err
 }
 
 // Delete removes matching records.
 func (q *QueryBuilder[T]) Delete(record *T) error {
 	query, args := q.buildDelete()
-	_, err := DB.Exec(query, args...)
+	_, err := q.db().Exec(query, args...)
 	return err
 }
 

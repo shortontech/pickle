@@ -79,17 +79,29 @@ type ConnectionConfig struct {
 	Name     string
 	User     string
 	Password string
+	Region   string            // AWS region (DynamoDB), GCP region, etc.
+	Options  map[string]string // Driver-specific options (sslmode, charset, etc.)
 }
 
 // DSN returns the driver-specific data source name.
 func (c ConnectionConfig) DSN() string {
 	switch c.Driver {
 	case "pgsql":
-		return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
-			url.PathEscape(c.User), url.PathEscape(c.Password), c.Host, c.Port, c.Name)
+		params := url.Values{}
+		params.Set("sslmode", "disable")
+		for k, v := range c.Options {
+			params.Set(k, v)
+		}
+		return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?%s",
+			url.PathEscape(c.User), url.PathEscape(c.Password), c.Host, c.Port, c.Name, params.Encode())
 	case "mysql":
-		return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true",
-			url.PathEscape(c.User), url.PathEscape(c.Password), c.Host, c.Port, c.Name)
+		params := url.Values{}
+		params.Set("parseTime", "true")
+		for k, v := range c.Options {
+			params.Set(k, v)
+		}
+		return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?%s",
+			url.PathEscape(c.User), url.PathEscape(c.Password), c.Host, c.Port, c.Name, params.Encode())
 	case "sqlite":
 		return c.Name
 	default:

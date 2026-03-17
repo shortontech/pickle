@@ -44,9 +44,10 @@ type columnInfo struct {
 }
 
 type tableInfo struct {
-	Name    string       ` + "`" + `json:"name"` + "`" + `
-	Columns []columnInfo ` + "`" + `json:"columns"` + "`" + `
-	Indexes []indexInfo  ` + "`" + `json:"indexes,omitempty"` + "`" + `
+	Name       string       ` + "`" + `json:"name"` + "`" + `
+	Connection string       ` + "`" + `json:"connection,omitempty"` + "`" + `
+	Columns    []columnInfo ` + "`" + `json:"columns"` + "`" + `
+	Indexes    []indexInfo  ` + "`" + `json:"indexes,omitempty"` + "`" + `
 }
 
 type indexInfo struct {
@@ -130,11 +131,11 @@ func collectRelationships(t *{{ .TypesPkg }}.Table, rels *[]relationshipInfo) {
 	}
 }
 
-func processOps(ops []{{ .TypesPkg }}.Operation, tables map[string]*tableInfo, order *[]string, views map[string]*viewInfo, viewOrder *[]string, rels *[]relationshipInfo) {
+func processOps(ops []{{ .TypesPkg }}.Operation, tables map[string]*tableInfo, order *[]string, views map[string]*viewInfo, viewOrder *[]string, rels *[]relationshipInfo, conn string) {
 	for _, op := range ops {
 		switch op.Type {
 		case {{ .TypesPkg }}.OpCreateTable:
-			ti := &tableInfo{Name: op.Table}
+			ti := &tableInfo{Name: op.Table, Connection: conn}
 			for _, col := range op.TableDef.Columns {
 				goType := goTypeNames[col.Type]
 				if col.IsNullable && goType != "[]byte" {
@@ -345,8 +346,9 @@ func main() {
 
 {{ range .Migrations }}	{
 		m := {{ .PkgAlias }}.{{ .StructName }}{}
+		conn := m.Connection()
 		m.Up()
-		processOps(m.Operations, tables, &order, views, &viewOrder, &rels)
+		processOps(m.Operations, tables, &order, views, &viewOrder, &rels, conn)
 	}
 {{ end }}
 	// Parse args: [--json] [table_name]

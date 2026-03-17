@@ -133,7 +133,7 @@ type tableInput struct {
 }
 
 func (s *Server) schemaShow(_ context.Context, _ *mcp.CallToolRequest, input tableInput) (*mcp.CallToolResult, any, error) {
-	tables, views, err := generator.RunSchemaInspector(s.project)
+	tables, views, _, err := generator.RunSchemaInspector(s.project)
 	if err != nil {
 		return errResult("schema inspection failed: " + err.Error()), nil, nil
 	}

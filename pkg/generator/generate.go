@@ -220,17 +220,26 @@ var typeNameToColumnType = map[string]schema.ColumnType{
 	"binary":     schema.Binary,
 }
 
+// SchemaRelationship describes a parent-child nesting from the inspector output.
+type SchemaRelationship struct {
+	Type        string // "has_many" or "has_one"
+	ParentTable string
+	ChildTable  string
+	Collection  bool
+	TopLevel    bool
+}
+
 // RunSchemaInspector generates a temp inspector program, compiles and runs it,
-// and returns the parsed schema tables and views.
-func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, error) {
+// and returns the parsed schema tables, views, and relationships.
+func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, []SchemaRelationship, error) {
 	migrationsDir := project.Layout.MigrationsDir
 	structNames, err := ScanMigrationStructs(migrationsDir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("scanning migrations: %w", err)
+		return nil, nil, nil, fmt.Errorf("scanning migrations: %w", err)
 	}
 
 	if len(structNames) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	migrationsImport := project.ModulePath + "/" + project.Layout.MigrationsRel
@@ -241,31 +250,31 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, erro
 
 	inspectorSrc, err := GenerateSchemaInspector(entries)
 	if err != nil {
-		return nil, nil, fmt.Errorf("generating inspector: %w", err)
+		return nil, nil, nil, fmt.Errorf("generating inspector: %w", err)
 	}
 
 	// Write to a temp directory inside the project so it can resolve local imports
 	tmpDir := filepath.Join(project.Dir, ".pickle-tmp")
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
-		return nil, nil, fmt.Errorf("creating temp directory: %w", err)
+		return nil, nil, nil, fmt.Errorf("creating temp directory: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
 	inspectorPath := filepath.Join(tmpDir, "main.go")
 	if err := os.WriteFile(inspectorPath, inspectorSrc, 0o644); err != nil {
-		return nil, nil, fmt.Errorf("writing inspector: %w", err)
+		return nil, nil, nil, fmt.Errorf("writing inspector: %w", err)
 	}
 
 	cmd := exec.Command("go", "run", inspectorPath, "--json")
 	cmd.Dir = project.Dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, nil, fmt.Errorf("running inspector: %w\n%s", err, output)
+		return nil, nil, nil, fmt.Errorf("running inspector: %w\n%s", err, output)
 	}
 
 	var result inspectorOutput
 	if err := json.Unmarshal(output, &result); err != nil {
-		return nil, nil, fmt.Errorf("parsing inspector output: %w\n%s", err, output)
+		return nil, nil, nil, fmt.Errorf("parsing inspector output: %w\n%s", err, output)
 	}
 
 	// Convert to schema.Table
@@ -275,7 +284,7 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, erro
 		for _, ci := range ti.Columns {
 			colType, ok := typeNameToColumnType[ci.Type]
 			if !ok {
-				return nil, nil, fmt.Errorf("unknown column type %q for column %s.%s", ci.Type, ti.Name, ci.Name)
+				return nil, nil, nil, fmt.Errorf("unknown column type %q for column %s.%s", ci.Type, ti.Name, ci.Name)
 			}
 			col := &schema.Column{
 				Name:             ci.Name,
@@ -330,7 +339,19 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, erro
 		views = append(views, v)
 	}
 
-	return tables, views, nil
+	// Convert relationships
+	var rels []SchemaRelationship
+	for _, ri := range result.Relationships {
+		rels = append(rels, SchemaRelationship{
+			Type:        ri.Type,
+			ParentTable: ri.ParentTable,
+			ChildTable:  ri.ChildTable,
+			Collection:  ri.Collection,
+			TopLevel:    ri.TopLevel,
+		})
+	}
+
+	return tables, views, rels, nil
 }
 
 
@@ -460,28 +481,53 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 	}
 
-	// 3. Run schema inspector to get tables and views from migrations
+	// 3. Run schema inspector to get tables, views, and relationships from migrations
 	var tables []*schema.Table
 	var views []*schema.View
+	var relationships []SchemaRelationship
 	if _, err := os.Stat(migrationsDir); err == nil {
 		fmt.Println("  inspecting schema from migrations")
 		var err error
-		tables, views, err = RunSchemaInspector(project)
+		tables, views, relationships, err = RunSchemaInspector(project)
 		if err != nil {
 			return fmt.Errorf("schema inspection: %w", err)
 		}
 	}
 
-	// 4. Generate models into models/
+	// Build nesting map: child table name → relationship info
+	nestingMap := map[string]SchemaRelationship{}
+	for _, rel := range relationships {
+		nestingMap[rel.ChildTable] = rel
+	}
+
+	// 3b. Write pickle_gen.go (QueryBuilder) into each nested model subdirectory
+	if len(nestingMap) > 0 {
+		nestedDirs := map[string]string{} // dir → pkgName
+		for _, tbl := range tables {
+			dir, pkg := resolveModelDir(modelsDir, tbl.Name, nestingMap)
+			if dir != modelsDir {
+				nestedDirs[dir] = pkg
+			}
+		}
+		for dir, pkg := range nestedDirs {
+			fmt.Printf("  generating %s/pickle_gen.go\n", pkg)
+			if err := writeFile(filepath.Join(dir, "pickle_gen.go"), GenerateCoreQuery(pkg)); err != nil {
+				return err
+			}
+		}
+	}
+
+	// 4. Generate models into models/ (or nested subdirectories)
 	if len(tables) > 0 {
 		for _, tbl := range tables {
-			fmt.Printf("  generating model: %s\n", tbl.Name)
-			src, err := GenerateModel(tbl, "models")
+			targetDir, pkgName := resolveModelDir(modelsDir, tbl.Name, nestingMap)
+			fmt.Printf("  generating model: %s → %s\n", tbl.Name, pkgName)
+			src, err := GenerateModel(tbl, pkgName)
 			if err != nil {
 				return fmt.Errorf("generating model for %s: %w", tbl.Name, err)
 			}
 			filename := toLowerFirst(tableToStructName(tbl.Name)) + ".go"
-			if err := writeFile(filepath.Join(modelsDir, filename), src); err != nil {
+			if err := writeFile(filepath.Join(targetDir, filename), src); err != nil {
 				return err
 			}
 		}
@@ -491,20 +537,21 @@ func Generate(project *Project, picklePkgDir string) error {
 	if len(tables) > 0 {
 		for _, tbl := range tables {
 			if HasOwnership(tbl) {
+				targetDir, pkgName := resolveModelDir(modelsDir, tbl.Name, nestingMap)
 				fmt.Printf("  generating responses: %s\n", tbl.Name)
-				src, err := GenerateResponses(tbl, "models")
+				src, err := GenerateResponses(tbl, pkgName)
 				if err != nil {
 					return fmt.Errorf("generating responses for %s: %w", tbl.Name, err)
 				}
 				filename := toLowerFirst(tableToStructName(tbl.Name)) + "_responses.go"
-				if err := writeFile(filepath.Join(modelsDir, filename), src); err != nil {
+				if err := writeFile(filepath.Join(targetDir, filename), src); err != nil {
 					return err
 				}
 			}
 		}
 	}
 
-	// 5. Generate query scopes into models/
+	// 5. Generate query scopes into models/ (or nested subdirectories)
 	if len(tables) > 0 {
 		scopesPath := filepath.Join(picklePkgDir, "cooked", "scopes.go")
 		if _, err := os.Stat(scopesPath); err == nil {
@@ -514,13 +561,14 @@ func Generate(project *Project, picklePkgDir string) error {
 			}
 
 			for _, tbl := range tables {
+				targetDir, pkgName := resolveModelDir(modelsDir, tbl.Name, nestingMap)
 				fmt.Printf("  generating queries: %s\n", tbl.Name)
-				src, err := GenerateQueryScopes(tbl, blocks, "models")
+				src, err := GenerateQueryScopes(tbl, blocks, pkgName)
 				if err != nil {
 					return fmt.Errorf("generating scopes for %s: %w", tbl.Name, err)
 				}
 				filename := toLowerFirst(tableToStructName(tbl.Name)) + "_query.go"
-				if err := writeFile(filepath.Join(modelsDir, filename), src); err != nil {
+				if err := writeFile(filepath.Join(targetDir, filename), src); err != nil {
 					return err
 				}
 			}
@@ -619,6 +667,36 @@ func Generate(project *Project, picklePkgDir string) error {
 	}
 
 	return nil
+}
+
+// resolveModelDir determines the output directory and package name for a table,
+// based on its position in the relationship nesting hierarchy.
+// - Top-level tables → models/ (package "models")
+// - Nested tables → models/parent/ (package "parent_singular")
+// - .TopLevelModel() → models/ (package "models")
+// - Deep nesting → models/parent/child/ etc.
+func resolveModelDir(modelsDir, tableName string, nestingMap map[string]SchemaRelationship) (string, string) {
+	rel, isNested := nestingMap[tableName]
+	if !isNested || rel.TopLevel {
+		return modelsDir, "models"
+	}
+
+	// Build the path chain from child → parent
+	var parents []string
+	current := tableName
+	for {
+		r, ok := nestingMap[current]
+		if !ok || r.TopLevel {
+			break
+		}
+		parentSingular := strings.TrimSuffix(r.ParentTable, "s") // simple singularize
+		parents = append([]string{parentSingular}, parents...)
+		current = r.ParentTable
+	}
+
+	dir := filepath.Join(append([]string{modelsDir}, parents...)...)
+	pkgName := parents[len(parents)-1] // deepest parent's singular name
+	return dir, pkgName
 }
 
 func writeFile(path string, data []byte) error {

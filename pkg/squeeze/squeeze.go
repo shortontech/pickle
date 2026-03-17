@@ -43,7 +43,7 @@ func Run(projectDir string) ([]Finding, error) {
 	}
 
 	// 6. Get schema from migrations
-	tables, _, err := generator.RunSchemaInspector(project)
+	tables, _, _, err := generator.RunSchemaInspector(project)
 	if err != nil {
 		// Schema inspection is optional — warn and continue
 		fmt.Printf("  warning: schema inspection failed: %v\n", err)

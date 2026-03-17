@@ -77,6 +77,8 @@ t.Text("notes").Nullable()
 | `.Public()` | Mark as visible to anyone (ownership system) |
 | `.OwnerSees()` | Mark as visible only to the row's owner |
 | `.IsOwner()` | Mark as the ownership column for the table |
+| `.Encrypted()` | Mark as requiring encryption at rest |
+| `.UnsafePublic()` | Acknowledge that a sensitive field is intentionally `.Public()` |
 
 ## Ownership & visibility
 
@@ -108,6 +110,29 @@ Pickle generates:
 - `WhereOwnedBy(ownerID)` — query scope filtering by the owner column
 
 Only one column per table may be marked `.IsOwner()`. Tables without any ownership modifiers generate no response structs.
+
+## Encryption at rest
+
+Mark sensitive columns with `.Encrypted()` to declare that they require encryption at rest. Squeeze flags sensitive field names that are missing this annotation.
+
+```go
+m.CreateTable("accounts", func(t *Table) {
+    t.UUID("id").PrimaryKey().Default("uuid_generate_v7()")
+    t.String("api_key", 255).NotNull().Encrypted()
+    t.String("email", 255).NotNull().Encrypted()
+    t.String("password_hash", 255).NotNull().Encrypted()
+    t.Timestamps()
+})
+```
+
+Pickle knows which field names are sensitive (e.g., `email`, `password`, `api_key`, `*_token`, `*_secret`, `*_hash`). If you mark a sensitive field as `.Public()`, Squeeze flags it as an error. Use `.UnsafePublic()` to explicitly opt out:
+
+```go
+// Intentionally public — e.g., a user directory
+t.String("email", 255).NotNull().Public().UnsafePublic().Encrypted()
+```
+
+See the [Squeeze docs](Squeeze.md) for the full list of sensitive field patterns.
 
 ## Migration operations
 

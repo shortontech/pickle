@@ -238,7 +238,7 @@ func (r *Runner) Migrate(entries []MigrationEntry) error {
 		if err := r.runMigration(entry.Migration); err != nil {
 			return fmt.Errorf("migrating %s: %w", entry.ID, err)
 		}
-		q := fmt.Sprintf(
+		q := fmt.Sprintf( //nolint:gosec // G201: placeholders ($1/$2 or ?), not user data
 			"INSERT INTO migrations (migration, batch) VALUES (%s, %s)",
 			r.placeholder(1), r.placeholder(2),
 		)
@@ -290,7 +290,7 @@ func (r *Runner) Rollback(entries []MigrationEntry) error {
 		if err := r.rollbackMigration(entry.Migration); err != nil {
 			return fmt.Errorf("rolling back %s: %w", entry.ID, err)
 		}
-		q := fmt.Sprintf("DELETE FROM migrations WHERE migration = %s", r.placeholder(1))
+		q := fmt.Sprintf("DELETE FROM migrations WHERE migration = %s", r.placeholder(1)) //nolint:gosec // G201: placeholder, not user data
 		if _, err := r.DB.Exec(q, entry.ID); err != nil {
 			return fmt.Errorf("removing %s: %w", entry.ID, err)
 		}

@@ -118,6 +118,11 @@ func (s *Server) registerTools() {
 	}, s.projectCreate)
 
 	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "generate",
+		Description: "Run Pickle code generation. Reads migrations, requests, config, and auth drivers, then generates models, query scopes, request bindings, and all framework glue code. Run this after changing migrations, requests, or config files.",
+	}, s.generate)
+
+	mcp.AddTool(s.server, &mcp.Tool{
 		Name:        "squeeze",
 		Description: "Run static analysis on the project. Returns security and correctness findings that generic linters miss: ownership scoping, enum validation, UUID error handling, public projections, required fields, and printf usage in controllers.",
 	}, s.squeeze)
@@ -379,6 +384,20 @@ func findPicklePkgDir() string {
 		}
 	}
 	return ""
+}
+
+func (s *Server) generate(_ context.Context, _ *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+	// Re-detect the project to pick up any changes since the server started.
+	project, err := generator.DetectProject(s.project.Dir)
+	if err != nil {
+		return errResult("detecting project: " + err.Error()), nil, nil
+	}
+	s.project = project
+
+	if err := generator.Generate(s.project, s.picklePkgDir); err != nil {
+		return errResult("generate failed: " + err.Error()), nil, nil
+	}
+	return textResult("Generated successfully."), nil, nil
 }
 
 func (s *Server) squeeze(_ context.Context, _ *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {

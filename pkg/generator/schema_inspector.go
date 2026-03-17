@@ -39,6 +39,8 @@ type columnInfo struct {
 	Public           bool   ` + "`" + `json:"public,omitempty"` + "`" + `
 	OwnerSees        bool   ` + "`" + `json:"owner_sees,omitempty"` + "`" + `
 	OwnerColumn      bool   ` + "`" + `json:"owner_column,omitempty"` + "`" + `
+	Encrypted        bool   ` + "`" + `json:"encrypted,omitempty"` + "`" + `
+	UnsafePublic     bool   ` + "`" + `json:"unsafe_public,omitempty"` + "`" + `
 }
 
 type tableInfo struct {
@@ -134,6 +136,8 @@ func processOps(ops []{{ .TypesPkg }}.Operation, tables map[string]*tableInfo, o
 					Public:           col.IsPublic,
 					OwnerSees:        col.IsOwnerSees,
 					OwnerColumn:      col.IsOwnerColumn,
+					Encrypted:        col.IsEncrypted,
+					UnsafePublic:     col.IsUnsafePublic,
 				})
 			}
 			tables[op.Table] = ti

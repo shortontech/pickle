@@ -34,6 +34,8 @@ squeeze:
     param_mismatch: true
     csrf_missing: true
     no_printf: true
+    sensitive_field_encryption: true
+    public_sensitive_conflict: true
 ```
 
 All rules default to enabled. Set a rule to `false` to disable it.
@@ -308,6 +310,48 @@ transfer := &models.Transfer{
 ```
 
 Check your migration to see which columns are `NOT NULL` without `.Default()` or `.Nullable()`.
+
+### sensitive_field_encryption
+
+**Severity:** warning
+
+**What it catches:** Columns with sensitive names that are not marked `.Encrypted()` in the migration. Pickle has a built-in dictionary of sensitive field patterns — exact names like `email`, `password`, `api_key`, `ssn`, `cvv`, and suffix patterns like `*_token`, `*_secret`, `*_key`, `*_hash`, `*_credential`.
+
+**How to fix:** Mark sensitive columns with `.Encrypted()` in your migration:
+
+```go
+// BEFORE — sensitive data stored unencrypted
+t.String("api_key", 255).NotNull()
+t.String("email", 255).NotNull()
+
+// AFTER — declared as encrypted at rest
+t.String("api_key", 255).NotNull().Encrypted()
+t.String("email", 255).NotNull().Encrypted()
+```
+
+The full list of sensitive patterns:
+
+**Exact names:** `password`, `email`, `ssn`, `access_token`, `api_key`, `session_key`, `refresh_token`, `secret`, `private_key`, `credit_card`, `card_number`, `cvv`, `pin`, `date_of_birth`, `phone`, `phone_number`
+
+**Suffixes:** `_secret`, `_token`, `_key`, `_hash`, `_password`, `_ssn`, `_credential`
+
+### public_sensitive_conflict
+
+**Severity:** error
+
+**What it catches:** Columns marked `.Public()` whose names match sensitive field patterns. Exposing a field like `email` to unauthenticated users is almost always a mistake.
+
+**How to fix:** Either remove `.Public()` from the sensitive column, or add `.UnsafePublic()` to explicitly acknowledge the exposure:
+
+```go
+// BEFORE — Squeeze flags this as an error
+t.String("email", 255).NotNull().Public()
+
+// AFTER — explicit acknowledgment that this is intentional
+t.String("email", 255).NotNull().Public().UnsafePublic().Encrypted()
+```
+
+`.UnsafePublic()` is the escape hatch — same pattern as `.AnyOwner()` for ownership scoping. It makes the intent visible in code review and grep-able in audits.
 
 ### no_printf
 

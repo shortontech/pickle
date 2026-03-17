@@ -17,6 +17,8 @@ type Column struct {
 	IsPublic         bool
 	IsOwnerSees      bool
 	IsOwnerColumn    bool
+	IsEncrypted      bool
+	IsUnsafePublic   bool
 }
 
 func (c *Column) PrimaryKey() *Column {
@@ -60,6 +62,19 @@ func (c *Column) Public() *Column {
 // OwnerSees marks this column as visible only to the row's owner.
 func (c *Column) OwnerSees() *Column {
 	c.IsOwnerSees = true
+	return c
+}
+
+// Encrypted marks this column as requiring encryption at rest.
+func (c *Column) Encrypted() *Column {
+	c.IsEncrypted = true
+	return c
+}
+
+// UnsafePublic explicitly acknowledges that a sensitive-named column is intentionally
+// marked Public. Without this, Squeeze flags the Public/sensitive combination as an error.
+func (c *Column) UnsafePublic() *Column {
+	c.IsUnsafePublic = true
 	return c
 }
 

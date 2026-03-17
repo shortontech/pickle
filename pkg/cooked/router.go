@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // MiddlewareFunc is the signature for middleware functions.
@@ -187,5 +188,13 @@ func (r *Router) RegisterRoutes(mux *http.ServeMux) {
 func (r *Router) ListenAndServe(addr string) error {
 	mux := http.NewServeMux()
 	r.RegisterRoutes(mux)
-	return http.ListenAndServe(addr, mux)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	return srv.ListenAndServe()
 }

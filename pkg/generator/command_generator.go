@@ -164,6 +164,7 @@ package commands
 import (
 	"log"
 	"net/http"
+	"time"
 
 	pickle "{{ .HTTPImport }}"
 	"{{ .ModelsImport }}"
@@ -252,7 +253,17 @@ func NewApp() *pickle.App {
 			mux := http.NewServeMux()
 {{ range .RouteVars }}			routes.{{ . }}.RegisterRoutes(mux)
 {{ end }}			log.Printf("listening on :%s", config.App.Port)
-			http.ListenAndServe(":"+config.App.Port, mux)
+			srv := &http.Server{
+				Addr:              ":" + config.App.Port,
+				Handler:           mux,
+				ReadHeaderTimeout: 10 * time.Second,
+				ReadTimeout:       30 * time.Second,
+				WriteTimeout:      60 * time.Second,
+				IdleTimeout:       120 * time.Second,
+			}
+			if err := srv.ListenAndServe(); err != nil {
+				log.Fatal(err)
+			}
 		},
 		Commands()...,
 	)

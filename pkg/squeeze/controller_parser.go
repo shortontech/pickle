@@ -282,6 +282,26 @@ func FindCallsTo(body *ast.BlockStmt, fset *token.FileSet, pkg, funcName string)
 	return lines
 }
 
+// FindBuiltinCalls finds calls to a Go builtin function (e.g. recover, panic) in a block.
+func FindBuiltinCalls(body *ast.BlockStmt, fset *token.FileSet, name string) []int {
+	var lines []int
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := call.Fun.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if ident.Name == name {
+			lines = append(lines, fset.Position(call.Pos()).Line)
+		}
+		return true
+	})
+	return lines
+}
+
 // FindMustParseCalls finds uuid.MustParse calls and categorizes them by argument type.
 type MustParseCall struct {
 	Line       int

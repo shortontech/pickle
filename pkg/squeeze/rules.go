@@ -24,18 +24,21 @@ type Rule func(ctx *AnalysisContext) []Finding
 // AllRules returns all available rules keyed by name.
 func AllRules() map[string]Rule {
 	return map[string]Rule{
-		"no_printf":           ruleNoPrintf,
-		"ownership_scoping":   ruleOwnershipScoping,
-		"read_scoping":        ruleReadScoping,
-		"enum_validation":     ruleEnumValidation,
-		"uuid_error_handling": ruleUUIDErrorHandling,
-		"public_projection":   rulePublicProjection,
-		"required_fields":     ruleRequiredFields,
-		"unbounded_query":     ruleUnboundedQuery,
-		"rate_limit_auth":     ruleRateLimitAuth,
-		"auth_without_middleware": ruleAuthWithoutMiddleware,
-		"param_mismatch":          ruleParamMismatch,
-		"csrf_missing":            ruleCsrfMissing,
+		"no_printf":                ruleNoPrintf,
+		"no_recover":               ruleNoRecover,
+		"ownership_scoping":        ruleOwnershipScoping,
+		"read_scoping":             ruleReadScoping,
+		"enum_validation":          ruleEnumValidation,
+		"uuid_error_handling":      ruleUUIDErrorHandling,
+		"public_projection":        rulePublicProjection,
+		"required_fields":          ruleRequiredFields,
+		"unbounded_query":          ruleUnboundedQuery,
+		"rate_limit_auth":          ruleRateLimitAuth,
+		"auth_without_middleware":  ruleAuthWithoutMiddleware,
+		"param_mismatch":           ruleParamMismatch,
+		"csrf_missing":             ruleCsrfMissing,
+		"sensitive_field_encryption": ruleSensitiveFieldEncryption,
+		"public_sensitive_conflict":  rulePublicSensitiveConflict,
 	}
 }
 
@@ -56,6 +59,41 @@ func ruleNoPrintf(ctx *AnalysisContext) []Finding {
 					Message:  "fmt." + fn + " in controller — use structured logging instead",
 				})
 			}
+		}
+	}
+
+	return findings
+}
+
+// ruleNoRecover flags recover() calls in controllers and helpers.
+// recover() silently swallows panics and hides bugs. Let panics crash loudly.
+func ruleNoRecover(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+
+	for _, m := range ctx.Methods {
+		lines := FindBuiltinCalls(m.Body, m.Fset, "recover")
+		for _, line := range lines {
+			findings = append(findings, Finding{
+				Rule:     "no_recover",
+				Severity: SeverityError,
+				File:     m.File,
+				Line:     line,
+				Message:  "recover() in controller — silently swallows panics and hides bugs, remove it",
+			})
+		}
+	}
+
+	for name, pf := range ctx.FuncRegistry {
+		lines := FindBuiltinCalls(pf.Body, pf.Fset, "recover")
+		for _, line := range lines {
+			file := pf.Fset.Position(pf.Body.Pos()).Filename
+			findings = append(findings, Finding{
+				Rule:     "no_recover",
+				Severity: SeverityError,
+				File:     file,
+				Line:     line,
+				Message:  name + "() calls recover() — silently swallows panics and hides bugs, remove it",
+			})
 		}
 	}
 
@@ -140,6 +178,88 @@ var enumFields = map[string]bool{
 	"state":    true,
 	"kind":     true,
 	"category": true,
+}
+
+// sensitiveExactNames are field names that are inherently sensitive.
+var sensitiveExactNames = map[string]bool{
+	"password":      true,
+	"email":         true,
+	"ssn":           true,
+	"access_token":  true,
+	"api_key":       true,
+	"session_key":   true,
+	"refresh_token": true,
+	"secret":        true,
+	"private_key":   true,
+	"credit_card":   true,
+	"card_number":   true,
+	"cvv":           true,
+	"pin":           true,
+	"date_of_birth": true,
+	"phone":         true,
+	"phone_number":  true,
+}
+
+// sensitiveSuffixes are column name suffixes that indicate sensitive data.
+var sensitiveSuffixes = []string{
+	"_secret",
+	"_token",
+	"_key",
+	"_hash",
+	"_password",
+	"_ssn",
+	"_credential",
+}
+
+// isSensitiveColumn returns true if the column name matches a known sensitive pattern.
+func isSensitiveColumn(name string) bool {
+	if sensitiveExactNames[name] {
+		return true
+	}
+	for _, suffix := range sensitiveSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// ruleSensitiveFieldEncryption flags sensitive columns without .Encrypted().
+func ruleSensitiveFieldEncryption(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+	for _, table := range ctx.Tables {
+		for _, col := range table.Columns {
+			if isSensitiveColumn(col.Name) && !col.IsEncrypted {
+				findings = append(findings, Finding{
+					Rule:     "sensitive_field_encryption",
+					Severity: SeverityWarning,
+					File:     "",
+					Line:     0,
+					Message:  table.Name + "." + col.Name + " — sensitive field without .Encrypted() (data at rest may be unprotected)",
+				})
+			}
+		}
+	}
+	return findings
+}
+
+// rulePublicSensitiveConflict flags sensitive columns marked .Public() without .UnsafePublic().
+func rulePublicSensitiveConflict(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+	for _, table := range ctx.Tables {
+		for _, col := range table.Columns {
+			if col.IsPublic && isSensitiveColumn(col.Name) && !col.IsUnsafePublic {
+				findings = append(findings, Finding{
+					Rule:     "public_sensitive_conflict",
+					Severity: SeverityError,
+					File:     "",
+					Line:     0,
+					Message:  table.Name + "." + col.Name + " — sensitive field marked .Public() (use .UnsafePublic() to override)",
+				})
+			}
+		}
+	}
+	return findings
 }
 
 // ruleEnumValidation flags request struct fields named status/role/type/state without oneof= validation.

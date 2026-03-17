@@ -53,6 +53,47 @@ func (m *Migration) CreateTable(name string, fn func(*Table)) {
 		Table:    name,
 		TableDef: t,
 	})
+	// Flatten nested relationships into additional create table operations
+	m.flattenRelationships(t)
+}
+
+// flattenRelationships walks a table's Relationships and emits OpCreateTable
+// and OpAddIndex operations for each child table, with auto-injected FK columns.
+func (m *Migration) flattenRelationships(parent *Table) {
+	for _, rel := range parent.Relationships {
+		child := rel.ChildTable
+		// Inject FK column: {singular_parent}_id referencing parent PK
+		parentSingular := singularize(parent.Name)
+		pkType := findPKType(parent)
+		fkCol := &Column{
+			Name:             parentSingular + "_id",
+			Type:             pkType,
+			ForeignKeyTable:  parent.Name,
+			ForeignKeyColumn: findPKName(parent),
+			IsOwnerColumn:    true,
+		}
+		if rel.Type == RelHasOne {
+			fkCol.IsUnique = true
+		}
+		child.Columns = insertFKColumn(child.Columns, fkCol)
+
+		m.Operations = append(m.Operations, Operation{
+			Type:     OpCreateTable,
+			Table:    child.Name,
+			TableDef: child,
+		})
+		// Add index on FK column
+		m.Operations = append(m.Operations, Operation{
+			Type:  OpAddIndex,
+			Table: child.Name,
+			Index: &Index{
+				Table:   child.Name,
+				Columns: []string{fkCol.Name},
+			},
+		})
+		// Recurse for deeper nesting
+		m.flattenRelationships(child)
+	}
 }
 
 func (m *Migration) DropTableIfExists(name string) {
@@ -80,6 +121,24 @@ func (m *Migration) AddColumn(table string, fn func(*Table)) {
 		Table:     table,
 		ColumnDef: fn,
 	})
+}
+
+// AlterTable allows adding columns and nested relationships to an existing table.
+func (m *Migration) AlterTable(name string, fn func(*Table)) {
+	t := &Table{Name: name}
+	fn(t)
+	// Emit AddColumn for each new column
+	for _, col := range t.Columns {
+		m.Operations = append(m.Operations, Operation{
+			Type:  OpAddColumn,
+			Table: name,
+			ColumnDef: func(tmp *Table) {
+				tmp.Columns = append(tmp.Columns, col)
+			},
+		})
+	}
+	// Flatten nested relationships
+	m.flattenRelationships(t)
 }
 
 func (m *Migration) DropColumn(table, column string) {

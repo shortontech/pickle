@@ -110,7 +110,27 @@ var goTypeNames = map[{{ .TypesPkg }}.ColumnType]string{
 	{{ .TypesPkg }}.Binary:     "[]byte",
 }
 
-func processOps(ops []{{ .TypesPkg }}.Operation, tables map[string]*tableInfo, order *[]string, views map[string]*viewInfo, viewOrder *[]string) {
+func collectRelationships(t *{{ .TypesPkg }}.Table, rels *[]relationshipInfo) {
+	for _, rel := range t.Relationships {
+		relType := "has_many"
+		if rel.Type == {{ .TypesPkg }}.RelHasOne {
+			relType = "has_one"
+		}
+		*rels = append(*rels, relationshipInfo{
+			Type:        relType,
+			ParentTable: rel.ParentTable,
+			ChildTable:  rel.Name,
+			Collection:  rel.IsCollection,
+			TopLevel:    rel.IsTopLevel,
+		})
+		// Recurse for deeper nesting
+		if rel.ChildTable != nil {
+			collectRelationships(rel.ChildTable, rels)
+		}
+	}
+}
+
+func processOps(ops []{{ .TypesPkg }}.Operation, tables map[string]*tableInfo, order *[]string, views map[string]*viewInfo, viewOrder *[]string, rels *[]relationshipInfo) {
 	for _, op := range ops {
 		switch op.Type {
 		case {{ .TypesPkg }}.OpCreateTable:
@@ -142,6 +162,10 @@ func processOps(ops []{{ .TypesPkg }}.Operation, tables map[string]*tableInfo, o
 			}
 			tables[op.Table] = ti
 			*order = append(*order, op.Table)
+			// Collect relationship metadata
+			if op.TableDef != nil {
+				collectRelationships(op.TableDef, rels)
+			}
 		case {{ .TypesPkg }}.OpDropTableIfExists:
 			delete(tables, op.Table)
 		case {{ .TypesPkg }}.OpAddIndex, {{ .TypesPkg }}.OpAddUniqueIndex:
@@ -298,9 +322,18 @@ func repeat(s string, n int) string {
 	return result
 }
 
+type relationshipInfo struct {
+	Type        string ` + "`" + `json:"type"` + "`" + `
+	ParentTable string ` + "`" + `json:"parent_table"` + "`" + `
+	ChildTable  string ` + "`" + `json:"child_table"` + "`" + `
+	Collection  bool   ` + "`" + `json:"collection,omitempty"` + "`" + `
+	TopLevel    bool   ` + "`" + `json:"top_level,omitempty"` + "`" + `
+}
+
 type inspectorOutput struct {
-	Tables []tableInfo ` + "`" + `json:"tables"` + "`" + `
-	Views  []viewInfo  ` + "`" + `json:"views,omitempty"` + "`" + `
+	Tables        []tableInfo        ` + "`" + `json:"tables"` + "`" + `
+	Views         []viewInfo         ` + "`" + `json:"views,omitempty"` + "`" + `
+	Relationships []relationshipInfo ` + "`" + `json:"relationships,omitempty"` + "`" + `
 }
 
 func main() {
@@ -308,11 +341,12 @@ func main() {
 	var order []string
 	views := map[string]*viewInfo{}
 	var viewOrder []string
+	var rels []relationshipInfo
 
 {{ range .Migrations }}	{
 		m := {{ .PkgAlias }}.{{ .StructName }}{}
 		m.Up()
-		processOps(m.Operations, tables, &order, views, &viewOrder)
+		processOps(m.Operations, tables, &order, views, &viewOrder, &rels)
 	}
 {{ end }}
 	// Parse args: [--json] [table_name]
@@ -344,6 +378,7 @@ func main() {
 			for _, name := range viewOrder {
 				out.Views = append(out.Views, *views[name])
 			}
+			out.Relationships = rels
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")

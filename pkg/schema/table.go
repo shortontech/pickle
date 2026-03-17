@@ -1,9 +1,38 @@
 package schema
 
+// RelationshipType distinguishes HasMany from HasOne.
+type RelationshipType int
+
+const (
+	RelHasMany RelationshipType = iota
+	RelHasOne
+)
+
+// Relationship records a nested child table declared via HasMany/HasOne.
+type Relationship struct {
+	Type         RelationshipType
+	Name         string // child table name (e.g., "posts")
+	ChildTable   *Table // child schema definition
+	ParentTable  string // parent table name (set during CreateTable)
+	IsCollection bool   // .Collection() — separate collection for doc stores
+	IsTopLevel   bool   // .TopLevelModel() — generate at models/ not models/parent/
+}
+
+func (r *Relationship) Collection() *Relationship {
+	r.IsCollection = true
+	return r
+}
+
+func (r *Relationship) TopLevelModel() *Relationship {
+	r.IsTopLevel = true
+	return r
+}
+
 // Table collects column definitions for a database table.
 type Table struct {
-	Name    string
-	Columns []*Column
+	Name          string
+	Columns       []*Column
+	Relationships []*Relationship
 }
 
 func (t *Table) addColumn(name string, colType ColumnType) *Column {
@@ -85,6 +114,36 @@ func (t *Table) Time(name string) *Column {
 
 func (t *Table) Binary(name string) *Column {
 	return t.addColumn(name, Binary)
+}
+
+// HasMany declares a one-to-many relationship. The child table gets an
+// auto-injected FK column pointing back to this table's primary key.
+func (t *Table) HasMany(name string, fn func(*Table)) *Relationship {
+	child := &Table{Name: name}
+	fn(child)
+	r := &Relationship{
+		Type:        RelHasMany,
+		Name:        name,
+		ChildTable:  child,
+		ParentTable: t.Name,
+	}
+	t.Relationships = append(t.Relationships, r)
+	return r
+}
+
+// HasOne declares a one-to-one relationship. The child table gets an
+// auto-injected unique FK column pointing back to this table's primary key.
+func (t *Table) HasOne(name string, fn func(*Table)) *Relationship {
+	child := &Table{Name: name}
+	fn(child)
+	r := &Relationship{
+		Type:        RelHasOne,
+		Name:        name,
+		ChildTable:  child,
+		ParentTable: t.Name,
+	}
+	t.Relationships = append(t.Relationships, r)
+	return r
 }
 
 // Timestamps adds created_at and updated_at columns with NOW() defaults.

@@ -190,9 +190,18 @@ type inspectorViewColumnInfo struct {
 	Scale        int    `json:"scale,omitempty"`
 }
 
+type inspectorRelationshipInfo struct {
+	Type        string `json:"type"`
+	ParentTable string `json:"parent_table"`
+	ChildTable  string `json:"child_table"`
+	Collection  bool   `json:"collection,omitempty"`
+	TopLevel    bool   `json:"top_level,omitempty"`
+}
+
 type inspectorOutput struct {
-	Tables []inspectorTableInfo `json:"tables"`
-	Views  []inspectorViewInfo  `json:"views,omitempty"`
+	Tables        []inspectorTableInfo        `json:"tables"`
+	Views         []inspectorViewInfo         `json:"views,omitempty"`
+	Relationships []inspectorRelationshipInfo `json:"relationships,omitempty"`
 }
 
 var typeNameToColumnType = map[string]schema.ColumnType{

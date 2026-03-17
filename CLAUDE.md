@@ -4,11 +4,11 @@
 
 ## What Is Pickle?
 
-Pickle is a **code generation framework** for Go that gives you Laravel's developer experience with Go's deployment story. You write controllers, migrations, request classes, and middleware in a Laravel-like syntax — Pickle watches your project and generates all the boring Go boilerplate around them. The output is idiomatic Go. The input is not. That's the point.
+Pickle is a **code generation framework** for Go that gives you a batteries-included developer experience with Go's deployment story. You write controllers, migrations, request classes, and middleware in a concise, expressive syntax — Pickle watches your project and generates all the boring Go boilerplate around them. The output is idiomatic Go. The input is not. That's the point.
 
-**One sentence:** Write Laravel code in Go, deploy a single static binary with no runtime.
+**One sentence:** Write expressive code in Go, deploy a single static binary with no runtime.
 
-**The problem:** Go makes you write 200 lines to do what Laravel does in 3. Every Go project is 60% boilerplate and 40% the thing you actually care about. ORMs are all terrible. There's no real MVC framework. The community thinks this is a feature.
+**The problem:** Go makes you write 200 lines to do what other frameworks do in 3. Every Go project is 60% boilerplate and 40% the thing you actually care about. ORMs are all terrible. There's no real MVC framework. The community thinks this is a feature.
 
 **The solution:** Pickle generates the boilerplate from your intent. You write what matters — controllers, migrations, validation rules, middleware — and `pickle --watch` generates models, query scopes, request bindings, and everything else. The generated code is plain Go. You can read it, debug it, `grep` it. It's not magic. It's just code you didn't have to type.
 
@@ -44,7 +44,7 @@ You Write (source of truth):              Pickle Generates (don't edit):
 └── go.mod
 ```
 
-The project follows a Laravel-like directory layout. Controllers, requests, and middleware each live in their own package under `app/http/`. The generated HTTP types (Context, Response, Router) live in `app/http/` as package `pickle` — controllers and middleware import them. Models live in `app/models/` as a separate package. Migrations live in `database/migrations/` with tickle-generated schema types. Routes live in `routes/`.
+The project follows a convention-based directory layout. Controllers, requests, and middleware each live in their own package under `app/http/`. The generated HTTP types (Context, Response, Router) live in `app/http/` as package `pickle` — controllers and middleware import them. Models live in `app/models/` as a separate package. Migrations live in `database/migrations/` with tickle-generated schema types. Routes live in `routes/`.
 
 **`pickle --watch`** scans for changes and regenerates. You never edit generated files — they get overwritten on the next run.
 
@@ -56,7 +56,7 @@ The project follows a Laravel-like directory layout. Controllers, requests, and 
 
 Migrations are the **single source of truth** for your database schema. You write them in Go using the schema DSL. Pickle generates model structs, query scope methods, and relationship helpers from them.
 
-Migration files use Laravel-style naming: `{timestamp}_{description}.go`. The timestamp prefix determines execution order:
+Migration files use timestamp-prefixed naming: `{timestamp}_{description}.go`. The timestamp prefix determines execution order:
 
 ```go
 // database/migrations/2026_02_21_143052_create_transfers_table.go
@@ -483,7 +483,7 @@ pickle make:middleware    # Scaffold a new middleware
 - **Not a runtime framework** — Pickle is a build tool. The generated code uses Go's stdlib and has no dependency on Pickle. There's no Pickle process running in production.
 - **Not opinionated about your database driver** — Uses `database/sql` under the hood. Bring your own driver (`pgx`, `lib/pq`, whatever).
 - **Not magic** — All generated code is visible, readable, debuggable Go. No reflection at runtime. No interface{} soup. Just structs and methods.
-- **Not trying to replace Go idioms** — The generated OUTPUT is idiomatic Go. The input (your controllers, migrations) is Laravel-flavored. Pickle is the translator between "how you think" and "how Go wants it."
+- **Not trying to replace Go idioms** — The generated OUTPUT is idiomatic Go. The input (your controllers, migrations) is expressive and concise. Pickle is the translator between "how you think" and "how Go wants it."
 
 ## Security
 
@@ -510,7 +510,7 @@ This is the advantage of code generation over runtime frameworks. A scanner can'
 
 ### Why a central route file?
 
-Go doesn't have decorators or annotations. A central route file (`routes/web.go`) means one file, entire app surface area visible at a glance. It's how Laravel does it (`routes/web.php` / `routes/api.php`), and it's idiomatic Go (just function calls). The `Router` type collects route definitions and registers them at runtime — no code generation needed for routing.
+Go doesn't have decorators or annotations. A central route file (`routes/web.go`) means one file, entire app surface area visible at a glance. It's idiomatic Go (just function calls). The `Router` type collects route definitions and registers them at runtime — no code generation needed for routing.
 
 ### Why migrations in Go instead of SQL?
 
@@ -566,7 +566,7 @@ A Pickle MCP server gives LLMs queryable access to the project without consuming
 - **`pickle routes:list`** — every endpoint, its middleware, its request class. One call.
 - **`pickle make:migration`**, **`pickle make:controller`** — the LLM scaffolds via tools, not by writing boilerplate.
 
-LLMs are deeply trained on both Laravel and Go. Pickle sits at the intersection — the LLM already understands the intent (Laravel conventions) and the output (idiomatic Go). The framework is the bridge between two things the LLM already knows.
+LLMs understand both MVC conventions and Go. Pickle sits at the intersection — the LLM already understands the intent (convention-based MVC) and the output (idiomatic Go). The framework is the bridge between two things the LLM already knows.
 
 ### Microservices Sweet Spot
 
@@ -655,4 +655,4 @@ Go's community confused *simplicity* with *tedium*. They're not the same thing. 
 
 Pickle takes the position that if boilerplate can be generated, it should be. The generated code is visible, readable, and idiomatic Go. You sacrifice nothing. You gain everything.
 
-**Laravel DX. Go binary. No runtime. 🥒**
+**Expressive DX. Go binary. No runtime. 🥒**

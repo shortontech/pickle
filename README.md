@@ -168,4 +168,4 @@ Tickle-generated embeds and testdata output are gitignored. You generate them lo
 - Security is the priority. If a change weakens any security guarantee — even for convenience — it won't be merged.
 - Keep the dependency list minimal. Pickle's output has zero dependency on Pickle. New runtime dependencies need strong justification.
 
-**Laravel DX. Go binary. No runtime. 🥒**
+**Expressive DX. Go binary. No runtime. 🥒**

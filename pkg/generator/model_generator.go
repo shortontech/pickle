@@ -37,6 +37,12 @@ func (m *{{ .StructName }}) CreatedAt() time.Time {
 func (m *{{ .StructName }}) UpdatedAt() time.Time {
 	return uuidV7Time([16]byte(m.VersionID))
 }
+{{ end }}{{ if .IsAppendOnly }}
+// CreatedAt returns the time this record was created, extracted from
+// the UUID v7 timestamp in ID. Not a database column — never stored.
+func (m *{{ .StructName }}) CreatedAt() time.Time {
+	return uuidV7Time([16]byte(m.ID))
+}
 {{ end }}
 {{ if .PublicFields }}
 // {{ .StructName }}Public is a projection of {{ .StructName }} without sensitive fields.
@@ -73,6 +79,7 @@ type modelData struct {
 	Fields       []fieldData
 	PublicFields []fieldData // non-nil only when model has hidden fields
 	IsImmutable  bool
+	IsAppendOnly bool
 }
 
 type fieldData struct {
@@ -108,8 +115,8 @@ func GenerateModel(table *schema.Table, packageName string) ([]byte, error) {
 		})
 	}
 
-	// Immutable tables need time for CreatedAt()/UpdatedAt() methods
-	if table.IsImmutable {
+	// Immutable/append-only tables need time for CreatedAt()/UpdatedAt() methods
+	if table.IsImmutable || table.IsAppendOnly {
 		imports["time"] = true
 	}
 
@@ -146,7 +153,8 @@ func GenerateModel(table *schema.Table, packageName string) ([]byte, error) {
 		StructName:  tableToStructName(table.Name),
 		Imports:     orderedImports,
 		Fields:      fields,
-		IsImmutable: table.IsImmutable,
+		IsImmutable:  table.IsImmutable,
+		IsAppendOnly: table.IsAppendOnly,
 	}
 	if hasHidden {
 		data.PublicFields = publicFields

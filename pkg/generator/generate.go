@@ -139,6 +139,7 @@ type inspectorTableInfo struct {
 	Columns       []inspectorColumnInfo `json:"columns"`
 	Indexes       []inspectorIndexInfo  `json:"indexes,omitempty"`
 	IsImmutable   bool                  `json:"is_immutable,omitempty"`
+	IsAppendOnly  bool                  `json:"is_append_only,omitempty"`
 	HasSoftDelete bool                  `json:"has_soft_delete,omitempty"`
 }
 
@@ -282,7 +283,7 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, []Sc
 	// Convert to schema.Table
 	var tables []*schema.Table
 	for _, ti := range result.Tables {
-		t := &schema.Table{Name: ti.Name, Connection: ti.Connection, IsImmutable: ti.IsImmutable, HasSoftDelete: ti.HasSoftDelete}
+		t := &schema.Table{Name: ti.Name, Connection: ti.Connection, IsImmutable: ti.IsImmutable, IsAppendOnly: ti.IsAppendOnly, HasSoftDelete: ti.HasSoftDelete}
 		for _, ci := range ti.Columns {
 			colType, ok := typeNameToColumnType[ci.Type]
 			if !ok {

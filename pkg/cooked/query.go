@@ -165,6 +165,21 @@ func (q *QueryBuilder[T]) Count() (int64, error) {
 	return count, err
 }
 
+// aggregate runs a SQL aggregate function (SUM, AVG, etc.) on a column.
+func (q *QueryBuilder[T]) aggregate(fn, column string) (*float64, error) {
+	query, args := q.buildAggregate(fn, column)
+	var result *float64
+	err := q.db().QueryRow(query, args...).Scan(&result)
+	return result, err
+}
+
+func (q *QueryBuilder[T]) buildAggregate(fn, column string) (string, []any) {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("SELECT %s(%s) FROM %s", fn, column, q.table))
+	args := q.appendWhere(&b)
+	return b.String(), args
+}
+
 // Create inserts a new record and scans the returned row back into the struct,
 // populating DB-generated values (UUIDs, timestamps, defaults).
 func (q *QueryBuilder[T]) Create(record *T) error {
@@ -409,149 +424,6 @@ func buildUpdate[T any](table string, record *T, conditions []condition) (string
 		b.WriteString(fmt.Sprintf(" WHERE id = $%d", len(args)+1))
 		args = append(args, idVal)
 	}
-
-	return b.String(), args
-}
-
-// immutableAll returns all current versions (latest version_id per id) matching conditions.
-// If softDeletes is true, rows with deleted_at IS NOT NULL are excluded.
-// If allVersions is true, all rows are returned in (id, version_id ASC) order.
-func (q *QueryBuilder[T]) immutableAll(cols []string, softDeletes, allVersions bool) ([]T, error) {
-	query, args := q.buildImmutableSelect(cols, softDeletes, allVersions, 0)
-	rows, err := q.db().Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanRows[T](rows)
-}
-
-// immutableFirst returns the latest version of the first matching record.
-func (q *QueryBuilder[T]) immutableFirst(cols []string, softDeletes, allVersions bool) (*T, error) {
-	query, args := q.buildImmutableSelect(cols, softDeletes, allVersions, 1)
-	row := q.db().QueryRow(query, args...)
-	var result T
-	if err := scanRow(row, &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
-}
-
-// immutableCount returns the number of distinct ids matching conditions.
-func (q *QueryBuilder[T]) immutableCount(softDeletes bool) (int64, error) {
-	query, args := q.buildImmutableCount(softDeletes)
-	var count int64
-	err := q.db().QueryRow(query, args...).Scan(&count)
-	return count, err
-}
-
-func (q *QueryBuilder[T]) buildImmutableSelect(cols []string, softDeletes, allVersions bool, limit int) (string, []any) {
-	prefixed := make([]string, len(cols))
-	for i, c := range cols {
-		prefixed[i] = "t." + c
-	}
-
-	var b strings.Builder
-	args := make([]any, 0, len(q.conditions))
-	argIdx := 1
-
-	b.WriteString("SELECT ")
-	b.WriteString(strings.Join(prefixed, ", "))
-	b.WriteString(" FROM ")
-	b.WriteString(q.table)
-	b.WriteString(" t WHERE t.version_id = (SELECT MAX(version_id) FROM ")
-	b.WriteString(q.table)
-	b.WriteString(" WHERE id = t.id")
-	if softDeletes {
-		b.WriteString(" AND deleted_at IS NULL")
-	}
-	b.WriteString(")")
-
-	if allVersions {
-		// Bypass dedup — plain select of all versions
-		b.Reset()
-		args = args[:0]
-		argIdx = 1
-		b.WriteString("SELECT ")
-		b.WriteString(strings.Join(prefixed, ", "))
-		b.WriteString(" FROM ")
-		b.WriteString(q.table)
-		b.WriteString(" t")
-		if len(q.conditions) > 0 {
-			b.WriteString(" WHERE ")
-			for i, c := range q.conditions {
-				if i > 0 {
-					b.WriteString(" AND ")
-				}
-				b.WriteString(fmt.Sprintf("t.%s %s $%d", c.column, c.op, argIdx))
-				args = append(args, c.value)
-				argIdx++
-			}
-		}
-		b.WriteString(" ORDER BY t.id, t.version_id ASC")
-	} else {
-		var extra []string
-		for _, c := range q.conditions {
-			extra = append(extra, fmt.Sprintf("t.%s %s $%d", c.column, c.op, argIdx))
-			args = append(args, c.value)
-			argIdx++
-		}
-		if softDeletes {
-			extra = append(extra, "t.deleted_at IS NULL")
-		}
-		if len(extra) > 0 {
-			b.WriteString(" AND ")
-			b.WriteString(strings.Join(extra, " AND "))
-		}
-		if len(q.orderBy) > 0 {
-			b.WriteString(" ORDER BY ")
-			b.WriteString(strings.Join(q.orderBy, ", "))
-		} else {
-			b.WriteString(" ORDER BY t.id")
-		}
-	}
-
-	if limit > 0 {
-		b.WriteString(fmt.Sprintf(" LIMIT %d", limit))
-	} else if q.limit > 0 {
-		b.WriteString(fmt.Sprintf(" LIMIT %d", q.limit))
-	}
-	if q.offset > 0 {
-		b.WriteString(fmt.Sprintf(" OFFSET %d", q.offset))
-	}
-
-	return b.String(), args
-}
-
-func (q *QueryBuilder[T]) buildImmutableCount(softDeletes bool) (string, []any) {
-	var b strings.Builder
-	args := make([]any, 0, len(q.conditions))
-	argIdx := 1
-
-	b.WriteString("SELECT COUNT(*) FROM (SELECT t.id FROM ")
-	b.WriteString(q.table)
-	b.WriteString(" t WHERE t.version_id = (SELECT MAX(version_id) FROM ")
-	b.WriteString(q.table)
-	b.WriteString(" WHERE id = t.id")
-	if softDeletes {
-		b.WriteString(" AND deleted_at IS NULL")
-	}
-	b.WriteString(")")
-
-	var extra []string
-	for _, c := range q.conditions {
-		extra = append(extra, fmt.Sprintf("t.%s %s $%d", c.column, c.op, argIdx))
-		args = append(args, c.value)
-		argIdx++
-	}
-	if softDeletes {
-		extra = append(extra, "t.deleted_at IS NULL")
-	}
-	if len(extra) > 0 {
-		b.WriteString(" AND ")
-		b.WriteString(strings.Join(extra, " AND "))
-	}
-	b.WriteString(") AS _dedup")
 
 	return b.String(), args
 }

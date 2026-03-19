@@ -716,6 +716,7 @@ func immutableTableNames(ctx *AnalysisContext) map[string]bool {
 	return names
 }
 
+
 // findRawSQLStrings walks an AST block and returns all string literal values
 // along with their source line numbers.
 func findRawSQLStrings(body *ast.BlockStmt, fset *token.FileSet) []struct {

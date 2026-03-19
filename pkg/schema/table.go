@@ -34,7 +34,8 @@ type Table struct {
 	Connection    string // database connection name ("" = default)
 	Columns       []*Column
 	Relationships []*Relationship
-	IsImmutable   bool // set by Immutable() — append-only, (id, version_id) composite PK
+	IsImmutable   bool // set by Immutable() — versioned, (id, version_id) composite PK
+	IsAppendOnly  bool // set by AppendOnly() — insert-only, single id PK, no updates/deletes
 	HasSoftDelete bool // set by SoftDeletes() — adds deleted_at nullable column
 }
 
@@ -150,11 +151,14 @@ func (t *Table) HasOne(name string, fn func(*Table)) *Relationship {
 }
 
 // Timestamps adds created_at and updated_at columns with NOW() defaults.
-// Panics if called on an immutable table — use Immutable() instead,
-// which derives created_at and updated_at from UUID v7 timestamps.
+// Panics if called on an immutable or append-only table — those derive
+// timestamps from UUID v7.
 func (t *Table) Timestamps() {
 	if t.IsImmutable {
 		panic("pickle: Timestamps() must not be called on immutable table \"" + t.Name + "\" — CreatedAt and UpdatedAt are derived from UUID v7 timestamps in id and version_id")
+	}
+	if t.IsAppendOnly {
+		panic("pickle: Timestamps() must not be called on append-only table \"" + t.Name + "\" — CreatedAt is derived from the UUID v7 timestamp in id")
 	}
 	t.addColumn("created_at", Timestamp).NotNull().Default("NOW()")
 	t.addColumn("updated_at", Timestamp).NotNull().Default("NOW()")
@@ -179,10 +183,32 @@ func (t *Table) Immutable() {
 	t.Columns = append([]*Column{id, versionID}, t.Columns...)
 }
 
+// AppendOnly marks this table as insert-only. Pickle injects a single id
+// primary key. The generated query type has no Update or Delete methods.
+// CreatedAt is derived from the UUID v7 timestamp in id.
+// Use this for financial ledgers, event logs, and audit journals where
+// records must never be modified after creation.
+func (t *Table) AppendOnly() {
+	if t.IsImmutable {
+		panic("pickle: AppendOnly() and Immutable() are mutually exclusive on table \"" + t.Name + "\"")
+	}
+	t.IsAppendOnly = true
+	id := &Column{
+		Name:         "id",
+		Type:         UUID,
+		IsPrimaryKey: true,
+	}
+	t.Columns = append([]*Column{id}, t.Columns...)
+}
+
 // SoftDeletes adds a nullable deleted_at timestamp column.
 // On an immutable table, Delete() inserts a new version with deleted_at set.
 // On a mutable table, Delete() issues a standard soft-delete UPDATE.
+// Panics on append-only tables — append-only records cannot be deleted.
 func (t *Table) SoftDeletes() {
+	if t.IsAppendOnly {
+		panic("pickle: SoftDeletes() must not be called on append-only table \"" + t.Name + "\" — append-only records cannot be deleted")
+	}
 	t.HasSoftDelete = true
 	t.addColumn("deleted_at", Timestamp).Nullable()
 }

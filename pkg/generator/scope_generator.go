@@ -37,20 +37,30 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 
 	// Generate the model-specific query wrapper type
 	queryType := structName + "Query"
-	b.WriteString(fmt.Sprintf("// %s provides typed query methods for %s.\n", queryType, structName))
+	builderType := "QueryBuilder" // mutable by default
 	if table.IsImmutable {
-		b.WriteString(fmt.Sprintf("type %s struct {\n\t*QueryBuilder[%s]\n\tallVersions bool\n}\n\n", queryType, structName))
-	} else {
-		b.WriteString(fmt.Sprintf("type %s struct {\n\t*QueryBuilder[%s]\n}\n\n", queryType, structName))
+		builderType = "ImmutableQueryBuilder"
 	}
+
+	b.WriteString(fmt.Sprintf("// %s provides typed query methods for %s.\n", queryType, structName))
+	b.WriteString(fmt.Sprintf("type %s struct {\n\t*%s[%s]\n}\n\n", queryType, builderType, structName))
 
 	// Generate a typed Query constructor
 	b.WriteString(fmt.Sprintf("// Query%s starts a new query for %s.\n", structName, structName))
 	b.WriteString(fmt.Sprintf("func Query%s() *%s {\n", structName, queryType))
-	if table.Connection != "" {
-		b.WriteString(fmt.Sprintf("\treturn &%s{QueryBuilder: Query[%s](%q, %q)}\n", queryType, structName, table.Name, table.Connection))
+	if table.IsImmutable {
+		softDeletes := table.HasSoftDelete
+		if table.Connection != "" {
+			b.WriteString(fmt.Sprintf("\treturn &%s{ImmutableQueryBuilder: ImmutableQuery[%s](%q, %v, %q)}\n", queryType, structName, table.Name, softDeletes, table.Connection))
+		} else {
+			b.WriteString(fmt.Sprintf("\treturn &%s{ImmutableQueryBuilder: ImmutableQuery[%s](%q, %v)}\n", queryType, structName, table.Name, softDeletes))
+		}
 	} else {
-		b.WriteString(fmt.Sprintf("\treturn &%s{QueryBuilder: Query[%s](%q)}\n", queryType, structName, table.Name))
+		if table.Connection != "" {
+			b.WriteString(fmt.Sprintf("\treturn &%s{QueryBuilder: Query[%s](%q, %q)}\n", queryType, structName, table.Name, table.Connection))
+		} else {
+			b.WriteString(fmt.Sprintf("\treturn &%s{QueryBuilder: Query[%s](%q)}\n", queryType, structName, table.Name))
+		}
 	}
 	b.WriteString("}\n\n")
 
@@ -79,18 +89,21 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 		}
 	}
 
-	// Generate chainable wrappers for base QueryBuilder methods so they
-	// return the typed query wrapper instead of *QueryBuilder[T].
-	for _, m := range []struct{ name, sig, call string }{
-		{"AnyOwner", "", "AnyOwner()"},
-		{"Limit", "n int", "Limit(n)"},
-		{"Offset", "n int", "Offset(n)"},
-		{"OrderBy", "column, direction string", "OrderBy(column, direction)"},
-	} {
-		b.WriteString(fmt.Sprintf("func (q *%s) %s(%s) *%s {\n", queryType, m.name, m.sig, queryType))
-		b.WriteString(fmt.Sprintf("\tq.QueryBuilder.%s\n", m.call))
-		b.WriteString(fmt.Sprintf("\treturn q\n"))
-		b.WriteString("}\n\n")
+	// Generate chainable wrappers for base builder methods so they
+	// return the typed query wrapper instead of the builder type.
+	// Immutable tables get these in generateImmutableMethods instead.
+	if !table.IsImmutable {
+		for _, m := range []struct{ name, sig, call string }{
+			{"AnyOwner", "", "AnyOwner()"},
+			{"Limit", "n int", "Limit(n)"},
+			{"Offset", "n int", "Offset(n)"},
+			{"OrderBy", "column, direction string", "OrderBy(column, direction)"},
+		} {
+			b.WriteString(fmt.Sprintf("func (q *%s) %s(%s) *%s {\n", queryType, m.name, m.sig, queryType))
+			b.WriteString(fmt.Sprintf("\tq.QueryBuilder.%s\n", m.call))
+			b.WriteString(fmt.Sprintf("\treturn q\n"))
+			b.WriteString("}\n\n")
+		}
 	}
 
 	// Generate per-column Select methods
@@ -100,6 +113,22 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 		b.WriteString(fmt.Sprintf("\tq.addSelect(%q)\n", col.Name))
 		b.WriteString(fmt.Sprintf("\treturn q\n"))
 		b.WriteString("}\n\n")
+	}
+
+	// Generate per-column Sum/Avg methods for numeric columns.
+	// Both QueryBuilder and ImmutableQueryBuilder have their own aggregate()
+	// method that handles dedup correctly for their table type.
+	for _, col := range table.Columns {
+		scope := tickle.ScopeForType(col.Type)
+		if scope != "numeric" {
+			continue
+		}
+		pascal := snakeToPascal(col.Name)
+		for _, fn := range []string{"Sum", "Avg"} {
+			b.WriteString(fmt.Sprintf("func (q *%s) %s%s() (*float64, error) {\n", queryType, fn, pascal))
+			b.WriteString(fmt.Sprintf("\treturn q.aggregate(%q, %q)\n", strings.ToUpper(fn), col.Name))
+			b.WriteString("}\n\n")
+		}
 	}
 
 	// Generate visibility scope methods (SelectPublic, SelectOwner, SelectAll)
@@ -169,6 +198,11 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 		generateImmutableMethods(&b, table, queryType, structName)
 	}
 
+	// Generate append-only table methods
+	if table.IsAppendOnly {
+		generateAppendOnlyMethods(&b, queryType, structName)
+	}
+
 	formatted, err := format.Source(b.Bytes())
 	if err != nil {
 		return b.Bytes(), fmt.Errorf("go format: %w\n%s", err, b.String())
@@ -177,51 +211,53 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 	return formatted, nil
 }
 
-// generateImmutableMethods emits Create, Update, Delete (if SoftDeletes), All,
-// First, Count, and AllVersions overrides for an immutable table's query type.
+// generateImmutableMethods emits Create, Update, and Delete (if SoftDeletes)
+// for an immutable table's query type. Terminal query methods (All, First, Count,
+// AllVersions, aggregate) are provided by ImmutableQueryBuilder itself.
 func generateImmutableMethods(b *bytes.Buffer, table *schema.Table, queryType, structName string) {
-	// Collect all db column names in order
-	var cols []string
-	for _, col := range table.Columns {
-		cols = append(cols, fmt.Sprintf("%q", col.Name))
-	}
-	colsLiteral := "[]string{" + strings.Join(cols, ", ") + "}"
 	softDeletes := table.HasSoftDelete
 
-	// AllVersions — bypass deduplication
-	b.WriteString(fmt.Sprintf("// AllVersions bypasses deduplication and returns the full version history.\n"))
-	b.WriteString(fmt.Sprintf("func (q *%s) AllVersions() *%s {\n\tq.allVersions = true\n\treturn q\n}\n\n", queryType, queryType))
+	// Chainable wrappers that return the typed wrapper
+	for _, m := range []struct{ name, sig, call string }{
+		{"AllVersions", "", "AllVersions()"},
+		{"Limit", "n int", "Limit(n)"},
+		{"Offset", "n int", "Offset(n)"},
+		{"OrderBy", "column, direction string", "OrderBy(column, direction)"},
+		{"AnyOwner", "", "AnyOwner()"},
+	} {
+		b.WriteString(fmt.Sprintf("func (q *%s) %s(%s) *%s {\n", queryType, m.name, m.sig, queryType))
+		b.WriteString(fmt.Sprintf("\tq.ImmutableQueryBuilder.%s\n", m.call))
+		b.WriteString(fmt.Sprintf("\treturn q\n"))
+		b.WriteString("}\n\n")
+	}
 
-	// All override
-	b.WriteString(fmt.Sprintf("func (q *%s) All() ([]%s, error) {\n", queryType, structName))
-	b.WriteString(fmt.Sprintf("\treturn q.immutableAll(%s, %v, q.allVersions)\n}\n\n", colsLiteral, softDeletes))
-
-	// First override
-	b.WriteString(fmt.Sprintf("func (q *%s) First() (*%s, error) {\n", queryType, structName))
-	b.WriteString(fmt.Sprintf("\treturn q.immutableFirst(%s, %v, q.allVersions)\n}\n\n", colsLiteral, softDeletes))
-
-	// Count override
-	b.WriteString(fmt.Sprintf("func (q *%s) Count() (int64, error) {\n", queryType))
-	b.WriteString(fmt.Sprintf("\treturn q.immutableCount(%v)\n}\n\n", softDeletes))
-
-	// Create override — generates id and version_id
+	// Create — generates id and version_id
 	b.WriteString(fmt.Sprintf("func (q *%s) Create(model *%s) error {\n", queryType, structName))
 	b.WriteString("\tif model.ID == (uuid.UUID{}) {\n\t\tmodel.ID = uuid.New()\n\t}\n")
 	b.WriteString("\tmodel.VersionID = uuid.New()\n")
-	b.WriteString("\treturn q.QueryBuilder.Create(model)\n}\n\n")
+	b.WriteString("\treturn q.ImmutableQueryBuilder.Create(model)\n}\n\n")
 
-	// Update override — inserts new version with same id
+	// Update — inserts new version with same id
 	b.WriteString(fmt.Sprintf("func (q *%s) Update(model *%s) error {\n", queryType, structName))
 	b.WriteString("\tmodel.VersionID = uuid.New()\n")
-	b.WriteString("\treturn q.QueryBuilder.Create(model)\n}\n\n")
+	b.WriteString("\treturn q.ImmutableQueryBuilder.Create(model)\n}\n\n")
 
-	// Delete override — only if SoftDeletes
+	// Delete — only if SoftDeletes
 	if softDeletes {
 		b.WriteString(fmt.Sprintf("func (q *%s) Delete(model *%s) error {\n", queryType, structName))
 		b.WriteString("\tnow := time.Now()\n\tmodel.DeletedAt = &now\n")
 		b.WriteString("\tmodel.VersionID = uuid.New()\n")
-		b.WriteString("\treturn q.QueryBuilder.Create(model)\n}\n\n")
+		b.WriteString("\treturn q.ImmutableQueryBuilder.Create(model)\n}\n\n")
 	}
+}
+
+// generateAppendOnlyMethods emits a Create override (with UUID generation) for
+// an append-only table. No Update, no Delete — records are permanent.
+func generateAppendOnlyMethods(b *bytes.Buffer, queryType, structName string) {
+	// Create override — generates id
+	b.WriteString(fmt.Sprintf("func (q *%s) Create(model *%s) error {\n", queryType, structName))
+	b.WriteString("\tif model.ID == (uuid.UUID{}) {\n\t\tmodel.ID = uuid.New()\n\t}\n")
+	b.WriteString("\treturn q.QueryBuilder.Create(model)\n}\n\n")
 }
 
 // GenerateViewQueryScopes produces a Go source file with typed Where* methods
@@ -360,6 +396,11 @@ func collectScopeImports(table *schema.Table, blocks []tickle.ScopeBlock) []stri
 		if table.HasSoftDelete {
 			imports["time"] = true
 		}
+	}
+
+	// Append-only tables need uuid for Create override
+	if table.IsAppendOnly {
+		imports["github.com/google/uuid"] = true
 	}
 
 	// Only need strconv if there are numeric or boolean columns

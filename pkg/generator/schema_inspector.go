@@ -48,7 +48,8 @@ type tableInfo struct {
 	Connection  string       ` + "`" + `json:"connection,omitempty"` + "`" + `
 	Columns     []columnInfo ` + "`" + `json:"columns"` + "`" + `
 	Indexes     []indexInfo  ` + "`" + `json:"indexes,omitempty"` + "`" + `
-	IsImmutable bool         ` + "`" + `json:"is_immutable,omitempty"` + "`" + `
+	IsImmutable   bool       ` + "`" + `json:"is_immutable,omitempty"` + "`" + `
+	IsAppendOnly  bool       ` + "`" + `json:"is_append_only,omitempty"` + "`" + `
 	HasSoftDelete bool       ` + "`" + `json:"has_soft_delete,omitempty"` + "`" + `
 }
 
@@ -141,6 +142,7 @@ func processOps(ops []{{ .TypesPkg }}.Operation, tables map[string]*tableInfo, o
 				Name:          op.Table,
 				Connection:    conn,
 				IsImmutable:   op.TableDef.IsImmutable,
+				IsAppendOnly:  op.TableDef.IsAppendOnly,
 				HasSoftDelete: op.TableDef.HasSoftDelete,
 			}
 			for _, col := range op.TableDef.Columns {

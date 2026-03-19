@@ -22,12 +22,12 @@ var templates = []struct {
 	{
 		srcDir: "pkg/cooked",
 		output: "pkg/generator/embed_http.go",
-		skip:   map[string]bool{"query.go": true, "scopes.go": true, "config.go": true},
+		skip:   map[string]bool{"query.go": true, "query_immutable.go": true, "scopes.go": true, "config.go": true},
 	},
 	{
 		srcDir: "pkg/cooked",
 		output: "pkg/generator/embed_query.go",
-		only:   map[string]bool{"query.go": true},
+		only:   map[string]bool{"query.go": true, "query_immutable.go": true},
 	},
 	{
 		srcDir: "pkg/cooked",

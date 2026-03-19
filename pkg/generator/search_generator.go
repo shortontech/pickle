@@ -114,7 +114,7 @@ func writeSearchMethod(b *bytes.Buffer, queryType, structName, methodName, visib
 			continue
 		}
 		b.WriteString(fmt.Sprintf("\t\tcase %q:\n", col.SnakeName))
-		b.WriteString(fmt.Sprintf("\t\t\tq.QueryBuilder.OrderBy(%q, sortDir)\n", col.SnakeName))
+		b.WriteString(fmt.Sprintf("\t\t\tq.OrderBy(%q, sortDir)\n", col.SnakeName))
 	}
 	b.WriteString("\t\tdefault:\n")
 	b.WriteString("\t\t\treturn nil, nil, fmt.Errorf(\"unknown sort field: %s\", sortCol)\n")
@@ -127,8 +127,8 @@ func writeSearchMethod(b *bytes.Buffer, queryType, structName, methodName, visib
 	b.WriteString("\tif err != nil {\n")
 	b.WriteString("\t\treturn nil, nil, err\n")
 	b.WriteString("\t}\n")
-	b.WriteString("\tq.QueryBuilder.Limit(pageSize)\n")
-	b.WriteString("\tq.QueryBuilder.Offset((page - 1) * pageSize)\n\n")
+	b.WriteString("\tq.Limit(pageSize)\n")
+	b.WriteString("\tq.Offset((page - 1) * pageSize)\n\n")
 	b.WriteString("\tresults, err := q.All()\n")
 	b.WriteString("\tif err != nil {\n")
 	b.WriteString("\t\treturn nil, nil, err\n")

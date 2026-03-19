@@ -42,3 +42,4 @@ sandbox/
 specs/
 testdata/basic-crud/post_controller.go
 testdata/basic-crud/server
+testdata/ledger/server

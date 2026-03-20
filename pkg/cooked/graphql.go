@@ -228,17 +228,7 @@ func execute(ctx *ResolveContext, root rootResolver, doc *Document) (map[string]
 		}
 
 		if err != nil {
-			gqlErr := map[string]any{
-				"message": err.Error(),
-				"path":    []string{alias},
-			}
-			if ve, ok := err.(*ValidationError); ok {
-				gqlErr["extensions"] = map[string]any{
-					"code":   "BAD_USER_INPUT",
-					"fields": ve.Fields,
-				}
-			}
-			errors = append(errors, gqlErr)
+			errors = append(errors, toGraphQLError(err, []string{alias}))
 			data[alias] = nil
 		} else {
 			data[alias] = val
@@ -403,5 +393,88 @@ func (l *batchLoader[K, V]) dispatch() {
 type rootResolver interface {
 	resolveQuery(ctx *ResolveContext, field Field) (any, error)
 	resolveMutation(ctx *ResolveContext, field Field) (any, error)
+}
+
+// GraphQLError is an error with a GraphQL error code for structured error responses.
+type GraphQLError struct {
+	Message    string
+	Code       string
+	Field      string // optional: the field path that caused the error
+	Extensions map[string]any
+}
+
+func (e *GraphQLError) Error() string {
+	return e.Message
+}
+
+// Error code constants following the GraphQL community conventions.
+const (
+	CodeBadUserInput            = "BAD_USER_INPUT"
+	CodeUnauthenticated         = "UNAUTHENTICATED"
+	CodeForbidden               = "FORBIDDEN"
+	CodeNotFound                = "NOT_FOUND"
+	CodeInternalServerError     = "INTERNAL_SERVER_ERROR"
+	CodeGraphQLParseFailed      = "GRAPHQL_PARSE_FAILED"
+	CodeGraphQLValidationFailed = "GRAPHQL_VALIDATION_FAILED"
+)
+
+// Unauthenticated returns a GraphQL error for missing or invalid authentication.
+func Unauthenticated(msg string) *GraphQLError {
+	return &GraphQLError{Message: msg, Code: CodeUnauthenticated}
+}
+
+// Forbidden returns a GraphQL error for insufficient permissions.
+func Forbidden(msg string) *GraphQLError {
+	return &GraphQLError{Message: msg, Code: CodeForbidden}
+}
+
+// NotFound returns a GraphQL error for a missing resource.
+func NotFound(resource string) *GraphQLError {
+	return &GraphQLError{
+		Message: fmt.Sprintf("%s not found", resource),
+		Code:    CodeNotFound,
+	}
+}
+
+// BadInput returns a GraphQL error for invalid user input.
+func BadInput(msg string) *GraphQLError {
+	return &GraphQLError{Message: msg, Code: CodeBadUserInput}
+}
+
+// InternalError returns a GraphQL error for unexpected server errors.
+func InternalError(msg string) *GraphQLError {
+	return &GraphQLError{Message: msg, Code: CodeInternalServerError}
+}
+
+// toGraphQLError converts any error to a structured GraphQL error map.
+// If the error is already a *GraphQLError, its code is preserved.
+// Otherwise it's treated as an internal error.
+func toGraphQLError(err error, path []string) map[string]any {
+	gqlErr := map[string]any{
+		"message": err.Error(),
+		"path":    path,
+	}
+
+	if ge, ok := err.(*GraphQLError); ok {
+		ext := map[string]any{"code": ge.Code}
+		if ge.Field != "" {
+			ext["field"] = ge.Field
+		}
+		for k, v := range ge.Extensions {
+			ext[k] = v
+		}
+		gqlErr["extensions"] = ext
+	} else if ve, ok := err.(*ValidationError); ok {
+		gqlErr["extensions"] = map[string]any{
+			"code":   CodeBadUserInput,
+			"fields": ve.Fields,
+		}
+	} else {
+		gqlErr["extensions"] = map[string]any{
+			"code": CodeInternalServerError,
+		}
+	}
+
+	return gqlErr
 }
 

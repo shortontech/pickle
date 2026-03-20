@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"go/format"
+	"strings"
 
 	"github.com/shortontech/pickle/pkg/schema"
 )
@@ -145,11 +146,11 @@ func writeCreateMutation(b *bytes.Buffer, tbl *schema.Table) {
 
 	b.WriteString(fmt.Sprintf("func (r *RootResolver) mutationCreate%s(ctx *ResolveContext, field Field) (any, error) {\n", structName))
 	b.WriteString("\tif !ctx.IsAuthenticated() {\n")
-	b.WriteString(fmt.Sprintf("\t\treturn nil, fmt.Errorf(\"create%s: authentication required\")\n", structName))
+	b.WriteString(fmt.Sprintf("\t\treturn nil, Unauthenticated(\"create%s: authentication required\")\n", structName))
 	b.WriteString("\t}\n\n")
 
 	b.WriteString(fmt.Sprintf("\tinput, err := extractCreate%sInput(field.Args[\"input\"])\n", structName))
-	b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n\n")
+	b.WriteString("\tif err != nil {\n\t\treturn nil, BadInput(err.Error())\n\t}\n\n")
 
 	b.WriteString(fmt.Sprintf("\trecord := &models.%s{}\n", structName))
 
@@ -175,7 +176,7 @@ func writeCreateMutation(b *bytes.Buffer, tbl *schema.Table) {
 		}
 	}
 
-	b.WriteString(fmt.Sprintf("\n\tif err := models.Query%s().Create(record); err != nil {\n\t\treturn nil, err\n\t}\n\n", structName))
+	b.WriteString(fmt.Sprintf("\n\tif err := models.Query%s().Create(record); err != nil {\n\t\treturn nil, InternalError(err.Error())\n\t}\n\n", structName))
 	b.WriteString(fmt.Sprintf("\treturn r.resolve%sObject(ctx, record, field.Selections)\n", structName))
 	b.WriteString("}\n\n")
 }
@@ -185,7 +186,7 @@ func writeUpdateMutation(b *bytes.Buffer, tbl *schema.Table) {
 
 	b.WriteString(fmt.Sprintf("func (r *RootResolver) mutationUpdate%s(ctx *ResolveContext, field Field) (any, error) {\n", structName))
 	b.WriteString("\tif !ctx.IsAuthenticated() {\n")
-	b.WriteString(fmt.Sprintf("\t\treturn nil, fmt.Errorf(\"update%s: authentication required\")\n", structName))
+	b.WriteString(fmt.Sprintf("\t\treturn nil, Unauthenticated(\"update%s: authentication required\")\n", structName))
 	b.WriteString("\t}\n\n")
 
 	b.WriteString("\tidStr, _ := field.Args[\"id\"].(string)\n")
@@ -193,20 +194,20 @@ func writeUpdateMutation(b *bytes.Buffer, tbl *schema.Table) {
 	if needsErr {
 		b.WriteString(fmt.Sprintf("\tid, err := %s\n", parseExpr))
 		b.WriteString("\tif err != nil {\n")
-		b.WriteString(fmt.Sprintf("\t\treturn nil, fmt.Errorf(\"update%s: invalid id\")\n", structName))
+		b.WriteString(fmt.Sprintf("\t\treturn nil, BadInput(\"update%s: invalid id\")\n", structName))
 		b.WriteString("\t}\n\n")
 	} else {
 		b.WriteString(fmt.Sprintf("\tid := %s\n\n", parseExpr))
 	}
 
 	b.WriteString(fmt.Sprintf("\tinput, err := extractUpdate%sInput(field.Args[\"input\"])\n", structName))
-	b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n\n")
+	b.WriteString("\tif err != nil {\n\t\treturn nil, BadInput(err.Error())\n\t}\n\n")
 
 	pk := pkColumn(tbl)
 	pkMethod := "Where" + snakeToPascal(pk.Name)
 	b.WriteString(fmt.Sprintf("\trecord, err := models.Query%s().%s(id).First()\n", structName, pkMethod))
 	b.WriteString("\tif err != nil {\n")
-	b.WriteString(fmt.Sprintf("\t\treturn nil, fmt.Errorf(\"update%s: not found\")\n", structName))
+	b.WriteString(fmt.Sprintf("\t\treturn nil, NotFound(\"%s\")\n", strings.TrimSuffix(tbl.Name, "s")))
 	b.WriteString("\t}\n\n")
 
 	// Apply partial update with type conversion
@@ -222,7 +223,7 @@ func writeUpdateMutation(b *bytes.Buffer, tbl *schema.Table) {
 		b.WriteString(fmt.Sprintf("\tif input.%s != nil {\n\t\trecord.%s = %s\n\t}\n", goFieldName, goFieldName, conv))
 	}
 
-	b.WriteString(fmt.Sprintf("\n\tif err := models.Query%s().Update(record); err != nil {\n\t\treturn nil, err\n\t}\n\n", structName))
+	b.WriteString(fmt.Sprintf("\n\tif err := models.Query%s().Update(record); err != nil {\n\t\treturn nil, InternalError(err.Error())\n\t}\n\n", structName))
 	b.WriteString(fmt.Sprintf("\treturn r.resolve%sObject(ctx, record, field.Selections)\n", structName))
 	b.WriteString("}\n\n")
 }
@@ -232,7 +233,7 @@ func writeDeleteMutation(b *bytes.Buffer, tbl *schema.Table) {
 
 	b.WriteString(fmt.Sprintf("func (r *RootResolver) mutationDelete%s(ctx *ResolveContext, field Field) (any, error) {\n", structName))
 	b.WriteString("\tif !ctx.IsAuthenticated() {\n")
-	b.WriteString(fmt.Sprintf("\t\treturn nil, fmt.Errorf(\"delete%s: authentication required\")\n", structName))
+	b.WriteString(fmt.Sprintf("\t\treturn nil, Unauthenticated(\"delete%s: authentication required\")\n", structName))
 	b.WriteString("\t}\n\n")
 
 	b.WriteString("\tidStr, _ := field.Args[\"id\"].(string)\n")
@@ -240,7 +241,7 @@ func writeDeleteMutation(b *bytes.Buffer, tbl *schema.Table) {
 	if needsErrDel {
 		b.WriteString(fmt.Sprintf("\tid, err := %s\n", parseExpr))
 		b.WriteString("\tif err != nil {\n")
-		b.WriteString(fmt.Sprintf("\t\treturn nil, fmt.Errorf(\"delete%s: invalid id\")\n", structName))
+		b.WriteString(fmt.Sprintf("\t\treturn nil, BadInput(\"delete%s: invalid id\")\n", structName))
 		b.WriteString("\t}\n\n")
 	} else {
 		b.WriteString(fmt.Sprintf("\tid := %s\n\n", parseExpr))
@@ -251,11 +252,11 @@ func writeDeleteMutation(b *bytes.Buffer, tbl *schema.Table) {
 	pkMethod := "Where" + snakeToPascal(pk.Name)
 	b.WriteString(fmt.Sprintf("\trecord, err := models.Query%s().%s(id).First()\n", structName, pkMethod))
 	b.WriteString("\tif err != nil {\n")
-	b.WriteString(fmt.Sprintf("\t\treturn nil, fmt.Errorf(\"delete%s: not found\")\n", structName))
+	b.WriteString(fmt.Sprintf("\t\treturn nil, NotFound(\"%s\")\n", strings.TrimSuffix(tbl.Name, "s")))
 	b.WriteString("\t}\n\n")
 
 	b.WriteString(fmt.Sprintf("\tif err := models.Query%s().Delete(record); err != nil {\n", structName))
-	b.WriteString(fmt.Sprintf("\t\treturn nil, fmt.Errorf(\"delete%s: failed\")\n", structName))
+	b.WriteString(fmt.Sprintf("\t\treturn nil, InternalError(\"delete %s: \" + err.Error())\n", strings.TrimSuffix(tbl.Name, "s")))
 	b.WriteString("\t}\n\n")
 	b.WriteString("\treturn true, nil\n")
 	b.WriteString("}\n\n")

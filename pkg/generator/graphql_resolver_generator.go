@@ -10,7 +10,7 @@ import (
 )
 
 // GenerateGraphQLResolvers generates resolver_gen.go with query dispatch,
-// per-type field resolvers, and object resolution helpers.
+// per-type field resolvers, filter/sort application, and object resolution helpers.
 func GenerateGraphQLResolvers(tables []*schema.Table, relationships []SchemaRelationship, modelsImport, packageName string) ([]byte, error) {
 	relByParent := map[string][]SchemaRelationship{}
 	for _, rel := range relationships {
@@ -22,6 +22,7 @@ func GenerateGraphQLResolvers(tables []*schema.Table, relationships []SchemaRela
 	b.WriteString(fmt.Sprintf("package %s\n\n", packageName))
 	b.WriteString("import (\n")
 	b.WriteString("\t\"fmt\"\n")
+	b.WriteString("\t\"strings\"\n")
 	b.WriteString("\t\"time\"\n\n")
 	b.WriteString(fmt.Sprintf("\t\"%s\"\n", modelsImport))
 	b.WriteString("\t\"github.com/google/uuid\"\n")
@@ -29,7 +30,8 @@ func GenerateGraphQLResolvers(tables []*schema.Table, relationships []SchemaRela
 
 	// Ensure imports are used
 	b.WriteString("var _ = time.RFC3339\n")
-	b.WriteString("var _ = uuid.Nil\n\n")
+	b.WriteString("var _ = uuid.Nil\n")
+	b.WriteString("var _ = strings.ToLower\n\n")
 
 	// RootResolver dispatches GraphQL operations.
 	b.WriteString("// RootResolver dispatches GraphQL queries and mutations.\n")
@@ -51,6 +53,8 @@ func GenerateGraphQLResolvers(tables []*schema.Table, relationships []SchemaRela
 	for _, tbl := range tables {
 		writeListResolver(&b, tbl)
 		writeSingleResolver(&b, tbl)
+		writeFilterApplier(&b, tbl)
+		writeSortApplier(&b, tbl)
 		writeObjectResolver(&b, tbl, relByParent[tbl.Name])
 		writeFieldResolver(&b, tbl, relByParent[tbl.Name])
 	}
@@ -71,6 +75,20 @@ func writeListResolver(b *bytes.Buffer, tbl *schema.Table) {
 		b.WriteString("\t}\n\n")
 	}
 
+	// Apply filters
+	b.WriteString(fmt.Sprintf("\tif filterArg, ok := field.Args[\"filter\"]; ok && filterArg != nil {\n"))
+	b.WriteString(fmt.Sprintf("\t\tif filterMap, ok := filterArg.(map[string]any); ok {\n"))
+	b.WriteString(fmt.Sprintf("\t\t\tapply%sFilter(q, filterMap)\n", structName))
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t}\n\n")
+
+	// Apply sort
+	b.WriteString(fmt.Sprintf("\tif sortArg, ok := field.Args[\"sort\"]; ok && sortArg != nil {\n"))
+	b.WriteString(fmt.Sprintf("\t\tif sortStr, ok := sortArg.(string); ok {\n"))
+	b.WriteString(fmt.Sprintf("\t\t\tapply%sSort(q, sortStr)\n", structName))
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t}\n\n")
+
 	// Pagination
 	b.WriteString("\tpage := extractPage(field.Args)\n")
 	b.WriteString("\tq.Limit(page.First + 1)\n")
@@ -78,7 +96,7 @@ func writeListResolver(b *bytes.Buffer, tbl *schema.Table) {
 	b.WriteString("\t\tq.Offset(decodeCursor(page.After))\n")
 	b.WriteString("\t}\n\n")
 
-	b.WriteString(fmt.Sprintf("\trecords, err := q.All()\n"))
+	b.WriteString("\trecords, err := q.All()\n")
 	b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n\n")
 
 	b.WriteString("\thasNext := len(records) > page.First\n")
@@ -106,6 +124,184 @@ func writeListResolver(b *bytes.Buffer, tbl *schema.Table) {
 	b.WriteString("}\n\n")
 }
 
+// writeFilterApplier generates a function that maps GraphQL filter input to query builder scope methods.
+func writeFilterApplier(b *bytes.Buffer, tbl *schema.Table) {
+	structName := tableToStructName(tbl.Name)
+	queryType := structName + "Query"
+
+	b.WriteString(fmt.Sprintf("func apply%sFilter(q *models.%s, filter map[string]any) {\n", structName, queryType))
+
+	for _, col := range tbl.Columns {
+		if isExcludedFromGraphQL(col) {
+			continue
+		}
+		gqlType := graphqlType(col)
+		if gqlType == "" {
+			continue
+		}
+		// JSONB and Decimal are serialized as String in GraphQL but have
+		// non-string Go types — no standard filter operators apply.
+		if col.Type == schema.JSONB || col.Type == schema.Decimal {
+			continue
+		}
+
+		fieldName := snakeToCamel(col.Name)
+		goMethod := snakeToPascal(col.Name)
+
+		b.WriteString(fmt.Sprintf("\tif f, ok := filter[\"%s\"]; ok && f != nil {\n", fieldName))
+		b.WriteString("\t\tif fm, ok := f.(map[string]any); ok {\n")
+
+		switch gqlType {
+		case "ID":
+			writeFilterOp(b, "eq", goMethod, col, "string")
+			writeFilterInOp(b, goMethod, col)
+		case "String":
+			writeFilterOp(b, "eq", goMethod, col, "string")
+			writeFilterLikeOp(b, goMethod)
+			writeFilterInOp(b, goMethod, col)
+		case "Int":
+			writeFilterOp(b, "eq", goMethod, col, "string")
+			writeFilterComparisonOps(b, goMethod, col)
+			writeFilterInOp(b, goMethod, col)
+		case "Boolean":
+			writeFilterBoolOp(b, goMethod)
+		case "DateTime":
+			writeFilterDateTimeOps(b, goMethod)
+		}
+
+		b.WriteString("\t\t}\n")
+		b.WriteString("\t}\n")
+	}
+
+	b.WriteString("}\n\n")
+}
+
+func writeFilterOp(b *bytes.Buffer, op, goMethod string, col *schema.Column, goType string) {
+	switch col.Type {
+	case schema.UUID:
+		b.WriteString(fmt.Sprintf("\t\t\tif v, ok := fm[\"%s\"].(string); ok {\n", op))
+		b.WriteString(fmt.Sprintf("\t\t\t\tif uid, err := uuid.Parse(v); err == nil {\n"))
+		b.WriteString(fmt.Sprintf("\t\t\t\t\tq.Where%s(uid)\n", goMethod))
+		b.WriteString("\t\t\t\t}\n")
+		b.WriteString("\t\t\t}\n")
+	case schema.Integer:
+		b.WriteString(fmt.Sprintf("\t\t\tif v, ok := fm[\"%s\"].(string); ok {\n", op))
+		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s(parseInt(v))\n", goMethod))
+		b.WriteString("\t\t\t}\n")
+	case schema.BigInteger:
+		b.WriteString(fmt.Sprintf("\t\t\tif v, ok := fm[\"%s\"].(string); ok {\n", op))
+		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s(int64(parseInt(v)))\n", goMethod))
+		b.WriteString("\t\t\t}\n")
+	default:
+		b.WriteString(fmt.Sprintf("\t\t\tif v, ok := fm[\"%s\"].(string); ok {\n", op))
+		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s(v)\n", goMethod))
+		b.WriteString("\t\t\t}\n")
+	}
+}
+
+func writeFilterLikeOp(b *bytes.Buffer, goMethod string) {
+	b.WriteString("\t\t\tif v, ok := fm[\"like\"].(string); ok {\n")
+	b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%sLike(v)\n", goMethod))
+	b.WriteString("\t\t\t}\n")
+}
+
+func writeFilterInOp(b *bytes.Buffer, goMethod string, col *schema.Column) {
+	b.WriteString("\t\t\tif v, ok := fm[\"in\"].([]any); ok {\n")
+	switch col.Type {
+	case schema.UUID:
+		b.WriteString("\t\t\t\tuids := make([]uuid.UUID, 0, len(v))\n")
+		b.WriteString("\t\t\t\tfor _, item := range v {\n")
+		b.WriteString("\t\t\t\t\tif s, ok := item.(string); ok {\n")
+		b.WriteString("\t\t\t\t\t\tif uid, err := uuid.Parse(s); err == nil {\n")
+		b.WriteString("\t\t\t\t\t\t\tuids = append(uids, uid)\n")
+		b.WriteString("\t\t\t\t\t\t}\n")
+		b.WriteString("\t\t\t\t\t}\n")
+		b.WriteString("\t\t\t\t}\n")
+		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%sIn(uids)\n", goMethod))
+	case schema.Integer:
+		b.WriteString("\t\t\t\tints := make([]int, 0, len(v))\n")
+		b.WriteString("\t\t\t\tfor _, item := range v {\n")
+		b.WriteString("\t\t\t\t\tif s, ok := item.(string); ok {\n")
+		b.WriteString("\t\t\t\t\t\tints = append(ints, parseInt(s))\n")
+		b.WriteString("\t\t\t\t\t}\n")
+		b.WriteString("\t\t\t\t}\n")
+		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%sIn(ints)\n", goMethod))
+	default:
+		b.WriteString("\t\t\t\tstrs := make([]string, 0, len(v))\n")
+		b.WriteString("\t\t\t\tfor _, item := range v {\n")
+		b.WriteString("\t\t\t\t\tif s, ok := item.(string); ok {\n")
+		b.WriteString("\t\t\t\t\t\tstrs = append(strs, s)\n")
+		b.WriteString("\t\t\t\t\t}\n")
+		b.WriteString("\t\t\t\t}\n")
+		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%sIn(strs)\n", goMethod))
+	}
+	b.WriteString("\t\t\t}\n")
+}
+
+func writeFilterComparisonOps(b *bytes.Buffer, goMethod string, col *schema.Column) {
+	for _, op := range []struct {
+		gqlOp    string
+		goSuffix string
+	}{
+		{"gt", "GT"},
+		{"gte", "GTE"},
+		{"lt", "LT"},
+		{"lte", "LTE"},
+	} {
+		switch col.Type {
+		case schema.Integer:
+			b.WriteString(fmt.Sprintf("\t\t\tif v, ok := fm[\"%s\"].(string); ok {\n", op.gqlOp))
+			b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s%s(parseInt(v))\n", goMethod, op.goSuffix))
+			b.WriteString("\t\t\t}\n")
+		case schema.BigInteger:
+			b.WriteString(fmt.Sprintf("\t\t\tif v, ok := fm[\"%s\"].(string); ok {\n", op.gqlOp))
+			b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s%s(int64(parseInt(v)))\n", goMethod, op.goSuffix))
+			b.WriteString("\t\t\t}\n")
+		}
+	}
+}
+
+func writeFilterBoolOp(b *bytes.Buffer, goMethod string) {
+	b.WriteString("\t\t\tif v, ok := fm[\"eq\"].(string); ok {\n")
+	b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s(v == \"true\")\n", goMethod))
+	b.WriteString("\t\t\t}\n")
+}
+
+func writeFilterDateTimeOps(b *bytes.Buffer, goMethod string) {
+	for _, op := range []struct {
+		gqlOp    string
+		goSuffix string
+	}{
+		{"gt", "After"},
+		{"gte", "After"},
+		{"lt", "Before"},
+		{"lte", "Before"},
+	} {
+		b.WriteString(fmt.Sprintf("\t\t\tif v, ok := fm[\"%s\"].(string); ok {\n", op.gqlOp))
+		b.WriteString(fmt.Sprintf("\t\t\t\tif t, err := time.Parse(time.RFC3339, v); err == nil {\n"))
+		b.WriteString(fmt.Sprintf("\t\t\t\t\tq.Where%s%s(t)\n", goMethod, op.goSuffix))
+		b.WriteString("\t\t\t\t}\n")
+		b.WriteString("\t\t\t}\n")
+	}
+}
+
+// writeSortApplier generates a function that maps a GraphQL sort enum value to an OrderBy call.
+func writeSortApplier(b *bytes.Buffer, tbl *schema.Table) {
+	structName := tableToStructName(tbl.Name)
+	queryType := structName + "Query"
+
+	b.WriteString(fmt.Sprintf("func apply%sSort(q *models.%s, sortEnum string) {\n", structName, queryType))
+	b.WriteString("\t// Sort enum values are COLUMN_ASC or COLUMN_DESC\n")
+	b.WriteString("\tif strings.HasSuffix(sortEnum, \"_ASC\") {\n")
+	b.WriteString("\t\tcol := strings.ToLower(strings.TrimSuffix(sortEnum, \"_ASC\"))\n")
+	b.WriteString("\t\tq.OrderBy(col, \"ASC\")\n")
+	b.WriteString("\t} else if strings.HasSuffix(sortEnum, \"_DESC\") {\n")
+	b.WriteString("\t\tcol := strings.ToLower(strings.TrimSuffix(sortEnum, \"_DESC\"))\n")
+	b.WriteString("\t\tq.OrderBy(col, \"DESC\")\n")
+	b.WriteString("\t}\n")
+	b.WriteString("}\n\n")
+}
+
 func writeSingleResolver(b *bytes.Buffer, tbl *schema.Table) {
 	structName := tableToStructName(tbl.Name)
 	fieldName := snakeToCamel(strings.TrimSuffix(tbl.Name, "s"))
@@ -115,14 +311,14 @@ func writeSingleResolver(b *bytes.Buffer, tbl *schema.Table) {
 	b.WriteString(fmt.Sprintf("func (r *RootResolver) query%s(ctx *ResolveContext, field Field) (any, error) {\n", structName))
 	b.WriteString("\tidStr, ok := field.Args[\"id\"].(string)\n")
 	b.WriteString("\tif !ok {\n")
-	b.WriteString(fmt.Sprintf("\t\treturn nil, fmt.Errorf(\"%s: id argument required\")\n", fieldName))
+	b.WriteString(fmt.Sprintf("\t\treturn nil, BadInput(\"%s: id argument required\")\n", fieldName))
 	b.WriteString("\t}\n")
 
 	parseExpr, needsErr := pkParseExpr(tbl, "idStr")
 	if needsErr {
 		b.WriteString(fmt.Sprintf("\tid, err := %s\n", parseExpr))
 		b.WriteString("\tif err != nil {\n")
-		b.WriteString(fmt.Sprintf("\t\treturn nil, fmt.Errorf(\"%s: invalid id\")\n", fieldName))
+		b.WriteString(fmt.Sprintf("\t\treturn nil, BadInput(\"%s: invalid id\")\n", fieldName))
 		b.WriteString("\t}\n\n")
 	} else {
 		b.WriteString(fmt.Sprintf("\tid := %s\n\n", parseExpr))
@@ -135,7 +331,7 @@ func writeSingleResolver(b *bytes.Buffer, tbl *schema.Table) {
 		b.WriteString("\tcase VisibilityOwner:\n\t\tq.SelectOwner()\n")
 		b.WriteString("\t}\n\n")
 	}
-	b.WriteString(fmt.Sprintf("\trecord, err := q.First()\n"))
+	b.WriteString("\trecord, err := q.First()\n")
 	b.WriteString("\tif err != nil {\n\t\treturn nil, nil\n\t}\n\n")
 	b.WriteString(fmt.Sprintf("\treturn r.resolve%sObject(ctx, record, field.Selections)\n", structName))
 	b.WriteString("}\n\n")
@@ -179,7 +375,6 @@ func writeFieldResolver(b *bytes.Buffer, tbl *schema.Table, rels []SchemaRelatio
 
 		// Visibility gate
 		if col.IsOwnerSees {
-			// Need to find the owner column to get the owner ID
 			ownerField := findOwnerField(tbl)
 			if ownerField != "" {
 				b.WriteString(fmt.Sprintf("\t\tif !ctx.CanSeeOwnerFields(record.%s.String()) {\n\t\t\treturn nil, nil\n\t\t}\n", ownerField))
@@ -213,7 +408,6 @@ func writeFieldResolver(b *bytes.Buffer, tbl *schema.Table, rels []SchemaRelatio
 		childCamel := snakeToCamel(rel.ChildTable)
 		childStruct := tableToStructName(rel.ChildTable)
 		b.WriteString(fmt.Sprintf("\tcase \"%s\":\n", childCamel))
-		// Use dataloader
 		fkCol := findFKColumn(tbl.Name, rel.ChildTable)
 		if fkCol == "" {
 			fkCol = strings.TrimSuffix(tbl.Name, "s") + "_id"
@@ -238,7 +432,6 @@ func findOwnerField(tbl *schema.Table) string {
 			return snakeToPascal(col.Name)
 		}
 	}
-	// If table has ID and the IsOwner is on ID itself
 	for _, col := range tbl.Columns {
 		if col.IsPrimaryKey && col.IsOwnerColumn {
 			return snakeToPascal(col.Name)

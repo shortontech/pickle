@@ -33,3 +33,9 @@ func GenerateCoreConfig(packageName string) []byte {
 func GenerateCoreMigration(packageName string) []byte {
 	return []byte(strings.ReplaceAll(embedMIGRATION, packagePlaceholder, packageName))
 }
+
+// GenerateCoreGraphQL returns the GraphQL executor, batch loader, ResolveContext,
+// and gqlparser wrapper types with the package name set to the target package.
+func GenerateCoreGraphQL(packageName string) []byte {
+	return []byte(strings.ReplaceAll(embedGRAPHQL, packagePlaceholder, packageName))
+}

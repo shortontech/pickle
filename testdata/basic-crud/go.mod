@@ -7,10 +7,12 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/shopspring/decimal v1.4.0
+	github.com/vektah/gqlparser/v2 v2.5.32
 	golang.org/x/crypto v0.48.0
 )
 
 require (
+	github.com/agnivade/levenshtein v1.2.1 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.12 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect

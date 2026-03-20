@@ -644,7 +644,16 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 	}
 
-	// 7. Generate commands glue if app/commands/ exists
+	// 7. Generate GraphQL layer if app/graphql/ exists
+	graphqlDir := filepath.Join(project.Dir, "app", "graphql")
+	if _, err := os.Stat(graphqlDir); err == nil {
+		fmt.Println("  generating graphql layer")
+		if err := GenerateGraphQL(project, tables, relationships); err != nil {
+			return fmt.Errorf("graphql generation: %w", err)
+		}
+	}
+
+	// 8. Generate commands glue if app/commands/ exists
 	commandsDir := layout.CommandsDir
 	if _, err := os.Stat(commandsDir); err == nil {
 		fmt.Println("  generating commands/pickle_gen.go")

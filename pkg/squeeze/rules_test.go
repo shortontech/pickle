@@ -1550,3 +1550,152 @@ func Handler() {
 		}
 	}
 }
+
+// ---- GraphQL rules ----
+
+func TestRuleGraphQLPublicSensitive(t *testing.T) {
+	ctx := &AnalysisContext{
+		Tables: []*schema.Table{
+			{
+				Name: "users",
+				Columns: []*schema.Column{
+					{Name: "email", IsPublic: true},
+				},
+			},
+		},
+	}
+
+	findings := ruleGraphQLPublicSensitive(ctx)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if findings[0].Rule != "graphql_public_sensitive" {
+		t.Error("wrong rule name")
+	}
+}
+
+func TestRuleGraphQLPublicSensitive_UnsafePublicExempt(t *testing.T) {
+	ctx := &AnalysisContext{
+		Tables: []*schema.Table{
+			{
+				Name: "users",
+				Columns: []*schema.Column{
+					{Name: "email", IsPublic: true, IsUnsafePublic: true},
+				},
+			},
+		},
+	}
+
+	findings := ruleGraphQLPublicSensitive(ctx)
+	if len(findings) != 0 {
+		t.Errorf("UnsafePublic should be exempt, got %d findings", len(findings))
+	}
+}
+
+func TestRuleGraphQLOwnerColumnMissing(t *testing.T) {
+	ctx := &AnalysisContext{
+		Tables: []*schema.Table{
+			{
+				Name: "posts",
+				Columns: []*schema.Column{
+					{Name: "id", IsPrimaryKey: true},
+					{Name: "body", IsOwnerSees: true},
+					// No IsOwnerColumn
+				},
+			},
+		},
+	}
+
+	findings := ruleGraphQLOwnerColumnMissing(ctx)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if findings[0].Rule != "graphql_owner_column_missing" {
+		t.Error("wrong rule name")
+	}
+}
+
+func TestRuleGraphQLNoVisibilityAnnotations(t *testing.T) {
+	ctx := &AnalysisContext{
+		HasGraphQL: true,
+		Tables: []*schema.Table{
+			{
+				Name: "users",
+				Columns: []*schema.Column{
+					{Name: "id", IsPrimaryKey: true},
+					{Name: "email"},
+					{Name: "name"},
+				},
+			},
+		},
+	}
+
+	findings := ruleGraphQLNoVisibilityAnnotations(ctx)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if findings[0].Rule != "graphql_no_visibility_annotations" {
+		t.Error("wrong rule name")
+	}
+}
+
+func TestRuleGraphQLNoVisibilityAnnotations_WithAnnotations(t *testing.T) {
+	ctx := &AnalysisContext{
+		HasGraphQL: true,
+		Tables: []*schema.Table{
+			{
+				Name: "users",
+				Columns: []*schema.Column{
+					{Name: "id", IsPrimaryKey: true},
+					{Name: "name", IsPublic: true},
+					{Name: "email", IsOwnerSees: true},
+				},
+			},
+		},
+	}
+
+	findings := ruleGraphQLNoVisibilityAnnotations(ctx)
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings, got %d", len(findings))
+	}
+}
+
+func TestRuleGraphQLNoVisibilityAnnotations_NoGraphQL(t *testing.T) {
+	ctx := &AnalysisContext{
+		HasGraphQL: false,
+		Tables: []*schema.Table{
+			{
+				Name: "users",
+				Columns: []*schema.Column{
+					{Name: "id", IsPrimaryKey: true},
+					{Name: "name"},
+				},
+			},
+		},
+	}
+
+	findings := ruleGraphQLNoVisibilityAnnotations(ctx)
+	if len(findings) != 0 {
+		t.Errorf("should skip when no GraphQL, got %d findings", len(findings))
+	}
+}
+
+func TestRuleGraphQLOwnerColumnMissing_WithOwner(t *testing.T) {
+	ctx := &AnalysisContext{
+		Tables: []*schema.Table{
+			{
+				Name: "posts",
+				Columns: []*schema.Column{
+					{Name: "id", IsPrimaryKey: true},
+					{Name: "user_id", IsOwnerColumn: true},
+					{Name: "body", IsOwnerSees: true},
+				},
+			},
+		},
+	}
+
+	findings := ruleGraphQLOwnerColumnMissing(ctx)
+	if len(findings) != 0 {
+		t.Errorf("table with owner column should pass, got %d findings", len(findings))
+	}
+}

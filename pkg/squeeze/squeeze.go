@@ -2,6 +2,7 @@ package squeeze
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 
@@ -53,6 +54,25 @@ func Run(projectDir string) ([]Finding, error) {
 	// 6b. Build function registry for recursive inlining
 	funcRegistry := ParseProjectFunctions(project.Dir)
 
+	// 6c. Check for GraphQL and parse custom resolvers
+	graphqlDir := filepath.Join(project.Dir, "app", "graphql")
+	_, hasGraphQLErr := os.Stat(graphqlDir)
+	hasGraphQL := hasGraphQLErr == nil
+
+	if hasGraphQL {
+		resolverMethods, resolverErr := ParseControllers(graphqlDir)
+		if resolverErr == nil {
+			for k, v := range resolverMethods {
+				methods[k] = v
+			}
+		}
+		// Also add resolver helper functions to the registry
+		resolverFuncs := ParseProjectFunctions(graphqlDir)
+		for k, v := range resolverFuncs {
+			funcRegistry[k] = v
+		}
+	}
+
 	// 7. Build analysis context
 	actx := &AnalysisContext{
 		Routes:       routes,
@@ -61,6 +81,7 @@ func Run(projectDir string) ([]Finding, error) {
 		Tables:       tables,
 		Config:       cfg.Squeeze,
 		FuncRegistry: funcRegistry,
+		HasGraphQL:   hasGraphQL,
 	}
 
 	// 8. Run enabled rules

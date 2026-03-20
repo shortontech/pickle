@@ -11,7 +11,7 @@ import (
 const graphqlPackageName = "graphql"
 
 // GenerateGraphQL orchestrates the complete GraphQL layer generation.
-func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []SchemaRelationship) error {
+func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []SchemaRelationship, requests []RequestDef) error {
 	graphqlDir := filepath.Join(project.Dir, "app", "graphql")
 	modelsImport := project.ModulePath + "/app/models"
 
@@ -39,7 +39,7 @@ func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []S
 	// 2. Schema SDL
 	if !hasOverride(graphqlDir, "schema.go") {
 		fmt.Println("  generating graphql/schema_gen.go")
-		src, err := GenerateGraphQLSchema(tables, relationships, graphqlPackageName)
+		src, err := GenerateGraphQLSchema(tables, relationships, requests, graphqlPackageName)
 		if err != nil {
 			return fmt.Errorf("schema generation: %w", err)
 		}
@@ -51,7 +51,7 @@ func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []S
 	// 3. GQL types
 	if !hasOverride(graphqlDir, "types.go") {
 		fmt.Println("  generating graphql/types_gen.go")
-		src, err := GenerateGraphQLTypes(tables, graphqlPackageName)
+		src, err := GenerateGraphQLTypes(tables, requests, graphqlPackageName)
 		if err != nil {
 			return fmt.Errorf("types generation: %w", err)
 		}

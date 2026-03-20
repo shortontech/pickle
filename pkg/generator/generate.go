@@ -648,7 +648,7 @@ func Generate(project *Project, picklePkgDir string) error {
 	graphqlDir := filepath.Join(project.Dir, "app", "graphql")
 	if _, err := os.Stat(graphqlDir); err == nil {
 		fmt.Println("  generating graphql layer")
-		if err := GenerateGraphQL(project, tables, relationships); err != nil {
+		if err := GenerateGraphQL(project, tables, relationships, requests); err != nil {
 			return fmt.Errorf("graphql generation: %w", err)
 		}
 	}

@@ -152,6 +152,8 @@ func writeCreateMutation(b *bytes.Buffer, tbl *schema.Table) {
 	b.WriteString(fmt.Sprintf("\tinput, err := extractCreate%sInput(field.Args[\"input\"])\n", structName))
 	b.WriteString("\tif err != nil {\n\t\treturn nil, BadInput(err.Error())\n\t}\n\n")
 
+	b.WriteString("\tif err := validateInput(input); err != nil {\n\t\treturn nil, err\n\t}\n\n")
+
 	b.WriteString(fmt.Sprintf("\trecord := &models.%s{}\n", structName))
 
 	// Set all fields with proper type conversion
@@ -202,6 +204,8 @@ func writeUpdateMutation(b *bytes.Buffer, tbl *schema.Table) {
 
 	b.WriteString(fmt.Sprintf("\tinput, err := extractUpdate%sInput(field.Args[\"input\"])\n", structName))
 	b.WriteString("\tif err != nil {\n\t\treturn nil, BadInput(err.Error())\n\t}\n\n")
+
+	b.WriteString("\tif err := validateInput(input); err != nil {\n\t\treturn nil, err\n\t}\n\n")
 
 	pk := pkColumn(tbl)
 	pkMethod := "Where" + snakeToPascal(pk.Name)

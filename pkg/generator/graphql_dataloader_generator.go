@@ -20,8 +20,14 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 		// No relationships — empty registry, no imports needed
 		b.WriteString("// DataLoaderRegistry holds per-request loader instances.\n")
 		b.WriteString("type DataLoaderRegistry struct{}\n\n")
-		b.WriteString("func newDataLoaderRegistry() *DataLoaderRegistry {\n\treturn &DataLoaderRegistry{}\n}\n")
+		b.WriteString("func newDataLoaderRegistry(_ VisibilityTier) *DataLoaderRegistry {\n\treturn &DataLoaderRegistry{}\n}\n")
 		return format.Source(b.Bytes())
+	}
+
+	// Build table lookup for visibility checks
+	tableByName := map[string]*schema.Table{}
+	for _, tbl := range tables {
+		tableByName[tbl.Name] = tbl
 	}
 
 	b.WriteString("import (\n")
@@ -29,9 +35,10 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 	b.WriteString("\t\"github.com/google/uuid\"\n")
 	b.WriteString(")\n\n")
 
-	// Registry struct
+	// Registry struct — holds per-request loaders and visibility tier
 	b.WriteString("// DataLoaderRegistry holds per-request loader instances.\n")
 	b.WriteString("type DataLoaderRegistry struct {\n")
+	b.WriteString("\tvisibility VisibilityTier\n")
 	for _, rel := range relationships {
 		fkCol := strings.TrimSuffix(rel.ParentTable, "s") + "_id"
 		childStruct := tableToStructName(rel.ChildTable)
@@ -45,9 +52,9 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 	}
 	b.WriteString("}\n\n")
 
-	// Constructor
-	b.WriteString("func newDataLoaderRegistry() *DataLoaderRegistry {\n")
-	b.WriteString("\tr := &DataLoaderRegistry{}\n")
+	// Constructor — accepts visibility tier from the request context
+	b.WriteString("func newDataLoaderRegistry(vis VisibilityTier) *DataLoaderRegistry {\n")
+	b.WriteString("\tr := &DataLoaderRegistry{visibility: vis}\n")
 	for _, rel := range relationships {
 		fkCol := strings.TrimSuffix(rel.ParentTable, "s") + "_id"
 		loaderField := snakeToCamel(rel.ChildTable) + "By" + snakeToPascal(fkCol)
@@ -63,11 +70,14 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 		batchFn := "batch" + snakeToPascal(rel.ChildTable) + "By" + snakeToPascal(fkCol)
 		whereFn := "Where" + snakeToPascal(fkCol) + "In"
 
+		childTable := tableByName[rel.ChildTable]
+		hasVis := childTable != nil && hasVisibilityAnnotations(childTable)
+
 		switch rel.Type {
 		case "has_many":
 			// Load function (called from field resolver)
-			b.WriteString(fmt.Sprintf("func (r *RootResolver) load%sList(ctx *ResolveContext, parentID uuid.UUID, selections []Field) (any, error) {\n",
-				childStruct+"By"+snakeToPascal(fkCol)))
+			b.WriteString(fmt.Sprintf("func (r *RootResolver) load%sBy%s(ctx *ResolveContext, parentID uuid.UUID, selections []Field) (any, error) {\n",
+				childStruct+"List", snakeToPascal(fkCol)))
 			b.WriteString(fmt.Sprintf("\trecords, err := ctx.loaders.(*DataLoaderRegistry).%s.load(parentID)\n", loaderField))
 			b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n")
 			b.WriteString("\tresult := make([]map[string]any, len(records))\n")
@@ -80,7 +90,11 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 
 			// Batch function
 			b.WriteString(fmt.Sprintf("func (r *DataLoaderRegistry) %s(ids []uuid.UUID) []batchResult[[]*models.%s] {\n", batchFn, childStruct))
-			b.WriteString(fmt.Sprintf("\trecords, err := models.Query%s().%s(ids...).All()\n", childStruct, whereFn))
+			b.WriteString(fmt.Sprintf("\tq := models.Query%s().%s(ids...)\n", childStruct, whereFn))
+			if hasVis {
+				writeVisibilitySwitch(&b, "\t")
+			}
+			b.WriteString("\trecords, err := q.All()\n")
 			b.WriteString(fmt.Sprintf("\tresults := make([]batchResult[[]*models.%s], len(ids))\n", childStruct))
 			b.WriteString("\tif err != nil {\n")
 			b.WriteString("\t\tfor i := range results {\n")
@@ -97,8 +111,8 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 
 		case "has_one":
 			// Load function
-			b.WriteString(fmt.Sprintf("func (r *RootResolver) load%s(ctx *ResolveContext, parentID uuid.UUID, selections []Field) (any, error) {\n",
-				childStruct+"By"+snakeToPascal(fkCol)))
+			b.WriteString(fmt.Sprintf("func (r *RootResolver) load%sBy%s(ctx *ResolveContext, parentID uuid.UUID, selections []Field) (any, error) {\n",
+				childStruct, snakeToPascal(fkCol)))
 			b.WriteString(fmt.Sprintf("\trecord, err := ctx.loaders.(*DataLoaderRegistry).%s.load(parentID)\n", loaderField))
 			b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n")
 			b.WriteString("\tif record == nil {\n\t\treturn nil, nil\n\t}\n")
@@ -107,7 +121,11 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 
 			// Batch function
 			b.WriteString(fmt.Sprintf("func (r *DataLoaderRegistry) %s(ids []uuid.UUID) []batchResult[*models.%s] {\n", batchFn, childStruct))
-			b.WriteString(fmt.Sprintf("\trecords, err := models.Query%s().%s(ids...).All()\n", childStruct, whereFn))
+			b.WriteString(fmt.Sprintf("\tq := models.Query%s().%s(ids...)\n", childStruct, whereFn))
+			if hasVis {
+				writeVisibilitySwitch(&b, "\t")
+			}
+			b.WriteString("\trecords, err := q.All()\n")
 			b.WriteString(fmt.Sprintf("\tresults := make([]batchResult[*models.%s], len(ids))\n", childStruct))
 			b.WriteString("\tif err != nil {\n")
 			b.WriteString("\t\tfor i := range results {\n")
@@ -124,4 +142,12 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 	}
 
 	return format.Source(b.Bytes())
+}
+
+// writeVisibilitySwitch emits a switch on r.visibility that calls SelectPublic/SelectOwner.
+func writeVisibilitySwitch(b *bytes.Buffer, indent string) {
+	b.WriteString(indent + "switch r.visibility {\n")
+	b.WriteString(indent + "case VisibilityPublic:\n" + indent + "\tq.SelectPublic()\n")
+	b.WriteString(indent + "case VisibilityOwner:\n" + indent + "\tq.SelectOwner()\n")
+	b.WriteString(indent + "}\n")
 }

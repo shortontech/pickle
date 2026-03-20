@@ -44,6 +44,12 @@ func (m *{{ .StructName }}) CreatedAt() time.Time {
 	return uuidV7Time([16]byte(m.ID))
 }
 {{ end }}
+{{ if .OwnerField }}
+// OwnerID returns the ID of the user who owns this record.
+func (m *{{ .StructName }}) OwnerID() string {
+	return m.{{ .OwnerField }}.String()
+}
+{{ end }}
 {{ if .PublicFields }}
 // {{ .StructName }}Public is a projection of {{ .StructName }} without sensitive fields.
 type {{ .StructName }}Public struct {
@@ -80,6 +86,7 @@ type modelData struct {
 	PublicFields []fieldData // non-nil only when model has hidden fields
 	IsImmutable  bool
 	IsAppendOnly bool
+	OwnerField   string // Go field name of the IsOwner column, if any
 }
 
 type fieldData struct {
@@ -149,13 +156,23 @@ func GenerateModel(table *schema.Table, packageName string) ([]byte, error) {
 		}
 	}
 
+	// Find owner column if present
+	var ownerField string
+	for _, col := range table.Columns {
+		if col.IsOwnerColumn {
+			ownerField = snakeToPascal(col.Name)
+			break
+		}
+	}
+
 	data := modelData{
-		Package:     packageName,
-		StructName:  tableToStructName(table.Name),
-		Imports:     orderedImports,
-		Fields:      fields,
+		Package:      packageName,
+		StructName:   tableToStructName(table.Name),
+		Imports:      orderedImports,
+		Fields:       fields,
 		IsImmutable:  table.IsImmutable,
 		IsAppendOnly: table.IsAppendOnly,
+		OwnerField:   ownerField,
 	}
 	if hasHidden {
 		data.PublicFields = publicFields

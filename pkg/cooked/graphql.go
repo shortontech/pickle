@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	validatorPkg "github.com/go-playground/validator/v10"
 	"github.com/vektah/gqlparser/v2"
 	"github.com/vektah/gqlparser/v2/ast"
 )
@@ -389,6 +390,65 @@ func (l *batchLoader[K, V]) dispatch() {
 	}
 }
 
+// validateInput runs struct validation on a GraphQL input and returns a
+// ValidationError if any fields fail. Uses go-playground/validator.
+func validateInput(input any) error {
+	validate := inputValidator()
+	if err := validate.Struct(input); err != nil {
+		if _, ok := err.(*validatorPkg.InvalidValidationError); ok {
+			return fmt.Errorf("validation setup error: %w", err)
+		}
+		var fields []FieldError
+		for _, fe := range err.(validatorPkg.ValidationErrors) {
+			fields = append(fields, FieldError{
+				Field:   camelCase(fe.Field()),
+				Message: validationMessage(fe),
+			})
+		}
+		return &ValidationError{Fields: fields}
+	}
+	return nil
+}
+
+// camelCase lowercases the first letter of a string.
+func camelCase(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	return strings.ToLower(s[:1]) + s[1:]
+}
+
+// validationMessage returns a human-readable message for a validation error.
+func validationMessage(fe validatorPkg.FieldError) string {
+	switch fe.Tag() {
+	case "required":
+		return "is required"
+	case "email":
+		return "must be a valid email address"
+	case "min":
+		return "must be at least " + fe.Param() + " characters"
+	case "max":
+		return "must be at most " + fe.Param() + " characters"
+	case "oneof":
+		return "must be one of: " + fe.Param()
+	case "uuid":
+		return "must be a valid UUID"
+	default:
+		return "failed " + fe.Tag() + " validation"
+	}
+}
+
+// inputValidatorInstance is a lazily initialized validator.
+var inputValidatorInstance *validatorPkg.Validate
+
+// inputValidator returns the shared validator instance.
+func inputValidator() *validatorPkg.Validate {
+	if inputValidatorInstance == nil {
+		inputValidatorInstance = validatorPkg.New()
+	}
+	return inputValidatorInstance
+}
+
 // rootResolver is the interface that the generated RootResolver must implement.
 type rootResolver interface {
 	resolveQuery(ctx *ResolveContext, field Field) (any, error)
@@ -476,5 +536,64 @@ func toGraphQLError(err error, path []string) map[string]any {
 	}
 
 	return gqlErr
+}
+
+// --- Playground ---
+
+// PlaygroundHandler returns an http.Handler that serves a GraphQL playground UI.
+// Mount it at /playground in debug mode.
+func PlaygroundHandler(endpoint string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(`<!DOCTYPE html>
+<html>
+<head>
+  <title>GraphQL Playground</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/graphql-playground-react/build/static/css/index.css" />
+  <script src="https://cdn.jsdelivr.net/npm/graphql-playground-react/build/static/js/middleware.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    window.addEventListener('load', function() {
+      GraphQLPlayground.init(document.getElementById('root'), { endpoint: '` + endpoint + `' })
+    })
+  </script>
+</body>
+</html>`))
+	})
+}
+
+// --- Query Depth Limiting ---
+
+// maxQueryDepth is the default maximum query depth.
+const maxQueryDepth = 10
+
+// queryDepth calculates the depth of a parsed document's field selections.
+func queryDepth(fields []Field) int {
+	max := 0
+	for _, f := range fields {
+		d := 1 + queryDepth(f.Selections)
+		if d > max {
+			max = d
+		}
+	}
+	return max
+}
+
+// --- Introspection Control ---
+
+// allowIntrospection controls whether __schema and __type queries are allowed.
+// Set to false in production to prevent schema leakage.
+var allowIntrospection = true
+
+// SetIntrospection enables or disables GraphQL introspection queries.
+func SetIntrospection(allow bool) {
+	allowIntrospection = allow
+}
+
+// isIntrospectionField returns true if the field is an introspection query.
+func isIntrospectionField(name string) bool {
+	return name == "__schema" || name == "__type" || name == "__typename"
 }
 

@@ -14,6 +14,7 @@ func GenerateGraphQLHandler(packageName string) ([]byte, error) {
 	b.WriteString(fmt.Sprintf("package %s\n\n", packageName))
 	b.WriteString(`import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 )
 
@@ -44,11 +45,12 @@ func Handler() http.Handler {
 		}
 
 		// Build resolve context — extract auth from request
+		auth := extractAuth(r)
 		ctx := &ResolveContext{
-			auth:      extractAuth(r),
+			auth:      auth,
 			variables: body.Variables,
-			loaders:   newDataLoaderRegistry(),
 		}
+		ctx.loaders = newDataLoaderRegistry(ctx.Visibility())
 
 		// Parse and validate against schema
 		doc, err := parseDocument(parsedSchema, body.Query)
@@ -57,6 +59,22 @@ func Handler() http.Handler {
 			return
 		}
 		doc.Variables = body.Variables
+
+		// Introspection control
+		if !allowIntrospection {
+			for _, f := range doc.Fields {
+				if isIntrospectionField(f.Name) {
+					writeError(w, "introspection is disabled", CodeForbidden)
+					return
+				}
+			}
+		}
+
+		// Query depth limiting
+		if depth := queryDepth(doc.Fields); depth > maxQueryDepth {
+			writeError(w, fmt.Sprintf("query depth %d exceeds maximum %d", depth, maxQueryDepth), CodeBadUserInput)
+			return
+		}
 
 		data, gqlErrs := execute(ctx, root, doc)
 

@@ -18,6 +18,7 @@ type AnalysisContext struct {
 	Tables       []*schema.Table
 	Config       SqueezeConfig
 	FuncRegistry FuncRegistry
+	HasGraphQL   bool // true if the project has a graphql/ directory
 }
 
 // Rule is a function that inspects the analysis context and returns findings.
@@ -49,6 +50,9 @@ func AllRules() map[string]Rule {
 		"version_field_in_request":               ruleVersionFieldInRequest,
 		"integrity_hash_override":                ruleIntegrityHashOverride,
 		"integrity_column_in_request":            ruleIntegrityColumnInRequest,
+		"graphql_public_sensitive":               ruleGraphQLPublicSensitive,
+		"graphql_owner_column_missing":           ruleGraphQLOwnerColumnMissing,
+		"graphql_no_visibility_annotations":      ruleGraphQLNoVisibilityAnnotations,
 	}
 }
 
@@ -1015,6 +1019,98 @@ func ruleIntegrityHashOverride(ctx *AnalysisContext) []Finding {
 					})
 				}
 			}
+		}
+	}
+	return findings
+}
+
+// ruleGraphQLPublicSensitive flags sensitive columns marked @public in GraphQL.
+// Sensitive columns that are .Public() without .UnsafePublic() will be visible
+// to unauthenticated GraphQL queries.
+func ruleGraphQLPublicSensitive(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+	for _, table := range ctx.Tables {
+		for _, col := range table.Columns {
+			if col.IsPublic && isSensitiveColumn(col.Name) && !col.IsUnsafePublic {
+				findings = append(findings, Finding{
+					Rule:     "graphql_public_sensitive",
+					Severity: SeverityError,
+					File:     "",
+					Line:     0,
+					Message:  table.Name + "." + col.Name + " — sensitive field exposed as @public in GraphQL schema (visible without authentication)",
+				})
+			}
+		}
+	}
+	return findings
+}
+
+// ruleGraphQLOwnerColumnMissing flags tables with @ownerOnly fields but no IsOwner column.
+// Without an owner column, @ownerOnly can't determine who owns the record.
+func ruleGraphQLOwnerColumnMissing(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+	for _, table := range ctx.Tables {
+		hasOwnerSees := false
+		hasOwnerColumn := false
+		for _, col := range table.Columns {
+			if col.IsOwnerSees {
+				hasOwnerSees = true
+			}
+			if col.IsOwnerColumn {
+				hasOwnerColumn = true
+			}
+		}
+		if hasOwnerSees && !hasOwnerColumn {
+			findings = append(findings, Finding{
+				Rule:     "graphql_owner_column_missing",
+				Severity: SeverityError,
+				File:     "",
+				Line:     0,
+				Message:  table.Name + " — has @ownerOnly fields but no column marked .IsOwner() (ownership check will fall back to auth-only)",
+			})
+		}
+	}
+	return findings
+}
+
+// ruleGraphQLNoVisibilityAnnotations flags tables exposed in GraphQL that have no
+// visibility annotations at all. Without annotations, all non-PK fields are @auth
+// (require authentication) which may be unintentional — the developer should explicitly
+// mark fields as .Public() or .OwnerSees() to document their access model.
+func ruleGraphQLNoVisibilityAnnotations(ctx *AnalysisContext) []Finding {
+	if !ctx.HasGraphQL {
+		return nil
+	}
+	var findings []Finding
+	for _, table := range ctx.Tables {
+		// Skip tables without a PK (not exposed in GraphQL)
+		hasPK := false
+		for _, col := range table.Columns {
+			if col.IsPrimaryKey {
+				hasPK = true
+				break
+			}
+		}
+		if !hasPK {
+			continue
+		}
+
+		// Check for any visibility annotation
+		hasAny := false
+		for _, col := range table.Columns {
+			if col.IsPublic || col.IsOwnerSees || col.IsOwnerColumn {
+				hasAny = true
+				break
+			}
+		}
+		if !hasAny {
+			findings = append(findings, Finding{
+				Rule:     "graphql_no_visibility_annotations",
+				Severity: SeverityWarning,
+				File:     "",
+				Line:     0,
+				Message:  table.Name + " — exposed in GraphQL with no visibility annotations (all fields default to @auth; add .Public() or .OwnerSees() to document access intent)",
+			})
 		}
 	}
 	return findings

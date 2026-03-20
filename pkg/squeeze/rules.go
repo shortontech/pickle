@@ -45,6 +45,10 @@ func AllRules() map[string]Rule {
 		"immutable_raw_insert_missing_version":  ruleImmutableRawInsertMissingVersion,
 		"immutable_timestamps_call":             ruleImmutableTimestampsCall,
 		"immutable_direct_delete":               ruleImmutableDirectDelete,
+		"lock_outside_transaction":               ruleLockOutsideTransaction,
+		"version_field_in_request":               ruleVersionFieldInRequest,
+		"integrity_hash_override":                ruleIntegrityHashOverride,
+		"integrity_column_in_request":            ruleIntegrityColumnInRequest,
 	}
 }
 
@@ -882,4 +886,155 @@ func projectUsesSessions(ctx *AnalysisContext) bool {
 	}
 
 	return false
+}
+
+// ruleLockOutsideTransaction flags Lock(), LockForUpdate(), or LockForShare() calls
+// that appear to be outside a Transaction() closure. This is a static approximation —
+// the runtime check (LockOutsideTransactionError) is the authoritative guard.
+func ruleLockOutsideTransaction(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+	lockMethods := []string{"Lock", "LockForUpdate", "LockForShare"}
+
+	for _, m := range ctx.Methods {
+		for _, lockFn := range lockMethods {
+			ast.Inspect(m.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != lockFn {
+					return true
+				}
+				// Heuristic: if the call chain root is a variable named "tx",
+				// assume it's inside a transaction.
+				if isReceiverNamed(sel.X, "tx") {
+					return true
+				}
+				findings = append(findings, Finding{
+					Rule:     "lock_outside_transaction",
+					Severity: SeverityWarning,
+					File:     m.File,
+					Line:     m.Fset.Position(call.Pos()).Line,
+					Message:  lockFn + "() appears to be outside a Transaction block — the lock will be released immediately after the query, which is never correct",
+				})
+				return true
+			})
+		}
+	}
+	return findings
+}
+
+// isReceiverNamed checks if the root of a selector chain is an identifier with the given name.
+func isReceiverNamed(expr ast.Expr, name string) bool {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e.Name == name
+	case *ast.SelectorExpr:
+		return isReceiverNamed(e.X, name)
+	case *ast.CallExpr:
+		if sel, ok := e.Fun.(*ast.SelectorExpr); ok {
+			return isReceiverNamed(sel.X, name)
+		}
+		if ident, ok := e.Fun.(*ast.Ident); ok {
+			return ident.Name == name
+		}
+	}
+	return false
+}
+
+// ruleVersionFieldInRequest flags request structs that expose version_id,
+// which is managed by the query builder for immutable tables.
+func ruleVersionFieldInRequest(ctx *AnalysisContext) []Finding {
+	immutable := immutableTableNames(ctx)
+	if len(immutable) == 0 {
+		return nil
+	}
+
+	var findings []Finding
+	for _, req := range ctx.Requests {
+		for _, field := range req.Fields {
+			if field.JSONTag == "version_id" {
+				findings = append(findings, Finding{
+					Rule:     "version_field_in_request",
+					Severity: SeverityError,
+					File:     req.File,
+					Line:     0,
+					Message:  `request struct "` + req.Name + `" exposes version column "version_id" — this field is managed by the query builder and must not be accepted from external input`,
+				})
+			}
+		}
+	}
+	return findings
+}
+
+// integrityTableNames returns a set of table names that are immutable or append-only.
+func integrityTableNames(ctx *AnalysisContext) map[string]bool {
+	tables := map[string]bool{}
+	for _, tbl := range ctx.Tables {
+		if tbl.IsImmutable || tbl.IsAppendOnly {
+			tables[tbl.Name] = true
+		}
+	}
+	return tables
+}
+
+// ruleIntegrityHashOverride flags raw SQL that sets row_hash or prev_hash on
+// integrity-enabled tables.
+func ruleIntegrityHashOverride(ctx *AnalysisContext) []Finding {
+	tables := integrityTableNames(ctx)
+	if len(tables) == 0 {
+		return nil
+	}
+	var findings []Finding
+	for _, m := range ctx.Methods {
+		for _, s := range findRawSQLStrings(m.Body, m.Fset) {
+			upper := strings.ToUpper(s.Value)
+			for tbl := range tables {
+				tblUpper := strings.ToUpper(tbl)
+				// Check for UPDATE setting row_hash or prev_hash
+				if strings.Contains(upper, "UPDATE "+tblUpper) &&
+					(strings.Contains(upper, "ROW_HASH") || strings.Contains(upper, "PREV_HASH")) {
+					findings = append(findings, Finding{
+						Rule:     "integrity_hash_override",
+						Severity: SeverityError,
+						File:     m.File,
+						Line:     s.Line,
+						Message:  `raw modification of integrity column on table "` + tbl + `" — hash values are computed by the query builder and must not be set manually`,
+					})
+				}
+				// Check for INSERT with explicit row_hash or prev_hash
+				if strings.Contains(upper, "INSERT INTO "+tblUpper) &&
+					(strings.Contains(upper, "ROW_HASH") || strings.Contains(upper, "PREV_HASH")) {
+					findings = append(findings, Finding{
+						Rule:     "integrity_hash_override",
+						Severity: SeverityError,
+						File:     m.File,
+						Line:     s.Line,
+						Message:  `raw modification of integrity column on table "` + tbl + `" — hash values are computed by the query builder and must not be set manually`,
+					})
+				}
+			}
+		}
+	}
+	return findings
+}
+
+// ruleIntegrityColumnInRequest flags request structs that expose row_hash or prev_hash.
+func ruleIntegrityColumnInRequest(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+	for _, req := range ctx.Requests {
+		for _, field := range req.Fields {
+			if field.JSONTag == "row_hash" || field.JSONTag == "prev_hash" {
+				findings = append(findings, Finding{
+					Rule:     "integrity_column_in_request",
+					Severity: SeverityError,
+					File:     req.File,
+					Line:     0,
+					Message:  `request struct "` + req.Name + `" exposes integrity column "` + field.JSONTag + `" — this field is computed internally and must not be accepted from external input`,
+				})
+			}
+		}
+	}
+	return findings
 }

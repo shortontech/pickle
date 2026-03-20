@@ -19,6 +19,7 @@ type Column struct {
 	IsOwnerColumn    bool
 	IsEncrypted      bool
 	IsUnsafePublic   bool
+	FKMetadataOnly   bool // FK is for ORM relationship metadata only; no SQL REFERENCES constraint
 }
 
 func (c *Column) PrimaryKey() *Column {

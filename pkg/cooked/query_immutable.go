@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ImmutableQuery starts a new immutable query for the given model type.
@@ -30,6 +31,10 @@ type ImmutableQueryBuilder[T any] struct {
 	visibility   visibilityMode
 	softDeletes  bool
 	allVersions  bool
+	tx           *sql.Tx       // transaction connection (nil = use global DB)
+	lockMode     string        // "", "FOR UPDATE", "FOR SHARE"
+	lockOpt      string        // "", "SKIP LOCKED", "NOWAIT"
+	lockTimeout  time.Duration // per-query lock timeout (0 = use server default)
 }
 
 // --- Internal condition builders ---
@@ -86,13 +91,72 @@ func (q *ImmutableQueryBuilder[T]) EagerLoad(relation string) *ImmutableQueryBui
 	return q
 }
 
-func (q *ImmutableQueryBuilder[T]) db() *sql.DB {
+func (q *ImmutableQueryBuilder[T]) db() dbExecutor {
+	if q.tx != nil {
+		return q.tx
+	}
 	if q.connection != "" {
 		if conn, ok := Connections[q.connection]; ok {
 			return conn
 		}
 	}
 	return DB
+}
+
+// setTx associates this query builder with a transaction.
+func (q *ImmutableQueryBuilder[T]) setTx(tx *sql.Tx) {
+	q.tx = tx
+}
+
+// Lock adds FOR UPDATE to the query. Must be used inside a Transaction.
+func (q *ImmutableQueryBuilder[T]) Lock() *ImmutableQueryBuilder[T] {
+	q.lockMode = "FOR UPDATE"
+	return q
+}
+
+// LockForUpdate is an alias for Lock().
+func (q *ImmutableQueryBuilder[T]) LockForUpdate() *ImmutableQueryBuilder[T] {
+	return q.Lock()
+}
+
+// LockForShare adds FOR SHARE to the query.
+func (q *ImmutableQueryBuilder[T]) LockForShare() *ImmutableQueryBuilder[T] {
+	q.lockMode = "FOR SHARE"
+	return q
+}
+
+// SkipLocked adds SKIP LOCKED to the lock clause.
+func (q *ImmutableQueryBuilder[T]) SkipLocked() *ImmutableQueryBuilder[T] {
+	q.lockOpt = "SKIP LOCKED"
+	return q
+}
+
+// NoWait adds NOWAIT to the lock clause.
+func (q *ImmutableQueryBuilder[T]) NoWait() *ImmutableQueryBuilder[T] {
+	q.lockOpt = "NOWAIT"
+	return q
+}
+
+// Timeout sets a per-query lock timeout.
+func (q *ImmutableQueryBuilder[T]) Timeout(d time.Duration) *ImmutableQueryBuilder[T] {
+	q.lockTimeout = d
+	return q
+}
+
+func (q *ImmutableQueryBuilder[T]) checkLockRequiresTransaction() error {
+	if q.lockMode != "" && q.tx == nil {
+		return &LockOutsideTransactionError{Table: q.table}
+	}
+	return nil
+}
+
+func (q *ImmutableQueryBuilder[T]) applyLockTimeout() error {
+	if q.lockTimeout > 0 && q.tx != nil {
+		ms := q.lockTimeout.Milliseconds()
+		_, err := q.tx.Exec(fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", ms))
+		return err
+	}
+	return nil
 }
 
 // --- Version control ---
@@ -107,21 +171,35 @@ func (q *ImmutableQueryBuilder[T]) AllVersions() *ImmutableQueryBuilder[T] {
 
 // First returns the latest version of the first matching record.
 func (q *ImmutableQueryBuilder[T]) First() (*T, error) {
+	if err := q.checkLockRequiresTransaction(); err != nil {
+		return nil, err
+	}
+	if err := q.applyLockTimeout(); err != nil {
+		return nil, mapLockError(q.table, err)
+	}
+
 	query, args := q.buildSelect(1)
 	row := q.db().QueryRow(query, args...)
 	var result T
 	if err := scanRow(row, &result); err != nil {
-		return nil, err
+		return nil, mapLockError(q.table, err)
 	}
 	return &result, nil
 }
 
 // All returns the latest version of all matching records.
 func (q *ImmutableQueryBuilder[T]) All() ([]T, error) {
+	if err := q.checkLockRequiresTransaction(); err != nil {
+		return nil, err
+	}
+	if err := q.applyLockTimeout(); err != nil {
+		return nil, mapLockError(q.table, err)
+	}
+
 	query, args := q.buildSelect(0)
 	rows, err := q.db().Query(query, args...)
 	if err != nil {
-		return nil, err
+		return nil, mapLockError(q.table, err)
 	}
 	defer rows.Close()
 	return scanRows[T](rows)
@@ -234,6 +312,15 @@ func (q *ImmutableQueryBuilder[T]) buildSelect(limit int) (string, []any) {
 	}
 	if q.offset > 0 {
 		b.WriteString(fmt.Sprintf(" OFFSET %d", q.offset))
+	}
+
+	if q.lockMode != "" {
+		b.WriteString(" ")
+		b.WriteString(q.lockMode)
+		if q.lockOpt != "" {
+			b.WriteString(" ")
+			b.WriteString(q.lockOpt)
+		}
 	}
 
 	return b.String(), args

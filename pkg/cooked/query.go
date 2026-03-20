@@ -47,6 +47,10 @@ type QueryBuilder[T any] struct {
 	eagerLoads   []string
 	selectedCols []string
 	visibility   visibilityMode
+	tx           *sql.Tx       // transaction connection (nil = use global DB)
+	lockMode     string        // "", "FOR UPDATE", "FOR SHARE"
+	lockOpt      string        // "", "SKIP LOCKED", "NOWAIT"
+	lockTimeout  time.Duration // per-query lock timeout (0 = use server default)
 }
 
 type condition struct {
@@ -113,14 +117,81 @@ func (q *QueryBuilder[T]) setVisibility(v visibilityMode) {
 	q.visibility = v
 }
 
-// db returns the *sql.DB for this query's connection.
-func (q *QueryBuilder[T]) db() *sql.DB {
+// db returns the database executor for this query — either the transaction
+// connection or the global DB (or a named connection).
+func (q *QueryBuilder[T]) db() dbExecutor {
+	if q.tx != nil {
+		return q.tx
+	}
 	if q.connection != "" {
 		if conn, ok := Connections[q.connection]; ok {
 			return conn
 		}
 	}
 	return DB
+}
+
+// setTx associates this query builder with a transaction.
+func (q *QueryBuilder[T]) setTx(tx *sql.Tx) {
+	q.tx = tx
+}
+
+// Lock adds FOR UPDATE to the query. Must be used inside a Transaction.
+func (q *QueryBuilder[T]) Lock() *QueryBuilder[T] {
+	q.lockMode = "FOR UPDATE"
+	return q
+}
+
+// LockForUpdate is an alias for Lock().
+func (q *QueryBuilder[T]) LockForUpdate() *QueryBuilder[T] {
+	return q.Lock()
+}
+
+// LockForShare adds FOR SHARE to the query — blocks writes but allows
+// other FOR SHARE reads.
+func (q *QueryBuilder[T]) LockForShare() *QueryBuilder[T] {
+	q.lockMode = "FOR SHARE"
+	return q
+}
+
+// SkipLocked adds SKIP LOCKED to the lock clause — skips rows that are
+// currently locked by another transaction. Useful for work queue patterns.
+func (q *QueryBuilder[T]) SkipLocked() *QueryBuilder[T] {
+	q.lockOpt = "SKIP LOCKED"
+	return q
+}
+
+// NoWait adds NOWAIT to the lock clause — fails immediately instead of
+// blocking if the target row is locked.
+func (q *QueryBuilder[T]) NoWait() *QueryBuilder[T] {
+	q.lockOpt = "NOWAIT"
+	return q
+}
+
+// Timeout sets a per-query lock timeout. If the lock isn't acquired within
+// this duration, a LockTimeoutError is returned.
+func (q *QueryBuilder[T]) Timeout(d time.Duration) *QueryBuilder[T] {
+	q.lockTimeout = d
+	return q
+}
+
+// checkLockRequiresTransaction returns an error if lock mode is set but
+// we're not inside a transaction.
+func (q *QueryBuilder[T]) checkLockRequiresTransaction() error {
+	if q.lockMode != "" && q.tx == nil {
+		return &LockOutsideTransactionError{Table: q.table}
+	}
+	return nil
+}
+
+// applyLockTimeout executes SET LOCAL lock_timeout if a per-query timeout is configured.
+func (q *QueryBuilder[T]) applyLockTimeout() error {
+	if q.lockTimeout > 0 && q.tx != nil {
+		ms := q.lockTimeout.Milliseconds()
+		_, err := q.tx.Exec(fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", ms))
+		return err
+	}
+	return nil
 }
 
 // EagerLoad marks a relationship for eager loading.
@@ -134,23 +205,37 @@ var ErrNoVisibilityScope = fmt.Errorf("no visibility scope set — call SelectPu
 
 // First returns the first matching record.
 func (q *QueryBuilder[T]) First() (*T, error) {
+	if err := q.checkLockRequiresTransaction(); err != nil {
+		return nil, err
+	}
+	if err := q.applyLockTimeout(); err != nil {
+		return nil, mapLockError(q.table, err)
+	}
+
 	q.limit = 1
 	query, args := q.buildSelect()
 	row := q.db().QueryRow(query, args...)
 
 	var result T
 	if err := scanRow(row, &result); err != nil {
-		return nil, err
+		return nil, mapLockError(q.table, err)
 	}
 	return &result, nil
 }
 
 // All returns all matching records.
 func (q *QueryBuilder[T]) All() ([]T, error) {
+	if err := q.checkLockRequiresTransaction(); err != nil {
+		return nil, err
+	}
+	if err := q.applyLockTimeout(); err != nil {
+		return nil, mapLockError(q.table, err)
+	}
+
 	query, args := q.buildSelect()
 	rows, err := q.db().Query(query, args...)
 	if err != nil {
-		return nil, err
+		return nil, mapLockError(q.table, err)
 	}
 	defer rows.Close()
 
@@ -230,6 +315,15 @@ func (q *QueryBuilder[T]) buildSelect() (string, []any) {
 	}
 	if q.offset > 0 {
 		b.WriteString(fmt.Sprintf(" OFFSET %d", q.offset))
+	}
+
+	if q.lockMode != "" {
+		b.WriteString(" ")
+		b.WriteString(q.lockMode)
+		if q.lockOpt != "" {
+			b.WriteString(" ")
+			b.WriteString(q.lockOpt)
+		}
 	}
 
 	return b.String(), args

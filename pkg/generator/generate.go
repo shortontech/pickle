@@ -575,6 +575,16 @@ func Generate(project *Project, picklePkgDir string) error {
 					return err
 				}
 			}
+
+			// Generate Tx.Query<Model>() methods
+			fmt.Println("  generating transaction query methods")
+			txSrc, err := GenerateTxMethods(tables, nestingMap, modelsDir, "models")
+			if err != nil {
+				return fmt.Errorf("generating tx methods: %w", err)
+			}
+			if err := writeFile(filepath.Join(modelsDir, "tx_gen.go"), txSrc); err != nil {
+				return err
+			}
 		}
 	}
 

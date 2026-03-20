@@ -180,7 +180,15 @@ func (t *Table) Immutable() {
 		Type:         UUID,
 		IsPrimaryKey: true,
 	}
-	t.Columns = append([]*Column{id, versionID}, t.Columns...)
+	rowHash := &Column{
+		Name: "row_hash",
+		Type: Binary,
+	}
+	prevHash := &Column{
+		Name: "prev_hash",
+		Type: Binary,
+	}
+	t.Columns = append([]*Column{id, versionID, rowHash, prevHash}, t.Columns...)
 }
 
 // AppendOnly marks this table as insert-only. Pickle injects a single id
@@ -198,7 +206,15 @@ func (t *Table) AppendOnly() {
 		Type:         UUID,
 		IsPrimaryKey: true,
 	}
-	t.Columns = append([]*Column{id}, t.Columns...)
+	rowHash := &Column{
+		Name: "row_hash",
+		Type: Binary,
+	}
+	prevHash := &Column{
+		Name: "prev_hash",
+		Type: Binary,
+	}
+	t.Columns = append([]*Column{id, rowHash, prevHash}, t.Columns...)
 }
 
 // SoftDeletes adds a nullable deleted_at timestamp column.

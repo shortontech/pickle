@@ -178,10 +178,52 @@ func (r *Runner) opsToSQL(op Operation) []string {
 	return nil
 }
 
+// markFKMetadataOnly scans all operations for CreateTable and marks any FK
+// column whose target table is immutable or append-only as metadata-only
+// (no SQL REFERENCES constraint). Immutable tables have non-unique id columns
+// (composite PK with version_id), so FK constraints to them are impossible.
+func markFKMetadataOnly(ops []Operation, immutableTables map[string]bool) {
+	for _, op := range ops {
+		if op.Type != OpCreateTable || op.TableDef == nil {
+			continue
+		}
+		for _, col := range op.TableDef.Columns {
+			if col.ForeignKeyTable != "" && immutableTables[col.ForeignKeyTable] {
+				col.FKMetadataOnly = true
+			}
+		}
+	}
+}
+
+// collectImmutableTables scans all migration entries and returns the set of
+// table names that are immutable or append-only.
+func collectImmutableTables(entries []MigrationEntry) map[string]bool {
+	tables := map[string]bool{}
+	for _, entry := range entries {
+		entry.Migration.Reset()
+		entry.Migration.Up()
+		for _, op := range entry.Migration.GetOperations() {
+			if op.Type == OpCreateTable && op.TableDef != nil {
+				if op.TableDef.IsImmutable || op.TableDef.IsAppendOnly {
+					tables[op.TableDef.Name] = true
+				}
+			}
+		}
+	}
+	return tables
+}
+
 func (r *Runner) runMigration(m MigrationIface) error {
+	return r.runMigrationWithContext(m, nil)
+}
+
+func (r *Runner) runMigrationWithContext(m MigrationIface, immutableTables map[string]bool) error {
 	m.Reset()
 	m.Up()
 	ops := m.GetOperations()
+	if immutableTables != nil {
+		markFKMetadataOnly(ops, immutableTables)
+	}
 	if m.Transactional() {
 		tx, err := r.DB.Begin()
 		if err != nil {
@@ -230,13 +272,16 @@ func (r *Runner) Migrate(entries []MigrationEntry) error {
 	}
 	batch := r.nextBatch(applied)
 
+	// Collect immutable tables so FK constraints to them are suppressed
+	immutableTables := collectImmutableTables(entries)
+
 	ran := 0
 	for _, entry := range entries {
 		if _, ok := applied[entry.ID]; ok {
 			continue
 		}
 		fmt.Printf("  migrating: %s\n", entry.ID)
-		if err := r.runMigration(entry.Migration); err != nil {
+		if err := r.runMigrationWithContext(entry.Migration, immutableTables); err != nil {
 			return fmt.Errorf("migrating %s: %w", entry.ID, err)
 		}
 		q := fmt.Sprintf( //nolint:gosec // G201: placeholders ($1/$2 or ?), not user data

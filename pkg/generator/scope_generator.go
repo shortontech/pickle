@@ -98,6 +98,12 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 			{"Limit", "n int", "Limit(n)"},
 			{"Offset", "n int", "Offset(n)"},
 			{"OrderBy", "column, direction string", "OrderBy(column, direction)"},
+			{"Lock", "", "Lock()"},
+			{"LockForUpdate", "", "LockForUpdate()"},
+			{"LockForShare", "", "LockForShare()"},
+			{"SkipLocked", "", "SkipLocked()"},
+			{"NoWait", "", "NoWait()"},
+			{"Timeout", "d time.Duration", "Timeout(d)"},
 		} {
 			b.WriteString(fmt.Sprintf("func (q *%s) %s(%s) *%s {\n", queryType, m.name, m.sig, queryType))
 			b.WriteString(fmt.Sprintf("\tq.QueryBuilder.%s\n", m.call))
@@ -105,6 +111,13 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 			b.WriteString("}\n\n")
 		}
 	}
+
+	// Generate LockInfo() for all table types
+	b.WriteString(fmt.Sprintf("// LockInfo returns the current lock status for the %s table.\n", table.Name))
+	b.WriteString(fmt.Sprintf("// Queries pg_locks and pg_stat_activity. Use for monitoring, not application logic.\n"))
+	b.WriteString(fmt.Sprintf("func (q *%s) LockInfo() (*LockStatus, error) {\n", queryType))
+	b.WriteString(fmt.Sprintf("\treturn queryLockInfo(q.db(), %q)\n", table.Name))
+	b.WriteString("}\n\n")
 
 	// Generate per-column Select methods
 	for _, col := range table.Columns {
@@ -200,7 +213,7 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 
 	// Generate append-only table methods
 	if table.IsAppendOnly {
-		generateAppendOnlyMethods(&b, queryType, structName)
+		generateAppendOnlyMethods(&b, table, queryType, structName)
 	}
 
 	formatted, err := format.Source(b.Bytes())
@@ -224,6 +237,12 @@ func generateImmutableMethods(b *bytes.Buffer, table *schema.Table, queryType, s
 		{"Offset", "n int", "Offset(n)"},
 		{"OrderBy", "column, direction string", "OrderBy(column, direction)"},
 		{"AnyOwner", "", "AnyOwner()"},
+		{"Lock", "", "Lock()"},
+		{"LockForUpdate", "", "LockForUpdate()"},
+		{"LockForShare", "", "LockForShare()"},
+		{"SkipLocked", "", "SkipLocked()"},
+		{"NoWait", "", "NoWait()"},
+		{"Timeout", "d time.Duration", "Timeout(d)"},
 	} {
 		b.WriteString(fmt.Sprintf("func (q *%s) %s(%s) *%s {\n", queryType, m.name, m.sig, queryType))
 		b.WriteString(fmt.Sprintf("\tq.ImmutableQueryBuilder.%s\n", m.call))
@@ -231,33 +250,82 @@ func generateImmutableMethods(b *bytes.Buffer, table *schema.Table, queryType, s
 		b.WriteString("}\n\n")
 	}
 
-	// Create — generates id and version_id
+	// Column metadata for hash chain computation
+	generateColumnMeta(b, table, structName)
+
+	// Create — generates id, version_id, and hash chain
 	b.WriteString(fmt.Sprintf("func (q *%s) Create(model *%s) error {\n", queryType, structName))
-	b.WriteString("\tif model.ID == (uuid.UUID{}) {\n\t\tmodel.ID = uuid.New()\n\t}\n")
-	b.WriteString("\tmodel.VersionID = uuid.New()\n")
+	b.WriteString("\tif model.ID == (uuid.UUID{}) {\n\t\tmodel.ID = uuid.Must(uuid.NewV7())\n\t}\n")
+	b.WriteString("\tmodel.VersionID = uuid.Must(uuid.NewV7())\n")
+	b.WriteString(generateChainHashBlock(table.Name, structName, true))
 	b.WriteString("\treturn q.ImmutableQueryBuilder.Create(model)\n}\n\n")
 
-	// Update — inserts new version with same id
+	// Update — version fence + insert new version with same id.
+	// Acquires FOR UPDATE on the latest version row to prevent concurrent updates
+	// from silently forking. If the version has changed since the caller read it,
+	// returns a StaleVersionError.
 	b.WriteString(fmt.Sprintf("func (q *%s) Update(model *%s) error {\n", queryType, structName))
-	b.WriteString("\tmodel.VersionID = uuid.New()\n")
+	b.WriteString("\tdb := q.db()\n\n")
+	// If not in a transaction, start an implicit one
+	b.WriteString("\t// Version fence requires a transaction\n")
+	b.WriteString("\tif q.ImmutableQueryBuilder.tx == nil {\n")
+	b.WriteString(fmt.Sprintf("\t\treturn TransactionOn(func() *sql.DB {\n"))
+	b.WriteString("\t\t\tif q.ImmutableQueryBuilder.connection != \"\" {\n")
+	b.WriteString("\t\t\t\tif conn, ok := Connections[q.ImmutableQueryBuilder.connection]; ok {\n")
+	b.WriteString("\t\t\t\t\treturn conn\n")
+	b.WriteString("\t\t\t\t}\n")
+	b.WriteString("\t\t\t}\n")
+	b.WriteString("\t\t\treturn DB\n")
+	b.WriteString("\t\t}(), func(tx *Tx) error {\n")
+	b.WriteString(fmt.Sprintf("\t\t\ttxQ := tx.Query%s()\n", structName))
+	b.WriteString("\t\t\treturn txQ.Update(model)\n")
+	b.WriteString("\t\t})\n")
+	b.WriteString("\t}\n\n")
+	// Version fence: SELECT version_id FOR UPDATE, compare
+	b.WriteString("\tvar currentVersionID uuid.UUID\n")
+	b.WriteString(fmt.Sprintf("\terr := db.QueryRow(\"SELECT version_id FROM %s WHERE id = $1 ORDER BY version_id DESC LIMIT 1 FOR UPDATE\", model.ID).Scan(&currentVersionID)\n", table.Name))
+	b.WriteString("\tif err != nil {\n")
+	b.WriteString(fmt.Sprintf("\t\treturn mapLockError(%q, err)\n", table.Name))
+	b.WriteString("\t}\n")
+	b.WriteString("\tif currentVersionID != model.VersionID {\n")
+	b.WriteString(fmt.Sprintf("\t\treturn &StaleVersionError{\n"))
+	b.WriteString(fmt.Sprintf("\t\t\tTable:           %q,\n", table.Name))
+	b.WriteString("\t\t\tEntityID:        model.ID.String(),\n")
+	b.WriteString("\t\t\tExpectedVersion: model.VersionID.String(),\n")
+	b.WriteString("\t\t\tActualVersion:   currentVersionID.String(),\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t}\n\n")
+	b.WriteString("\tmodel.VersionID = uuid.Must(uuid.NewV7())\n")
+	b.WriteString(generateChainHashBlock(table.Name, structName, true))
 	b.WriteString("\treturn q.ImmutableQueryBuilder.Create(model)\n}\n\n")
 
 	// Delete — only if SoftDeletes
 	if softDeletes {
 		b.WriteString(fmt.Sprintf("func (q *%s) Delete(model *%s) error {\n", queryType, structName))
 		b.WriteString("\tnow := time.Now()\n\tmodel.DeletedAt = &now\n")
-		b.WriteString("\tmodel.VersionID = uuid.New()\n")
+		b.WriteString("\tmodel.VersionID = uuid.Must(uuid.NewV7())\n")
+		b.WriteString(generateChainHashBlock(table.Name, structName, true))
 		b.WriteString("\treturn q.ImmutableQueryBuilder.Create(model)\n}\n\n")
 	}
+
+	// VerifyChain and VerifyRow
+	generateVerifyMethods(b, table, queryType, structName, true)
 }
 
-// generateAppendOnlyMethods emits a Create override (with UUID generation) for
-// an append-only table. No Update, no Delete — records are permanent.
-func generateAppendOnlyMethods(b *bytes.Buffer, queryType, structName string) {
-	// Create override — generates id
+// generateAppendOnlyMethods emits a Create override (with UUID generation and
+// hash chain) for an append-only table. No Update, no Delete — records are permanent.
+func generateAppendOnlyMethods(b *bytes.Buffer, table *schema.Table, queryType, structName string) {
+	// Column metadata for hash chain
+	generateColumnMeta(b, table, structName)
+
+	// Create override — generates id + hash chain
 	b.WriteString(fmt.Sprintf("func (q *%s) Create(model *%s) error {\n", queryType, structName))
-	b.WriteString("\tif model.ID == (uuid.UUID{}) {\n\t\tmodel.ID = uuid.New()\n\t}\n")
+	b.WriteString("\tif model.ID == (uuid.UUID{}) {\n\t\tmodel.ID = uuid.Must(uuid.NewV7())\n\t}\n")
+	b.WriteString(generateChainHashBlock(table.Name, structName, false))
 	b.WriteString("\treturn q.QueryBuilder.Create(model)\n}\n\n")
+
+	// VerifyChain and VerifyRow
+	generateVerifyMethods(b, table, queryType, structName, false)
 }
 
 // GenerateViewQueryScopes produces a Go source file with typed Where* methods
@@ -390,9 +458,18 @@ func collectScopeImports(table *schema.Table, blocks []tickle.ScopeBlock) []stri
 	imports["fmt"] = true
 	imports["net/http"] = true
 
-	// Immutable tables need uuid and time for Create/Update/Delete overrides
+	// Lock methods need time for Timeout(time.Duration)
+	imports["time"] = true
+
+	// Integrity-enabled tables need bytes and fmt for VerifyRow
+	if table.IsImmutable || table.IsAppendOnly {
+		imports["bytes"] = true
+	}
+
+	// Immutable tables need uuid, time, and database/sql for Create/Update/Delete overrides
 	if table.IsImmutable {
 		imports["github.com/google/uuid"] = true
+		imports["database/sql"] = true
 		if table.HasSoftDelete {
 			imports["time"] = true
 		}
@@ -466,4 +543,171 @@ func collectScopeImports(table *schema.Table, blocks []tickle.ScopeBlock) []stri
 		}
 	}
 	return append(std, ext...)
+}
+
+// selectCols returns a comma-separated list of column names for a table, for use in SELECT statements.
+func selectCols(table *schema.Table) string {
+	var cols []string
+	for _, col := range table.Columns {
+		cols = append(cols, col.Name)
+	}
+	return strings.Join(cols, ", ")
+}
+
+// schemaTypeToTag maps a schema.ColumnType to the integrity type tag byte.
+func schemaTypeToTag(ct schema.ColumnType) string {
+	switch ct {
+	case schema.UUID:
+		return "0x01"
+	case schema.String, schema.Text:
+		return "0x02"
+	case schema.Integer:
+		return "0x03"
+	case schema.BigInteger:
+		return "0x04"
+	case schema.Decimal:
+		return "0x05"
+	case schema.Boolean:
+		return "0x06"
+	case schema.Timestamp:
+		return "0x07"
+	case schema.JSONB:
+		return "0x08"
+	case schema.Binary:
+		return "0x09"
+	case schema.Date:
+		return "0x0A"
+	case schema.Time:
+		return "0x0B"
+	default:
+		return "0x02" // default to string
+	}
+}
+
+// generateColumnMeta emits a package-level variable with ColumnMeta for a table.
+func generateColumnMeta(b *bytes.Buffer, table *schema.Table, structName string) {
+	varName := fmt.Sprintf("%sColumns", toLowerFirst(structName))
+	b.WriteString(fmt.Sprintf("var %s = []ColumnMeta{\n", varName))
+	for _, col := range table.Columns {
+		b.WriteString(fmt.Sprintf("\t{Name: %q, TypeTag: %s},\n", col.Name, schemaTypeToTag(col.Type)))
+	}
+	b.WriteString("}\n\n")
+}
+
+// generateChainHashBlock emits code to fetch the chain tail and compute the hash.
+// The code assumes it's inside a Create/Update method with access to q.db(), model, and the columns var.
+func generateChainHashBlock(tableName, structName string, isImmutable bool) string {
+	var sb strings.Builder
+	colsVar := fmt.Sprintf("%sColumns", toLowerFirst(structName))
+
+	// Fetch chain tail — wrapped in block to avoid err redeclaration in Update
+	sb.WriteString("\t// Hash chain: fetch tail and compute row_hash\n")
+	sb.WriteString("\t{\n")
+	sb.WriteString("\t\tvar chainTailHash []byte\n")
+	if isImmutable {
+		sb.WriteString(fmt.Sprintf("\t\tchainErr := q.db().QueryRow(\"SELECT row_hash FROM %s ORDER BY id DESC, version_id DESC LIMIT 1\").Scan(&chainTailHash)\n", tableName))
+	} else {
+		sb.WriteString(fmt.Sprintf("\t\tchainErr := q.db().QueryRow(\"SELECT row_hash FROM %s ORDER BY id DESC LIMIT 1\").Scan(&chainTailHash)\n", tableName))
+	}
+	sb.WriteString("\t\tif chainErr != nil {\n")
+	sb.WriteString("\t\t\tchainTailHash = GenesisHash\n")
+	sb.WriteString("\t\t}\n")
+	sb.WriteString("\t\tmodel.PrevHash = chainTailHash\n")
+	sb.WriteString(fmt.Sprintf("\t\tmodel.RowHash = computeRowHash(chainTailHash, model, %s)\n", colsVar))
+	sb.WriteString("\t}\n\n")
+
+	return sb.String()
+}
+
+// generateVerifyMethods emits VerifyChain and VerifyRow methods for a query type.
+func generateVerifyMethods(b *bytes.Buffer, table *schema.Table, queryType, structName string, isImmutable bool) {
+	colsVar := fmt.Sprintf("%sColumns", toLowerFirst(structName))
+
+	// VerifyChain — scans into the model struct so serialization is identical to write path
+	b.WriteString(fmt.Sprintf("// VerifyChain walks the full hash chain for %s from genesis to the latest row,\n", table.Name))
+	b.WriteString("// recomputing each row_hash and checking it matches the stored value.\n")
+	b.WriteString(fmt.Sprintf("func (q *%s) VerifyChain() error {\n", queryType))
+	if isImmutable {
+		b.WriteString(fmt.Sprintf("\trows, err := q.db().Query(\"SELECT %s FROM %s ORDER BY id ASC, version_id ASC\")\n",
+			selectCols(table), table.Name))
+	} else {
+		b.WriteString(fmt.Sprintf("\trows, err := q.db().Query(\"SELECT %s FROM %s ORDER BY id ASC\")\n",
+			selectCols(table), table.Name))
+	}
+	b.WriteString("\tif err != nil {\n\t\treturn err\n\t}\n")
+	b.WriteString("\tdefer rows.Close()\n\n")
+	b.WriteString("\tprevHash := GenesisHash\n")
+	b.WriteString("\tposition := 0\n")
+	b.WriteString("\tfor rows.Next() {\n")
+	b.WriteString(fmt.Sprintf("\t\tvar record %s\n", structName))
+	b.WriteString("\t\tif err := rows.Scan(dbScanDest(&record)...); err != nil {\n")
+	b.WriteString("\t\t\treturn err\n\t\t}\n")
+	b.WriteString("\t\tif !bytes.Equal(record.PrevHash, prevHash) {\n")
+	b.WriteString(fmt.Sprintf("\t\t\treturn &ChainError{Table: %q, RowID: fmt.Sprintf(\"%%v\", record.ID), Expected: prevHash, Actual: record.PrevHash, Position: position}\n", table.Name))
+	b.WriteString("\t\t}\n")
+	b.WriteString(fmt.Sprintf("\t\trecomputed := computeRowHash(prevHash, &record, %s)\n", colsVar))
+	b.WriteString("\t\tif !bytes.Equal(recomputed, record.RowHash) {\n")
+	b.WriteString(fmt.Sprintf("\t\t\treturn &ChainError{Table: %q, RowID: fmt.Sprintf(\"%%v\", record.ID), Expected: recomputed, Actual: record.RowHash, Position: position}\n", table.Name))
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\tprevHash = record.RowHash\n")
+	b.WriteString("\t\tposition++\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn rows.Err()\n")
+	b.WriteString("}\n\n")
+
+	// VerifyRow
+	b.WriteString(fmt.Sprintf("// VerifyRow checks that a single %s row's row_hash is consistent with its\n", structName))
+	b.WriteString("// prev_hash and column data. Does NOT verify the full chain.\n")
+	b.WriteString(fmt.Sprintf("func (q *%s) VerifyRow(record *%s) error {\n", queryType, structName))
+	b.WriteString(fmt.Sprintf("\trecomputed := computeRowHash(record.PrevHash, record, %s)\n", colsVar))
+	b.WriteString("\tif !bytes.Equal(recomputed, record.RowHash) {\n")
+	b.WriteString(fmt.Sprintf("\t\treturn &ChainError{\n"))
+	b.WriteString(fmt.Sprintf("\t\t\tTable:    %q,\n", table.Name))
+	b.WriteString("\t\t\tRowID:    fmt.Sprintf(\"%v\", record.ID),\n")
+	b.WriteString("\t\t\tExpected: recomputed,\n")
+	b.WriteString("\t\t\tActual:   record.RowHash,\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn nil\n")
+	b.WriteString("}\n\n")
+}
+
+// GenerateTxMethods produces a tx_gen.go file with Tx.Query<Model>() methods
+// for all tables in the models package.
+func GenerateTxMethods(tables []*schema.Table, nestingMap map[string]SchemaRelationship, modelsDir, packageName string) ([]byte, error) {
+	var b bytes.Buffer
+	b.WriteString("// Code generated by Pickle. DO NOT EDIT.\n")
+	b.WriteString(fmt.Sprintf("package %s\n\n", packageName))
+
+	// Collect only top-level tables (those that resolve to the models package)
+	var topLevel []*schema.Table
+	for _, tbl := range tables {
+		_, pkg := resolveModelDir(modelsDir, tbl.Name, nestingMap)
+		if pkg == packageName {
+			topLevel = append(topLevel, tbl)
+		}
+	}
+
+	if len(topLevel) == 0 {
+		b.WriteString("// No models in this package.\n")
+		return b.Bytes(), nil
+	}
+
+	for _, tbl := range topLevel {
+		structName := tableToStructName(tbl.Name)
+		queryType := structName + "Query"
+
+		b.WriteString(fmt.Sprintf("// Query%s returns a %s scoped to this transaction.\n", structName, queryType))
+		b.WriteString(fmt.Sprintf("func (tx *Tx) Query%s() *%s {\n", structName, queryType))
+		b.WriteString(fmt.Sprintf("\tq := Query%s()\n", structName))
+		if tbl.IsImmutable {
+			b.WriteString("\tq.ImmutableQueryBuilder.setTx(tx.Conn())\n")
+		} else {
+			b.WriteString("\tq.QueryBuilder.setTx(tx.Conn())\n")
+		}
+		b.WriteString("\treturn q\n")
+		b.WriteString("}\n\n")
+	}
+
+	return format.Source(b.Bytes())
 }

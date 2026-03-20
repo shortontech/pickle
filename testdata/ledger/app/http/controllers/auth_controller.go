@@ -23,7 +23,7 @@ func (c AuthController) Login(ctx *pickle.Context) pickle.Response {
 		return ctx.Unauthorized("invalid credentials")
 	}
 
-	if !CheckPassword(user.Password, req.Password) {
+	if !CheckPassword(user.PasswordHash, req.Password) {
 		return ctx.Unauthorized("invalid credentials")
 	}
 

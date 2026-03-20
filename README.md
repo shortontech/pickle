@@ -24,6 +24,7 @@ Pickle is different. It makes entire vulnerability classes structurally impossib
 - **SQL injection** — The generated query builder uses parameterized queries exclusively. There is no API for string interpolation. The unsafe path doesn't exist.
 - **Mass assignment** — Request structs define exactly which fields are accepted. If `CreateUserRequest` doesn't have a `Role` field, POSTing `{"role": "admin"}` does nothing. The model never sees unvalidated input.
 - **Validation bypass** — Controllers receive pre-validated, typed request structs. The generated binding layer runs validation before your code executes. There is no code path around it.
+- **Data tampering** — Immutable and append-only tables are cryptographically hash-chained. Every row's `row_hash` includes the previous row's hash — tampering with any historical record breaks the chain. Periodic Merkle tree checkpoints give O(log n) inclusion proofs you can hand to an auditor.
 
 **Visible by convention:**
 
@@ -76,6 +77,10 @@ If something's wrong, Squeeze tells you exactly where:
 | `no_printf` | warning | `fmt.Print*` in controllers — use structured logging |
 | `param_mismatch` | error | Route parameters (`:id`) with no corresponding `ctx.Param()` call, or vice versa |
 | `auth_without_middleware` | error | `ctx.Auth()` called in a controller without auth middleware on the route |
+| `immutable_raw_update` | error | Raw `UPDATE` on an immutable or append-only table — use the query builder |
+| `immutable_raw_delete` | error | Raw `DELETE` on an immutable table without `SoftDeletes()` |
+| `immutable_timestamps` | error | `t.Immutable()` + `t.Timestamps()` on the same table — timestamps are derived from UUID v7 |
+| `integrity_hash_override` | error | Raw SQL setting `row_hash` or `prev_hash` — these are computed by the query builder |
 
 No pickle ships without being squeezed first.
 
@@ -128,6 +133,71 @@ See the [Getting Started guide](docs/GettingStarted.md) to create your first Pic
 | [Commands](docs/Commands.md) | CLI commands reference |
 | [Tickle](docs/Tickle.md) | The preprocessor pipeline |
 | [Squeeze](docs/Squeeze.md) | Static security analysis |
+| [Ledger Example](testdata/ledger/README.md) | Immutable tables, append-only tables, DB permissions |
+
+### Immutable Tables & Cryptographic Integrity
+
+Financial records, audit logs, compliance data — anything where history matters. Declare `t.Immutable()` or `t.AppendOnly()` in your migration and Pickle enforces it at every layer.
+
+```go
+m.CreateTable("transactions", func(t *Table) {
+    t.AppendOnly()
+    t.UUID("account_id").NotNull().ForeignKey("accounts", "id")
+    t.String("type", 20).NotNull()
+    t.Decimal("amount", 18, 2).NotNull()
+    t.String("currency", 3).NotNull()
+})
+```
+
+**What you get:**
+
+| | Mutable | Immutable | Append-Only |
+|---|---|---|---|
+| DSL | `t.Timestamps()` | `t.Immutable()` | `t.AppendOnly()` |
+| `Create()` | INSERT | INSERT | INSERT |
+| `Update()` | UPDATE | INSERT new version | Not generated |
+| `Delete()` | DELETE | INSERT with `deleted_at`* | Not generated |
+| Hash chain | No | Yes | Yes |
+| Merkle proofs | No | Yes | Yes |
+| DB permissions needed | SELECT, INSERT, UPDATE, DELETE | SELECT, INSERT | SELECT, INSERT |
+
+\* Only with `t.SoftDeletes()`. Without it, `Delete()` is not generated — immutable tables without soft deletes have no deletion concept.
+
+**Developer code is identical to mutable tables:**
+
+```go
+// Create — hash chain extended automatically
+transfer := &models.Transfer{CustomerID: id, Amount: amount, Status: "pending"}
+models.QueryTransfer().Create(transfer)
+
+// Read — always returns the latest version, transparently
+transfer, _ := models.QueryTransfer().WhereID(id).First()
+
+// Update — inserts a new version, old version preserved forever
+transfer.Status = "completed"
+models.QueryTransfer().Update(transfer)
+
+// Full history — opt-in only
+versions, _ := models.QueryTransfer().WhereID(id).AllVersions().All()
+```
+
+**Cryptographic verification:**
+
+```go
+// Verify the full hash chain — O(n), run as a periodic audit
+err := models.QueryTransaction().VerifyChain()
+
+// Create a Merkle checkpoint — O(n) within the checkpoint window
+cp, _ := models.QueryTransaction().Checkpoint()
+
+// Generate an inclusion proof for an auditor — O(log n)
+proof, _ := models.QueryTransaction().Proof(transaction)
+ok := models.VerifyProof(proof) // pure function, no DB needed
+```
+
+Every row is chained to its predecessor via SHA-256. Merkle tree checkpoints roll the chain into a binary tree for efficient verification. Tampering with any historical row breaks the chain — detectable by `VerifyChain()` and provable via `VerifyProof()`.
+
+Three layers of enforcement: **schema DSL** (no unsafe methods generated), **Go compiler** (can't call what doesn't exist), **database permissions** (SELECT + INSERT only). Any one is sufficient. All three together means you can prove it to an auditor.
 
 ## The Stack
 

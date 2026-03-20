@@ -110,6 +110,75 @@ For each column, Pickle generates type-safe scopes:
 **Foreign key columns:**
 - `With{Relation}()` — eager load the related model
 
+## Immutable table queries
+
+For tables declared with `t.Immutable()`, the query builder transparently deduplicates to return only the latest version per `id`:
+
+```go
+// Returns the latest version — DISTINCT ON under the hood
+transfer, _ := models.QueryTransfer().WhereID(id).First()
+
+// Returns all latest versions matching a filter
+transfers, _ := models.QueryTransfer().WhereStatus("pending").All()
+
+// Opt into full history — returns every version, oldest first
+versions, _ := models.QueryTransfer().WhereID(id).AllVersions().All()
+```
+
+**CRUD on immutable tables:**
+
+```go
+// Create — sets id, version_id, row_hash in Go before INSERT
+models.QueryTransfer().Create(transfer)
+
+// Update — inserts a new version row (never issues SQL UPDATE)
+transfer.Status = "completed"
+models.QueryTransfer().Update(transfer)
+
+// Delete — inserts a version with deleted_at set (only if SoftDeletes() declared)
+models.QueryTransfer().Delete(transfer)
+```
+
+`Update()` generates a fresh `version_id` (UUID v7) and computes the `row_hash` before inserting. The original row is untouched. `transfer.UpdatedAt()` reflects the new version's timestamp.
+
+## Append-only table queries
+
+For tables declared with `t.AppendOnly()`, only `Create()` and read methods exist:
+
+```go
+// Create — the only write operation
+models.QueryTransaction().Create(tx)
+
+// Read
+tx, _ := models.QueryTransaction().WhereID(id).First()
+txs, _ := models.QueryTransaction().WhereAccountID(accountID).All()
+```
+
+`Update()` and `Delete()` are not generated — calling them is a compile error.
+
+## Integrity verification
+
+Immutable and append-only tables are automatically hash-chained. The query builder exposes verification methods:
+
+```go
+// Walk the full chain, recomputing each hash — O(n)
+err := models.QueryTransaction().VerifyChain()
+
+// Check a single row's hash against its data and prev_hash
+err := models.QueryTransaction().VerifyRow(record)
+
+// Create a Merkle tree checkpoint from uncheckpointed rows
+cp, _ := models.QueryTransaction().Checkpoint()
+
+// Generate an inclusion proof (O(log n) within the checkpoint)
+proof, _ := models.QueryTransaction().Proof(record)
+
+// Verify a proof — pure function, no DB access needed
+ok := models.VerifyProof(proof)
+```
+
+`VerifyChain()` is O(n) over the full table — run it as a periodic audit job, not per-request. `VerifyProof()` is O(log n) and can run on a client, auditor, or third party.
+
 ## Database connection
 
 The query builder uses the package-level `models.DB` variable (a `*sql.DB`). This is set during app initialization by the generated commands package. All queries use parameterized `$1, $2, ...` placeholders — no string interpolation, no SQL injection.

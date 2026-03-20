@@ -34,6 +34,12 @@ squeeze:
     param_mismatch: true
     csrf_missing: true
     no_printf: true
+    immutable_raw_update: true
+    immutable_raw_insert_missing_version_id: true
+    immutable_timestamps: true
+    immutable_direct_delete: true
+    integrity_hash_override: true
+    integrity_column_in_request: true
     sensitive_field_encryption: true
     public_sensitive_conflict: true
 ```
@@ -352,6 +358,76 @@ t.String("email", 255).NotNull().Public().UnsafePublic().Encrypted()
 ```
 
 `.UnsafePublic()` is the escape hatch — same pattern as `.AnyOwner()` for ownership scoping. It makes the intent visible in code review and grep-able in audits.
+
+### immutable_raw_update
+
+**Severity:** error
+
+**What it catches:** Raw SQL containing `UPDATE <table>` where `<table>` is an immutable or append-only table. On these tables, the query builder's `Update()` inserts a new version row — it never issues a SQL `UPDATE`. A raw `UPDATE` bypasses immutability and destroys history.
+
+**How to fix:** Use the generated query builder:
+
+```go
+// BEFORE — destroys the previous state
+db.Exec("UPDATE transfers SET status = 'completed' WHERE id = $1", id)
+
+// AFTER — inserts a new version, previous state preserved
+transfer.Status = "completed"
+models.QueryTransfer().Update(transfer)
+```
+
+### immutable_raw_insert_missing_version_id
+
+**Severity:** error
+
+**What it catches:** Raw SQL `INSERT INTO <table>` on an immutable table that names explicit columns but omits `version_id`. The row will fail the NOT NULL constraint.
+
+**How to fix:** Use the generated query builder, which handles `version_id` and `row_hash` automatically.
+
+### immutable_timestamps
+
+**Severity:** error
+
+**What it catches:** `t.Immutable()` and `t.Timestamps()` called on the same table. Immutable tables derive `CreatedAt()` and `UpdatedAt()` from the UUID v7 timestamps in `id` and `version_id` — separate timestamp columns are redundant and would drift.
+
+**How to fix:** Remove `t.Timestamps()` from the migration:
+
+```go
+// BEFORE — Squeeze flags this
+m.CreateTable("transfers", func(t *Table) {
+    t.Immutable()
+    t.Timestamps() // ← remove this
+})
+
+// AFTER
+m.CreateTable("transfers", func(t *Table) {
+    t.Immutable()
+})
+```
+
+### immutable_direct_delete
+
+**Severity:** error
+
+**What it catches:** Raw `DELETE FROM <table>` where the table is immutable and has no `SoftDeletes()`.
+
+**How to fix:** If you need soft deletes, add `t.SoftDeletes()` to the migration and use the generated `Delete()` method. If you need hard deletes for data erasure (e.g., GDPR), that's a deliberate raw SQL operation — document why.
+
+### integrity_hash_override
+
+**Severity:** error
+
+**What it catches:** Raw SQL that sets `row_hash` or `prev_hash` on an immutable or append-only table. These are computed by the query builder from the row's canonical serialization and must not be set manually.
+
+**How to fix:** Use the generated `Create()` or `Update()` methods. They compute the hash chain automatically.
+
+### integrity_column_in_request
+
+**Severity:** error
+
+**What it catches:** A request struct with a field tagged `json:"row_hash"` or `json:"prev_hash"`. Integrity columns are internal — they must not be accepted from external input.
+
+**How to fix:** Remove the field from the request struct. If you need to expose integrity data to clients (e.g., for proof verification), return it in a response — never accept it in a request.
 
 ### no_printf
 

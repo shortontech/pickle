@@ -134,6 +134,128 @@ t.String("email", 255).NotNull().Public().UnsafePublic().Encrypted()
 
 See the [Squeeze docs](Squeeze.md) for the full list of sensitive field patterns.
 
+## Immutable tables
+
+Declare `t.Immutable()` for tables where history must never be lost. Every "update" inserts a new version row — the original is preserved forever.
+
+```go
+m.CreateTable("transfers", func(t *Table) {
+    t.Immutable()
+
+    t.UUID("customer_id").NotNull().ForeignKey("customers", "id").IsOwner()
+    t.String("status").NotNull().Default("pending")
+    t.Decimal("amount", 18, 2).NotNull()
+    t.String("currency", 3).NotNull()
+    t.JSONB("metadata").Nullable()
+
+    t.SoftDeletes() // optional — "delete" inserts a version with deleted_at set
+})
+```
+
+`t.Immutable()` automatically injects:
+
+- `id UUID NOT NULL` — stable identity, same across all versions
+- `version_id UUID NOT NULL` — unique per version, UUID v7 (monotonically increasing)
+- `row_hash BYTEA NOT NULL` — SHA-256 hash chain linking each row to its predecessor
+- `prev_hash BYTEA NOT NULL` — the previous row's `row_hash`
+- Composite primary key `(id, version_id)`
+
+**Do not call `t.Timestamps()` on an immutable table.** `CreatedAt()` and `UpdatedAt()` are derived from the UUID v7 timestamps embedded in `id` and `version_id` — they're Go methods, not database columns.
+
+Pickle generates:
+
+```go
+type Transfer struct {
+    ID         uuid.UUID       `json:"id" db:"id"`
+    VersionID  uuid.UUID       `json:"version_id" db:"version_id"`
+    RowHash    []byte          `json:"-" db:"row_hash"`
+    PrevHash   []byte          `json:"-" db:"prev_hash"`
+    CustomerID uuid.UUID       `json:"customer_id" db:"customer_id"`
+    Status     string          `json:"status" db:"status"`
+    Amount     decimal.Decimal `json:"amount" db:"amount"`
+    Currency   string          `json:"currency" db:"currency"`
+    // ...
+}
+
+func (m *Transfer) CreatedAt() time.Time { return uuidV7Time(m.ID) }
+func (m *Transfer) UpdatedAt() time.Time { return uuidV7Time(m.VersionID) }
+```
+
+### How immutable CRUD works
+
+Your code looks identical to a mutable table:
+
+```go
+// Create — generates id, version_id, and row_hash automatically
+transfer := &models.Transfer{CustomerID: id, Amount: amount, Status: "pending"}
+models.QueryTransfer().Create(transfer)
+
+// Read — returns the latest version per id, transparently
+transfer, _ := models.QueryTransfer().WhereID(id).First()
+
+// Update — inserts a new version with a fresh version_id
+transfer.Status = "completed"
+models.QueryTransfer().Update(transfer)
+
+// Soft delete — inserts a version with deleted_at set (requires SoftDeletes())
+models.QueryTransfer().Delete(transfer)
+
+// Read full history
+versions, _ := models.QueryTransfer().WhereID(id).AllVersions().All()
+```
+
+Under the hood, all read queries use `DISTINCT ON (id) ... ORDER BY id, version_id DESC` (Postgres) or an equivalent `MAX(version_id)` subquery (MySQL/SQLite) to return only the latest version per `id`.
+
+## Append-only tables
+
+For permanent records that are never modified — audit logs, financial transactions, event streams. No `Update()` or `Delete()` is generated.
+
+```go
+m.CreateTable("transactions", func(t *Table) {
+    t.AppendOnly()
+
+    t.UUID("account_id").NotNull().ForeignKey("accounts", "id")
+    t.String("type", 20).NotNull()
+    t.Decimal("amount", 18, 2).NotNull()
+    t.String("currency", 3).NotNull()
+})
+```
+
+`t.AppendOnly()` automatically injects:
+
+- `id UUID NOT NULL PRIMARY KEY` — UUID v7, generated in Go
+- `row_hash BYTEA NOT NULL` — SHA-256 hash chain
+- `prev_hash BYTEA NOT NULL` — previous row's hash
+
+Only `Create()` and read methods are generated. Corrections are modeled as new records (e.g., a reversal transaction), not mutations.
+
+## Hash chains and Merkle trees
+
+Every immutable and append-only table is automatically hash-chained. Each row's `row_hash` is `SHA-256(prev_hash || canonical row data)`. Tampering with any historical row breaks the chain.
+
+```go
+// Verify the entire chain — O(n), run periodically
+err := models.QueryTransaction().VerifyChain()
+
+// Verify a single row
+err := models.QueryTransaction().VerifyRow(record)
+
+// Create a Merkle tree checkpoint
+cp, _ := models.QueryTransaction().Checkpoint()
+
+// Generate an inclusion proof for a specific row
+proof, _ := models.QueryTransaction().Proof(record)
+
+// Verify a proof — pure function, no database needed
+ok := models.VerifyProof(proof)
+```
+
+`RowHash` and `PrevHash` use `json:"-"` tags — they are internal integrity data, not part of the API response.
+
+### Database permissions
+
+Immutable and append-only tables should be granted `SELECT, INSERT` only — no `UPDATE`, no `DELETE`. See the [ledger test app](../testdata/ledger/README.md) for a complete example of database-level permission enforcement.
+
 ## Migration operations
 
 Available in `Up()` and `Down()`:

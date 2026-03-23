@@ -40,7 +40,11 @@ sandbox/
 
 # Specs
 specs/
-testdata/basic-crud/server
-testdata/ledger/server
+# Built test binaries
+testdata/*/server
+
+# Local docker infra
 Dockerfile
 claude-docker.sh
+**/*_gen.go
+**/*_query.go

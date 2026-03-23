@@ -15,6 +15,7 @@ func Create(moduleName, targetDir string) error {
 	ts := time.Now().Format("2006_01_02_150405")
 
 	files := map[string]string{
+		".gitignore":                          tmplGitignore(),
 		"go.mod":                              tmplGoMod(moduleName),
 		".env":                                tmplDotEnv(),
 		"cmd/server/main.go":                  tmplMain(moduleName),
@@ -477,4 +478,37 @@ func (m *%s) Down() {
 	m.DropTableIfExists("users")
 }
 `, structName, structName, structName)
+}
+
+func tmplGitignore() string {
+	return `# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+server
+
+# Pickle generated files
+**/*_gen.go
+**/*_query.go
+app/models/
+
+# Environment
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+`
 }

@@ -42,6 +42,11 @@ squeeze:
     integrity_column_in_request: true
     sensitive_field_encryption: true
     public_sensitive_conflict: true
+    encrypted_column_range: true
+    sealed_column_where: true
+    encrypted_column_order_by: true
+    encrypted_sealed_conflict: true
+    encrypted_missing_key_config: true
 ```
 
 All rules default to enabled. Set a rule to `false` to disable it.
@@ -428,6 +433,46 @@ m.CreateTable("transfers", func(t *Table) {
 **What it catches:** A request struct with a field tagged `json:"row_hash"` or `json:"prev_hash"`. Integrity columns are internal — they must not be accepted from external input.
 
 **How to fix:** Remove the field from the request struct. If you need to expose integrity data to clients (e.g., for proof verification), return it in a response — never accept it in a request.
+
+### encrypted_column_range
+
+**Severity:** error
+
+**What it catches:** Range or comparison scopes (`WhereXxxGT`, `WhereXxxLT`, `WhereXxxBetween`) on columns marked `.Encrypted()`. Encrypted values are ciphertext — ordering and range comparisons are meaningless.
+
+**How to fix:** Remove range queries on encrypted columns. If you need to filter by range, the column should not be encrypted, or you should use a separate plaintext index column.
+
+### sealed_column_where
+
+**Severity:** error
+
+**What it catches:** Any `WHERE` clause on a column marked `.Sealed()`. Sealed columns are write-only — the plaintext is never retrievable, so filtering by value is impossible.
+
+**How to fix:** Remove the WHERE clause. Sealed columns can only be written and verified (e.g., password hashing), not queried.
+
+### encrypted_column_order_by
+
+**Severity:** error
+
+**What it catches:** `ORDER BY` on a column marked `.Encrypted()`. Ciphertext sort order is effectively random and does not reflect the plaintext ordering.
+
+**How to fix:** Remove the ORDER BY on the encrypted column, or sort by a different column.
+
+### encrypted_sealed_conflict
+
+**Severity:** error
+
+**What it catches:** A column marked with both `.Encrypted()` and `.Sealed()`. These are mutually exclusive — `.Encrypted()` means the value is retrievable (decrypt on read), while `.Sealed()` means it is write-only (verify only, never decrypt).
+
+**How to fix:** Pick one. Use `.Encrypted()` if you need to read the plaintext back. Use `.Sealed()` if the column should never be retrieved (e.g., password hashes).
+
+### encrypted_missing_key_config
+
+**Severity:** error
+
+**What it catches:** Migrations that declare `.Encrypted()` or `.Sealed()` columns, but no `ENCRYPTION_KEY` is configured. Without a key, encryption cannot function.
+
+**How to fix:** Set `ENCRYPTION_KEY` in your `.env` or environment variables. See [Config](Config.md) for details.
 
 ### no_printf
 

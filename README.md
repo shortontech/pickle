@@ -7,6 +7,7 @@ Pickle is a code generation framework for Go that makes secure applications triv
 ```
 You write controllers.     Pickle generates models.
 You write migrations.      Pickle generates query builders.
+You write migrations.      Pickle generates a GraphQL API.
 You write request classes.  Pickle generates validation + deserialization.
 You write routes.go.       Pickle wires it all together.
 ```
@@ -24,6 +25,7 @@ Pickle is different. It makes entire vulnerability classes structurally impossib
 - **SQL injection** — The generated query builder uses parameterized queries exclusively. There is no API for string interpolation. The unsafe path doesn't exist.
 - **Mass assignment** — Request structs define exactly which fields are accepted. If `CreateUserRequest` doesn't have a `Role` field, POSTing `{"role": "admin"}` does nothing. The model never sees unvalidated input.
 - **Validation bypass** — Controllers receive pre-validated, typed request structs. The generated binding layer runs validation before your code executes. There is no code path around it.
+- **Encryption at rest** — Columns marked `.Encrypted()` are transparently encrypted before storage and decrypted on read. Columns marked `.Sealed()` are write-only — they can be verified but never retrieved in plaintext. The query builder enforces both: no range queries on encrypted columns, no WHERE clauses on sealed columns.
 - **Data tampering** — Immutable and append-only tables are cryptographically hash-chained. Every row's `row_hash` includes the previous row's hash — tampering with any historical record breaks the chain. Periodic Merkle tree checkpoints give O(log n) inclusion proofs you can hand to an auditor.
 
 **Visible by convention:**
@@ -81,6 +83,11 @@ If something's wrong, Squeeze tells you exactly where:
 | `immutable_raw_delete` | error | Raw `DELETE` on an immutable table without `SoftDeletes()` |
 | `immutable_timestamps` | error | `t.Immutable()` + `t.Timestamps()` on the same table — timestamps are derived from UUID v7 |
 | `integrity_hash_override` | error | Raw SQL setting `row_hash` or `prev_hash` — these are computed by the query builder |
+| `encrypted_column_range` | error | Range/comparison scopes (GT, LT, Between) on `.Encrypted()` columns — ciphertext ordering is meaningless |
+| `sealed_column_where` | error | Any WHERE clause on a `.Sealed()` column — sealed data cannot be queried |
+| `encrypted_column_order_by` | error | ORDER BY on an `.Encrypted()` column — ciphertext sort order is random |
+| `encrypted_sealed_conflict` | error | Column marked both `.Encrypted()` and `.Sealed()` — pick one |
+| `encrypted_missing_key_config` | error | `.Encrypted()` columns exist but no encryption key is configured |
 
 No pickle ships without being squeezed first.
 
@@ -133,6 +140,9 @@ See the [Getting Started guide](docs/GettingStarted.md) to create your first Pic
 | [Commands](docs/Commands.md) | CLI commands reference |
 | [Tickle](docs/Tickle.md) | The preprocessor pipeline |
 | [Squeeze](docs/Squeeze.md) | Static security analysis |
+| [GraphQL](docs/GraphQL.md) | Auto-generated GraphQL API from migrations |
+| [Cron Jobs](docs/CronJobs.md) | Scheduled background tasks |
+| [Encryption](docs/Encryption.md) | Encryption at rest and sealed columns |
 | [Ledger Example](testdata/ledger/README.md) | Immutable tables, append-only tables, DB permissions |
 
 ### Immutable Tables & Cryptographic Integrity
@@ -198,6 +208,10 @@ ok := models.VerifyProof(proof) // pure function, no DB needed
 Every row is chained to its predecessor via SHA-256. Merkle tree checkpoints roll the chain into a binary tree for efficient verification. Tampering with any historical row breaks the chain — detectable by `VerifyChain()` and provable via `VerifyProof()`.
 
 Three layers of enforcement: **schema DSL** (no unsafe methods generated), **Go compiler** (can't call what doesn't exist), **database permissions** (SELECT + INSERT only). Any one is sufficient. All three together means you can prove it to an auditor.
+
+### Cron Jobs
+
+Schedule recurring tasks with `pickle make:job`. Jobs run inside your compiled binary — no external cron daemon needed. Define the schedule, write the logic, and Pickle wires it into the app lifecycle. See the [Cron Jobs docs](docs/CronJobs.md) for details.
 
 ## The Stack
 

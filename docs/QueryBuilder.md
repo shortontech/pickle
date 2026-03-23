@@ -110,6 +110,12 @@ For each column, Pickle generates type-safe scopes:
 **Foreign key columns:**
 - `With{Relation}()` — eager load the related model
 
+## Encrypted and sealed column scopes
+
+Columns marked `.Encrypted()` get equality scopes (`WhereXxx`, `WhereXxxNot`, `WhereXxxIn`, `WhereXxxNotIn`) but **no range or ordering scopes**. `WhereXxxGT`, `WhereXxxLT`, `WhereXxxBetween`, and `OrderBy` on encrypted columns are not generated — ciphertext comparisons are meaningless. Squeeze flags any attempt to use generic `WhereOp` or `OrderBy` on encrypted columns.
+
+Columns marked `.Sealed()` get **no query scopes at all**. Sealed columns are write-only: the plaintext is never retrieved from the database. They are suitable for password hashes, verification tokens, and similar data that is checked but never displayed.
+
 ## Immutable table queries
 
 For tables declared with `t.Immutable()`, the query builder transparently deduplicates to return only the latest version per `id`:

@@ -77,7 +77,8 @@ t.Text("notes").Nullable()
 | `.Public()` | Mark as visible to anyone (ownership system) |
 | `.OwnerSees()` | Mark as visible only to the row's owner |
 | `.IsOwner()` | Mark as the ownership column for the table |
-| `.Encrypted()` | Mark as requiring encryption at rest |
+| `.Encrypted()` | Mark as requiring encryption at rest — see [Encryption](Encryption.md) |
+| `.Sealed()` | Mark as write-only encrypted — can be verified but never retrieved in plaintext. See [Encryption](Encryption.md) |
 | `.UnsafePublic()` | Acknowledge that a sensitive field is intentionally `.Public()` |
 
 ## Ownership & visibility

@@ -1,0 +1,296 @@
+# Encryption at Rest
+
+Pickle provides transparent encryption at rest with two annotations and zero-downtime key rotation. You mark columns in your migration; Pickle generates all the encrypt/decrypt wiring, dual columns for rotation, and typed query scopes.
+
+Two annotations, different tradeoffs:
+
+| Annotation | Cipher | Searchable | Leaks |
+|------------|--------|------------|-------|
+| `.Encrypted()` | AES-256-SIV (deterministic) | Yes — `WhereXxx`, `WhereXxxIn` | Equality (attacker sees which rows share a value) |
+| `.Sealed()` | AES-256-GCM (non-deterministic) | No — no `Where` scopes generated | Nothing |
+
+Both share the same key config, rotation lifecycle, and dual-column storage pattern. The only difference is the cipher and whether query scopes are generated.
+
+## Migration DSL
+
+```go
+m.CreateTable("credentials", func(t *Table) {
+    t.UUID("id").PrimaryKey().Default("uuid_generate_v7()")
+    t.String("email").NotNull().Encrypted()           // searchable — WhereEmail() works
+    t.String("api_key", 255).NotNull().Encrypted()     // searchable — WhereAPIKey() works
+    t.Text("private_key").NotNull().Sealed()            // not searchable — read by loading the row
+    t.String("diagnosis_code", 10).NotNull().Sealed()   // not searchable — no equality leakage
+    t.Timestamps()
+})
+```
+
+The declared column type (`String`, `Text`, etc.) determines the Go struct field type. The database column is always `TEXT` — Pickle marshals before encrypt and unmarshals after decrypt. NULL stays NULL; no encryption of empty values.
+
+## `.Encrypted()` — Deterministic (AES-256-SIV)
+
+Same plaintext + same key = same ciphertext. This makes equality search possible: `WHERE email_encrypted = encrypt("alice@example.com")` works directly.
+
+Ciphertext format: `base64(SIV || ciphertext)` stored as TEXT. The SIV (Synthetic Initialization Vector) is 16 bytes, derived deterministically from the plaintext and key.
+
+The tradeoff is explicit: an attacker with database access can see which rows share a plaintext value. Use `.Encrypted()` for columns you need to find — email, API keys, SSNs.
+
+Generated scopes for `.Encrypted()` columns:
+
+```go
+func (q *CredentialQuery) WhereEmail(email string) *CredentialQuery { ... }     // encrypts input, WHERE =
+func (q *CredentialQuery) WhereEmailIn(emails ...string) *CredentialQuery { ... } // encrypts each, WHERE IN
+// WhereEmailGt, WhereEmailLt, WhereEmailLike, OrderByEmail — NOT generated.
+```
+
+Range comparisons (`>`, `<`, `>=`, `<=`, `BETWEEN`, `LIKE`) and ordering are suppressed. Ciphertext does not preserve ordering. Squeeze flags raw SQL that attempts it.
+
+## `.Sealed()` — Non-Deterministic (AES-256-GCM)
+
+Same plaintext encrypts differently every time. No frequency analysis possible. No search is possible.
+
+Ciphertext format: `base64(nonce || ciphertext || tag)` stored as TEXT. The nonce is 12 bytes, generated fresh per encrypt call using `crypto/rand`. The tag is 16 bytes.
+
+No `Where` scopes are generated for `.Sealed()` columns. Squeeze flags raw SQL that attempts any `WHERE` on a sealed column. Use `.Sealed()` for columns you only read by loading the parent row — private keys, medical records, raw credentials passed through to another system.
+
+## Key configuration
+
+Keys are read from environment variables. Declare them in your database config:
+
+```go
+// config/database.go
+package config
+
+var Database = pickle.DatabaseConfig{
+    Default: "postgres",
+    Connections: map[string]pickle.ConnectionConfig{
+        "postgres": {
+            Driver: "postgres",
+            // ...existing config...
+        },
+    },
+    Encryption: pickle.EncryptionConfig{
+        CurrentKeyEnv: "PICKLE_ENCRYPTION_KEY",     // required if any column is .Encrypted() or .Sealed()
+        NextKeyEnv:    "PICKLE_ENCRYPTION_KEY_NEXT", // optional — set only when rotating
+    },
+}
+```
+
+Both env vars hold base64-encoded 256-bit keys. At app startup, the generated config loader decodes them:
+
+```go
+// Generated in config/pickle_gen.go
+var EncryptionKey []byte     // decoded from PICKLE_ENCRYPTION_KEY
+var EncryptionKeyNext []byte // decoded from PICKLE_ENCRYPTION_KEY_NEXT (nil if not set)
+```
+
+If any table has `.Encrypted()` or `.Sealed()` columns and `PICKLE_ENCRYPTION_KEY` is empty, the app panics at startup with a clear message. `PICKLE_ENCRYPTION_KEY_NEXT` is only required during active rotation.
+
+## What gets generated
+
+For each `.Encrypted()` or `.Sealed()` column, Pickle generates **two** database columns:
+
+```go
+// You write:
+t.String("api_key", 255).NotNull().Encrypted()
+t.Text("private_key").NotNull().Sealed()
+
+// Pickle generates SQL:
+//   api_key_encrypted        TEXT NOT NULL   ← primary ciphertext
+//   api_key_encrypted_v2     TEXT            ← rotation target (always nullable)
+//   private_key_encrypted    TEXT NOT NULL
+//   private_key_encrypted_v2 TEXT
+```
+
+The model struct field retains the original name with `db:"-"`:
+
+```go
+// Code generated by Pickle. DO NOT EDIT.
+type Credential struct {
+    ID         uuid.UUID `json:"id" db:"id"`
+    Email      string    `json:"email" db:"-"`          // .Encrypted() — AES-SIV, searchable
+    APIKey     string    `json:"api_key" db:"-"`        // .Encrypted() — AES-SIV, searchable
+    PrivateKey string    `json:"private_key" db:"-"`    // .Sealed() — AES-GCM, not searchable
+    // ... plus _encrypted and _encrypted_v2 fields with json:"-" tags
+}
+```
+
+Each model with encrypted or sealed columns gets an `encryptedFields()` method:
+
+```go
+func (c *Credential) encryptedFields() []encryptedFieldMapping {
+    return []encryptedFieldMapping{
+        {
+            Field:         &c.Email,
+            Column:        "email_encrypted",
+            ColumnV2:      "email_encrypted_v2",
+            Deterministic: true, // AES-SIV — .Encrypted()
+            Marshal:       func() ([]byte, error) { return []byte(fmt.Sprint(c.Email)), nil },
+            Unmarshal:     func(b []byte) error { c.Email = string(b); return nil },
+        },
+        {
+            Field:         &c.PrivateKey,
+            Column:        "private_key_encrypted",
+            ColumnV2:      "private_key_encrypted_v2",
+            Deterministic: false, // AES-GCM — .Sealed()
+            Marshal:       func() ([]byte, error) { return []byte(fmt.Sprint(c.PrivateKey)), nil },
+            Unmarshal:     func(b []byte) error { c.PrivateKey = string(b); return nil },
+        },
+    }
+}
+```
+
+The query builder calls `encryptedFields()` during `Create`, `Update`, and scan operations. The developer never sees ciphertext:
+
+```go
+// Encryption is invisible:
+cred := &models.Credential{
+    Email:      "alice@example.com",
+    APIKey:     "sk_live_abc123",
+    PrivateKey: "-----BEGIN EC PRIVATE KEY-----\n...",
+}
+models.QueryCredential().Create(cred)
+
+// What hits the database:
+// INSERT INTO credentials (id, email_encrypted, email_encrypted_v2, api_key_encrypted, ...)
+// VALUES ($1, $2, $3, $4, ...)
+//             ↑ encrypted          ↑ NULL (no rotation in progress)
+```
+
+## Query scopes
+
+For `.Encrypted()` columns, equality scopes encrypt the input before querying:
+
+```go
+// Find by encrypted email — encrypts "alice@example.com" with the current key
+user, err := models.QueryCredential().WhereEmail("alice@example.com").First()
+
+// IN query — encrypts each value
+users, err := models.QueryCredential().WhereEmailIn("a@x.com", "b@x.com").All()
+```
+
+During rotation (when `PICKLE_ENCRYPTION_KEY_NEXT` is set), equality scopes emit:
+
+```sql
+WHERE email_encrypted = $1 OR email_encrypted_v2 = $2
+```
+
+Both key variants are checked because some rows may only have the `_v2` value populated.
+
+For `.Sealed()` columns, no `Where` scopes are generated. Load the row by another column and read the value from the struct.
+
+## Key rotation lifecycle
+
+Four steps, each a separate auditable action:
+
+### 1. Deploy next key
+
+Generate a new 256-bit key, base64-encode it, and set `PICKLE_ENCRYPTION_KEY_NEXT` in your environment. Deploy. The app now dual-writes: every insert/update encrypts with both keys.
+
+### 2. Rotate existing rows
+
+```bash
+pickle key:rotate                    # process all rows
+pickle key:rotate --batch-size 500   # smaller batches
+pickle key:rotate --sleep 100ms      # throttle between batches
+```
+
+Processes all rows where any `_encrypted_v2` column is NULL. Decrypts with the current key, re-encrypts with the next key, writes to `_encrypted_v2`. Idempotent — safe to interrupt and resume.
+
+```
+credentials: 5000/12000 rows rotated
+credentials: 10000/12000 rows rotated
+credentials: 12000/12000 rows rotated
+```
+
+### 3. Swap keys
+
+```bash
+pickle key:swap
+```
+
+Prints instructions (does not mutate anything):
+
+```
+Key rotation complete. To finalize:
+
+1. Set PICKLE_ENCRYPTION_KEY to the value currently in PICKLE_ENCRYPTION_KEY_NEXT
+2. Remove PICKLE_ENCRYPTION_KEY_NEXT from your environment
+3. Deploy the updated environment
+4. Run: pickle key:cleanup
+
+WARNING: Do not remove the old key until step 3 is deployed.
+         Rows not yet rotated will become unreadable.
+```
+
+### 4. Cleanup
+
+```bash
+pickle key:cleanup
+```
+
+Generates a migration that copies `_encrypted_v2` to `_encrypted` and NULLs out `_encrypted_v2` for all encrypted columns:
+
+```sql
+UPDATE credentials SET email_encrypted = email_encrypted_v2, email_encrypted_v2 = NULL
+  WHERE email_encrypted_v2 IS NOT NULL;
+```
+
+After cleanup, you're back to single-key operation with `_encrypted_v2` columns empty and ready for the next rotation.
+
+## Squeeze rules
+
+Five rules catch encryption misuse at analysis time.
+
+### encrypted_column_range
+
+**Severity:** error
+
+Range comparison (`>`, `<`, `>=`, `<=`, `BETWEEN`, `LIKE`) on an `.Encrypted()` column. Ciphertext does not preserve ordering.
+
+**Message:** `range comparison on encrypted column "users.api_key" -- ciphertext does not preserve ordering. Use equality (=, IN) or filter by a non-encrypted column.`
+
+### sealed_column_where
+
+**Severity:** error
+
+Any `WHERE` clause (including equality) on a `.Sealed()` column. AES-GCM is non-deterministic — equality search will never match.
+
+**Message:** `WHERE clause on sealed column "users.private_key" -- sealed columns use non-deterministic encryption and cannot be searched. Load the row by another column and read the value from the struct.`
+
+### encrypted_column_order_by
+
+**Severity:** error
+
+`ORDER BY` on any encrypted or sealed column. Ordering ciphertext is meaningless.
+
+**Message:** `ORDER BY on encrypted column "users.api_key" -- ordering ciphertext is meaningless. Sort by a non-encrypted column.`
+
+### encrypted_sealed_conflict
+
+**Severity:** error
+
+A column marked both `.Encrypted()` and `.Sealed()`. Pick one.
+
+**Message:** `column "users.api_key" is both .Encrypted() and .Sealed() -- choose one. .Encrypted() is searchable (deterministic). .Sealed() leaks nothing (non-deterministic).`
+
+### encrypted_missing_key_config
+
+**Severity:** error
+
+A table has `.Encrypted()` or `.Sealed()` columns but `config/database.go` does not declare `Encryption.CurrentKeyEnv`.
+
+**Message:** `table "users" has .Encrypted() columns but no encryption key is configured in config/database.go -- add Encryption.CurrentKeyEnv`
+
+## When to use which
+
+| Use case | Annotation | Why |
+|----------|-----------|-----|
+| Email addresses you look up by value | `.Encrypted()` | Need `WhereEmail()` — accept equality leakage |
+| API keys you validate on incoming requests | `.Encrypted()` | Need `WhereAPIKey()` to find the matching row |
+| SSNs you search by | `.Encrypted()` | Need equality lookup — accept the tradeoff |
+| Private keys (TLS, signing) | `.Sealed()` | Never searched — load the row by ID, read the key |
+| Medical records, diagnosis codes | `.Sealed()` | Never searched — zero leakage matters more |
+| OAuth refresh tokens passed to a provider | `.Sealed()` | Never searched by value — looked up by user ID |
+| Credentials you only read, never query by | `.Sealed()` | No reason to leak equality |
+
+The rule: if you need `WHERE column = value`, use `.Encrypted()`. If you only read the value after loading the row by some other column, use `.Sealed()`.

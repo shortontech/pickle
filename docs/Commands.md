@@ -50,3 +50,25 @@ type Command interface {
 ```
 
 Register commands in the generated `NewApp()` by placing them in `app/commands/`.
+
+## Scaffold commands
+
+The Pickle CLI includes scaffolding commands (run from your project root):
+
+| Command | Description |
+|---------|-------------|
+| `pickle make:controller` | Scaffold a new controller |
+| `pickle make:migration` | Scaffold a new migration with timestamp |
+| `pickle make:request` | Scaffold a new request class |
+| `pickle make:middleware` | Scaffold a new middleware |
+| `pickle make:job` | Scaffold a new cron job (creates a job struct in `app/jobs/`) |
+
+## Encryption key management
+
+These commands manage encryption keys for columns marked `.Encrypted()` or `.Sealed()`. They are planned and may not be fully implemented yet.
+
+| Command | Description |
+|---------|-------------|
+| `key:rotate` | Re-encrypt all encrypted columns with a new key. Set `ENCRYPTION_KEY` to the new key and `ENCRYPTION_KEY_PREVIOUS` to the old one, then run this command. |
+| `key:swap` | Swap the active and previous keys. Useful for completing a rotation or rolling back. |
+| `key:cleanup` | Remove the previous key after rotation is verified complete. Clears `ENCRYPTION_KEY_PREVIOUS`. |

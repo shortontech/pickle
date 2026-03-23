@@ -129,3 +129,35 @@ JWT_SECRET=change-me
 ```
 
 Lines starting with `#` are comments. Values can be quoted with single or double quotes.
+
+## Encryption configuration
+
+If your migrations use `.Encrypted()` or `.Sealed()` columns, configure the encryption key:
+
+```
+ENCRYPTION_KEY=base64-encoded-32-byte-key
+ENCRYPTION_KEY_PREVIOUS=base64-encoded-32-byte-key
+```
+
+The `EncryptionConfig` struct is generated alongside your other config:
+
+```go
+type EncryptionConfig struct {
+    Key         string // active encryption key (base64-encoded)
+    PreviousKey string // previous key, used during key rotation
+}
+```
+
+`ENCRYPTION_KEY` is required when any table has encrypted or sealed columns. `ENCRYPTION_KEY_PREVIOUS` is only needed during key rotation (see `key:rotate` in [Commands](Commands.md)).
+
+## RuntimeConfig and hot reload
+
+Pickle wraps your config in a `RuntimeConfig` that uses Go's `atomic.Pointer` for lock-free reads. Config values are read millions of times per second in a busy server — an atomic pointer swap means zero contention.
+
+To reload config without restarting the server, hit the built-in reload endpoint:
+
+```
+POST /pickle/config/reload
+```
+
+This re-reads `.env` and environment variables, builds new config structs, and atomically swaps the pointer. In-flight requests see either the old or new config — never a torn read. The endpoint is only available when `APP_ENV` is not `production` (or when explicitly enabled).

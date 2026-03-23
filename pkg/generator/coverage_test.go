@@ -742,6 +742,7 @@ func TestGenerateCommandsGlue(t *testing.T) {
 		[]string{"SendEmailCommand"},
 		[]string{"API"},
 		false,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("GenerateCommandsGlue: %v", err)
@@ -769,6 +770,7 @@ func TestGenerateCommandsGlueWithAuth(t *testing.T) {
 		nil,
 		[]string{"API"},
 		true,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("GenerateCommandsGlue: %v", err)
@@ -786,6 +788,7 @@ func TestGenerateCommandsGlueDefaultRouteVar(t *testing.T) {
 		"database/migrations",
 		nil,
 		nil, // no route vars — should default to API
+		false,
 		false,
 	)
 	if err != nil {

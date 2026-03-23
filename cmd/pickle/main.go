@@ -47,6 +47,8 @@ func main() {
 		cmdMakeRequest()
 	case "make:middleware":
 		cmdMakeMiddleware()
+	case "make:job":
+		cmdMakeJob()
 	case "squeeze":
 		cmdSqueeze()
 	case "--help", "-h", "help":
@@ -77,6 +79,7 @@ Commands:
   make:migration    Scaffold a new migration
   make:request      Scaffold a new request class
   make:middleware    Scaffold a new middleware
+  make:job           Scaffold a new job
   squeeze            Run static analysis on your Pickle project
 
 Options:
@@ -412,6 +415,25 @@ func cmdMakeMiddleware() {
 		os.Exit(1)
 	}
 	relPath, err := scaffold.MakeMiddleware(name, project.Dir, project.ModulePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("  created %s\n", relPath)
+}
+
+func cmdMakeJob() {
+	name, projectDir := parseMakeArgs()
+	if name == "" {
+		fmt.Fprintf(os.Stderr, "Usage: pickle make:job <Name>\n")
+		os.Exit(1)
+	}
+	project, err := generator.DetectProject(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	relPath, err := scaffold.MakeJob(name, project.Dir, project.ModulePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
 		os.Exit(1)

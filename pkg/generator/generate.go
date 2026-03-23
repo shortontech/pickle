@@ -644,6 +644,18 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 	}
 
+	// 6b. Generate scheduler core if app/jobs/ exists
+	jobsDir := filepath.Join(project.Dir, "app", "jobs")
+	if _, err := os.Stat(jobsDir); err == nil {
+		// Check override pattern: only write pickle_gen.go if pickle.go doesn't exist
+		if _, err := os.Stat(filepath.Join(jobsDir, "pickle.go")); os.IsNotExist(err) {
+			fmt.Println("  generating jobs/pickle_gen.go")
+			if err := writeFile(filepath.Join(jobsDir, "pickle_gen.go"), GenerateCoreScheduler("jobs")); err != nil {
+				return err
+			}
+		}
+	}
+
 	// 7. Generate GraphQL layer if app/graphql/ exists
 	graphqlDir := filepath.Join(project.Dir, "app", "graphql")
 	if _, err := os.Stat(graphqlDir); err == nil {
@@ -679,7 +691,13 @@ func Generate(project *Project, picklePkgDir string) error {
 			hasAuth = true
 		}
 
-		cmdSrc, err := GenerateCommandsGlue(project.ModulePath, layout.MigrationsRel, userCmds, routeVars, hasAuth)
+		// Check if schedule/jobs.go exists
+		hasSchedule := false
+		if _, err := os.Stat(filepath.Join(project.Dir, "schedule", "jobs.go")); err == nil {
+			hasSchedule = true
+		}
+
+		cmdSrc, err := GenerateCommandsGlue(project.ModulePath, layout.MigrationsRel, userCmds, routeVars, hasAuth, hasSchedule)
 		if err != nil {
 			return fmt.Errorf("generating commands glue: %w", err)
 		}

@@ -162,8 +162,11 @@ var commandsGlueTemplate = template.Must(template.New("commands").Parse(`// Code
 package commands
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"time"
 
 	pickle "{{ .HTTPImport }}"
@@ -172,6 +175,7 @@ import (
 	"{{ .ConfigImport }}"
 	"{{ .RoutesImport }}"
 {{ if .HasAuth }}	"{{ .AuthImport }}"
+{{ end }}{{ if .HasSchedule }}	"{{ .ScheduleImport }}"
 {{ end }})
 
 // migrateCommand runs pending migrations.
@@ -250,6 +254,12 @@ func NewApp() *pickle.App {
 {{ if .HasAuth }}			auth.Init(config.Env, models.DB)
 {{ end }}		},
 		func() {
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+			defer stop()
+
+{{ if .HasSchedule }}			// Start the scheduler in a background goroutine
+			go schedule.Schedule.Start(ctx)
+{{ end }}
 			mux := http.NewServeMux()
 {{ range .RouteVars }}			routes.{{ . }}.RegisterRoutes(mux)
 {{ end }}			log.Printf("listening on :%s", config.App.Port)
@@ -271,7 +281,7 @@ func NewApp() *pickle.App {
 `))
 
 // GenerateCommandsGlue produces app/commands/pickle_gen.go.
-func GenerateCommandsGlue(modulePath string, migrationsRel string, userCommands []string, routeVars []string, hasAuth bool) ([]byte, error) {
+func GenerateCommandsGlue(modulePath string, migrationsRel string, userCommands []string, routeVars []string, hasAuth bool, hasSchedule bool) ([]byte, error) {
 	// Default to "API" if no route vars found
 	if len(routeVars) == 0 {
 		routeVars = []string{"API"}
@@ -284,9 +294,11 @@ func GenerateCommandsGlue(modulePath string, migrationsRel string, userCommands 
 		ConfigImport     string
 		RoutesImport     string
 		AuthImport       string
+		ScheduleImport   string
 		UserCommands     []string
 		RouteVars        []string
 		HasAuth          bool
+		HasSchedule      bool
 	}{
 		HTTPImport:       modulePath + "/app/http",
 		ModelsImport:     modulePath + "/app/models",
@@ -294,9 +306,11 @@ func GenerateCommandsGlue(modulePath string, migrationsRel string, userCommands 
 		ConfigImport:     modulePath + "/config",
 		RoutesImport:     modulePath + "/routes",
 		AuthImport:       modulePath + "/app/http/auth",
+		ScheduleImport:   modulePath + "/schedule",
 		UserCommands:     userCommands,
 		RouteVars:        routeVars,
 		HasAuth:          hasAuth,
+		HasSchedule:      hasSchedule,
 	}
 
 	var buf bytes.Buffer

@@ -119,6 +119,35 @@ func MakeMigration(name, projectDir string) (string, error) {
 	return writeScaffold(projectDir, relPath, tmplMakeMigration(structName, tableName))
 }
 
+// MakeJob scaffolds a new job file.
+func MakeJob(name, projectDir, moduleName string) (string, error) {
+	if err := sanitizeName(name); err != nil {
+		return "", err
+	}
+	name = strings.TrimSuffix(name, "Job")
+	structName := names.SnakeToPascal(name) + "Job"
+	snake := names.PascalToSnake(name)
+	if strings.Contains(name, "_") {
+		snake = strings.ToLower(name)
+		structName = names.SnakeToPascal(name) + "Job"
+	}
+	fileName := snake + ".go"
+	relPath := filepath.Join("app", "jobs", fileName)
+	return writeScaffold(projectDir, relPath, tmplMakeJob(structName))
+}
+
+func tmplMakeJob(structName string) string {
+	return `package jobs
+
+type ` + structName + ` struct{}
+
+func (j ` + structName + `) Handle() error {
+	// TODO: implement job logic
+	return nil
+}
+`
+}
+
 // sanitizeName rejects names containing path traversal sequences.
 // Forward slashes are allowed for subdirectory scaffolding (e.g. "admin/User").
 func sanitizeName(name string) error {

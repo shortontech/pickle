@@ -39,3 +39,9 @@ func GenerateCoreMigration(packageName string) []byte {
 func GenerateCoreGraphQL(packageName string) []byte {
 	return []byte(strings.ReplaceAll(embedGRAPHQL, packagePlaceholder, packageName))
 }
+
+// GenerateCoreScheduler returns the Scheduler, Job, JobEntry, and Cron types
+// with the package name set to the target package.
+func GenerateCoreScheduler(packageName string) []byte {
+	return []byte(strings.ReplaceAll(embedSCHEDULER, packagePlaceholder, packageName))
+}

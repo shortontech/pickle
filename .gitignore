@@ -43,5 +43,4 @@ specs/
 testdata/basic-crud/server
 testdata/ledger/server
 Dockerfile
-.gitignore
 claude-docker.sh

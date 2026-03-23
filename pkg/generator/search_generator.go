@@ -10,12 +10,14 @@ import (
 
 // searchColumnInfo holds what the search generator needs for each column.
 type searchColumnInfo struct {
-	SnakeName  string
-	PascalName string
-	GoType     string
-	ColType    schema.ColumnType
-	IsPublic   bool
-	IsOwner    bool // IsPublic || IsOwnerSees
+	SnakeName   string
+	PascalName  string
+	GoType      string
+	ColType     schema.ColumnType
+	IsPublic    bool
+	IsOwner     bool // IsPublic || IsOwnerSees
+	IsEncrypted bool // AES-SIV deterministic — equality only, no range/like/sort
+	IsSealed    bool // AES-GCM non-deterministic — no search at all
 }
 
 // generateSearchMethods emits SearchPublic, SearchOwner, SearchAll for a table.
@@ -29,12 +31,14 @@ func generateSearchMethods(b *bytes.Buffer, table *schema.Table, queryType, stru
 			hasVisibility = true
 		}
 		cols = append(cols, searchColumnInfo{
-			SnakeName:  col.Name,
-			PascalName: snakeToPascal(col.Name),
-			GoType:     columnGoType(col),
-			ColType:    col.Type,
-			IsPublic:   isPublic,
-			IsOwner:    isOwner,
+			SnakeName:   col.Name,
+			PascalName:  snakeToPascal(col.Name),
+			GoType:      columnGoType(col),
+			ColType:     col.Type,
+			IsPublic:    isPublic,
+			IsOwner:     isOwner,
+			IsEncrypted: col.IsEncrypted,
+			IsSealed:    col.IsSealed,
 		})
 	}
 
@@ -72,6 +76,10 @@ func writeSearchMethod(b *bytes.Buffer, queryType, structName, methodName, visib
 		if !include(col) || !isSearchable(col.ColType) {
 			continue
 		}
+		// Sealed columns cannot be searched at all (non-deterministic encryption)
+		if col.IsSealed {
+			continue
+		}
 		b.WriteString(fmt.Sprintf("\t\tcase %q:\n", col.SnakeName))
 		writeFilterCase(b, col, "val")
 	}
@@ -85,6 +93,10 @@ func writeSearchMethod(b *bytes.Buffer, queryType, structName, methodName, visib
 	b.WriteString("\t\tswitch fop.Column {\n")
 	for _, col := range cols {
 		if !include(col) || !isSearchable(col.ColType) {
+			continue
+		}
+		// Encrypted/sealed columns: no range or like operators
+		if col.IsEncrypted || col.IsSealed {
 			continue
 		}
 		ops := opsForType(col.ColType)
@@ -111,6 +123,10 @@ func writeSearchMethod(b *bytes.Buffer, queryType, structName, methodName, visib
 	b.WriteString("\t\tswitch sortCol {\n")
 	for _, col := range cols {
 		if !include(col) || !isSearchable(col.ColType) {
+			continue
+		}
+		// Encrypted/sealed columns: ordering ciphertext is meaningless
+		if col.IsEncrypted || col.IsSealed {
 			continue
 		}
 		b.WriteString(fmt.Sprintf("\t\tcase %q:\n", col.SnakeName))

@@ -254,11 +254,14 @@ func NewApp() *pickle.App {
 {{ if .HasAuth }}			auth.Init(config.Env, models.DB)
 {{ end }}		},
 		func() {
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+{{ if .HasSchedule }}			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 			defer stop()
 
-{{ if .HasSchedule }}			// Start the scheduler in a background goroutine
+			// Start the scheduler in a background goroutine
 			go schedule.Schedule.Start(ctx)
+{{ else }}			_, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+			defer stop()
+
 {{ end }}
 			mux := http.NewServeMux()
 {{ range .RouteVars }}			routes.{{ . }}.RegisterRoutes(mux)

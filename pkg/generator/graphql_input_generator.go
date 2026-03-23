@@ -2,6 +2,8 @@ package generator
 
 import (
 	"strings"
+
+	"github.com/shortontech/pickle/pkg/schema"
 )
 
 // RequestValidationMap maps GraphQL input struct field names to their validation tags
@@ -100,4 +102,62 @@ func extractOneof(validate string) []string {
 		}
 	}
 	return nil
+}
+
+// BuildColumnValidationMap derives validation tags from column constraints
+// for GraphQL input types when no request struct exists (zero-controller mode).
+// Key format: "CreateUserInput.Name" → "required,max=255".
+func BuildColumnValidationMap(tables []*schema.Table) RequestValidationMap {
+	m := make(RequestValidationMap)
+	for _, tbl := range tables {
+		if tbl.IsImmutable {
+			continue
+		}
+		structName := tableToStructName(tbl.Name)
+		createInput := "Create" + structName + "Input"
+		updateInput := "Update" + structName + "Input"
+
+		for _, col := range tbl.Columns {
+			if isExcludedFromInput(col) {
+				continue
+			}
+			fieldName := snakeToPascal(col.Name)
+			tag := ColumnConstraints(col)
+			if tag != "" {
+				m[createInput+"."+fieldName] = tag
+			}
+			// Update fields are always optional — strip "required"
+			updateTag := stripRequired(tag)
+			if updateTag != "" {
+				m[updateInput+"."+fieldName] = updateTag
+			}
+		}
+	}
+	return m
+}
+
+// MergeValidationMaps merges request-based and column-based validation maps.
+// Request-based tags take precedence over column-derived tags.
+func MergeValidationMaps(requestMap, columnMap RequestValidationMap) RequestValidationMap {
+	merged := make(RequestValidationMap, len(requestMap)+len(columnMap))
+	for k, v := range columnMap {
+		merged[k] = v
+	}
+	// Request-based overrides column-based
+	for k, v := range requestMap {
+		merged[k] = v
+	}
+	return merged
+}
+
+// stripRequired removes "required" from a comma-separated validation tag string.
+func stripRequired(tag string) string {
+	parts := strings.Split(tag, ",")
+	var filtered []string
+	for _, p := range parts {
+		if p != "required" {
+			filtered = append(filtered, p)
+		}
+	}
+	return strings.Join(filtered, ",")
 }

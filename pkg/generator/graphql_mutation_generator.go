@@ -11,7 +11,9 @@ import (
 
 // GenerateGraphQLMutations generates mutation_gen.go with mutation dispatch
 // and create/update/delete methods.
-func GenerateGraphQLMutations(tables []*schema.Table, modelsImport, packageName string) ([]byte, error) {
+// GenerateGraphQLMutations generates mutation_gen.go with mutation dispatch
+// and create/update/delete methods. Accepts relationships for nested mutation dispatch.
+func GenerateGraphQLMutations(tables []*schema.Table, modelsImport, packageName string, relationships ...[]SchemaRelationship) ([]byte, error) {
 	// Collect imports needed
 	needsTime := false
 	needsDecimal := false
@@ -66,6 +68,14 @@ func GenerateGraphQLMutations(tables []*schema.Table, modelsImport, packageName 
 	}
 	b.WriteString("\n")
 
+	// Build child-to-parent map for nested mutations
+	childToParent := map[string]SchemaRelationship{}
+	if len(relationships) > 0 && relationships[0] != nil {
+		for _, rel := range relationships[0] {
+			childToParent[rel.ChildTable] = rel
+		}
+	}
+
 	// Mutation dispatch
 	b.WriteString("func (r *RootResolver) resolveMutation(ctx *ResolveContext, field Field) (any, error) {\n")
 	b.WriteString("\tswitch field.Name {\n")
@@ -79,6 +89,10 @@ func GenerateGraphQLMutations(tables []*schema.Table, modelsImport, packageName 
 			b.WriteString(fmt.Sprintf("\tcase \"update%s\":\n\t\treturn r.mutationUpdate%s(ctx, field)\n", structName, structName))
 		}
 		b.WriteString(fmt.Sprintf("\tcase \"delete%s\":\n\t\treturn r.mutationDelete%s(ctx, field)\n", structName, structName))
+		// Nested create dispatch (spec 018)
+		if _, ok := childToParent[tbl.Name]; ok {
+			b.WriteString(fmt.Sprintf("\tcase \"createNested%s\":\n\t\treturn r.crudCreateNested%s(ctx, field)\n", structName, structName))
+		}
 	}
 	b.WriteString("\tdefault:\n\t\treturn nil, fmt.Errorf(\"unknown mutation field: %s\", field.Name)\n")
 	b.WriteString("\t}\n}\n\n")

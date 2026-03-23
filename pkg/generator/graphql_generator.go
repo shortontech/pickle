@@ -75,7 +75,7 @@ func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []S
 	// 5. Mutations
 	if !hasOverride(graphqlDir, "mutation.go") {
 		fmt.Println("  generating graphql/mutation_gen.go")
-		src, err := GenerateGraphQLMutations(tables, modelsImport, graphqlPackageName)
+		src, err := GenerateGraphQLMutations(tables, modelsImport, graphqlPackageName, relationships)
 		if err != nil {
 			return fmt.Errorf("mutation generation: %w", err)
 		}
@@ -104,6 +104,30 @@ func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []S
 			return fmt.Errorf("handler generation: %w", err)
 		}
 		if err := writeFile(filepath.Join(graphqlDir, "handler_gen.go"), src); err != nil {
+			return err
+		}
+	}
+
+	// 8. Zero-controller CRUD resolvers (spec 018)
+	// Generate CRUD resolvers for tables that don't have user-written resolver overrides.
+	var crudTables []*schema.Table
+	for _, tbl := range tables {
+		if !HasCRUDOverride(graphqlDir, tbl.Name) {
+			crudTables = append(crudTables, tbl)
+		}
+	}
+	if len(crudTables) > 0 && !hasOverride(graphqlDir, "crud_resolver.go") {
+		fmt.Println("  generating graphql/crud_resolver_gen.go")
+		src, err := GenerateGraphQLCRUDResolvers(CRUDConfig{
+			Tables:        crudTables,
+			Relationships: relationships,
+			ModelsImport:  modelsImport,
+			PackageName:   graphqlPackageName,
+		})
+		if err != nil {
+			return fmt.Errorf("crud resolver generation: %w", err)
+		}
+		if err := writeFile(filepath.Join(graphqlDir, "crud_resolver_gen.go"), src); err != nil {
 			return err
 		}
 	}

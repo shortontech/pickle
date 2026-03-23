@@ -81,8 +81,12 @@ func buildSDL(tables []*schema.Table, relationships []SchemaRelationship, reques
 	// Query root
 	writeQueryType(&b, tables)
 
-	// Mutation root
-	writeMutationType(&b, tables)
+	// Mutation root (includes nested mutations from relationships)
+	if len(relationships) > 0 {
+		writeMutationTypeWithNesting(&b, tables, relationships)
+	} else {
+		writeMutationType(&b, tables)
+	}
 
 	// Enums from oneof= validation tags
 	enums := ExtractEnums(requests)
@@ -292,6 +296,37 @@ func writeMutationType(b *strings.Builder, tables []*schema.Table) {
 				b.WriteString(fmt.Sprintf("  update%s(id: ID!, input: Update%sInput!): %s! @auth\n", structName, structName, structName))
 			}
 			b.WriteString(fmt.Sprintf("  delete%s(id: ID!): Boolean! @auth\n", structName))
+		}
+	}
+	b.WriteString("}\n\n")
+}
+
+// writeMutationTypeWithNesting writes the Mutation type including nested resource mutations.
+// This is used when relationships are present to add parent-scoped create mutations.
+func writeMutationTypeWithNesting(b *strings.Builder, tables []*schema.Table, relationships []SchemaRelationship) {
+	childToParent := map[string]SchemaRelationship{}
+	for _, rel := range relationships {
+		childToParent[rel.ChildTable] = rel
+	}
+
+	b.WriteString("type Mutation {\n")
+	for _, tbl := range tables {
+		structName := tableToStructName(tbl.Name)
+
+		if !tbl.IsImmutable {
+			b.WriteString(fmt.Sprintf("  create%s(input: Create%sInput!): %s! @auth\n", structName, structName, structName))
+			if !tbl.IsAppendOnly {
+				b.WriteString(fmt.Sprintf("  update%s(id: ID!, input: Update%sInput!): %s! @auth\n", structName, structName, structName))
+			}
+			b.WriteString(fmt.Sprintf("  delete%s(id: ID!): Boolean! @auth\n", structName))
+
+			// Nested create mutation if this table is a child
+			if rel, ok := childToParent[tbl.Name]; ok {
+				parentSingular := strings.TrimSuffix(rel.ParentTable, "s")
+				parentArgName := snakeToCamel(parentSingular) + "Id"
+				b.WriteString(fmt.Sprintf("  createNested%s(%s: ID!, input: Create%sInput!): %s! @auth\n",
+					structName, parentArgName, structName, structName))
+			}
 		}
 	}
 	b.WriteString("}\n\n")

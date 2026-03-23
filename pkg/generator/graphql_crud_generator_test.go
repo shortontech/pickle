@@ -33,7 +33,7 @@ func TestCRUDResolverGeneration(t *testing.T) {
 	s := string(src)
 
 	// Should have ownership scoping on create
-	if !strings.Contains(s, "ownerID, err := uuid.Parse(ctx.Auth().UserID)") {
+	if !strings.Contains(s, "ownerID, err := uuid.Parse(ctx.UserID())") {
 		t.Error("create should set owner from auth context")
 	}
 	if !strings.Contains(s, "record.UserID = ownerID") {

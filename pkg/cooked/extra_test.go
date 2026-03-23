@@ -407,6 +407,123 @@ func TestContextResourcesWithAuth(t *testing.T) {
 	}
 }
 
+func TestErrorMapsStaleVersion(t *testing.T) {
+	ctx := NewContext(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	err := &StaleVersionError{Table: "users", EntityID: "1", ExpectedVersion: "a", ActualVersion: "b"}
+	resp := ctx.Error(err)
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("StaleVersionError status = %d, want 409", resp.StatusCode)
+	}
+}
+
+func TestErrorMapsLockTimeout(t *testing.T) {
+	ctx := NewContext(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	err := &LockTimeoutError{Table: "users", LockType: "row"}
+	resp := ctx.Error(err)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("LockTimeoutError status = %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestErrorMapsDeadlock(t *testing.T) {
+	ctx := NewContext(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	err := &DeadlockError{Table: "users", Detail: "test"}
+	resp := ctx.Error(err)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("DeadlockError status = %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestErrorMapsNoWait(t *testing.T) {
+	ctx := NewContext(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	err := &NoWaitError{Table: "users"}
+	resp := ctx.Error(err)
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("NoWaitError status = %d, want 409", resp.StatusCode)
+	}
+}
+
+func TestErrorMapsLockOutsideTransaction(t *testing.T) {
+	ctx := NewContext(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	err := &LockOutsideTransactionError{Table: "users"}
+	resp := ctx.Error(err)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("LockOutsideTransactionError status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestErrorUnknownReturns500(t *testing.T) {
+	ctx := NewContext(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	resp := ctx.Error(errors.New("unknown"))
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("unknown error status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestPanicRecovery(t *testing.T) {
+	r := Routes(func(r *Router) {
+		r.Get("/boom", func(ctx *Context) Response {
+			panic("kaboom")
+		})
+	})
+	mux := http.NewServeMux()
+	r.RegisterRoutes(mux)
+
+	req := httptest.NewRequest("GET", "/boom", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("panic recovery status = %d, want 500", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "internal server error") {
+		t.Errorf("panic recovery body = %q, want internal server error", w.Body.String())
+	}
+}
+
+func TestPanicRecoveryCallsOnError(t *testing.T) {
+	var reported error
+	r := Routes(func(r *Router) {
+		r.Get("/boom", func(ctx *Context) Response {
+			panic("kaboom")
+		})
+	})
+	r.OnError(func(ctx *Context, err error) {
+		reported = err
+	})
+	mux := http.NewServeMux()
+	r.RegisterRoutes(mux)
+
+	req := httptest.NewRequest("GET", "/boom", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if reported == nil {
+		t.Fatal("OnError callback was not called")
+	}
+	if !strings.Contains(reported.Error(), "kaboom") {
+		t.Errorf("reported error = %q, want kaboom", reported.Error())
+	}
+}
+
+func TestPanicRecoveryWithErrorValue(t *testing.T) {
+	r := Routes(func(r *Router) {
+		r.Get("/boom", func(ctx *Context) Response {
+			panic(fmt.Errorf("wrapped: %s", "oops"))
+		})
+	})
+	mux := http.NewServeMux()
+	r.RegisterRoutes(mux)
+
+	req := httptest.NewRequest("GET", "/boom", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("panic recovery status = %d, want 500", w.Code)
+	}
+}
+
 type mockResourceController struct{}
 
 func (m *mockResourceController) Index(ctx *Context) Response   { return Response{StatusCode: 200} }

@@ -17,6 +17,7 @@ type StaleVersionError struct {
 	ActualVersion   string
 }
 
+func (e *StaleVersionError) HTTPStatus() int { return 409 }
 func (e *StaleVersionError) Error() string {
 	return fmt.Sprintf(
 		"stale version on %s (id=%s): expected version %s but found %s — "+
@@ -32,6 +33,7 @@ type LockTimeoutError struct {
 	Duration time.Duration
 }
 
+func (e *LockTimeoutError) HTTPStatus() int { return 503 }
 func (e *LockTimeoutError) Error() string {
 	return fmt.Sprintf(
 		"%s lock on %s timed out after %s — another transaction is holding the lock",
@@ -45,6 +47,7 @@ type DeadlockError struct {
 	Detail string
 }
 
+func (e *DeadlockError) HTTPStatus() int { return 503 }
 func (e *DeadlockError) Error() string {
 	return fmt.Sprintf("deadlock detected on %s: %s", e.Table, e.Detail)
 }
@@ -54,6 +57,7 @@ type NoWaitError struct {
 	Table string
 }
 
+func (e *NoWaitError) HTTPStatus() int { return 409 }
 func (e *NoWaitError) Error() string {
 	return fmt.Sprintf("row in %s is locked by another transaction (NOWAIT)", e.Table)
 }
@@ -65,6 +69,7 @@ type LockOutsideTransactionError struct {
 	Table string
 }
 
+func (e *LockOutsideTransactionError) HTTPStatus() int { return 500 }
 func (e *LockOutsideTransactionError) Error() string {
 	return fmt.Sprintf(
 		"Lock() on %s called outside a transaction — locks are released immediately "+

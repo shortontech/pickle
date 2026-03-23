@@ -1,8 +1,11 @@
 package cooked
 
 import (
+	"fmt"
+	"log"
 	"net/http"
 	"regexp"
+	"runtime/debug"
 	"strings"
 	"time"
 )
@@ -21,12 +24,23 @@ type Route struct {
 	Middleware []MiddlewareFunc
 }
 
+// ErrorReporter is called when ctx.Error() handles an unrecoverable error or
+// when panic recovery catches a panic. Use it to report to Sentry, Datadog, etc.
+type ErrorReporter func(ctx *Context, err error)
+
 // Router collects route definitions. It is a descriptor, not a runtime router.
 type Router struct {
 	prefix     string
 	middleware []MiddlewareFunc
 	routes     []Route
 	groups     []*Router
+	onError    ErrorReporter
+}
+
+// OnError registers a callback that is invoked for panics recovered during
+// request handling. Use this to wire in external error reporting (Sentry, etc.).
+func (r *Router) OnError(fn ErrorReporter) {
+	r.onError = fn
 }
 
 // Routes creates a new Router by invoking the given configuration function.
@@ -145,8 +159,29 @@ func (r *Router) RegisterRoutes(mux *http.ServeMux) {
 
 		pattern := route.Method + " " + goPath
 
+		onError := r.onError
 		handler := func(w http.ResponseWriter, req *http.Request) {
 			ctx := NewContext(w, req)
+
+			defer func() {
+				if rv := recover(); rv != nil {
+					err, ok := rv.(error)
+					if !ok {
+						err = fmt.Errorf("%v", rv)
+					}
+					log.Printf("panic: %v\n%s", err, debug.Stack())
+					if onError != nil {
+						onError(ctx, err)
+					}
+					resp := Response{
+						StatusCode: http.StatusInternalServerError,
+						Body:       map[string]string{"error": "internal server error"},
+						Headers:    map[string]string{"Content-Type": "application/json"},
+					}
+					resp.Write(w)
+				}
+			}()
+
 			for _, name := range params {
 				ctx.SetParam(name, req.PathValue(name))
 			}

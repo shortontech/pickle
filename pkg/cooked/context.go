@@ -1,6 +1,7 @@
 package cooked
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -163,8 +164,27 @@ func (c *Context) NoContent() Response {
 	return Response{StatusCode: http.StatusNoContent}
 }
 
-// Error returns a 500 Internal Server Error response.
+// httpStatusError is implemented by errors that know their own HTTP status code.
+// The query builder's typed errors (StaleVersionError, DeadlockError, etc.)
+// implement this interface, keeping the mapping close to the error definition
+// rather than requiring the HTTP package to know about every error type.
+type httpStatusError interface {
+	HTTPStatus() int
+}
+
+// Error maps an error to an appropriate HTTP response. Errors that implement
+// httpStatusError produce their own status code; unknown errors return 500.
 func (c *Context) Error(err error) Response {
+	var httpErr httpStatusError
+	if errors.As(err, &httpErr) {
+		status := httpErr.HTTPStatus()
+		if status >= 500 {
+			log.Printf("internal error: %v", err)
+			return c.JSON(status, map[string]string{"error": "internal server error"})
+		}
+		return c.JSON(status, map[string]string{"error": err.Error()})
+	}
+
 	log.Printf("internal error: %v", err)
 	return Response{
 		StatusCode: http.StatusInternalServerError,

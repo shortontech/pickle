@@ -125,7 +125,11 @@ func (r *Router) collectRoutes(parentPrefix string, parentMW []MiddlewareFunc) [
 var paramPattern = regexp.MustCompile(`:(\w+)`)
 
 // RegisterRoutes wires all routes onto the given ServeMux.
+// Also registers Pickle's internal operations endpoints (/pickle/*).
 func (r *Router) RegisterRoutes(mux *http.ServeMux) {
+	// Register Pickle's internal operations endpoints
+	RegisterPickleEndpoints(mux)
+
 	registered := map[string]bool{}
 	for _, route := range r.AllRoutes() {
 		route := route // capture

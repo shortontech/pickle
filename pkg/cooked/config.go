@@ -3,12 +3,14 @@ package cooked
 import (
 	"bufio"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 var envOnce sync.Once
@@ -134,4 +136,148 @@ func OpenDB(conn ConnectionConfig) *sql.DB {
 		log.Fatalf("pickle: failed to ping database: %v", err)
 	}
 	return db
+}
+
+// RuntimeConfig holds configuration values that can be hot-reloaded without
+// restarting the process. Access via Config() — never cache the pointer.
+type RuntimeConfig struct {
+	EncryptionKey     []byte
+	EncryptionKeyNext []byte
+	DatabaseDSNs      map[string]string // connection name → DSN
+}
+
+var runtimeConfig atomic.Pointer[RuntimeConfig]
+
+// Config returns the current runtime config. Lock-free, safe for concurrent reads.
+func Config() *RuntimeConfig {
+	cfg := runtimeConfig.Load()
+	if cfg == nil {
+		return &RuntimeConfig{}
+	}
+	return cfg
+}
+
+// InitRuntimeConfig reads environment variables and initializes the runtime config.
+// Call once at startup.
+func InitRuntimeConfig() {
+	cfg := buildRuntimeConfig()
+	runtimeConfig.Store(cfg)
+}
+
+// ConnectionSwapFunc is called during config reload when a database DSN changes.
+// It receives the connection name, driver, and new DSN. Set by the models package
+// to wire up ManagedConnection swapping.
+var ConnectionSwapFunc func(name, driver, dsn string) error
+
+// ConnectionNamesFunc returns the names of all managed connections.
+// Set by the models package during initialization.
+var ConnectionNamesFunc func() []string
+
+// ReloadConfig re-reads environment variables, validates them, and atomically
+// swaps the in-memory RuntimeConfig. Returns the new config, a list of changed
+// env var names, and any validation error.
+func ReloadConfig() (*RuntimeConfig, []string, error) {
+	newCfg, err := buildAndValidateRuntimeConfig()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	oldCfg := Config()
+	var changes []string
+
+	// Detect encryption key changes
+	if !bytesEqual(oldCfg.EncryptionKey, newCfg.EncryptionKey) {
+		changes = append(changes, "PICKLE_ENCRYPTION_KEY")
+	}
+	if !bytesEqual(oldCfg.EncryptionKeyNext, newCfg.EncryptionKeyNext) {
+		changes = append(changes, "PICKLE_ENCRYPTION_KEY_NEXT")
+	}
+
+	// Detect DSN changes and swap connections
+	for name, newDSN := range newCfg.DatabaseDSNs {
+		oldDSN := ""
+		if oldCfg.DatabaseDSNs != nil {
+			oldDSN = oldCfg.DatabaseDSNs[name]
+		}
+		if newDSN != oldDSN {
+			changes = append(changes, "DATABASE_DSN_"+strings.ToUpper(name))
+			if ConnectionSwapFunc != nil {
+				driver := "pgx"
+				if err := ConnectionSwapFunc(name, driver, newDSN); err != nil {
+					return nil, nil, fmt.Errorf("connection %q: %w", name, err)
+				}
+			}
+		}
+	}
+
+	// Atomic swap
+	runtimeConfig.Store(newCfg)
+	return newCfg, changes, nil
+}
+
+// buildRuntimeConfig reads env vars and builds a RuntimeConfig without validation.
+func buildRuntimeConfig() *RuntimeConfig {
+	cfg := &RuntimeConfig{
+		DatabaseDSNs: make(map[string]string),
+	}
+
+	if key := os.Getenv("PICKLE_ENCRYPTION_KEY"); key != "" {
+		if decoded, err := base64.StdEncoding.DecodeString(key); err == nil {
+			cfg.EncryptionKey = decoded
+		}
+	}
+	if key := os.Getenv("PICKLE_ENCRYPTION_KEY_NEXT"); key != "" {
+		if decoded, err := base64.StdEncoding.DecodeString(key); err == nil {
+			cfg.EncryptionKeyNext = decoded
+		}
+	}
+
+	return cfg
+}
+
+// buildAndValidateRuntimeConfig reads env vars and validates them.
+func buildAndValidateRuntimeConfig() (*RuntimeConfig, error) {
+	cfg := &RuntimeConfig{
+		DatabaseDSNs: make(map[string]string),
+	}
+
+	if key := os.Getenv("PICKLE_ENCRYPTION_KEY"); key != "" {
+		decoded, err := base64.StdEncoding.DecodeString(key)
+		if err != nil {
+			return nil, fmt.Errorf("PICKLE_ENCRYPTION_KEY: invalid base64")
+		}
+		cfg.EncryptionKey = decoded
+	}
+	if key := os.Getenv("PICKLE_ENCRYPTION_KEY_NEXT"); key != "" {
+		decoded, err := base64.StdEncoding.DecodeString(key)
+		if err != nil {
+			return nil, fmt.Errorf("PICKLE_ENCRYPTION_KEY_NEXT: invalid base64")
+		}
+		cfg.EncryptionKeyNext = decoded
+	}
+
+	// Copy DSNs from managed connections for change detection
+	if ConnectionNamesFunc != nil {
+		for _, name := range ConnectionNamesFunc() {
+			envKey := "DATABASE_DSN_" + strings.ToUpper(name)
+			if dsn := os.Getenv(envKey); dsn != "" {
+				cfg.DatabaseDSNs[name] = dsn
+			}
+		}
+	}
+
+	return cfg, nil
+}
+
+// bytesEqual compares two byte slices for equality.
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

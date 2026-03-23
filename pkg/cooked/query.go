@@ -15,6 +15,7 @@ var DB *sql.DB
 
 // Connections holds named database connections for multi-connection support.
 // Keyed by connection name from config/database.go.
+// Deprecated: Use ManagedConnections and WrapConnection for hot-reloadable connections.
 var Connections = map[string]*sql.DB{}
 
 // Query starts a new query for the given model type.
@@ -51,6 +52,7 @@ type QueryBuilder[T any] struct {
 	lockMode     string        // "", "FOR UPDATE", "FOR SHARE"
 	lockOpt      string        // "", "SKIP LOCKED", "NOWAIT"
 	lockTimeout  time.Duration // per-query lock timeout (0 = use server default)
+	managedConn  *ManagedConnection // tracked for Release() after query completes
 }
 
 type condition struct {
@@ -118,17 +120,37 @@ func (q *QueryBuilder[T]) setVisibility(v visibilityMode) {
 }
 
 // db returns the database executor for this query — either the transaction
-// connection or the global DB (or a named connection).
+// connection or the global DB (or a named connection). When a ManagedConnection
+// is acquired, call releaseConn() when the query completes.
 func (q *QueryBuilder[T]) db() dbExecutor {
 	if q.tx != nil {
 		return q.tx
 	}
 	if q.connection != "" {
+		// Try ManagedConnections first (hot-reloadable)
+		if mc := acquireConnection(q.connection); mc != nil {
+			q.managedConn = mc
+			return mc.DB
+		}
+		// Fall back to legacy Connections map
 		if conn, ok := Connections[q.connection]; ok {
 			return conn
 		}
 	}
+	// Try default managed connection
+	if mc := acquireConnection("default"); mc != nil {
+		q.managedConn = mc
+		return mc.DB
+	}
 	return DB
+}
+
+// releaseConn releases the managed connection acquired by db(), if any.
+func (q *QueryBuilder[T]) releaseConn() {
+	if q.managedConn != nil {
+		q.managedConn.Release()
+		q.managedConn = nil
+	}
 }
 
 // setTx associates this query builder with a transaction.
@@ -214,7 +236,9 @@ func (q *QueryBuilder[T]) First() (*T, error) {
 
 	q.limit = 1
 	query, args := q.buildSelect()
-	row := q.db().QueryRow(query, args...)
+	db := q.db()
+	defer q.releaseConn()
+	row := db.QueryRow(query, args...)
 
 	var result T
 	if err := scanRow(row, &result); err != nil {
@@ -233,7 +257,9 @@ func (q *QueryBuilder[T]) All() ([]T, error) {
 	}
 
 	query, args := q.buildSelect()
-	rows, err := q.db().Query(query, args...)
+	db := q.db()
+	defer q.releaseConn()
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, mapLockError(q.table, err)
 	}
@@ -245,16 +271,20 @@ func (q *QueryBuilder[T]) All() ([]T, error) {
 // Count returns the number of matching records.
 func (q *QueryBuilder[T]) Count() (int64, error) {
 	query, args := q.buildCount()
+	db := q.db()
+	defer q.releaseConn()
 	var count int64
-	err := q.db().QueryRow(query, args...).Scan(&count)
+	err := db.QueryRow(query, args...).Scan(&count)
 	return count, err
 }
 
 // aggregate runs a SQL aggregate function (SUM, AVG, etc.) on a column.
 func (q *QueryBuilder[T]) aggregate(fn, column string) (*float64, error) {
 	query, args := q.buildAggregate(fn, column)
+	db := q.db()
+	defer q.releaseConn()
 	var result *float64
-	err := q.db().QueryRow(query, args...).Scan(&result)
+	err := db.QueryRow(query, args...).Scan(&result)
 	return result, err
 }
 
@@ -271,21 +301,27 @@ func (q *QueryBuilder[T]) Create(record *T) error {
 	query, args := buildInsert(q.table, record)
 	cols := dbColumns(record)
 	query += " RETURNING " + strings.Join(cols, ", ")
-	row := q.db().QueryRow(query, args...)
+	db := q.db()
+	defer q.releaseConn()
+	row := db.QueryRow(query, args...)
 	return row.Scan(dbScanDest(record)...)
 }
 
 // Update updates an existing record.
 func (q *QueryBuilder[T]) Update(record *T) error {
 	query, args := buildUpdate(q.table, record, q.conditions)
-	_, err := q.db().Exec(query, args...)
+	db := q.db()
+	defer q.releaseConn()
+	_, err := db.Exec(query, args...)
 	return err
 }
 
 // Delete removes matching records.
 func (q *QueryBuilder[T]) Delete(record *T) error {
 	query, args := q.buildDelete()
-	_, err := q.db().Exec(query, args...)
+	db := q.db()
+	defer q.releaseConn()
+	_, err := db.Exec(query, args...)
 	return err
 }
 

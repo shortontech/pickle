@@ -101,6 +101,14 @@ func GenerateModel(table *schema.Table, packageName string) ([]byte, error) {
 	imports := map[string]bool{}
 	var fields []fieldData
 
+	type encFieldInfo struct {
+		FieldName     string // Go field name (e.g. "Email")
+		SnakeName     string // original column name (e.g. "email")
+		GoType        string // Go type (e.g. "string")
+		Deterministic bool   // true = AES-SIV (.Encrypted()), false = AES-GCM (.Sealed())
+	}
+	var encFields []encFieldInfo
+
 	for _, col := range table.Columns {
 		goType := columnGoType(col)
 		if imp := columnImport(col); imp != "" {
@@ -115,17 +123,59 @@ func GenerateModel(table *schema.Table, packageName string) ([]byte, error) {
 			jsonTag += ",omitempty"
 		}
 
-		fields = append(fields, fieldData{
-			Name:    snakeToPascal(col.Name),
-			Type:    goType,
-			JSONTag: jsonTag,
-			DBTag:   col.Name,
-		})
+		if col.IsEncrypted || col.IsSealed {
+			// The Go struct field retains the original name with db:"-"
+			fields = append(fields, fieldData{
+				Name:    snakeToPascal(col.Name),
+				Type:    goType,
+				JSONTag: jsonTag,
+				DBTag:   "-",
+			})
+			// Add _encrypted column (TEXT, same nullability)
+			encColName := col.Name + "_encrypted"
+			encType := "string"
+			encJSONTag := "-"
+			if col.IsNullable {
+				encType = "*string"
+			}
+			fields = append(fields, fieldData{
+				Name:    snakeToPascal(encColName),
+				Type:    encType,
+				JSONTag: encJSONTag,
+				DBTag:   encColName,
+			})
+			// Add _encrypted_v2 column (TEXT, always nullable)
+			v2ColName := col.Name + "_encrypted_v2"
+			fields = append(fields, fieldData{
+				Name:    snakeToPascal(v2ColName),
+				Type:    "*string",
+				JSONTag: "-",
+				DBTag:   v2ColName,
+			})
+			encFields = append(encFields, encFieldInfo{
+				FieldName:     snakeToPascal(col.Name),
+				SnakeName:     col.Name,
+				GoType:        goType,
+				Deterministic: col.IsEncrypted,
+			})
+		} else {
+			fields = append(fields, fieldData{
+				Name:    snakeToPascal(col.Name),
+				Type:    goType,
+				JSONTag: jsonTag,
+				DBTag:   col.Name,
+			})
+		}
 	}
 
 	// Immutable/append-only tables need time for CreatedAt()/UpdatedAt() methods
 	if table.IsImmutable || table.IsAppendOnly {
 		imports["time"] = true
+	}
+
+	// Encrypted/sealed fields need fmt for Sprint in Marshal
+	if len(encFields) > 0 {
+		imports["fmt"] = true
 	}
 
 	var sortedImports []string
@@ -181,6 +231,30 @@ func GenerateModel(table *schema.Table, packageName string) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := modelTemplate.Execute(&buf, data); err != nil {
 		return nil, fmt.Errorf("template execution: %w", err)
+	}
+
+	// Generate encryptedFields() method if there are encrypted/sealed columns
+	if len(encFields) > 0 {
+		structName := tableToStructName(table.Name)
+		receiver := strings.ToLower(structName[:1])
+		buf.WriteString(fmt.Sprintf("// encryptedFields returns the column-to-field mappings for encrypted/sealed columns.\n"))
+		buf.WriteString(fmt.Sprintf("// Used by the query builder for transparent encrypt on write / decrypt on read.\n"))
+		buf.WriteString(fmt.Sprintf("func (%s *%s) encryptedFields() []encryptedFieldMapping {\n", receiver, structName))
+		buf.WriteString(fmt.Sprintf("\treturn []encryptedFieldMapping{\n"))
+		for _, ef := range encFields {
+			buf.WriteString(fmt.Sprintf("\t\t{\n"))
+			buf.WriteString(fmt.Sprintf("\t\t\tField:         &%s.%s,\n", receiver, ef.FieldName))
+			buf.WriteString(fmt.Sprintf("\t\t\tColumn:        %q,\n", ef.SnakeName+"_encrypted"))
+			buf.WriteString(fmt.Sprintf("\t\t\tColumnV2:      %q,\n", ef.SnakeName+"_encrypted_v2"))
+			buf.WriteString(fmt.Sprintf("\t\t\tDeterministic: %v,\n", ef.Deterministic))
+			marshalExpr := fmt.Sprintf("return []byte(fmt.Sprint(%s.%s)), nil", receiver, ef.FieldName)
+			unmarshalExpr := fmt.Sprintf("%s.%s = string(b); return nil", receiver, ef.FieldName)
+			buf.WriteString(fmt.Sprintf("\t\t\tMarshal:       func() ([]byte, error) { %s },\n", marshalExpr))
+			buf.WriteString(fmt.Sprintf("\t\t\tUnmarshal:     func(b []byte) error { %s },\n", unmarshalExpr))
+			buf.WriteString(fmt.Sprintf("\t\t},\n"))
+		}
+		buf.WriteString(fmt.Sprintf("\t}\n"))
+		buf.WriteString(fmt.Sprintf("}\n"))
 	}
 
 	formatted, err := format.Source(buf.Bytes())

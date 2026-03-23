@@ -17,10 +17,12 @@ type ScopeBlock struct {
 
 // ColumnDef holds the info needed to stamp out scope functions.
 type ColumnDef struct {
-	PascalName string // "UserID", "Status", "CreatedAt"
-	SnakeName  string // "user_id", "status", "created_at"
-	GoType     string // "uuid.UUID", "string", "time.Time"
-	Scope      string // "all", "string", "numeric", "timestamp"
+	PascalName  string // "UserID", "Status", "CreatedAt"
+	SnakeName   string // "user_id", "status", "created_at"
+	GoType      string // "uuid.UUID", "string", "time.Time"
+	Scope       string // "all", "string", "numeric", "timestamp"
+	IsEncrypted bool   // AES-SIV deterministic — only equality scopes
+	IsSealed    bool   // AES-GCM non-deterministic — no scopes at all
 }
 
 // ScopeForType maps schema column types to their scope category.
@@ -103,10 +105,12 @@ func ColumnsFromTable(table *schema.Table) []ColumnDef {
 	var cols []ColumnDef
 	for _, col := range table.Columns {
 		cols = append(cols, ColumnDef{
-			PascalName: names.SnakeToPascal(col.Name),
-			SnakeName:  col.Name,
-			GoType:     names.ColumnGoType(col),
-			Scope:      ScopeForType(col.Type),
+			PascalName:  names.SnakeToPascal(col.Name),
+			SnakeName:   col.Name,
+			GoType:      names.ColumnGoType(col),
+			Scope:       ScopeForType(col.Type),
+			IsEncrypted: col.IsEncrypted,
+			IsSealed:    col.IsSealed,
 		})
 	}
 	return cols
@@ -123,12 +127,27 @@ func GenerateScopes(blocks []ScopeBlock, columns []ColumnDef, modelName string) 
 	matched := 0
 
 	for _, col := range columns {
+		// Sealed columns: skip ALL scopes (no search possible)
+		if col.IsSealed {
+			continue
+		}
+
 		for _, block := range blocks {
 			if IsTableScope(block.Scope) {
 				continue
 			}
 			if !scopeMatches(block.Scope, col.Scope) {
 				continue
+			}
+
+			// Encrypted columns: only equality scopes (Where__Column__ and Where__Column__In)
+			if col.IsEncrypted {
+				body := block.Body
+				isEquality := strings.Contains(body, "q.where(\"__column__\", val)") ||
+					strings.Contains(body, "q.whereIn(\"__column__\", vals)")
+				if !isEquality {
+					continue
+				}
 			}
 
 			expanded := block.Body

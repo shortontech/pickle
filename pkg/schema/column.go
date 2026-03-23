@@ -18,6 +18,7 @@ type Column struct {
 	IsOwnerSees      bool
 	IsOwnerColumn    bool
 	IsEncrypted      bool
+	IsSealed         bool
 	IsUnsafePublic   bool
 	FKMetadataOnly   bool // FK is for ORM relationship metadata only; no SQL REFERENCES constraint
 }
@@ -69,6 +70,13 @@ func (c *Column) OwnerSees() *Column {
 // Encrypted marks this column as requiring encryption at rest.
 func (c *Column) Encrypted() *Column {
 	c.IsEncrypted = true
+	return c
+}
+
+// Sealed marks this column as requiring non-deterministic encryption at rest (AES-256-GCM).
+// Sealed columns cannot be searched — no WHERE scopes are generated.
+func (c *Column) Sealed() *Column {
+	c.IsSealed = true
 	return c
 }
 

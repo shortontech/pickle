@@ -160,6 +160,7 @@ type inspectorColumnInfo struct {
 	OwnerSees        bool   `json:"owner_sees,omitempty"`
 	OwnerColumn      bool   `json:"owner_column,omitempty"`
 	Encrypted        bool   `json:"encrypted,omitempty"`
+	Sealed           bool   `json:"sealed,omitempty"`
 	UnsafePublic     bool   `json:"unsafe_public,omitempty"`
 }
 
@@ -304,6 +305,7 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, []Sc
 				IsOwnerSees:      ci.OwnerSees,
 				IsOwnerColumn:    ci.OwnerColumn,
 				IsEncrypted:      ci.Encrypted,
+				IsSealed:         ci.Sealed,
 				IsUnsafePublic:   ci.UnsafePublic,
 			}
 			if ci.Default != nil {

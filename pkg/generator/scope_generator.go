@@ -122,8 +122,12 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 	// Generate per-column Select methods
 	for _, col := range table.Columns {
 		pascal := snakeToPascal(col.Name)
+		selectCol := col.Name
+		if col.IsEncrypted || col.IsSealed {
+			selectCol = col.Name + "_encrypted"
+		}
 		b.WriteString(fmt.Sprintf("func (q *%s) Select%s() *%s {\n", queryType, pascal, queryType))
-		b.WriteString(fmt.Sprintf("\tq.addSelect(%q)\n", col.Name))
+		b.WriteString(fmt.Sprintf("\tq.addSelect(%q)\n", selectCol))
 		b.WriteString(fmt.Sprintf("\treturn q\n"))
 		b.WriteString("}\n\n")
 	}
@@ -132,6 +136,9 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 	// Both QueryBuilder and ImmutableQueryBuilder have their own aggregate()
 	// method that handles dedup correctly for their table type.
 	for _, col := range table.Columns {
+		if col.IsEncrypted || col.IsSealed {
+			continue // aggregates on ciphertext are meaningless
+		}
 		scope := tickle.ScopeForType(col.Type)
 		if scope != "numeric" {
 			continue

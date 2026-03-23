@@ -53,6 +53,11 @@ func AllRules() map[string]Rule {
 		"graphql_public_sensitive":               ruleGraphQLPublicSensitive,
 		"graphql_owner_column_missing":           ruleGraphQLOwnerColumnMissing,
 		"graphql_no_visibility_annotations":      ruleGraphQLNoVisibilityAnnotations,
+		"encrypted_column_range":                 ruleEncryptedColumnRange,
+		"sealed_column_where":                    ruleSealedColumnWhere,
+		"encrypted_column_order_by":              ruleEncryptedColumnOrderBy,
+		"encrypted_sealed_conflict":              ruleEncryptedSealedConflict,
+		"encrypted_missing_key_config":           ruleEncryptedMissingKeyConfig,
 	}
 }
 
@@ -243,7 +248,7 @@ func ruleSensitiveFieldEncryption(ctx *AnalysisContext) []Finding {
 	var findings []Finding
 	for _, table := range ctx.Tables {
 		for _, col := range table.Columns {
-			if isSensitiveColumn(col.Name) && !col.IsEncrypted {
+			if isSensitiveColumn(col.Name) && !col.IsEncrypted && !col.IsSealed {
 				findings = append(findings, Finding{
 					Rule:     "sensitive_field_encryption",
 					Severity: SeverityWarning,
@@ -1130,6 +1135,186 @@ func ruleIntegrityColumnInRequest(ctx *AnalysisContext) []Finding {
 					Message:  `request struct "` + req.Name + `" exposes integrity column "` + field.JSONTag + `" — this field is computed internally and must not be accepted from external input`,
 				})
 			}
+		}
+	}
+	return findings
+}
+
+// encryptedColumnNames returns a map of "table.column" → true for encrypted columns.
+func encryptedColumnNames(ctx *AnalysisContext) map[string]bool {
+	cols := map[string]bool{}
+	for _, tbl := range ctx.Tables {
+		for _, col := range tbl.Columns {
+			if col.IsEncrypted {
+				cols[tbl.Name+"."+col.Name] = true
+			}
+		}
+	}
+	return cols
+}
+
+// sealedColumnNames returns a map of "table.column" → true for sealed columns.
+func sealedColumnNames(ctx *AnalysisContext) map[string]bool {
+	cols := map[string]bool{}
+	for _, tbl := range ctx.Tables {
+		for _, col := range tbl.Columns {
+			if col.IsSealed {
+				cols[tbl.Name+"."+col.Name] = true
+			}
+		}
+	}
+	return cols
+}
+
+// allEncryptedOrSealedColumns returns column names that are encrypted or sealed.
+func allEncryptedOrSealedColumns(ctx *AnalysisContext) map[string]string {
+	cols := map[string]string{}
+	for _, tbl := range ctx.Tables {
+		for _, col := range tbl.Columns {
+			if col.IsEncrypted || col.IsSealed {
+				cols[col.Name] = tbl.Name + "." + col.Name
+				cols[col.Name+"_encrypted"] = tbl.Name + "." + col.Name
+			}
+		}
+	}
+	return cols
+}
+
+// ruleEncryptedColumnRange flags range comparisons on encrypted columns in raw SQL.
+func ruleEncryptedColumnRange(ctx *AnalysisContext) []Finding {
+	encrypted := encryptedColumnNames(ctx)
+	if len(encrypted) == 0 {
+		return nil
+	}
+	rangeOps := []string{" > ", " < ", " >= ", " <= ", " BETWEEN ", " LIKE "}
+	var findings []Finding
+	for _, m := range ctx.Methods {
+		for _, s := range findRawSQLStrings(m.Body, m.Fset) {
+			upper := strings.ToUpper(s.Value)
+			for qualName := range encrypted {
+				parts := strings.SplitN(qualName, ".", 2)
+				colName := strings.ToUpper(parts[1])
+				encColName := colName + "_ENCRYPTED"
+				for _, op := range rangeOps {
+					if strings.Contains(upper, encColName+op) || strings.Contains(upper, colName+op) {
+						findings = append(findings, Finding{
+							Rule:     "encrypted_column_range",
+							Severity: SeverityError,
+							File:     m.File,
+							Line:     s.Line,
+							Message:  `range comparison on encrypted column "` + qualName + `" — ciphertext does not preserve ordering. Use equality (=, IN) or filter by a non-encrypted column.`,
+						})
+					}
+				}
+			}
+		}
+	}
+	return findings
+}
+
+// ruleSealedColumnWhere flags any WHERE clause on a sealed column in raw SQL.
+func ruleSealedColumnWhere(ctx *AnalysisContext) []Finding {
+	sealed := sealedColumnNames(ctx)
+	if len(sealed) == 0 {
+		return nil
+	}
+	whereOps := []string{" = ", " != ", " > ", " < ", " >= ", " <= ", " BETWEEN ", " LIKE ", " IN "}
+	var findings []Finding
+	for _, m := range ctx.Methods {
+		for _, s := range findRawSQLStrings(m.Body, m.Fset) {
+			upper := strings.ToUpper(s.Value)
+			for qualName := range sealed {
+				parts := strings.SplitN(qualName, ".", 2)
+				colName := strings.ToUpper(parts[1])
+				encColName := colName + "_ENCRYPTED"
+				for _, op := range whereOps {
+					if strings.Contains(upper, encColName+op) || strings.Contains(upper, colName+op) {
+						findings = append(findings, Finding{
+							Rule:     "sealed_column_where",
+							Severity: SeverityError,
+							File:     m.File,
+							Line:     s.Line,
+							Message:  `WHERE clause on sealed column "` + qualName + `" — sealed columns use non-deterministic encryption and cannot be searched. Load the row by another column and read the value from the struct.`,
+						})
+						break
+					}
+				}
+			}
+		}
+	}
+	return findings
+}
+
+// ruleEncryptedColumnOrderBy flags ORDER BY on any encrypted or sealed column.
+func ruleEncryptedColumnOrderBy(ctx *AnalysisContext) []Finding {
+	encCols := allEncryptedOrSealedColumns(ctx)
+	if len(encCols) == 0 {
+		return nil
+	}
+	var findings []Finding
+	for _, m := range ctx.Methods {
+		for _, s := range findRawSQLStrings(m.Body, m.Fset) {
+			upper := strings.ToUpper(s.Value)
+			orderIdx := strings.Index(upper, "ORDER BY")
+			if orderIdx < 0 {
+				continue
+			}
+			orderClause := upper[orderIdx:]
+			for colName, qualName := range encCols {
+				colUpper := strings.ToUpper(colName)
+				if strings.Contains(orderClause, colUpper) {
+					findings = append(findings, Finding{
+						Rule:     "encrypted_column_order_by",
+						Severity: SeverityError,
+						File:     m.File,
+						Line:     s.Line,
+						Message:  `ORDER BY on encrypted column "` + qualName + `" — ordering ciphertext is meaningless. Sort by a non-encrypted column.`,
+					})
+				}
+			}
+		}
+	}
+	return findings
+}
+
+// ruleEncryptedSealedConflict flags columns marked both .Encrypted() and .Sealed().
+func ruleEncryptedSealedConflict(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+	for _, table := range ctx.Tables {
+		for _, col := range table.Columns {
+			if col.IsEncrypted && col.IsSealed {
+				findings = append(findings, Finding{
+					Rule:     "encrypted_sealed_conflict",
+					Severity: SeverityError,
+					File:     "",
+					Line:     0,
+					Message:  `column "` + table.Name + "." + col.Name + `" is both .Encrypted() and .Sealed() — choose one. .Encrypted() is searchable (deterministic). .Sealed() leaks nothing (non-deterministic).`,
+				})
+			}
+		}
+	}
+	return findings
+}
+
+// ruleEncryptedMissingKeyConfig flags tables with encrypted/sealed columns but no encryption key config.
+func ruleEncryptedMissingKeyConfig(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+	for _, table := range ctx.Tables {
+		hasEncrypted := false
+		for _, col := range table.Columns {
+			if col.IsEncrypted || col.IsSealed {
+				hasEncrypted = true
+				break
+			}
+		}
+		if hasEncrypted {
+			findings = append(findings, Finding{
+				Rule:     "encrypted_missing_key_config",
+				Severity: SeverityWarning,
+				File:     "",
+				Line:     0,
+				Message:  `table "` + table.Name + `" has .Encrypted() or .Sealed() columns — ensure Encryption.CurrentKeyEnv is configured in config/database.go`,
+			})
 		}
 	}
 	return findings

@@ -20,7 +20,8 @@ testdata/**/*_gen.go
 testdata/*/app/models/
 testdata/*/generated/
 
-# IDE
+# IDE / tools
+.claude/
 .idea/
 .vscode/
 *.swp

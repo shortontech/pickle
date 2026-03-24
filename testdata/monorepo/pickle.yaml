@@ -1,0 +1,5 @@
+services:
+  api:
+    dir: services/api
+  worker:
+    dir: services/worker

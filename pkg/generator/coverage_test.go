@@ -337,7 +337,7 @@ func TestGenerateRegistry(t *testing.T) {
 		{ID: "2026_02_21_100001_create_posts_table", StructName: "CreatePostsTable_2026_02_21_100001"},
 	}
 
-	out, err := GenerateRegistry("migrations", entries)
+	out, err := GenerateRegistry("migrations", entries, "")
 	if err != nil {
 		t.Fatalf("GenerateRegistry: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestGenerateRegistryWithImports(t *testing.T) {
 		{ID: "2026_02_21_100001_create_sessions_table", StructName: "CreateSessionsTable_2026_02_21_100001", ImportPath: "myapp/database/migrations/auth"},
 	}
 
-	out, err := GenerateRegistry("migrations", entries)
+	out, err := GenerateRegistry("migrations", entries, "")
 	if err != nil {
 		t.Fatalf("GenerateRegistry: %v", err)
 	}

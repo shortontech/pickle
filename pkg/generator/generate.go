@@ -29,6 +29,17 @@ type Layout struct {
 	ConfigDir     string // absolute path: where config files live
 	CommandsDir   string // absolute path: where app/commands/ lives
 	AuthDir       string // absolute path: where app/http/auth/ lives
+	MigrationDirs []MigrationDir // monorepo: multiple migration directories (empty = use MigrationsDir)
+}
+
+// ServiceLayout describes per-service paths in a multi-service project.
+type ServiceLayout struct {
+	Name        string // "api", "worker"
+	Dir         string // absolute path to service dir
+	HTTPDir     string // {serviceDir}/http
+	HTTPPkg     string // package name for HTTPDir ("pickle")
+	RequestsDir string // {serviceDir}/http/requests
+	CommandsDir string // {serviceDir}/commands
 }
 
 // Project represents a Pickle project layout rooted at a directory.
@@ -36,6 +47,7 @@ type Project struct {
 	Dir        string // project root
 	ModulePath string // Go module path from go.mod
 	Layout     Layout
+	Services   []ServiceLayout // populated in multi-service mode; empty = single-service
 }
 
 // DetectProject finds the project layout from the given directory.
@@ -236,20 +248,34 @@ type SchemaRelationship struct {
 // RunSchemaInspector generates a temp inspector program, compiles and runs it,
 // and returns the parsed schema tables, views, and relationships.
 func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, []SchemaRelationship, error) {
-	migrationsDir := project.Layout.MigrationsDir
-	structNames, err := ScanMigrationStructs(migrationsDir)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("scanning migrations: %w", err)
-	}
-
-	if len(structNames) == 0 {
-		return nil, nil, nil, nil
-	}
-
-	migrationsImport := project.ModulePath + "/" + project.Layout.MigrationsRel
 	var entries []MigrationEntry
-	for _, name := range structNames {
-		entries = append(entries, MigrationEntry{StructName: name, ImportPath: migrationsImport})
+
+	if len(project.Layout.MigrationDirs) > 0 {
+		// Monorepo: scan each configured migration directory
+		for _, md := range project.Layout.MigrationDirs {
+			structNames, err := ScanMigrationStructs(md.Dir)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("scanning migrations in %s: %w", md.Dir, err)
+			}
+			for _, name := range structNames {
+				entries = append(entries, MigrationEntry{StructName: name, ImportPath: md.ImportPath})
+			}
+		}
+	} else {
+		// Single-app: scan the default migrations directory
+		migrationsDir := project.Layout.MigrationsDir
+		structNames, err := ScanMigrationStructs(migrationsDir)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("scanning migrations: %w", err)
+		}
+		migrationsImport := project.ModulePath + "/" + project.Layout.MigrationsRel
+		for _, name := range structNames {
+			entries = append(entries, MigrationEntry{StructName: name, ImportPath: migrationsImport})
+		}
+	}
+
+	if len(entries) == 0 {
+		return nil, nil, nil, nil
 	}
 
 	inspectorSrc, err := GenerateSchemaInspector(entries)
@@ -397,6 +423,7 @@ func Generate(project *Project, picklePkgDir string) error {
 	}
 
 	// 1. Write pre-tickled core types
+	// In multi-service mode, still write to app/http/ for auth drivers to import.
 	fmt.Println("  generating pickle_gen.go")
 	if err := writeFile(filepath.Join(layout.HTTPDir, "pickle_gen.go"), GenerateCoreHTTP(httpPkg)); err != nil {
 		return err
@@ -461,6 +488,28 @@ func Generate(project *Project, picklePkgDir string) error {
 	}
 
 	// 2. Write pre-tickled schema types and migration runner into migrations/
+	// In monorepo mode, also write types_gen.go into external migration directories
+	// so shared migrations can reference Migration, Table, Column types.
+	if len(layout.MigrationDirs) > 0 {
+		for _, md := range layout.MigrationDirs {
+			if md.Dir == migrationsDir {
+				continue // handled below with the local dir
+			}
+			if _, err := os.Stat(md.Dir); err != nil {
+				continue
+			}
+			// Determine the package name from the directory
+			pkg := filepath.Base(md.Dir)
+			typesPath := filepath.Join(md.Dir, "types_gen.go")
+			if _, err := os.Stat(typesPath); err != nil {
+				// Only write if types_gen.go doesn't already exist (another app may have written it)
+				fmt.Printf("  generating %s/types_gen.go\n", md.Dir)
+				if err := writeFile(typesPath, GenerateCoreSchema(pkg)); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	if _, err := os.Stat(migrationsDir); err == nil {
 		fmt.Println("  generating migrations/types_gen.go")
 		if err := writeFile(filepath.Join(migrationsDir, "types_gen.go"), GenerateCoreSchema("migrations")); err != nil {
@@ -473,11 +522,22 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 
 		fmt.Println("  generating migrations/registry_gen.go")
-		localMigEntries, err := ScanMigrationFiles(migrationsDir)
+		var localMigEntries []MigrationFileEntry
+		if len(layout.MigrationDirs) > 0 {
+			localMigEntries, err = ScanAllMigrationFiles(layout.MigrationDirs)
+		} else {
+			localMigEntries, err = ScanMigrationFiles(migrationsDir)
+		}
 		if err != nil {
 			return fmt.Errorf("scanning migration files: %w", err)
 		}
-		registrySrc, err := GenerateRegistry("migrations", localMigEntries)
+		// In monorepo mode, tell the registry which import path is "local"
+		// so it doesn't try to import itself.
+		localImport := ""
+		if len(layout.MigrationDirs) > 0 {
+			localImport = project.ModulePath + "/" + layout.MigrationsRel
+		}
+		registrySrc, err := GenerateRegistry("migrations", localMigEntries, localImport)
 		if err != nil {
 			return fmt.Errorf("generating registry: %w", err)
 		}
@@ -628,82 +688,159 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 	}
 
-	// 6. Generate bindings
-	requests, err := ScanRequests(requestsDir)
-	if err != nil {
-		return fmt.Errorf("scanning requests: %w", err)
-	}
-
-	if len(requests) > 0 {
-		fmt.Println("  generating bindings")
-		bindingSrc, err := GenerateBindings(requests, "requests")
+	// 6–8: Per-service generation
+	if len(project.Services) > 0 {
+		// Multi-service mode: generate HTTP core + bindings per service
+		for _, svc := range project.Services {
+			fmt.Printf("  [%s] generating per-service files\n", svc.Name)
+			if err := generateService(project, svc, picklePkgDir); err != nil {
+				return fmt.Errorf("service %s: %w", svc.Name, err)
+			}
+		}
+	} else {
+		// Single-service mode: existing behavior
+		// 6. Generate bindings
+		requests, err := ScanRequests(requestsDir)
 		if err != nil {
-			return fmt.Errorf("generating bindings: %w", err)
+			return fmt.Errorf("scanning requests: %w", err)
 		}
 
-		if err := writeFile(filepath.Join(requestsDir, "bindings_gen.go"), bindingSrc); err != nil {
-			return err
-		}
-	}
+		if len(requests) > 0 {
+			fmt.Println("  generating bindings")
+			bindingSrc, err := GenerateBindings(requests, "requests")
+			if err != nil {
+				return fmt.Errorf("generating bindings: %w", err)
+			}
 
-	// 6b. Generate scheduler core if app/jobs/ exists
-	jobsDir := filepath.Join(project.Dir, "app", "jobs")
-	if _, err := os.Stat(jobsDir); err == nil {
-		// Check override pattern: only write pickle_gen.go if pickle.go doesn't exist
-		if _, err := os.Stat(filepath.Join(jobsDir, "pickle.go")); os.IsNotExist(err) {
-			fmt.Println("  generating jobs/pickle_gen.go")
-			if err := writeFile(filepath.Join(jobsDir, "pickle_gen.go"), GenerateCoreScheduler("jobs")); err != nil {
+			if err := writeFile(filepath.Join(requestsDir, "bindings_gen.go"), bindingSrc); err != nil {
+				return err
+			}
+		}
+
+		// 6b. Generate scheduler core if app/jobs/ exists
+		jobsDir := filepath.Join(project.Dir, "app", "jobs")
+		if _, err := os.Stat(jobsDir); err == nil {
+			// Check override pattern: only write pickle_gen.go if pickle.go doesn't exist
+			if _, err := os.Stat(filepath.Join(jobsDir, "pickle.go")); os.IsNotExist(err) {
+				fmt.Println("  generating jobs/pickle_gen.go")
+				if err := writeFile(filepath.Join(jobsDir, "pickle_gen.go"), GenerateCoreScheduler("jobs")); err != nil {
+					return err
+				}
+			}
+		}
+
+		// 7. Generate GraphQL layer if app/graphql/ exists
+		graphqlDir := filepath.Join(project.Dir, "app", "graphql")
+		if _, err := os.Stat(graphqlDir); err == nil {
+			fmt.Println("  generating graphql layer")
+			if err := GenerateGraphQL(project, tables, relationships, requests); err != nil {
+				return fmt.Errorf("graphql generation: %w", err)
+			}
+		}
+
+		// 8. Generate commands glue if app/commands/ exists
+		commandsDir := layout.CommandsDir
+		if _, err := os.Stat(commandsDir); err == nil {
+			fmt.Println("  generating commands/pickle_gen.go")
+			userCmds, err := ScanCommands(commandsDir)
+			if err != nil {
+				return fmt.Errorf("scanning commands: %w", err)
+			}
+
+			// Scan routes/ for route vars (e.g. "API")
+			routesDir := filepath.Join(project.Dir, "routes")
+			var routeVars []string
+			if _, err := os.Stat(routesDir); err == nil {
+				var scanErr error
+				routeVars, scanErr = ScanRouteVars(routesDir)
+				if scanErr != nil {
+					return fmt.Errorf("scanning route vars: %w", scanErr)
+				}
+			}
+
+			// Check if auth directory exists
+			hasAuth := false
+			if _, err := os.Stat(layout.AuthDir); err == nil {
+				hasAuth = true
+			}
+
+			// Check if schedule/jobs.go exists
+			hasSchedule := false
+			if _, err := os.Stat(filepath.Join(project.Dir, "schedule", "jobs.go")); err == nil {
+				hasSchedule = true
+			}
+
+			cmdSrc, err := GenerateCommandsGlue(project.ModulePath, layout.MigrationsRel, userCmds, routeVars, hasAuth, hasSchedule)
+			if err != nil {
+				return fmt.Errorf("generating commands glue: %w", err)
+			}
+			if err := writeFile(filepath.Join(commandsDir, "pickle_gen.go"), cmdSrc); err != nil {
 				return err
 			}
 		}
 	}
 
-	// 7. Generate GraphQL layer if app/graphql/ exists
-	graphqlDir := filepath.Join(project.Dir, "app", "graphql")
-	if _, err := os.Stat(graphqlDir); err == nil {
-		fmt.Println("  generating graphql layer")
-		if err := GenerateGraphQL(project, tables, relationships, requests); err != nil {
-			return fmt.Errorf("graphql generation: %w", err)
+	return nil
+}
+
+// generateService generates per-service files: HTTP core, request bindings, commands.
+func generateService(project *Project, svc ServiceLayout, picklePkgDir string) error {
+	// HTTP core
+	if err := os.MkdirAll(svc.HTTPDir, 0o755); err != nil {
+		return fmt.Errorf("creating http dir: %w", err)
+	}
+	fmt.Printf("    generating %s/http/pickle_gen.go\n", svc.Name)
+	if err := writeFile(filepath.Join(svc.HTTPDir, "pickle_gen.go"), GenerateCoreHTTP(svc.HTTPPkg)); err != nil {
+		return err
+	}
+
+	// Request bindings
+	if _, err := os.Stat(svc.RequestsDir); err == nil {
+		reqs, err := ScanRequests(svc.RequestsDir)
+		if err != nil {
+			return fmt.Errorf("scanning requests: %w", err)
+		}
+		if len(reqs) > 0 {
+			fmt.Printf("    generating %s/http/requests/bindings_gen.go\n", svc.Name)
+			bindingSrc, err := GenerateBindings(reqs, "requests")
+			if err != nil {
+				return fmt.Errorf("generating bindings: %w", err)
+			}
+			if err := writeFile(filepath.Join(svc.RequestsDir, "bindings_gen.go"), bindingSrc); err != nil {
+				return err
+			}
 		}
 	}
 
-	// 8. Generate commands glue if app/commands/ exists
-	commandsDir := layout.CommandsDir
-	if _, err := os.Stat(commandsDir); err == nil {
-		fmt.Println("  generating commands/pickle_gen.go")
-		userCmds, err := ScanCommands(commandsDir)
+	// Commands glue
+	if _, err := os.Stat(svc.CommandsDir); err == nil {
+		fmt.Printf("    generating %s/commands/pickle_gen.go\n", svc.Name)
+		userCmds, err := ScanCommands(svc.CommandsDir)
 		if err != nil {
 			return fmt.Errorf("scanning commands: %w", err)
 		}
 
-		// Scan routes/ for route vars (e.g. "API")
-		routesDir := filepath.Join(project.Dir, "routes")
+		routesDir := filepath.Join(svc.Dir, "routes")
 		var routeVars []string
 		if _, err := os.Stat(routesDir); err == nil {
-			var scanErr error
-			routeVars, scanErr = ScanRouteVars(routesDir)
-			if scanErr != nil {
-				return fmt.Errorf("scanning route vars: %w", scanErr)
-			}
+			routeVars, _ = ScanRouteVars(routesDir)
 		}
 
-		// Check if auth directory exists
 		hasAuth := false
-		if _, err := os.Stat(layout.AuthDir); err == nil {
+		if _, err := os.Stat(project.Layout.AuthDir); err == nil {
 			hasAuth = true
 		}
 
-		// Check if schedule/jobs.go exists
 		hasSchedule := false
-		if _, err := os.Stat(filepath.Join(project.Dir, "schedule", "jobs.go")); err == nil {
+		if _, err := os.Stat(filepath.Join(svc.Dir, "schedule", "jobs.go")); err == nil {
 			hasSchedule = true
 		}
 
-		cmdSrc, err := GenerateCommandsGlue(project.ModulePath, layout.MigrationsRel, userCmds, routeVars, hasAuth, hasSchedule)
+		cmdSrc, err := GenerateCommandsGlue(project.ModulePath, project.Layout.MigrationsRel, userCmds, routeVars, hasAuth, hasSchedule)
 		if err != nil {
 			return fmt.Errorf("generating commands glue: %w", err)
 		}
-		if err := writeFile(filepath.Join(commandsDir, "pickle_gen.go"), cmdSrc); err != nil {
+		if err := writeFile(filepath.Join(svc.CommandsDir, "pickle_gen.go"), cmdSrc); err != nil {
 			return err
 		}
 	}

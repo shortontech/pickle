@@ -9,7 +9,31 @@ import (
 
 // Config represents the top-level pickle.yaml file.
 type Config struct {
-	Squeeze SqueezeConfig `yaml:"squeeze"`
+	Squeeze  SqueezeConfig            `yaml:"squeeze"`
+	Apps     map[string]AppConfig     `yaml:"apps,omitempty"`
+	Services map[string]ServiceConfig `yaml:"services,omitempty"`
+}
+
+// AppConfig describes a single app in a monorepo layout.
+type AppConfig struct {
+	Path       string   `yaml:"path"`                 // directory containing go.mod, relative to pickle.yaml
+	Migrations []string `yaml:"migrations,omitempty"` // migration dirs relative to app path; default: ["database/migrations"]
+	Config     string   `yaml:"config,omitempty"`     // config dir relative to app path; default: "config"
+}
+
+// IsMonorepo returns true if the config defines multiple apps (separate go.mod files).
+func (c *Config) IsMonorepo() bool {
+	return len(c.Apps) > 0
+}
+
+// ServiceConfig describes a service in a multi-service project (one go.mod, shared models).
+type ServiceConfig struct {
+	Dir string `yaml:"dir"` // relative to project root, e.g. "services/api"
+}
+
+// IsMultiService returns true if the config defines multiple services.
+func (c *Config) IsMultiService() bool {
+	return len(c.Services) > 0
 }
 
 // SqueezeConfig holds all squeeze-related configuration.

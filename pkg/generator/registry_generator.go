@@ -185,16 +185,21 @@ type registryImport struct {
 }
 
 // GenerateRegistry produces the contents of migrations/registry_gen.go.
-func GenerateRegistry(pkg string, entries []MigrationFileEntry) ([]byte, error) {
-	// Determine the "local" import path (the first entry's package, or entries with no special import)
-	localImport := ""
-	if len(entries) > 0 {
-		localImport = entries[0].ImportPath
-	}
-	for _, e := range entries {
-		if e.ImportPath != "" {
-			localImport = e.ImportPath
-			break
+// localImportPath is the import path of the package that registry_gen.go will
+// be written into — entries with this import path are treated as local (no
+// import needed). Pass "" to auto-detect from the first entry.
+func GenerateRegistry(pkg string, entries []MigrationFileEntry, localImportPath string) ([]byte, error) {
+	localImport := localImportPath
+	if localImport == "" {
+		// Auto-detect: use the first non-empty import path (single-app mode)
+		if len(entries) > 0 {
+			localImport = entries[0].ImportPath
+		}
+		for _, e := range entries {
+			if e.ImportPath != "" {
+				localImport = e.ImportPath
+				break
+			}
 		}
 	}
 

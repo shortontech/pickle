@@ -84,6 +84,7 @@ Commands:
 
 Options:
   --project <dir>   Project directory (default: current directory)
+  --app <name>      Target a specific app in a monorepo (requires pickle.yaml with apps)
   --help, -h        Show this help
   --version, -v     Show version`)
 }
@@ -197,23 +198,101 @@ func cmdMCP() {
 }
 
 func cmdGenerate() {
-	// Determine project directory (current working directory or --project flag)
 	projectDir := "."
+	appFilter := ""
 	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--project" && i+1 < len(args) {
-			projectDir = args[i+1]
-			i++
+		switch args[i] {
+		case "--project":
+			if i+1 < len(args) {
+				projectDir = args[i+1]
+				i++
+			}
+		case "--app":
+			if i+1 < len(args) {
+				appFilter = args[i+1]
+				i++
+			}
 		}
 	}
 
+	// Check for monorepo config
+	cfg, err := squeeze.LoadConfig(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+
+	if cfg.IsMonorepo() {
+		picklePkgDir := findPicklePkgDir()
+		for name, appCfg := range cfg.Apps {
+			if appFilter != "" && name != appFilter {
+				continue
+			}
+			project, err := projectFromAppConfig(projectDir, appCfg)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "pickle: app %s: %v\n", name, err)
+				os.Exit(1)
+			}
+			fmt.Printf("pickle generate: [%s] %s\n", name, project.Dir)
+			if err := generator.Generate(project, picklePkgDir); err != nil {
+				fmt.Fprintf(os.Stderr, "pickle: app %s: %v\n", name, err)
+				os.Exit(1)
+			}
+			cmd := exec.Command("go", "mod", "tidy")
+			cmd.Dir = project.Dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				fmt.Fprintf(os.Stderr, "pickle: app %s: go mod tidy failed: %v\n%s", name, err, out)
+			}
+		}
+		fmt.Println("pickle: done")
+		return
+	}
+
+	// Multi-service mode: one go.mod, shared models, per-service HTTP/bindings
+	if cfg.IsMultiService() {
+		project, err := generator.DetectProject(projectDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+			os.Exit(1)
+		}
+
+		for name, svc := range cfg.Services {
+			absDir := filepath.Join(project.Dir, svc.Dir)
+			project.Services = append(project.Services, generator.ServiceLayout{
+				Name:        name,
+				Dir:         absDir,
+				HTTPDir:     filepath.Join(absDir, "http"),
+				HTTPPkg:     "pickle",
+				RequestsDir: filepath.Join(absDir, "http", "requests"),
+				CommandsDir: filepath.Join(absDir, "commands"),
+			})
+		}
+
+		picklePkgDir := findPicklePkgDir()
+		fmt.Printf("pickle generate: %s (%d services)\n", project.Dir, len(project.Services))
+		if err := generator.Generate(project, picklePkgDir); err != nil {
+			fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+			os.Exit(1)
+		}
+
+		cmd := exec.Command("go", "mod", "tidy")
+		cmd.Dir = project.Dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "pickle: go mod tidy failed: %v\n%s", err, out)
+		}
+
+		fmt.Println("pickle: done")
+		return
+	}
+
+	// Single-service mode
 	project, err := generator.DetectProject(projectDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Find the pickle package directory (where cooked/ and templates live)
 	picklePkgDir := findPicklePkgDir()
 
 	fmt.Printf("pickle generate: %s\n", project.Dir)
@@ -222,7 +301,6 @@ func cmdGenerate() {
 		os.Exit(1)
 	}
 
-	// Run go mod tidy so new imports (e.g. shopspring/decimal) get resolved
 	cmd := exec.Command("go", "mod", "tidy")
 	cmd.Dir = project.Dir
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -230,6 +308,40 @@ func cmdGenerate() {
 	}
 
 	fmt.Println("pickle: done")
+}
+
+// projectFromAppConfig creates a Project from a monorepo app config entry.
+func projectFromAppConfig(rootDir string, appCfg squeeze.AppConfig) (*generator.Project, error) {
+	absRoot, err := filepath.Abs(rootDir)
+	if err != nil {
+		return nil, err
+	}
+	appDir := filepath.Join(absRoot, appCfg.Path)
+	project, err := generator.DetectProject(appDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// Resolve migration directories
+	migrations := appCfg.Migrations
+	if len(migrations) == 0 {
+		migrations = []string{"database/migrations"}
+	}
+	for _, rel := range migrations {
+		absDir := filepath.Clean(filepath.Join(appDir, rel))
+		importPath := generator.ResolveImportPath(appDir, project.ModulePath, absDir)
+		project.Layout.MigrationDirs = append(project.Layout.MigrationDirs, generator.MigrationDir{
+			Dir:        absDir,
+			ImportPath: importPath,
+		})
+	}
+
+	// Resolve config dir override
+	if appCfg.Config != "" {
+		project.Layout.ConfigDir = filepath.Clean(filepath.Join(appDir, appCfg.Config))
+	}
+
+	return project, nil
 }
 
 func cmdMigrate() {
@@ -283,23 +395,154 @@ func cmdMigrate() {
 
 func cmdWatch() {
 	projectDir := "."
+	appFilter := ""
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--project" && i+1 < len(args) {
-			projectDir = args[i+1]
-			i++
+		switch args[i] {
+		case "--project":
+			if i+1 < len(args) {
+				projectDir = args[i+1]
+				i++
+			}
+		case "--app":
+			if i+1 < len(args) {
+				appFilter = args[i+1]
+				i++
+			}
 		}
 	}
 
+	picklePkgDir := findPicklePkgDir()
+
+	// Check for monorepo config
+	cfg, err := squeeze.LoadConfig(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+
+	if cfg.IsMonorepo() {
+		absRoot, err := filepath.Abs(projectDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Build app projects
+		type appEntry struct {
+			name    string
+			project *generator.Project
+		}
+		var apps []appEntry
+		for name, appCfg := range cfg.Apps {
+			if appFilter != "" && name != appFilter {
+				continue
+			}
+			project, err := projectFromAppConfig(projectDir, appCfg)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "pickle: app %s: %v\n", name, err)
+				os.Exit(1)
+			}
+			apps = append(apps, appEntry{name: name, project: project})
+		}
+
+		// Initial generation
+		for _, app := range apps {
+			fmt.Printf("pickle --watch: [%s] %s\n", app.name, app.project.Dir)
+			fmt.Println("  initial generation...")
+			if err := generator.Generate(app.project, picklePkgDir); err != nil {
+				fmt.Fprintf(os.Stderr, "pickle: app %s: generate failed: %v\n", app.name, err)
+			}
+		}
+
+		// Build watch configs
+		var watchApps []watcher.AppWatchConfig
+		for _, app := range apps {
+			var migDirs []string
+			for _, md := range app.project.Layout.MigrationDirs {
+				migDirs = append(migDirs, md.Dir)
+			}
+			watchApps = append(watchApps, watcher.AppWatchConfig{
+				Name:          app.name,
+				ProjectDir:    app.project.Dir,
+				MigrationDirs: migDirs,
+			})
+		}
+
+		fmt.Println("  watching for changes (ctrl+c to stop)")
+		if err := watcher.WatchMonorepo(absRoot, watchApps, func(appName string, changed []string) {
+			// Find the app project
+			for _, app := range apps {
+				if app.name == appName {
+					fmt.Printf("\n  [%s] changed: %d file(s)\n", appName, len(changed))
+					fmt.Println("  regenerating...")
+					if err := generator.Generate(app.project, picklePkgDir); err != nil {
+						fmt.Fprintf(os.Stderr, "  [%s] error: %v\n", appName, err)
+					} else {
+						fmt.Printf("  [%s] done\n", appName)
+					}
+					return
+				}
+			}
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Multi-service mode
+	if cfg.IsMultiService() {
+		project, err := generator.DetectProject(projectDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+			os.Exit(1)
+		}
+
+		var svcDirs []string
+		for name, svc := range cfg.Services {
+			absDir := filepath.Join(project.Dir, svc.Dir)
+			project.Services = append(project.Services, generator.ServiceLayout{
+				Name:        name,
+				Dir:         absDir,
+				HTTPDir:     filepath.Join(absDir, "http"),
+				HTTPPkg:     "pickle",
+				RequestsDir: filepath.Join(absDir, "http", "requests"),
+				CommandsDir: filepath.Join(absDir, "commands"),
+			})
+			svcDirs = append(svcDirs, svc.Dir)
+		}
+
+		fmt.Printf("pickle --watch: %s (%d services)\n", project.Dir, len(project.Services))
+		fmt.Println("  initial generation...")
+		if err := generator.Generate(project, picklePkgDir); err != nil {
+			fmt.Fprintf(os.Stderr, "pickle: generate failed: %v\n", err)
+		}
+
+		watchDirs := watcher.WatchDirsForServices(svcDirs)
+		fmt.Println("  watching for changes (ctrl+c to stop)")
+		if err := watcher.WatchWithDirs(project.Dir, watchDirs, func(changed []string) {
+			fmt.Printf("\n  changed: %d file(s)\n", len(changed))
+			fmt.Println("  regenerating...")
+			if err := generator.Generate(project, picklePkgDir); err != nil {
+				fmt.Fprintf(os.Stderr, "  error: %v\n", err)
+			} else {
+				fmt.Println("  done")
+			}
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Single-service mode
 	project, err := generator.DetectProject(projectDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
 		os.Exit(1)
 	}
 
-	picklePkgDir := findPicklePkgDir()
-
-	// Run an initial generate
 	fmt.Printf("pickle --watch: %s\n", project.Dir)
 	fmt.Println("  initial generation...")
 	if err := generator.Generate(project, picklePkgDir); err != nil {

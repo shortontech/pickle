@@ -120,6 +120,18 @@ func (t *Table) Binary(name string) *Column {
 	return t.addColumn(name, Binary)
 }
 
+// Float adds a single-precision floating-point column (SQL REAL / FLOAT).
+// In almost all cases you should use Decimal(name, precision, scale) instead.
+func (t *Table) Float(name string) *Column {
+	return t.addColumn(name, Float)
+}
+
+// Double adds a double-precision floating-point column (SQL DOUBLE PRECISION).
+// In almost all cases you should use Decimal(name, precision, scale) instead.
+func (t *Table) Double(name string) *Column {
+	return t.addColumn(name, Double)
+}
+
 // HasMany declares a one-to-many relationship. The child table gets an
 // auto-injected FK column pointing back to this table's primary key.
 func (t *Table) HasMany(name string, fn func(*Table)) *Relationship {

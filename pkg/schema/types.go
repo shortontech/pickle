@@ -16,6 +16,8 @@ const (
 	Date
 	Time
 	Binary
+	Float
+	Double
 )
 
 var columnTypeNames = [...]string{
@@ -31,6 +33,8 @@ var columnTypeNames = [...]string{
 	Date:       "date",
 	Time:       "time",
 	Binary:     "binary",
+	Float:      "float",
+	Double:     "double",
 }
 
 func (t ColumnType) String() string {

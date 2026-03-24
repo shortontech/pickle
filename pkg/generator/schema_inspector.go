@@ -98,6 +98,8 @@ var typeNames = map[{{ .TypesPkg }}.ColumnType]string{
 	{{ .TypesPkg }}.Date:       "date",
 	{{ .TypesPkg }}.Time:       "time",
 	{{ .TypesPkg }}.Binary:     "binary",
+	{{ .TypesPkg }}.Float:      "float",
+	{{ .TypesPkg }}.Double:     "double",
 }
 
 var goTypeNames = map[{{ .TypesPkg }}.ColumnType]string{
@@ -113,6 +115,8 @@ var goTypeNames = map[{{ .TypesPkg }}.ColumnType]string{
 	{{ .TypesPkg }}.Date:       "time.Time",
 	{{ .TypesPkg }}.Time:       "string",
 	{{ .TypesPkg }}.Binary:     "[]byte",
+	{{ .TypesPkg }}.Float:      "float32",
+	{{ .TypesPkg }}.Double:     "float64",
 }
 
 func collectRelationships(t *{{ .TypesPkg }}.Table, rels *[]relationshipInfo) {

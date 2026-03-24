@@ -1699,3 +1699,129 @@ func TestRuleGraphQLOwnerColumnMissing_WithOwner(t *testing.T) {
 		t.Errorf("table with owner column should pass, got %d findings", len(findings))
 	}
 }
+
+// ---- Rule: float_column ----
+
+func TestRuleFloatColumn_WarningForNonMonetary(t *testing.T) {
+	ctx := &AnalysisContext{
+		Tables: []*schema.Table{
+			{
+				Name: "readings",
+				Columns: []*schema.Column{
+					{Name: "latitude", Type: schema.Float},
+				},
+			},
+		},
+	}
+	findings := ruleFloatColumn(ctx)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if findings[0].Severity != SeverityWarning {
+		t.Errorf("expected warning, got %s", findings[0].Severity)
+	}
+	if findings[0].Rule != "float_column" {
+		t.Errorf("wrong rule: %s", findings[0].Rule)
+	}
+}
+
+func TestRuleFloatColumn_ErrorForMonetary(t *testing.T) {
+	ctx := &AnalysisContext{
+		Tables: []*schema.Table{
+			{
+				Name: "orders",
+				Columns: []*schema.Column{
+					{Name: "amount", Type: schema.Double},
+				},
+			},
+		},
+	}
+	findings := ruleFloatColumn(ctx)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if findings[0].Severity != SeverityError {
+		t.Errorf("expected error for monetary float, got %s", findings[0].Severity)
+	}
+}
+
+func TestRuleFloatColumn_ErrorForMonetarySuffix(t *testing.T) {
+	ctx := &AnalysisContext{
+		Tables: []*schema.Table{
+			{
+				Name: "invoices",
+				Columns: []*schema.Column{
+					{Name: "shipping_cost", Type: schema.Float},
+				},
+			},
+		},
+	}
+	findings := ruleFloatColumn(ctx)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if findings[0].Severity != SeverityError {
+		t.Errorf("expected error for monetary suffix, got %s", findings[0].Severity)
+	}
+}
+
+func TestRuleFloatColumn_PassesDecimal(t *testing.T) {
+	ctx := &AnalysisContext{
+		Tables: []*schema.Table{
+			{
+				Name: "orders",
+				Columns: []*schema.Column{
+					{Name: "amount", Type: schema.Decimal},
+				},
+			},
+		},
+	}
+	findings := ruleFloatColumn(ctx)
+	if len(findings) != 0 {
+		t.Errorf("decimal should not trigger float_column, got %d findings", len(findings))
+	}
+}
+
+// ---- Rule: float_request_field ----
+
+func TestRuleFloatRequestField_FlagsFloat64(t *testing.T) {
+	ctx := &AnalysisContext{
+		Requests: []generator.RequestDef{
+			{
+				Name: "CreateOrderRequest",
+				File: "requests/create_order.go",
+				Fields: []generator.RequestField{
+					{Name: "Amount", Type: "float64", JSONTag: "amount"},
+				},
+			},
+		},
+	}
+	findings := ruleFloatRequestField(ctx)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if findings[0].Severity != SeverityError {
+		t.Errorf("expected error, got %s", findings[0].Severity)
+	}
+	if findings[0].Rule != "float_request_field" {
+		t.Errorf("wrong rule: %s", findings[0].Rule)
+	}
+}
+
+func TestRuleFloatRequestField_PassesString(t *testing.T) {
+	ctx := &AnalysisContext{
+		Requests: []generator.RequestDef{
+			{
+				Name: "CreateOrderRequest",
+				File: "requests/create_order.go",
+				Fields: []generator.RequestField{
+					{Name: "Amount", Type: "string", JSONTag: "amount", Validate: "required,decimal"},
+				},
+			},
+		},
+	}
+	findings := ruleFloatRequestField(ctx)
+	if len(findings) != 0 {
+		t.Errorf("string field should not trigger, got %d findings", len(findings))
+	}
+}

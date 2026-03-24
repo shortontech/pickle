@@ -30,7 +30,7 @@ func ScopeForType(colType schema.ColumnType) string {
 	switch colType {
 	case schema.String, schema.Text:
 		return "string"
-	case schema.Integer, schema.BigInteger, schema.Decimal:
+	case schema.Integer, schema.BigInteger, schema.Decimal, schema.Float, schema.Double:
 		return "numeric"
 	case schema.Timestamp, schema.Date:
 		return "timestamp"

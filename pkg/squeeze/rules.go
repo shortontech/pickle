@@ -58,6 +58,8 @@ func AllRules() map[string]Rule {
 		"encrypted_column_order_by":              ruleEncryptedColumnOrderBy,
 		"encrypted_sealed_conflict":              ruleEncryptedSealedConflict,
 		"encrypted_missing_key_config":           ruleEncryptedMissingKeyConfig,
+		"float_column":                           ruleFloatColumn,
+		"float_request_field":                    ruleFloatRequestField,
 	}
 }
 
@@ -1315,6 +1317,97 @@ func ruleEncryptedMissingKeyConfig(ctx *AnalysisContext) []Finding {
 				Line:     0,
 				Message:  `table "` + table.Name + `" has .Encrypted() or .Sealed() columns — ensure Encryption.CurrentKeyEnv is configured in config/database.go`,
 			})
+		}
+	}
+	return findings
+}
+
+// monetaryNames are column names that strongly imply monetary values.
+var monetaryNames = map[string]bool{
+	"amount":     true,
+	"price":      true,
+	"cost":       true,
+	"total":      true,
+	"subtotal":   true,
+	"balance":    true,
+	"fee":        true,
+	"tax":        true,
+	"discount":   true,
+	"revenue":    true,
+	"salary":     true,
+	"wage":       true,
+	"payment":    true,
+	"refund":     true,
+	"deposit":    true,
+	"withdrawal": true,
+}
+
+var monetarySuffixes = []string{
+	"_amount",
+	"_price",
+	"_cost",
+	"_total",
+	"_fee",
+	"_tax",
+	"_balance",
+	"_rate",
+}
+
+func isMonetaryColumn(name string) bool {
+	if monetaryNames[name] {
+		return true
+	}
+	for _, suffix := range monetarySuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// ruleFloatColumn flags Float and Double columns. IEEE 754 floats silently lose
+// precision — use Decimal(name, precision, scale) instead. Monetary column names
+// escalate to error severity.
+func ruleFloatColumn(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+	for _, table := range ctx.Tables {
+		for _, col := range table.Columns {
+			if col.Type != schema.Float && col.Type != schema.Double {
+				continue
+			}
+			severity := SeverityWarning
+			msg := table.Name + "." + col.Name + " uses " + col.Type.String() + " — prefer Decimal(name, precision, scale) to avoid floating-point precision loss"
+			if isMonetaryColumn(col.Name) {
+				severity = SeverityError
+				msg = table.Name + "." + col.Name + " uses " + col.Type.String() + " for a monetary field — this WILL cause precision loss; use Decimal(name, precision, scale)"
+			}
+			findings = append(findings, Finding{
+				Rule:     "float_column",
+				Severity: severity,
+				File:     "",
+				Line:     0,
+				Message:  msg,
+			})
+		}
+	}
+	return findings
+}
+
+// ruleFloatRequestField flags float32/float64 fields in request structs.
+// Accept numeric input as string with validate:"decimal" to avoid precision loss during deserialization.
+func ruleFloatRequestField(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+	for _, req := range ctx.Requests {
+		for _, field := range req.Fields {
+			if field.Type == "float32" || field.Type == "float64" || field.Type == "*float32" || field.Type == "*float64" {
+				findings = append(findings, Finding{
+					Rule:     "float_request_field",
+					Severity: SeverityError,
+					File:     req.File,
+					Line:     0,
+					Message:  req.Name + "." + field.Name + " uses " + field.Type + ` — JSON floats lose precision during deserialization; use string with validate:"required,decimal" instead`,
+				})
+			}
 		}
 	}
 	return findings

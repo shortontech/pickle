@@ -490,7 +490,7 @@ func collectScopeImports(table *schema.Table, blocks []tickle.ScopeBlock) []stri
 	// Only need strconv if there are numeric or boolean columns
 	for _, col := range table.Columns {
 		switch col.Type {
-		case schema.Integer, schema.BigInteger, schema.Boolean:
+		case schema.Integer, schema.BigInteger, schema.Boolean, schema.Float, schema.Double:
 			imports["strconv"] = true
 		}
 	}
@@ -586,6 +586,10 @@ func schemaTypeToTag(ct schema.ColumnType) string {
 		return "0x0A"
 	case schema.Time:
 		return "0x0B"
+	case schema.Float:
+		return "0x0C"
+	case schema.Double:
+		return "0x0D"
 	default:
 		return "0x02" // default to string
 	}

@@ -149,6 +149,10 @@ func ColumnBaseGoType(col *schema.Column) string {
 		return "json.RawMessage"
 	case schema.Binary:
 		return "[]byte"
+	case schema.Float:
+		return "float32"
+	case schema.Double:
+		return "float64"
 	default:
 		return "any"
 	}

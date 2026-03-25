@@ -1,13 +1,33 @@
 package cooked
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"sync/atomic"
+	"regexp"
+"sync/atomic"
 	"time"
 )
+
+// scrubDSN replaces password components in DSN strings with "***".
+// Handles: postgres://user:pass@host, mysql://user:pass@host,
+// and key=value formats (password=secret, passwd=secret, secret=value).
+func scrubDSN(s string) string {
+	// Scrub URI-style: ://user:password@
+	s = regexp.MustCompile(`(://[^:]+:)[^@]+(@)`).ReplaceAllString(s, "${1}***${2}")
+	// Scrub key=value style: password=, passwd=, PASSWORD=, secret=
+	s = regexp.MustCompile(`(?i)((?:password|passwd|secret)\s*=\s*)\S+`).ReplaceAllString(s, "${1}***")
+	return s
+}
+
+func shortID() string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
 
 var lastReload atomic.Int64
 
@@ -79,14 +99,16 @@ func handleConfigReload(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	_, changes, err := ConfigReloadFunc()
 	if err != nil {
-		log.Printf("pickle: config reload failed error=%q", err)
+		reloadID := shortID()
+		log.Printf("pickle: config reload failed reload_id=%s error=%q", reloadID, scrubDSN(err.Error()))
 		// Roll back the timestamp so a retry is possible after fixing the issue
 		lastReload.Store(0)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]any{
-			"status":  "error",
-			"message": err.Error(),
+			"status":    "error",
+			"message":   "config reload failed — check application logs",
+			"reload_id": reloadID,
 		})
 		return
 	}

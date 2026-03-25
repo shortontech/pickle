@@ -108,8 +108,8 @@ func TestMakeActionContent(t *testing.T) {
 	if !strings.Contains(s, "PublishAction") {
 		t.Error("expected PublishAction struct")
 	}
-	if !strings.Contains(s, "Execute") {
-		t.Error("expected Execute method")
+	if !strings.Contains(s, "func (a PublishAction) Publish(") {
+		t.Error("expected Publish method matching action name")
 	}
 	// Gate file should also exist
 	gateFile := filepath.Join(dir, "app", "actions", "post", "publish_gate.go")
@@ -334,8 +334,8 @@ func TestTmplMakeActionContent(t *testing.T) {
 	if !strings.Contains(out, "PublishAction") {
 		t.Error("expected PublishAction struct")
 	}
-	if !strings.Contains(out, "Execute") {
-		t.Error("expected Execute method")
+	if !strings.Contains(out, "func (a PublishAction) Publish(") {
+		t.Error("expected Publish method matching action name")
 	}
 }
 

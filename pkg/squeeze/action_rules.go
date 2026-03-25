@@ -43,7 +43,7 @@ func ruleDirectExecuteCall(ctx *AnalysisContext) []Finding {
 				Severity: SeverityError,
 				File:     m.File,
 				Line:     line,
-				Message:  ".Execute() called directly in action package — dispatch through the gate instead",
+				Message:  "action method called directly in action package — dispatch through the gated model method instead",
 			})
 		}
 	}
@@ -62,7 +62,7 @@ func ruleDirectExecuteCall(ctx *AnalysisContext) []Finding {
 				Severity: SeverityError,
 				File:     file,
 				Line:     line,
-				Message:  ".Execute() called directly in action package — dispatch through the gate instead",
+				Message:  "action method called directly in action package — dispatch through the gated model method instead",
 			})
 		}
 	}
@@ -173,7 +173,11 @@ func isScopeFile(path string) bool {
 	return strings.Contains(path, "database/scopes/") || strings.Contains(path, "database\\scopes\\")
 }
 
-// findExecuteCalls finds .Execute() method calls in an AST block.
+// findDirectActionCalls finds direct method calls on Action types within
+// action files. The convention is that XxxAction.Xxx() is the action method,
+// and the generator renames it to lowercase. Calling it directly bypasses the gate.
+// We detect any lowercase method call on a variable whose selector starts with
+// a lowercase letter — matching the renamed pattern.
 func findExecuteCalls(body *ast.BlockStmt, fset *token.FileSet) []int {
 	var lines []int
 	ast.Inspect(body, func(n ast.Node) bool {
@@ -185,8 +189,16 @@ func findExecuteCalls(body *ast.BlockStmt, fset *token.FileSet) []int {
 		if !ok {
 			return true
 		}
-		if sel.Sel.Name == "Execute" {
-			lines = append(lines, fset.Position(call.Pos()).Line)
+		// Flag calls to lowercase methods on "action" receivers — these are
+		// the renamed action methods that should only be called through the gate.
+		methodName := sel.Sel.Name
+		if len(methodName) > 0 && methodName[0] >= 'a' && methodName[0] <= 'z' {
+			// Check if the receiver looks like an action variable
+			if ident, ok := sel.X.(*ast.Ident); ok {
+				if ident.Name == "action" || strings.HasSuffix(ident.Name, "Action") {
+					lines = append(lines, fset.Position(call.Pos()).Line)
+				}
+			}
 		}
 		return true
 	})

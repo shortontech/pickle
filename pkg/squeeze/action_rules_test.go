@@ -71,7 +71,7 @@ func TestUngatedAction_EmptyActions(t *testing.T) {
 func TestDirectExecuteCall_FlagsExecuteInAction(t *testing.T) {
 	m := method(t, `package actions
 func Run() {
-	action.Execute()
+	action.ban()
 }
 `)
 	m.File = "app/actions/create_transfer.go"
@@ -94,7 +94,7 @@ func Run() {
 func TestDirectExecuteCall_IgnoresNonActionFile(t *testing.T) {
 	m := method(t, `package controllers
 func Run() {
-	action.Execute()
+	action.ban()
 }
 `)
 	m.File = "app/http/controllers/transfer_controller.go"

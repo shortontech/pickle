@@ -127,6 +127,8 @@ func (p *%s) Down() {
 
 func tmplMakeAction(structName, modelName string) string {
 	modelParam := strings.ToLower(modelName[:1]) + modelName[1:]
+	// Method name = struct name minus "Action" suffix
+	methodName := strings.TrimSuffix(structName, "Action")
 	return fmt.Sprintf(`package actions
 
 // %s performs the %s action on a %s.
@@ -134,13 +136,13 @@ type %s struct {
 	// Add action-specific fields here
 }
 
-// Execute runs the action. The generator renames this to unexported execute()
+// %s runs the action. The generator renames this to unexported %s()
 // so it can only be called through the gated model method.
-func (a %s) Execute(ctx *Context, %s *%s) error {
+func (a %s) %s(ctx *Context, %s *%s) error {
 	// TODO: implement action logic
 	return nil
 }
-`, structName, structName, modelName, structName, structName, modelParam, modelName)
+`, structName, methodName, modelName, structName, methodName, strings.ToLower(methodName[:1])+methodName[1:], structName, methodName, modelParam, modelName)
 }
 
 func tmplMakeGate(funcName, modelName string) string {

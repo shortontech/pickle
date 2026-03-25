@@ -17,7 +17,7 @@ func TestScanActions(t *testing.T) {
 
 type BanAction struct{}
 
-func (a BanAction) Execute(ctx interface{}, model interface{}) error {
+func (a BanAction) Ban(ctx interface{}, model interface{}) error {
 	return nil
 }
 `), 0o644)
@@ -116,8 +116,8 @@ func TestGenerateActionWiring(t *testing.T) {
 	if !strings.Contains(content, "actions.CanBan(ctx, m)") {
 		t.Error("expected gate call")
 	}
-	if !strings.Contains(content, "action.execute(ctx, m)") {
-		t.Error("expected execute call (lowercase)")
+	if !strings.Contains(content, "action.ban(ctx, m)") {
+		t.Error("expected lowercased action method call")
 	}
 	if !strings.Contains(content, "ErrUnauthorized") {
 		t.Error("expected ErrUnauthorized check")

@@ -104,18 +104,22 @@ func parseActionDir(dir, modelDir string) (*ActionSet, error) {
 					})
 				}
 			} else {
-				// Parse action structs with Execute method
+				// Parse action structs with a method matching their name.
+				// BanAction must have a Ban() method, PublishAction must have Publish(), etc.
 				for _, decl := range file.Decls {
 					fn, ok := decl.(*ast.FuncDecl)
-					if !ok || fn.Recv == nil || fn.Name.Name != "Execute" {
+					if !ok || fn.Recv == nil || !fn.Name.IsExported() {
 						continue
 					}
-					// Get the receiver struct name
 					structName := actionReceiverTypeName(fn.Recv)
 					if structName == "" || !strings.HasSuffix(structName, "Action") {
 						continue
 					}
 					actionName := strings.TrimSuffix(structName, "Action")
+					// The method name must match the action name
+					if fn.Name.Name != actionName {
+						continue
+					}
 
 					action := ActionDef{
 						Name:       actionName,
@@ -217,7 +221,7 @@ func GenerateActionWiring(set *ActionSet, packageName, actionImportPath string) 
 			buf.WriteString("\tif roleID == nil {\n")
 			buf.WriteString(fmt.Sprintf("\t\treturn nil, ErrUnauthorized\n"))
 			buf.WriteString("\t}\n")
-			buf.WriteString(fmt.Sprintf("\treturn action.execute(ctx, m)\n"))
+			buf.WriteString(fmt.Sprintf("\treturn action.%s(ctx, m)\n", toLowerFirst(action.Name)))
 		} else {
 			buf.WriteString(fmt.Sprintf("func (m *%s) %s(ctx *Context, action actions.%s) error {\n",
 				structName, action.Name, action.StructName))
@@ -225,7 +229,7 @@ func GenerateActionWiring(set *ActionSet, packageName, actionImportPath string) 
 			buf.WriteString("\tif roleID == nil {\n")
 			buf.WriteString("\t\treturn ErrUnauthorized\n")
 			buf.WriteString("\t}\n")
-			buf.WriteString(fmt.Sprintf("\treturn action.execute(ctx, m)\n"))
+			buf.WriteString(fmt.Sprintf("\treturn action.%s(ctx, m)\n", toLowerFirst(action.Name)))
 		}
 		buf.WriteString("}\n\n")
 	}

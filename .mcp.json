@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "pickle-basic-crud": {
+      "command": "go",
+      "args": ["run", "./cmd/pickle/", "mcp", "--project", "./testdata/basic-crud/"]
+    },
+    "pickle-cron-test": {
+      "command": "go",
+      "args": ["run", "./cmd/pickle/", "mcp", "--project", "./testdata/cron-test/"]
+    },
+    "pickle-encryption-test": {
+      "command": "go",
+      "args": ["run", "./cmd/pickle/", "mcp", "--project", "./testdata/encryption-test/"]
+    },
+    "pickle-ledger": {
+      "command": "go",
+      "args": ["run", "./cmd/pickle/", "mcp", "--project", "./testdata/ledger/"]
+    },
+    "pickle-monorepo": {
+      "command": "go",
+      "args": ["run", "./cmd/pickle/", "mcp", "--project", "./testdata/monorepo/"]
+    },
+    "pickle-zero-graphql": {
+      "command": "go",
+      "args": ["run", "./cmd/pickle/", "mcp", "--project", "./testdata/zero-graphql/"]
+    }
+  }
+}

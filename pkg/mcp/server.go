@@ -126,6 +126,8 @@ func (s *Server) registerTools() {
 		Name:        "squeeze",
 		Description: "Run static analysis on the project. Returns security and correctness findings that generic linters miss: ownership scoping, enum validation, UUID error handling, public projections, required fields, and printf usage in controllers.",
 	}, s.squeeze)
+
+	s.registerRBACTools()
 }
 
 type tableInput struct {

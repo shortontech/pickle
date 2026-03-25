@@ -108,11 +108,13 @@ func TestMakeActionContent(t *testing.T) {
 	if !strings.Contains(s, "PublishAction") {
 		t.Error("expected PublishAction struct")
 	}
-	if !strings.Contains(s, "Authorize") {
-		t.Error("expected Authorize method")
+	if !strings.Contains(s, "Execute") {
+		t.Error("expected Execute method")
 	}
-	if !strings.Contains(s, "Handle") {
-		t.Error("expected Handle method")
+	// Gate file should also exist
+	gateFile := filepath.Join(dir, "app", "actions", "post", "publish_gate.go")
+	if _, err := os.Stat(gateFile); os.IsNotExist(err) {
+		t.Error("expected gate file to be created alongside action")
 	}
 }
 
@@ -332,11 +334,21 @@ func TestTmplMakeActionContent(t *testing.T) {
 	if !strings.Contains(out, "PublishAction") {
 		t.Error("expected PublishAction struct")
 	}
-	if !strings.Contains(out, "Authorize") {
-		t.Error("expected Authorize method")
+	if !strings.Contains(out, "Execute") {
+		t.Error("expected Execute method")
 	}
-	if !strings.Contains(out, "Handle") {
-		t.Error("expected Handle method")
+}
+
+func TestTmplMakeGateContent(t *testing.T) {
+	out := tmplMakeGate("CanPublish", "Post")
+	if !strings.Contains(out, "package actions") {
+		t.Error("expected package actions")
+	}
+	if !strings.Contains(out, "func CanPublish") {
+		t.Error("expected CanPublish function")
+	}
+	if !strings.Contains(out, "*uuid.UUID") {
+		t.Error("expected uuid return type")
 	}
 }
 
@@ -345,8 +357,8 @@ func TestTmplMakeScopeContent(t *testing.T) {
 	if !strings.Contains(out, "package scopes") {
 		t.Error("expected package scopes")
 	}
-	if !strings.Contains(out, "func Published()") {
-		t.Error("expected Published function")
+	if !strings.Contains(out, "func Published(q *PostScopeBuilder) *PostScopeBuilder") {
+		t.Error("expected Published function with ScopeBuilder signature")
 	}
 }
 

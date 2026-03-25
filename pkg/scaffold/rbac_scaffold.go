@@ -37,10 +37,24 @@ func MakeAction(name, projectDir string) (string, error) {
 	if strings.Contains(action, "_") {
 		actionSnake = strings.ToLower(action)
 	}
-	fileName := actionSnake + ".go"
-	relPath := filepath.Join("app", "actions", modelSnake, fileName)
+	actionFileName := actionSnake + ".go"
+	gateFileName := actionSnake + "_gate.go"
+	actionsDir := filepath.Join("app", "actions", modelSnake)
 	structName := names.SnakeToPascal(actionSnake) + "Action"
-	return writeScaffold(projectDir, relPath, tmplMakeAction(structName, names.SnakeToPascal(modelSnake)))
+	modelPascal := names.SnakeToPascal(modelSnake)
+
+	actionPath, err := writeScaffold(projectDir, filepath.Join(actionsDir, actionFileName), tmplMakeAction(structName, modelPascal))
+	if err != nil {
+		return "", err
+	}
+
+	gateFuncName := "Can" + names.SnakeToPascal(actionSnake)
+	_, err = writeScaffold(projectDir, filepath.Join(actionsDir, gateFileName), tmplMakeGate(gateFuncName, modelPascal))
+	if err != nil {
+		return actionPath, err
+	}
+
+	return actionPath, nil
 }
 
 // MakeScope scaffolds a new scope file.
@@ -100,10 +114,9 @@ type %s struct {
 }
 
 func (p *%s) Up() {
-	// Define roles and permissions
-	// p.Role("admin", func(r *RoleBuilder) {
-	//     r.Can("users.create", "users.delete")
-	// })
+	// p.CreateRole("editor").Name("Editor").Can("posts.create", "posts.edit")
+	// p.AlterRole("editor").RevokeCan("posts.delete")
+	// p.DropRole("viewer")
 }
 
 func (p *%s) Down() {
@@ -113,32 +126,49 @@ func (p *%s) Down() {
 }
 
 func tmplMakeAction(structName, modelName string) string {
+	modelParam := strings.ToLower(modelName[:1]) + modelName[1:]
 	return fmt.Sprintf(`package actions
 
-// %s defines the gate for the %s action on %s.
-type %s struct{}
-
-func (a %s) Authorize(userID string, %s interface{}) bool {
-	// TODO: implement authorization logic
-	return false
+// %s performs the %s action on a %s.
+type %s struct {
+	// Add action-specific fields here
 }
 
-func (a %s) Handle(%s interface{}) error {
+// Execute runs the action. The generator renames this to unexported execute()
+// so it can only be called through the gated model method.
+func (a %s) Execute(ctx *Context, %s *%s) error {
 	// TODO: implement action logic
 	return nil
 }
-`, structName, structName, modelName, structName, structName, strings.ToLower(modelName[:1])+modelName[1:], structName, strings.ToLower(modelName[:1])+modelName[1:])
+`, structName, structName, modelName, structName, structName, modelParam, modelName)
+}
+
+func tmplMakeGate(funcName, modelName string) string {
+	modelParam := strings.ToLower(modelName[:1]) + modelName[1:]
+	return fmt.Sprintf(`package actions
+
+import "github.com/google/uuid"
+
+// %s returns the authorizing role ID, or nil if denied.
+func %s(ctx *Context, %s *%s) *uuid.UUID {
+	// TODO: implement authorization logic
+	// Example: check ctx.HasAnyRole("admin", "moderator")
+	return nil
+}
+`, funcName, funcName, modelParam, modelName)
 }
 
 func tmplMakeScope(funcName, modelName string) string {
 	return fmt.Sprintf(`package scopes
 
-// %s is a query scope for %s.
-func %s() {
-	// TODO: implement scope logic
-	// Example: return q.Where("status", "=", "published")
+// %s filters %s records.
+// The first parameter is *models.%sScopeBuilder, return is *models.%sScopeBuilder.
+func %s(q *%sScopeBuilder) *%sScopeBuilder {
+	// TODO: add filters
+	// Example: q.WhereStatus("published")
+	return q
 }
-`, funcName, modelName, funcName)
+`, funcName, modelName, modelName, modelName, funcName, modelName, modelName)
 }
 
 func tmplMakeGraphQLPolicy(structName string) string {
@@ -149,15 +179,20 @@ type %s struct {
 }
 
 func (p *%s) Up() {
-	// Expose models and operations via GraphQL
 	// p.Expose("User", func(e *ExposeBuilder) {
-	//     e.Operations("query", "create", "update")
-	//     e.Roles("admin", "viewer")
+	//     e.List()
+	//     e.Show()
+	//     e.Create()
+	//     e.Update()
+	//     e.Delete()
 	// })
+	//
+	// p.ControllerAction("banUser", controllers.UserController{}.Ban)
 }
 
 func (p *%s) Down() {
-	// Reverse the policy
+	// p.Unexpose("User")
+	// p.RemoveAction("banUser")
 }
 `, structName, structName, structName)
 }

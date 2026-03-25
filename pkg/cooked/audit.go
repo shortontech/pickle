@@ -30,6 +30,11 @@ func AuditFailed(ctx *Context, action, model string, resourceID any, err error) 
 		userID, roles, action, model, resourceID, err)
 }
 
+// AuditHook is the function type for audit trail integration.
+// The generator wires this to the database-backed audit package when
+// audit tables are present. Default: no-op (log-only audit above handles it).
+var AuditHook func(ctx *Context, actionTypeID int, resourceID, resourceVersionID, roleID interface{}) error
+
 func auditUserID(ctx *Context) string {
 	if ctx == nil || ctx.auth == nil {
 		return ""

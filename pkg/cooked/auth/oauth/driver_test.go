@@ -372,6 +372,48 @@ func TestTokenEndpointWrongCredentials(t *testing.T) {
 	}
 }
 
+func TestTokenEndpointWrongClientIDOnly(t *testing.T) {
+	d, _ := testDriver(t, map[string]string{
+		"OAUTH_CLIENT_ID":     "correct-id",
+		"OAUTH_CLIENT_SECRET": "correct-secret",
+	})
+
+	body := strings.NewReader("grant_type=client_credentials")
+	req := httptest.NewRequest(http.MethodPost, "/oauth2/token", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", basicAuthHeader("wrong-id", "correct-secret"))
+
+	resp := d.TokenEndpoint(makeContext(req))
+	if resp.StatusCode != 401 {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+	m := resp.Body.(map[string]string)
+	if m["error"] != "invalid_client" {
+		t.Errorf("error = %q, want invalid_client", m["error"])
+	}
+}
+
+func TestTokenEndpointWrongSecretOnly(t *testing.T) {
+	d, _ := testDriver(t, map[string]string{
+		"OAUTH_CLIENT_ID":     "correct-id",
+		"OAUTH_CLIENT_SECRET": "correct-secret",
+	})
+
+	body := strings.NewReader("grant_type=client_credentials")
+	req := httptest.NewRequest(http.MethodPost, "/oauth2/token", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", basicAuthHeader("correct-id", "wrong-secret"))
+
+	resp := d.TokenEndpoint(makeContext(req))
+	if resp.StatusCode != 401 {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+	m := resp.Body.(map[string]string)
+	if m["error"] != "invalid_client" {
+		t.Errorf("error = %q, want invalid_client", m["error"])
+	}
+}
+
 func TestTokenEndpointSuccess(t *testing.T) {
 	d, mock := testDriver(t, map[string]string{
 		"OAUTH_CLIENT_ID":     "my-client",

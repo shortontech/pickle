@@ -1,8 +1,11 @@
 package cooked
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -23,6 +26,7 @@ type Context struct {
 	response http.ResponseWriter
 	params   map[string]string
 	auth     *AuthInfo
+	bodyBuf  []byte // cached request body for PeekJSON
 }
 
 // NewContext creates a Context from an HTTP request/response pair.
@@ -227,4 +231,37 @@ func (c *Context) BadRequest(msg string) Response {
 		Body:       map[string]string{"error": msg},
 		Headers:    map[string]string{"Content-Type": "application/json"},
 	}
+}
+
+// PeekJSON reads a top-level string field from a JSON request body without
+// consuming the body. The body is buffered so subsequent reads (Bind, etc.)
+// still work. Returns "" if the field is missing or the body isn't JSON.
+func (c *Context) PeekJSON(field string) string {
+	if c.bodyBuf == nil {
+		body, err := io.ReadAll(c.request.Body)
+		if err != nil {
+			return ""
+		}
+		c.bodyBuf = body
+		c.request.Body = io.NopCloser(bytes.NewReader(body))
+	} else {
+		// Reset the body reader for subsequent reads.
+		c.request.Body = io.NopCloser(bytes.NewReader(c.bodyBuf))
+	}
+
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(c.bodyBuf, &obj); err != nil {
+		return ""
+	}
+
+	raw, ok := obj[field]
+	if !ok {
+		return ""
+	}
+
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s
 }

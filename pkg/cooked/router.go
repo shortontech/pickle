@@ -43,6 +43,12 @@ func (r *Router) OnError(fn ErrorReporter) {
 	r.onError = fn
 }
 
+// OnRateLimit registers a callback that is invoked on every rate limit check
+// (both IP and auth layers). Use this for metrics and alerting.
+func (r *Router) OnRateLimit(fn func(ctx *Context, event RateLimitEvent)) {
+	rateLimitCallback = fn
+}
+
 // Routes creates a new Router by invoking the given configuration function.
 func Routes(fn func(r *Router)) *Router {
 	r := &Router{}
@@ -50,43 +56,60 @@ func Routes(fn func(r *Router)) *Router {
 	return r
 }
 
-func (r *Router) addRoute(method, path string, handler HandlerFunc, mw []MiddlewareFunc) {
+func (r *Router) addRoute(method, path string, handler HandlerFunc, mw []any) {
 	r.routes = append(r.routes, Route{
 		Method:     method,
 		Path:       path,
 		Handler:    handler,
-		Middleware: mw,
+		Middleware: resolveMiddleware(mw),
 	})
 }
 
+// resolveMiddleware converts a slice of any (MiddlewareFunc or MiddlewareProvider)
+// into a slice of MiddlewareFunc. This runs at route registration time, not per-request.
+func resolveMiddleware(mw []any) []MiddlewareFunc {
+	resolved := make([]MiddlewareFunc, 0, len(mw))
+	for _, m := range mw {
+		switch v := m.(type) {
+		case MiddlewareFunc:
+			resolved = append(resolved, v)
+		case MiddlewareProvider:
+			resolved = append(resolved, v.Middleware())
+		default:
+			panic(fmt.Sprintf("pickle: invalid middleware type %T — must be MiddlewareFunc or MiddlewareProvider", m))
+		}
+	}
+	return resolved
+}
+
 // Get registers a GET route.
-func (r *Router) Get(path string, handler HandlerFunc, mw ...MiddlewareFunc) {
+func (r *Router) Get(path string, handler HandlerFunc, mw ...any) {
 	r.addRoute("GET", path, handler, mw)
 }
 
 // Post registers a POST route.
-func (r *Router) Post(path string, handler HandlerFunc, mw ...MiddlewareFunc) {
+func (r *Router) Post(path string, handler HandlerFunc, mw ...any) {
 	r.addRoute("POST", path, handler, mw)
 }
 
 // Put registers a PUT route.
-func (r *Router) Put(path string, handler HandlerFunc, mw ...MiddlewareFunc) {
+func (r *Router) Put(path string, handler HandlerFunc, mw ...any) {
 	r.addRoute("PUT", path, handler, mw)
 }
 
 // Patch registers a PATCH route.
-func (r *Router) Patch(path string, handler HandlerFunc, mw ...MiddlewareFunc) {
+func (r *Router) Patch(path string, handler HandlerFunc, mw ...any) {
 	r.addRoute("PATCH", path, handler, mw)
 }
 
 // Delete registers a DELETE route.
-func (r *Router) Delete(path string, handler HandlerFunc, mw ...MiddlewareFunc) {
+func (r *Router) Delete(path string, handler HandlerFunc, mw ...any) {
 	r.addRoute("DELETE", path, handler, mw)
 }
 
 // Group creates a sub-router with a shared prefix and optional middleware.
-func (r *Router) Group(prefix string, body func(*Router), mw ...MiddlewareFunc) {
-	g := &Router{prefix: prefix, middleware: mw}
+func (r *Router) Group(prefix string, body func(*Router), mw ...any) {
+	g := &Router{prefix: prefix, middleware: resolveMiddleware(mw)}
 	body(g)
 	r.groups = append(r.groups, g)
 }
@@ -100,7 +123,7 @@ type ResourceController interface {
 	Destroy(*Context) Response
 }
 
-func (r *Router) Resource(prefix string, c ResourceController, mw ...MiddlewareFunc) {
+func (r *Router) Resource(prefix string, c ResourceController, mw ...any) {
 	r.addRoute("GET", prefix, c.Index, mw)
 	r.addRoute("GET", prefix+"/:id", c.Show, mw)
 	r.addRoute("POST", prefix, c.Store, mw)
@@ -162,7 +185,8 @@ func (r *Router) RegisterRoutes(mux *http.ServeMux) {
 		onError := r.onError
 		handler := func(w http.ResponseWriter, req *http.Request) {
 			// Framework-level rate limiting — runs before everything else.
-			if resp := checkRateLimit(req); resp != nil {
+			resp, ipRLHeaders := checkRateLimit(req)
+			if resp != nil {
 				resp.Write(w)
 				return
 			}
@@ -197,10 +221,17 @@ func (r *Router) RegisterRoutes(mux *http.ServeMux) {
 				mw = route.Middleware
 			}
 
-			resp := RunMiddleware(ctx, mw, func() Response {
+			result := RunMiddleware(ctx, mw, func() Response {
 				return route.Handler(ctx)
 			})
-			resp.Write(w)
+			// Attach IP-layer rate limit headers to the response.
+			for k, v := range ipRLHeaders {
+				if result.Headers == nil {
+					result.Headers = make(map[string]string)
+				}
+				result.Headers[k] = v
+			}
+			result.Write(w)
 		}
 
 		if registered[pattern] {

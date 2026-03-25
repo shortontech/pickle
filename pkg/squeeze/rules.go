@@ -63,6 +63,7 @@ func AllRules() map[string]Rule {
 		"encrypted_missing_key_config":           ruleEncryptedMissingKeyConfig,
 		"float_column":                           ruleFloatColumn,
 		"float_request_field":                    ruleFloatRequestField,
+		"raw_sql":                                ruleRawSQL,
 		"raw_query_builder_access":               ruleRawQueryBuilderAccess,
 		"stale_role_annotation":                  ruleStaleRoleAnnotation,
 		"unknown_role_annotation":                ruleUnknownRoleAnnotation,
@@ -1467,6 +1468,70 @@ func ruleRawQueryBuilderAccess(ctx *AnalysisContext) []Finding {
 			})
 			return true
 		})
+	}
+	return findings
+}
+
+// ruleRawSQL flags direct database/sql calls (Query, Exec, QueryRow and their
+// Context variants) in controllers. Controllers should use the generated query
+// builder — raw SQL bypasses parameterization guards, ownership scoping, column
+// visibility, and audit hooks.
+func ruleRawSQL(ctx *AnalysisContext) []Finding {
+	sqlMethods := map[string]bool{
+		"Query":           true,
+		"QueryRow":        true,
+		"Exec":            true,
+		"QueryContext":    true,
+		"QueryRowContext": true,
+		"ExecContext":     true,
+	}
+
+	findRawSQL := func(body *ast.BlockStmt, fset *token.FileSet, file string, via string) []Finding {
+		var out []Finding
+		ast.Inspect(body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || !sqlMethods[sel.Sel.Name] {
+				return true
+			}
+			if len(call.Args) == 0 {
+				return true
+			}
+			lit, ok := call.Args[0].(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			upper := strings.ToUpper(strings.Trim(lit.Value, "`\""))
+			if strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "INSERT") ||
+				strings.HasPrefix(upper, "UPDATE") || strings.HasPrefix(upper, "DELETE") ||
+				strings.HasPrefix(upper, "WITH") {
+				msg := "raw SQL via " + sel.Sel.Name + "() — use the generated query builder instead"
+				if via != "" {
+					msg = "raw SQL via " + sel.Sel.Name + "() in " + via + " — use the generated query builder instead"
+				}
+				out = append(out, Finding{
+					Rule:     "raw_sql",
+					Severity: SeverityError,
+					File:     file,
+					Line:     fset.Position(call.Pos()).Line,
+					Message:  msg,
+				})
+			}
+			return true
+		})
+		return out
+	}
+
+	var findings []Finding
+	for _, m := range ctx.Methods {
+		findings = append(findings, findRawSQL(m.Body, m.Fset, m.File, "")...)
+	}
+	for name, fn := range ctx.FuncRegistry {
+		file := fn.Fset.Position(fn.Body.Pos()).Filename
+		findings = append(findings, findRawSQL(fn.Body, fn.Fset, file, name+"()")...)
 	}
 	return findings
 }

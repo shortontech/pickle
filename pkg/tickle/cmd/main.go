@@ -85,6 +85,16 @@ var templates = []struct {
 		output:  "pkg/generator/embed_auth_oauth_migrations.go",
 		perFile: true,
 	},
+	{
+		srcDir:  "pkg/cooked/rbac/migrations",
+		output:  "pkg/generator/embed_rbac_migrations.go",
+		perFile: true,
+	},
+	{
+		srcDir:  "pkg/cooked/graphql/migrations",
+		output:  "pkg/generator/embed_graphql_migrations.go",
+		perFile: true,
+	},
 }
 
 func main() {

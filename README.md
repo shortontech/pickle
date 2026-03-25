@@ -28,9 +28,15 @@ Pickle is different. It makes entire vulnerability classes structurally impossib
 - **Encryption at rest** — Columns marked `.Encrypted()` are transparently encrypted before storage and decrypted on read. Columns marked `.Sealed()` are write-only — they can be verified but never retrieved in plaintext. The query builder enforces both: no range queries on encrypted columns, no WHERE clauses on sealed columns.
 - **Data tampering** — Immutable and append-only tables are cryptographically hash-chained. Every row's `row_hash` includes the previous row's hash — tampering with any historical record breaks the chain. Periodic Merkle tree checkpoints give O(log n) inclusion proofs you can hand to an auditor.
 
+**Impossible by construction (RBAC and actions):**
+
+- **Ungated actions** — every action requires a gate function. The generator refuses to produce output if a gate is missing. The action method is renamed to unexported in the compiled output, so it can only be called through the gated model method.
+- **Role visibility leaks** — column annotations (`ComplianceSees()`, `SupportSees()`) generate `SelectFor(role)` query scopes. Unknown roles see only `Public()` columns. `Manages()` roles see everything. Squeeze flags controllers that query role-annotated models without calling `SelectFor*`.
+- **Audit trail gaps** — every successful action execution writes an append-only audit row in the same database transaction as the action. Both succeed or both roll back. No action persists without its audit record.
+
 **Visible by convention:**
 
-- Every endpoint, its middleware stack, and its grouping are in one file: `routes/web.go`. A missing `Auth` or `RequireRole` is immediately obvious — to you and to any AI reviewing your code. One file, entire API surface, 30-second security review.
+- Every endpoint, its middleware stack, and its grouping are in one file: `routes/web.go`. A missing `Auth`, `LoadRoles`, or `RequireRole` is immediately obvious — to you and to any AI reviewing your code. One file, entire API surface, 30-second security review.
 
 **Caught at build time by Squeeze:**
 
@@ -88,6 +94,14 @@ If something's wrong, Squeeze tells you exactly where:
 | `encrypted_column_order_by` | error | ORDER BY on an `.Encrypted()` column — ciphertext sort order is random |
 | `encrypted_sealed_conflict` | error | Column marked both `.Encrypted()` and `.Sealed()` — pick one |
 | `encrypted_missing_key_config` | error | `.Encrypted()` columns exist but no encryption key is configured |
+| `stale_role_annotation` | warning | Migration uses `XxxSees()` for a role removed via policy |
+| `unknown_role_annotation` | error | Migration uses `XxxSees()` for a role that has never been defined |
+| `role_without_load` | error | `RequireRole()` used but `LoadRoles` not in middleware chain |
+| `default_role_missing` | error | Policies exist but no role has `.Default()`, or multiple do |
+| `ungated_action` | error | Action exists with no corresponding gate |
+| `direct_execute_call` | error | Action method called directly instead of through the gated model method |
+| `scope_builder_leak` | error | `ScopeBuilder` referenced outside `database/scopes/` |
+| `query_builder_in_scope` | error | `XxxQuery` referenced inside `database/scopes/` |
 
 No pickle ships without being squeezed first.
 
@@ -106,9 +120,11 @@ A functioning Pickle app is ~2,000 tokens of source. Controllers are pure busine
 Pickle ships an MCP server that gives AI models queryable access to your project's structure — without dumping source files into context.
 
 ```
-pickle schema:show transfers    → exact table structure, no reading migrations
+pickle schema:show transfers    → exact table structure with visibility annotations
 pickle routes:list              → every endpoint, middleware, request class
-pickle requests:list            → all validation rules at a glance
+pickle roles:list               → all RBAC roles with permissions
+pickle roles:show admin         → single role with column visibility and action grants
+pickle graphql:list             → exposed GraphQL models with operations
 pickle make:controller          → scaffold via tooling, not by writing boilerplate
 ```
 
@@ -143,6 +159,9 @@ See the [Getting Started guide](docs/GettingStarted.md) to create your first Pic
 | [GraphQL](docs/GraphQL.md) | Auto-generated GraphQL API from migrations |
 | [Cron Jobs](docs/CronJobs.md) | Scheduled background tasks |
 | [Encryption](docs/Encryption.md) | Encryption at rest and sealed columns |
+| [RBAC](docs/RBAC.md) | Role-based access control, column visibility, role-aware queries |
+| [Policies](docs/Policies.md) | Role policies and GraphQL exposure policies |
+| [Actions](docs/Actions.md) | Gated actions, scopes, and audit trails |
 | [Ledger Example](testdata/ledger/README.md) | Immutable tables, append-only tables, DB permissions |
 
 ### Immutable Tables & Cryptographic Integrity
@@ -217,6 +236,7 @@ Schedule recurring tasks with `pickle make:job`. Jobs run inside your compiled b
 
 ```
 Migrations → Models → Query Builders → Controllers → Routes
+Policies   → Roles  → Gates          → Actions     → Audit Trail
      ↑ single source of truth              ↑ pure intent
 ```
 

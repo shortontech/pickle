@@ -22,21 +22,27 @@ You Write (source of truth):              Pickle Generates (don't edit):
 │       │   ├── user_controller.go        │   │   └── requests/
 │       │   ├── post_controller.go        │   │       └── bindings_gen.go ← request deserialization + validation
 │       │   └── helpers.go                │   └── models/
-│       ├── middleware/                   │       ├── pickle_gen.go       ← QueryBuilder[T], DB
+│       ├── middleware/                   │       ├── pickle_gen.go       ← QueryBuilder[T], ScopeBuilder[T], DB
 │       │   └── auth.go                   │       ├── user.go             ← struct from migration
-│       └── requests/                     │       ├── user_query.go       ← WhereEmail(), etc.
-│           ├── create_user.go            │       ├── post.go
-│           ├── update_user.go            │       └── post_query.go
-│           ├── create_post.go            ├── config/
-│           └── update_post.go            │   └── pickle_gen.go           ← Config loading
-├── cmd/server/                           └── database/
-│   └── main.go                               └── migrations/
-├── routes/                                       └── types_gen.go       ← Migration, Table, Column types
-│   └── web.go
+│       └── requests/                     │       ├── user_query.go       ← WhereEmail(), SelectFor(), etc.
+│           ├── create_user.go            │       ├── user_scope.go       ← UserScopeBuilder
+│           ├── update_user.go            │       ├── post.go
+│           ├── create_post.go            │       └── post_query.go
+│           └── update_post.go            ├── config/
+├── cmd/server/                           │   └── pickle_gen.go           ← Config loading
+│   └── main.go                           └── database/
+├── routes/                                   └── migrations/
+│   └── web.go                                    └── types_gen.go       ← Migration, Table, Column types
 ├── database/
-│   └── migrations/
-│       ├── 2026_02_21_100000_create_users_table.go
-│       └── 2026_02_21_100001_create_posts_table.go
+│   ├── migrations/
+│   │   ├── 2026_02_21_100000_create_users_table.go
+│   │   └── 2026_02_21_100001_create_posts_table.go
+│   ├── policies/                         ← Role lifecycle (create/alter/drop)
+│   │   └── 2026_03_23_000001_initial_roles.go
+│   ├── policies/graphql/                 ← GraphQL exposure policies
+│   │   └── 2026_03_25_000001_core_api.go
+│   ├── actions/{model}/                  ← Gated actions (ban.go + ban_gate.go)
+│   └── scopes/{model}/                   ← Restricted query scopes
 ├── config/
 │   ├── app.go
 │   └── database.go
@@ -366,8 +372,8 @@ Parameterized middleware returns a `pickle.MiddlewareFunc`:
 ```go
 func RequireRole(roles ...string) pickle.MiddlewareFunc {
     return func(ctx *pickle.Context, next func() pickle.Response) pickle.Response {
-        if !slices.Contains(roles, ctx.Auth().Role) {
-            return ctx.Forbidden("insufficient permissions")
+        if !ctx.HasAnyRole(roles...) {
+            return ctx.Forbidden("insufficient role")
         }
         return next()
     }
@@ -388,7 +394,7 @@ func RequestTimer(ctx *pickle.Context, next func() pickle.Response) pickle.Respo
 The stack executes as nested calls. Group middleware runs first (outermost), then per-route middleware, then the controller:
 
 ```
-Request → RateLimit → Auth → RequireKYB → Controller → Response
+Request → RateLimit → Auth → LoadRoles → RequireRole → Controller → Response
 ```
 
 Any layer can return early. The response bubbles back up through the stack, hitting post-processing in each layer on the way out.
@@ -402,10 +408,14 @@ Tickle is Pickle's internal build tool. It takes Go source files from Pickle's o
 go run ./pkg/tickle/cmd/
 ```
 
-This pre-generates three embedded templates in `pkg/generator/`:
-- `embed_http.go` — Context, Response, Router, Middleware, Controller (from `pkg/cooked/`)
-- `embed_query.go` — QueryBuilder[T] (from `pkg/cooked/query.go`)
-- `embed_schema.go` — Migration, Table, Column types (from `pkg/schema/`)
+This pre-generates embedded templates in `pkg/generator/`:
+- `embed_http.go` — Context, Response, Router, Middleware, Controller, RBAC middleware (from `pkg/cooked/`)
+- `embed_query.go` — QueryBuilder[T], ScopeBuilder[T], transactions, locks, encryption (from `pkg/cooked/`)
+- `embed_schema.go` — Migration, Table, Column, Policy, GraphQLPolicy types (from `pkg/schema/`)
+- `embed_policy.go` — PolicyRunner, GraphQLPolicyRunner, derive functions (from `pkg/migration/`)
+- `embed_migration.go` — Migration runner, SQL generators (from `pkg/migration/`)
+- `embed_config.go`, `embed_graphql.go`, `embed_scheduler.go` — other subsystems
+- `embed_*_migrations.go` — per-file embeds for auth, RBAC, GraphQL, and audit driver migrations
 
 Each template uses `__PACKAGE__` as a placeholder. At generation time, the generator does a simple string replace with the target package name and writes the file. No AST parsing, no runtime file I/O from Pickle's source tree.
 
@@ -422,32 +432,58 @@ pickle/
 │   │   ├── generate.go            ← Main orchestrator
 │   │   ├── core_generator.go      ← Writes pre-tickled templates with package substitution
 │   │   ├── model_generator.go     ← Generates model structs from schema
-│   │   ├── scope_generator.go     ← Generates typed query scopes (WhereX, WithX)
+│   │   ├── scope_generator.go     ← Generates typed query scopes (WhereX, SelectFor, ScopeBuilder)
 │   │   ├── binding_generator.go   ← Generates request deserialization + validation
 │   │   ├── schema_inspector.go    ← Generates temp program to extract schema from migrations
-│   │   ├── embed_http.go          ← PRE-TICKLED: Context, Response, Router, etc.
-│   │   ├── embed_query.go         ← PRE-TICKLED: QueryBuilder[T]
-│   │   └── embed_schema.go        ← PRE-TICKLED: Migration, Table, Column
+│   │   ├── action_generator.go    ← Scans actions, validates gates, generates wiring
+│   │   ├── scope_wiring_generator.go ← Reads user scopes, generates query wrappers
+│   │   ├── rbac_generator.go      ← Writes RBAC baked-in migrations
+│   │   ├── rbac_gate_generator.go ← Generates default gates from Can() declarations
+│   │   ├── audit_generator.go     ← Writes audit trail baked-in migrations
+│   │   ├── column_annotation_generator.go ← Generates XxxSees() from derived roles
+│   │   ├── graphql_exposure_generator.go  ← Filters models by GraphQL policies
+│   │   └── embed_*.go             ← PRE-TICKLED templates (gitignored, regenerated by tickle)
 │   ├── cooked/                    ← Source-of-truth Go types (tickled into templates)
-│   │   ├── context.go
+│   │   ├── context.go             ← Context with auth + role methods
 │   │   ├── response.go
 │   │   ├── router.go
 │   │   ├── middleware.go
+│   │   ├── rbac_middleware.go     ← RequireRole, RequireAdmin
 │   │   ├── controller.go
-│   │   ├── query.go
-│   │   └── scopes.go              ← Scope templates (pickle:scope directives)
+│   │   ├── query.go               ← QueryBuilder[T] + ScopeBuilder[T]
+│   │   ├── scopes.go              ← Scope templates (pickle:scope directives)
+│   │   ├── audit.go               ← Audit trail hooks
+│   │   ├── errors.go              ← Typed errors (ErrUnauthorized, etc.)
+│   │   ├── rbac/migrations/       ← Baked-in: roles, role_actions, role_user, rbac_changelog
+│   │   ├── graphql/migrations/    ← Baked-in: graphql_changelog, exposures, actions
+│   │   └── audit/migrations/      ← Baked-in: model_types, action_types, user_actions
 │   ├── tickle/                    ← Generator of generators
 │   │   ├── tickle.go              ← Reads Go files, merges with package substitution
 │   │   ├── scopes.go              ← Scope block parser and expander
 │   │   └── cmd/main.go            ← CLI: run `tickle` with no args from repo root
-│   ├── schema/                    ← Migration DSL types (source of truth for tickle)
-│   │   ├── migration.go
+│   ├── schema/                    ← DSL types (source of truth for tickle)
+│   │   ├── migration.go           ← Migration base type
+│   │   ├── policy.go              ← Policy base type (CreateRole, AlterRole, DropRole)
+│   │   ├── graphql_policy.go      ← GraphQLPolicy (Expose, Unexpose, ControllerAction)
 │   │   ├── table.go
-│   │   ├── column.go
+│   │   ├── column.go              ← Column with VisibleTo map + RoleSees()
 │   │   └── types.go
-│   ├── watcher/
-│   │   └── watcher.go             ← File system watcher for --watch mode
-│   └── migration/                 ← Migration runner (not yet implemented)
+│   ├── migration/                 ← Runners (//go:build ignore — tickled into user projects)
+│   │   ├── runner.go              ← Migration runner
+│   │   ├── policy_runner.go       ← Role policy runner + DeriveRoles
+│   │   └── graphql_policy_runner.go ← GraphQL policy runner + DeriveGraphQLState
+│   ├── squeeze/                   ← Linting & validation rules
+│   │   ├── rules.go               ← Core squeeze rules
+│   │   ├── rbac_rules.go          ← RBAC-specific rules
+│   │   └── action_rules.go        ← Action/scope rules
+│   ├── scaffold/                  ← CLI scaffolding
+│   │   ├── scaffold.go            ← Core scaffolds (controller, migration, etc.)
+│   │   └── rbac_scaffold.go       ← Policy, action, scope, graphql-policy scaffolds
+│   ├── mcp/                       ← MCP server for AI assistants
+│   │   ├── server.go
+│   │   └── rbac_tools.go          ← roles:list, roles:show, graphql:list
+│   └── watcher/
+│       └── watcher.go             ← File system watcher for --watch mode
 ├── testdata/
 │   └── basic-crud/                ← Test app: users, posts (compiles standalone)
 │       ├── app/
@@ -467,15 +503,23 @@ pickle/
 ## CLI Commands
 
 ```bash
-pickle --watch           # Watch for changes, regenerate on save
-pickle generate          # One-shot: generate all files
-pickle migrate           # Run pending migrations
-pickle migrate:rollback  # Rollback last migration batch
-pickle migrate:status    # Show migration status
-pickle make:controller   # Scaffold a new controller
-pickle make:migration    # Scaffold a new migration
-pickle make:request      # Scaffold a new request class
-pickle make:middleware    # Scaffold a new middleware
+pickle --watch              # Watch for changes, regenerate on save
+pickle generate            # One-shot: generate all files
+pickle migrate             # Run pending migrations, role policies, GraphQL policies
+pickle migrate:rollback    # Rollback last migration batch
+pickle migrate:status      # Show migration status
+pickle policies:status     # Show role policy status
+pickle policies:rollback   # Rollback last role policy batch
+pickle graphql:status      # Show GraphQL policy status
+pickle graphql:rollback    # Rollback last GraphQL policy batch
+pickle make:controller     # Scaffold a new controller
+pickle make:migration      # Scaffold a new migration
+pickle make:request        # Scaffold a new request class
+pickle make:middleware      # Scaffold a new middleware
+pickle make:policy         # Scaffold a new role policy
+pickle make:action         # Scaffold a new action + gate
+pickle make:scope          # Scaffold a new query scope
+pickle make:graphql-policy # Scaffold a new GraphQL exposure policy
 ```
 
 ## What Pickle Is NOT
@@ -498,6 +542,13 @@ Pickle makes the secure path the default and the insecure path impossible or vis
 - **Rate limiting** — built into the router, not just middleware. Every request hits a per-IP token bucket *before* middleware or handlers execute — same level as panic recovery. Configured via `RATE_LIMIT_RPS` (default: 10) and `RATE_LIMIT_BURST` (default: 20) in `.env`. Returns 429 with `Retry-After` header. Disabled with `RATE_LIMIT=false`. For per-route overrides, `pickle.RateLimit(rps, burst)` returns a `MiddlewareFunc` that runs its own independent limiter. Proxy-aware: reads `X-Forwarded-For` and `X-Real-IP` before falling back to `RemoteAddr`. Stale buckets are cleaned up automatically.
 - **Panic recovery** — the router catches panics in handlers and returns a 500 response instead of crashing the process. Recovered panics are forwarded to the `OnError` reporter for external error tracking (Sentry, Datadog, etc.).
 - **Secrets** — `pickle new` scaffolds a `.gitignore` that excludes `.env` and `.env.local`. Secrets never end up in version control by default.
+
+### By Design — RBAC and Gates
+
+- **Role-based access control** — roles are defined in policy files, not config. `CreateRole("admin").Manages().Can("users.ban")` is code, not a database record. The policy runner applies them transactionally with full rollback support.
+- **Gate enforcement** — every action requires a gate. Generate fails if a gate is missing. The generator renames the action method to unexported (`Ban()` → `ban()`) so it can only be called through the gated model method. Same-package bypass is caught by squeeze.
+- **Action audit trail** — every successful action execution is recorded in an append-only `user_actions` table in the same transaction as the action. Gate denials and failures don't produce audit rows — nothing changed, nothing to audit.
+- **Column visibility** — role-specific column annotations (`ComplianceSees()`, `SupportSees()`) generate `SelectFor(role)` query scopes that restrict SELECT clauses by role. Unknown roles see only `Public()` columns. `Manages()` roles see everything.
 
 ### By Design — Auth Drivers
 
@@ -573,9 +624,12 @@ Convention over configuration means the LLM never has to search. Validation is i
 
 A Pickle MCP server gives LLMs queryable access to the project without consuming context on source files:
 
-- **`pickle schema:show transfers`** — returns the exact table structure. No reading migration files.
+- **`pickle schema:show transfers`** — returns the exact table structure with visibility annotations. No reading migration files.
 - **`pickle routes:list`** — every endpoint, its middleware, its request class. One call.
-- **`pickle make:migration`**, **`pickle make:controller`** — the LLM scaffolds via tools, not by writing boilerplate.
+- **`pickle roles:list`** — all current roles with permissions. Derived from policy files.
+- **`pickle roles:show admin`** — single role with column visibility per table and action grants.
+- **`pickle graphql:list`** — exposed models with their operations. Derived from GraphQL policies.
+- **`pickle make:migration`**, **`pickle make:controller`**, **`pickle make:action`** — the LLM scaffolds via tools, not by writing boilerplate.
 
 LLMs understand both MVC conventions and Go. Pickle sits at the intersection — the LLM already understands the intent (convention-based MVC) and the output (idiomatic Go). The framework is the bridge between two things the LLM already knows.
 
@@ -658,7 +712,7 @@ This applies everywhere: migrations, models, config, auth drivers. If a driver s
 
 ### Driver Migrations
 
-Any driver (auth, billing, notifications, etc.) can ship its own migrations. Driver migrations live in a subdirectory of `database/migrations/` named after the driver — never in the user's root migration directory. For example, the session auth driver writes to `database/migrations/auth/`, not `database/migrations/`. Driver migrations follow all the same rules: timestamp prefixes, `_gen.go` suffix, one struct per file, override pattern applies. The migration runner flattens all subdirectories for execution order. The directory is for ownership boundaries, not execution order.
+Any driver (auth, RBAC, audit, etc.) can ship its own migrations. Driver migrations live in a subdirectory of `database/migrations/` named after the driver — never in the user's root migration directory. For example, the session auth driver writes to `database/migrations/auth/`, RBAC writes to `database/migrations/rbac/`, audit writes to `database/migrations/audit/`. Driver migrations follow all the same rules: timestamp prefixes, `_gen.go` suffix, one struct per file, override pattern applies. The migration runner flattens all subdirectories for execution order. The directory is for ownership boundaries, not execution order.
 
 ## Philosophy
 

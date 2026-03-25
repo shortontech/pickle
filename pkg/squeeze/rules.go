@@ -60,6 +60,7 @@ func AllRules() map[string]Rule {
 		"encrypted_missing_key_config":           ruleEncryptedMissingKeyConfig,
 		"float_column":                           ruleFloatColumn,
 		"float_request_field":                    ruleFloatRequestField,
+		"raw_query_builder_access":               ruleRawQueryBuilderAccess,
 	}
 }
 
@@ -1409,6 +1410,52 @@ func ruleFloatRequestField(ctx *AnalysisContext) []Finding {
 				})
 			}
 		}
+	}
+	return findings
+}
+
+// ruleRawQueryBuilderAccess flags direct access to the embedded QueryBuilder or
+// ImmutableQueryBuilder field when calling column-name methods (OrderBy, Where,
+// WhereIn, WhereNotIn). Terminal methods (First, All, Count, Create, Update,
+// Delete) are not flagged because they don't accept column name arguments.
+func ruleRawQueryBuilderAccess(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+
+	flaggedMethods := map[string]bool{
+		"OrderBy":    true,
+		"Where":      true,
+		"WhereIn":    true,
+		"WhereNotIn": true,
+	}
+	builderNames := map[string]bool{
+		"QueryBuilder":          true,
+		"ImmutableQueryBuilder": true,
+	}
+
+	for _, m := range ctx.Methods {
+		ast.Inspect(m.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || !flaggedMethods[sel.Sel.Name] {
+				return true
+			}
+			// Check if the receiver is .QueryBuilder or .ImmutableQueryBuilder
+			inner, ok := sel.X.(*ast.SelectorExpr)
+			if !ok || !builderNames[inner.Sel.Name] {
+				return true
+			}
+			findings = append(findings, Finding{
+				Rule:     "raw_query_builder_access",
+				Severity: SeverityWarning,
+				File:     m.File,
+				Line:     m.Fset.Position(call.Pos()).Line,
+				Message:  "direct " + inner.Sel.Name + "." + sel.Sel.Name + "() bypasses typed query API — use the generated OrderBy{Column}/Where{Column} methods instead",
+			})
+			return true
+		})
 	}
 	return findings
 }

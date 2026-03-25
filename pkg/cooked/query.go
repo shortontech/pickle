@@ -150,6 +150,105 @@ func (q *QueryBuilder[T]) setVisibility(v visibilityMode) {
 	q.visibility = v
 }
 
+// ScopeBuilder is a restricted query builder that exposes filter/sort methods
+// but no terminal methods (First, All, Count, Create, Update, Delete).
+// Scopes are defined against this type to prevent data access in scope functions.
+type ScopeBuilder[T any] struct {
+	conditions   []condition
+	orderBy      []string
+	limit        int
+	offset       int
+	selectedCols []string
+	visibility   visibilityMode
+}
+
+// NewScopeBuilder creates a ScopeBuilder from a QueryBuilder's current state.
+func NewScopeBuilder[T any](q *QueryBuilder[T]) *ScopeBuilder[T] {
+	sb := &ScopeBuilder[T]{
+		conditions:   append([]condition{}, q.conditions...),
+		orderBy:      append([]string{}, q.orderBy...),
+		limit:        q.limit,
+		offset:       q.offset,
+		selectedCols: append([]string{}, q.selectedCols...),
+		visibility:   q.visibility,
+	}
+	return sb
+}
+
+// ApplyScopeBuilder merges a ScopeBuilder's state back into a QueryBuilder.
+func ApplyScopeBuilder[T any](q *QueryBuilder[T], sb *ScopeBuilder[T]) *QueryBuilder[T] {
+	q.conditions = append(q.conditions, sb.conditions...)
+	q.orderBy = append(q.orderBy, sb.orderBy...)
+	if sb.limit > 0 {
+		q.limit = sb.limit
+	}
+	if sb.offset > 0 {
+		q.offset = sb.offset
+	}
+	if len(sb.selectedCols) > 0 {
+		q.selectedCols = sb.selectedCols
+	}
+	if sb.visibility != visibilityNone {
+		q.visibility = sb.visibility
+	}
+	return q
+}
+
+func (sb *ScopeBuilder[T]) where(column string, value any) *ScopeBuilder[T] {
+	sb.conditions = append(sb.conditions, condition{column: column, op: "=", value: value})
+	return sb
+}
+
+func (sb *ScopeBuilder[T]) whereOp(column, op string, value any) *ScopeBuilder[T] {
+	sb.conditions = append(sb.conditions, condition{column: column, op: op, value: value})
+	return sb
+}
+
+func (sb *ScopeBuilder[T]) whereIn(column string, values any) *ScopeBuilder[T] {
+	sb.conditions = append(sb.conditions, condition{column: column, op: "IN", value: values})
+	return sb
+}
+
+func (sb *ScopeBuilder[T]) whereNotIn(column string, values any) *ScopeBuilder[T] {
+	sb.conditions = append(sb.conditions, condition{column: column, op: "NOT IN", value: values})
+	return sb
+}
+
+// OrderBy adds an ORDER BY clause to the scope builder.
+func (sb *ScopeBuilder[T]) OrderBy(column, direction string) *ScopeBuilder[T] {
+	if !validSQLIdentifier(column) {
+		panic("pickle: OrderBy column must be a valid identifier, got: " + column)
+	}
+	dir := strings.ToUpper(strings.TrimSpace(direction))
+	if dir != "ASC" && dir != "DESC" {
+		panic("pickle: OrderBy direction must be ASC or DESC, got: " + direction)
+	}
+	sb.orderBy = append(sb.orderBy, column+" "+dir)
+	return sb
+}
+
+// Limit sets the LIMIT clause.
+func (sb *ScopeBuilder[T]) Limit(n int) *ScopeBuilder[T] {
+	sb.limit = n
+	return sb
+}
+
+// Offset sets the OFFSET clause.
+func (sb *ScopeBuilder[T]) Offset(n int) *ScopeBuilder[T] {
+	sb.offset = n
+	return sb
+}
+
+// addSelect adds a column to the explicit select list.
+func (sb *ScopeBuilder[T]) addSelect(col string) {
+	sb.selectedCols = append(sb.selectedCols, col)
+}
+
+// setVisibility sets the visibility mode.
+func (sb *ScopeBuilder[T]) setVisibility(v visibilityMode) {
+	sb.visibility = v
+}
+
 // db returns the database executor for this query — either the transaction
 // connection or the global DB (or a named connection). When a ManagedConnection
 // is acquired, call releaseConn() when the query completes.

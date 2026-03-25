@@ -114,6 +114,48 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 		generateOrderByMethods(&b, table, queryType, "QueryBuilder")
 	}
 
+	// Generate the ScopeBuilder wrapper type
+	scopeBuilderType := structName + "ScopeBuilder"
+	b.WriteString(fmt.Sprintf("// %s provides filter/sort methods without terminal methods (First, All, Create, etc.).\n", scopeBuilderType))
+	b.WriteString(fmt.Sprintf("// Scopes are defined against this type to prevent data access in scope functions.\n"))
+	b.WriteString(fmt.Sprintf("type %s struct {\n\t*ScopeBuilder[%s]\n}\n\n", scopeBuilderType, structName))
+
+	// toScopeBuilder and applyScopeBuilder
+	b.WriteString(fmt.Sprintf("// ToScopeBuilder creates a %s from this query's current state.\n", scopeBuilderType))
+	b.WriteString(fmt.Sprintf("func (q *%s) ToScopeBuilder() *%s {\n", queryType, scopeBuilderType))
+	b.WriteString(fmt.Sprintf("\treturn &%s{ScopeBuilder: NewScopeBuilder[%s](q.QueryBuilder)}\n", scopeBuilderType, structName))
+	b.WriteString("}\n\n")
+
+	b.WriteString(fmt.Sprintf("// ApplyScope applies a scope builder's filters back onto this query.\n"))
+	b.WriteString(fmt.Sprintf("func (q *%s) ApplyScope(sb *%s) *%s {\n", queryType, scopeBuilderType, queryType))
+	b.WriteString(fmt.Sprintf("\tApplyScopeBuilder[%s](q.QueryBuilder, sb.ScopeBuilder)\n", structName))
+	b.WriteString("\treturn q\n")
+	b.WriteString("}\n\n")
+
+	// Generate Where* methods on the ScopeBuilder for each column
+	for _, col := range table.Columns {
+		if col.IsEncrypted || col.IsSealed {
+			continue
+		}
+		pascal := snakeToPascal(col.Name)
+		goType := columnGoType(col)
+		b.WriteString(fmt.Sprintf("func (sb *%s) Where%s(%s %s) *%s {\n", scopeBuilderType, pascal, toLowerFirst(pascal), goType, scopeBuilderType))
+		b.WriteString(fmt.Sprintf("\tsb.where(%q, %s)\n", col.Name, toLowerFirst(pascal)))
+		b.WriteString("\treturn sb\n")
+		b.WriteString("}\n\n")
+	}
+
+	// ScopeBuilder Limit/Offset/OrderBy chainable wrappers
+	for _, m := range []struct{ name, sig, call string }{
+		{"Limit", "n int", "Limit(n)"},
+		{"Offset", "n int", "Offset(n)"},
+	} {
+		b.WriteString(fmt.Sprintf("func (sb *%s) %s(%s) *%s {\n", scopeBuilderType, m.name, m.sig, scopeBuilderType))
+		b.WriteString(fmt.Sprintf("\tsb.ScopeBuilder.%s\n", m.call))
+		b.WriteString("\treturn sb\n")
+		b.WriteString("}\n\n")
+	}
+
 	// Generate LockInfo() for all table types
 	b.WriteString(fmt.Sprintf("// LockInfo returns the current lock status for the %s table.\n", table.Name))
 	b.WriteString(fmt.Sprintf("// Queries pg_locks and pg_stat_activity. Use for monitoring, not application logic.\n"))

@@ -494,6 +494,17 @@ Pickle makes the secure path the default and the insecure path impossible or vis
 - **SQL injection** — impossible. `QueryBuilder[T]` generates parameterized queries. There's no API for string interpolation.
 - **Mass assignment** — request structs define exactly which fields are accepted. POSTing `{"role": "admin"}` does nothing if `CreateUserRequest` doesn't have a `Role` field.
 - **Validation bypass** — controllers call generated `Bind` functions that validate before returning the typed struct.
+- **CSRF** — the session auth driver ships HMAC double-submit cookie CSRF middleware (`session.CSRF`). Tokens are generated from a random nonce HMAC-signed with the session ID using `SESSION_SECRET`. Safe methods (GET, HEAD, OPTIONS) pass through; state-changing methods require a valid `X-CSRF-TOKEN` header. Bearer-token API requests skip CSRF automatically. Cookies are set with `Secure`, `SameSite=Strict`, and `HttpOnly=false` (JS must read the token).
+- **Rate limiting** — built into the router, not just middleware. Every request hits a per-IP token bucket *before* middleware or handlers execute — same level as panic recovery. Configured via `RATE_LIMIT_RPS` (default: 10) and `RATE_LIMIT_BURST` (default: 20) in `.env`. Returns 429 with `Retry-After` header. Disabled with `RATE_LIMIT=false`. For per-route overrides, `pickle.RateLimit(rps, burst)` returns a `MiddlewareFunc` that runs its own independent limiter. Proxy-aware: reads `X-Forwarded-For` and `X-Real-IP` before falling back to `RemoteAddr`. Stale buckets are cleaned up automatically.
+- **Panic recovery** — the router catches panics in handlers and returns a 500 response instead of crashing the process. Recovered panics are forwarded to the `OnError` reporter for external error tracking (Sentry, Datadog, etc.).
+- **Secrets** — `pickle new` scaffolds a `.gitignore` that excludes `.env` and `.env.local`. Secrets never end up in version control by default.
+
+### By Design — Auth Drivers
+
+Pickle ships opinionated auth drivers that eliminate common JWT and session pitfalls:
+
+- **JWT driver** — pure Go HMAC implementation (HS256/HS384/HS512), no third-party JWT library. Algorithm is pinned server-side — tokens with a mismatched `alg` header are rejected, preventing alg=none and key confusion attacks. Expiry is enforced. Issuer is validated when configured. Tokens are tracked in a `jwt_tokens` allowlist table — a token must exist in the table *and* not be revoked to be valid. Revocation is instant: `RevokeToken(jti)` for single logout, `RevokeAllForUser(userID)` for password changes or account compromise.
+- **Session driver** — server-side sessions with CSRF protection built in. The `CSRF` middleware is part of the session package and works automatically when the session driver is active.
 
 ### By Review — One-File Audit
 

@@ -161,6 +161,12 @@ func (r *Router) RegisterRoutes(mux *http.ServeMux) {
 
 		onError := r.onError
 		handler := func(w http.ResponseWriter, req *http.Request) {
+			// Framework-level rate limiting — runs before everything else.
+			if resp := checkRateLimit(req); resp != nil {
+				resp.Write(w)
+				return
+			}
+
 			ctx := NewContext(w, req)
 
 			defer func() {

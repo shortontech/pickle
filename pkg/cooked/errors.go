@@ -6,6 +6,15 @@ import (
 	"time"
 )
 
+// ErrUnauthorized is returned by gated action methods when the gate denies access.
+var ErrUnauthorized = &UnauthorizedActionError{}
+
+// UnauthorizedActionError indicates an action was denied by its gate.
+type UnauthorizedActionError struct{}
+
+func (e *UnauthorizedActionError) Error() string   { return "unauthorized: action denied by gate" }
+func (e *UnauthorizedActionError) HTTPStatus() int { return 403 }
+
 // StaleVersionError is returned when an immutable table Update() detects that
 // the entity's version_id has changed since the caller read it. This means
 // another write occurred between the read and update — the caller must re-read

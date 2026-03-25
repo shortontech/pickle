@@ -162,7 +162,7 @@ func TestAppendOnlyVerifyChain(t *testing.T) {
 	}
 
 	// First verify each row individually by reading back from DB
-	txns, err := models.QueryTransaction().SelectAll().OrderBy("id", "ASC").All()
+	txns, err := models.QueryTransaction().SelectAll().OrderByID("ASC").All()
 	if err != nil {
 		t.Fatalf("reading transactions: %v", err)
 	}

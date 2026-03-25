@@ -129,8 +129,9 @@ func writeSearchMethod(b *bytes.Buffer, queryType, structName, methodName, visib
 		if col.IsEncrypted || col.IsSealed {
 			continue
 		}
+		pascal := snakeToPascal(col.SnakeName)
 		b.WriteString(fmt.Sprintf("\t\tcase %q:\n", col.SnakeName))
-		b.WriteString(fmt.Sprintf("\t\t\tq.OrderBy(%q, sortDir)\n", col.SnakeName))
+		b.WriteString(fmt.Sprintf("\t\t\tq.OrderBy%s(sortDir)\n", pascal))
 	}
 	b.WriteString("\t\tdefault:\n")
 	b.WriteString("\t\t\treturn nil, nil, fmt.Errorf(\"unknown sort field: %s\", sortCol)\n")

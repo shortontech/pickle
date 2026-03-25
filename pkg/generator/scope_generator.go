@@ -97,7 +97,6 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 			{"AnyOwner", "", "AnyOwner()"},
 			{"Limit", "n int", "Limit(n)"},
 			{"Offset", "n int", "Offset(n)"},
-			{"OrderBy", "column, direction string", "OrderBy(column, direction)"},
 			{"Lock", "", "Lock()"},
 			{"LockForUpdate", "", "LockForUpdate()"},
 			{"LockForShare", "", "LockForShare()"},
@@ -110,6 +109,9 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 			b.WriteString(fmt.Sprintf("\treturn q\n"))
 			b.WriteString("}\n\n")
 		}
+
+		// Generate typed OrderBy methods per column
+		generateOrderByMethods(&b, table, queryType, "QueryBuilder")
 	}
 
 	// Generate LockInfo() for all table types
@@ -242,7 +244,6 @@ func generateImmutableMethods(b *bytes.Buffer, table *schema.Table, queryType, s
 		{"AllVersions", "", "AllVersions()"},
 		{"Limit", "n int", "Limit(n)"},
 		{"Offset", "n int", "Offset(n)"},
-		{"OrderBy", "column, direction string", "OrderBy(column, direction)"},
 		{"AnyOwner", "", "AnyOwner()"},
 		{"Lock", "", "Lock()"},
 		{"LockForUpdate", "", "LockForUpdate()"},
@@ -256,6 +257,9 @@ func generateImmutableMethods(b *bytes.Buffer, table *schema.Table, queryType, s
 		b.WriteString(fmt.Sprintf("\treturn q\n"))
 		b.WriteString("}\n\n")
 	}
+
+	// Generate typed OrderBy methods per column
+	generateOrderByMethods(b, table, queryType, "ImmutableQueryBuilder")
 
 	// Column metadata for hash chain computation
 	generateColumnMeta(b, table, structName)
@@ -384,10 +388,24 @@ func GenerateViewQueryScopes(view *schema.View, blocks []tickle.ScopeBlock, pack
 	for _, m := range []struct{ name, sig, call string }{
 		{"Limit", "n int", "Limit(n)"},
 		{"Offset", "n int", "Offset(n)"},
-		{"OrderBy", "column, direction string", "OrderBy(column, direction)"},
 	} {
 		b.WriteString(fmt.Sprintf("func (q *%s) %s(%s) *%s {\n", queryType, m.name, m.sig, queryType))
 		b.WriteString(fmt.Sprintf("\tq.QueryBuilder.%s\n", m.call))
+		b.WriteString(fmt.Sprintf("\treturn q\n"))
+		b.WriteString("}\n\n")
+	}
+
+	// Generate typed OrderBy methods per view column
+	for _, vc := range view.Columns {
+		col := &vc.Column
+		colName := vc.OutputName()
+		pascal := snakeToPascal(colName)
+		if col.IsEncrypted || col.IsSealed {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("// OrderBy%s orders results by the %s column.\n", pascal, colName))
+		b.WriteString(fmt.Sprintf("func (q *%s) OrderBy%s(direction string) *%s {\n", queryType, pascal, queryType))
+		b.WriteString(fmt.Sprintf("\tq.QueryBuilder.OrderBy(%q, direction)\n", colName))
 		b.WriteString(fmt.Sprintf("\treturn q\n"))
 		b.WriteString("}\n\n")
 	}
@@ -550,6 +568,25 @@ func collectScopeImports(table *schema.Table, blocks []tickle.ScopeBlock) []stri
 		}
 	}
 	return append(std, ext...)
+}
+
+// generateOrderByMethods emits typed OrderBy{Column}(direction string) methods
+// for each column in the table. Encrypted/sealed columns are skipped since
+// ordering ciphertext is meaningless. The generated methods call the validated
+// OrderBy on the base builder with a hardcoded column name, making SQL injection
+// structurally impossible.
+func generateOrderByMethods(b *bytes.Buffer, table *schema.Table, queryType, builderField string) {
+	for _, col := range table.Columns {
+		if col.IsEncrypted || col.IsSealed {
+			continue
+		}
+		pascal := snakeToPascal(col.Name)
+		b.WriteString(fmt.Sprintf("// OrderBy%s orders results by the %s column.\n", pascal, col.Name))
+		b.WriteString(fmt.Sprintf("func (q *%s) OrderBy%s(direction string) *%s {\n", queryType, pascal, queryType))
+		b.WriteString(fmt.Sprintf("\tq.%s.OrderBy(%q, direction)\n", builderField, col.Name))
+		b.WriteString(fmt.Sprintf("\treturn q\n"))
+		b.WriteString("}\n\n")
+	}
 }
 
 // selectCols returns a comma-separated list of column names for a table, for use in SELECT statements.

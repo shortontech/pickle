@@ -85,10 +85,41 @@ func (q *QueryBuilder[T]) whereNotIn(column string, values any) *QueryBuilder[T]
 	return q
 }
 
-// OrderBy adds an ORDER BY clause.
+// OrderBy adds an ORDER BY clause. The column name must be a valid SQL
+// identifier (letters, digits, underscores only). Direction must be ASC or DESC.
+// Invalid values panic — this is a programming error, not user input.
+//
+// Prefer the generated typed methods (OrderByEmail, OrderByCreatedAt, etc.)
+// which are safe by construction. This method exists for generated code and
+// internal use; calling it with unsanitized user input is a bug.
 func (q *QueryBuilder[T]) OrderBy(column, direction string) *QueryBuilder[T] {
-	q.orderBy = append(q.orderBy, column+" "+direction)
+	if !validSQLIdentifier(column) {
+		panic("pickle: OrderBy column must be a valid identifier, got: " + column)
+	}
+	dir := strings.ToUpper(strings.TrimSpace(direction))
+	if dir != "ASC" && dir != "DESC" {
+		panic("pickle: OrderBy direction must be ASC or DESC, got: " + direction)
+	}
+	q.orderBy = append(q.orderBy, column+" "+dir)
 	return q
+}
+
+// validSQLIdentifier returns true if s is a simple SQL identifier:
+// non-empty, starts with a letter or underscore, contains only [a-zA-Z0-9_].
+func validSQLIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, c := range s {
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' {
+			continue
+		}
+		if i > 0 && c >= '0' && c <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // Limit sets the LIMIT clause.

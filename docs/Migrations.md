@@ -306,4 +306,28 @@ type User struct {
 }
 ```
 
+## Role annotations
+
+Columns can declare which roles are allowed to see them using `RoleSees()`:
+
+```go
+m.CreateTable("users", func(t *Table) {
+    t.UUID("id").PrimaryKey().Default("uuid_generate_v7()").Public()
+    t.String("name").NotNull().Public()
+    t.String("email").NotNull().RoleSees("admin", "support")
+    t.String("phone").NotNull().RoleSees("admin")
+    t.String("internal_score").NotNull().RoleSees("analyst")
+    t.Timestamps()
+})
+```
+
+`RoleSees(roles...)` declares that only users with one of the listed roles can see the column. Pickle generates:
+
+- `XxxSees()` methods on the model (e.g., `EmailSees() []string` returns `["admin", "support"]`)
+- A `VisibleTo` map on the model metadata, keyed by column name, used by `SelectFor()` and `SelectForRoles()` in the query builder
+
+Role annotations work alongside `.Public()` and `.OwnerSees()`. A column can have both visibility tiers and role restrictions. `.Public()` columns are always visible regardless of role.
+
+Policy migrations for roles themselves live in `database/policies/`. Squeeze validates that role slugs referenced in `RoleSees()` exist in your roles migration — see the `unknown_role_annotation` and `stale_role_annotation` rules.
+
 Nullable columns become pointer types (`*string`, `*time.Time`). The `json` and `db` struct tags are generated automatically.

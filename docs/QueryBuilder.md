@@ -185,6 +185,69 @@ ok := models.VerifyProof(proof)
 
 `VerifyChain()` is O(n) over the full table — run it as a periodic audit job, not per-request. `VerifyProof()` is O(log n) and can run on a client, auditor, or third party.
 
+## Role-aware queries
+
+When columns have `RoleSees()` annotations in migrations, the query builder can filter columns based on the caller's roles.
+
+```go
+// Select only columns visible to a specific role
+user, err := models.QueryUser().
+    WhereID(id).
+    SelectFor("editor").
+    First()
+
+// Select columns visible to any of several roles
+user, err := models.QueryUser().
+    WhereID(id).
+    SelectForRoles([]string{"editor", "viewer"}).
+    First()
+
+// Select columns visible to the owner's roles (combines ownership + role visibility)
+user, err := models.QueryUser().
+    WhereID(id).
+    SelectForOwner(ctx.Roles()).
+    First()
+```
+
+`SelectFor` restricts the SELECT clause to columns where the given role appears in the column's `VisibleTo` map. `SelectForRoles` is the union of columns visible to any of the provided roles. `SelectForOwner` combines owner-visible columns with role-visible columns.
+
+## Scope builder
+
+For complex, reusable query logic, Pickle generates a restricted `XxxScopeBuilder` type per model. Scope builders expose a subset of query methods — they cannot call `First()`, `All()`, or other terminal methods directly.
+
+```go
+// Generated restricted type
+type UserScopeBuilder struct {
+    // unexported — wraps QueryBuilder but restricts terminal methods
+}
+
+// Scope function — accepts and returns a scope builder
+func ActiveUsers(q *models.UserScopeBuilder) *models.UserScopeBuilder {
+    return q.WhereStatus("active").WhereEmailNot("")
+}
+
+// Convert a full query to a scope builder
+scopeBuilder := models.QueryUser().ToScopeBuilder()
+
+// Apply a scope function to a query
+users, err := models.QueryUser().
+    ApplyScope(ActiveUsers).
+    Limit(20).
+    All()
+```
+
+Scope functions are composable:
+
+```go
+users, err := models.QueryUser().
+    ApplyScope(ActiveUsers).
+    ApplyScope(RecentlyCreated).
+    OrderBy("created_at", "DESC").
+    All()
+```
+
+Squeeze enforces that scope functions use `XxxScopeBuilder` (not the full query type) and that scope builders don't leak outside scope functions. See the `scope_builder_leak` and `query_builder_in_scope` rules.
+
 ## Database connection
 
 The query builder uses the package-level `models.DB` variable (a `*sql.DB`). This is set during app initialization by the generated commands package. All queries use parameterized `$1, $2, ...` placeholders — no string interpolation, no SQL injection.

@@ -48,6 +48,35 @@ claims := ctx.Auth().Claims // type-assert to your claims type
 
 If you pass an `*AuthInfo` directly to `SetAuth`, it's stored as-is. Any other type is wrapped in `AuthInfo{Claims: v}`.
 
+## Roles
+
+Role middleware populates role data on the context. Controllers read it back with role helper methods.
+
+```go
+// Primary role (string)
+role := ctx.Role()
+
+// All assigned roles ([]string slugs)
+roles := ctx.Roles()
+
+// Check for a specific role
+if ctx.HasRole("editor") { ... }
+
+// Check for any of several roles
+if ctx.HasAnyRole("editor", "admin", "superadmin") { ... }
+
+// Convenience check for the "admin" role
+if ctx.IsAdmin() { ... }
+
+// Set roles (called by LoadRoles middleware, not controllers)
+ctx.SetRoles([]pickle.RoleInfo{
+    {Slug: "admin", Name: "Administrator"},
+    {Slug: "editor", Name: "Editor"},
+})
+```
+
+`ctx.Role()` returns the first role's slug, or `""` if no roles are set. `ctx.Roles()` returns all role slugs. `ctx.HasRole()` and `ctx.HasAnyRole()` do exact slug matching. `ctx.IsAdmin()` is shorthand for `ctx.HasRole("admin")`.
+
 ## Building responses
 
 Context provides convenience methods that return `pickle.Response`:
@@ -87,3 +116,9 @@ All JSON responses set `Content-Type: application/json` automatically.
 | `NotFound(msg)` | `Response` | 404 response |
 | `Unauthorized(msg)` | `Response` | 401 response |
 | `Forbidden(msg)` | `Response` | 403 response |
+| `SetRoles(roles)` | — | Store role info (called by middleware) |
+| `Role()` | `string` | Primary role slug, empty if none |
+| `Roles()` | `[]string` | All role slugs |
+| `HasRole(slug)` | `bool` | Whether the user has the given role |
+| `HasAnyRole(slugs...)` | `bool` | Whether the user has any of the given roles |
+| `IsAdmin()` | `bool` | Shorthand for `HasRole("admin")` |

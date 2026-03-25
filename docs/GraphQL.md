@@ -362,3 +362,74 @@ Produces a complete GraphQL API with:
 - Input validation from column constraints
 
 One migration file. `go build`. Static binary.
+
+## GraphQL Exposure Policies
+
+By default, no models are exposed via GraphQL. Exposure is opt-in: if your project has no `database/policies/` directory, no GraphQL schema is generated.
+
+### Enabling exposure
+
+Create policy files in `database/policies/` to control which models and fields are exposed:
+
+```go
+// database/policies/user_policy.go
+package policies
+
+type UserPolicy struct {
+    Policy
+}
+
+func (p *UserPolicy) Configure() {
+    // Expose the User model with all public fields
+    p.Expose("users")
+
+    // Modify exposure — hide specific fields or add constraints
+    p.AlterExpose("users", func(e *Exposure) {
+        e.Hide("internal_notes")
+        e.ReadOnly("email")
+    })
+}
+```
+
+### Policy methods
+
+| Method | Description |
+|--------|-------------|
+| `Expose(table)` | Expose a table as a GraphQL type with standard CRUD |
+| `AlterExpose(table, fn)` | Modify an existing exposure — hide fields, set read-only, add constraints |
+| `Unexpose(table)` | Remove a previously exposed table from the GraphQL schema |
+| `ControllerAction(action)` | Wrap an existing controller action as a GraphQL mutation or query |
+
+### ControllerAction adapter
+
+Reuse existing REST controller logic in GraphQL without duplication:
+
+```go
+func (p *TransferPolicy) Configure() {
+    p.Expose("transfers")
+    p.ControllerAction(controllers.TransferController{}.Approve)
+}
+```
+
+The adapter handles argument mapping, auth context forwarding, and response serialization.
+
+### Incremental exposure
+
+Add tables to your GraphQL API one at a time. Each `Expose()` call adds that table; everything else stays hidden:
+
+```go
+// Sprint 1 — expose users only
+p.Expose("users")
+
+// Sprint 2 — add posts
+p.Expose("posts")
+
+// Sprint 3 — remove a field that shouldn't have been exposed
+p.AlterExpose("users", func(e *Exposure) {
+    e.Hide("phone_number")
+})
+```
+
+### Changelog tracking
+
+Pickle tracks GraphQL schema changes in a `graphql_changelog` state file (generated, lives alongside other `_gen.go` files). Each generation run diffs the current schema against the previous one and records additions, removals, and type changes. This makes it easy to review schema evolution in pull requests and catch accidental exposure changes.

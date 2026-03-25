@@ -51,6 +51,19 @@ squeeze:
 
 All rules default to enabled. Set a rule to `false` to disable it.
 
+Add RBAC and action/scope rules to the config as needed:
+
+```yaml
+    stale_role_annotation: true
+    unknown_role_annotation: true
+    role_without_load: true
+    default_role_missing: true
+    ungated_action: true
+    direct_execute_call: true
+    scope_builder_leak: true
+    query_builder_in_scope: true
+```
+
 ## Rules
 
 ### ownership_scoping
@@ -473,6 +486,78 @@ m.CreateTable("transfers", func(t *Table) {
 **What it catches:** Migrations that declare `.Encrypted()` or `.Sealed()` columns, but no `ENCRYPTION_KEY` is configured. Without a key, encryption cannot function.
 
 **How to fix:** Set `ENCRYPTION_KEY` in your `.env` or environment variables. See [Config](Config.md) for details.
+
+### stale_role_annotation
+
+**Severity:** warning
+
+**What it catches:** A `RoleSees()` annotation in a migration referencing a role slug that no longer exists in the `roles` table migration. The role was probably renamed or removed.
+
+**How to fix:** Update the `RoleSees()` call to use the current role slug, or remove it if the role no longer exists.
+
+### unknown_role_annotation
+
+**Severity:** error
+
+**What it catches:** A `RoleSees()` annotation referencing a role slug that has never been defined in any roles migration. This is a typo or a reference to a role that hasn't been created yet.
+
+**How to fix:** Check the slug against your roles migration. Create the role first, or fix the typo.
+
+### role_without_load
+
+**Severity:** error
+
+**What it catches:** A route that uses `RequireRole` middleware without `LoadRoles` in the middleware chain. Without `LoadRoles`, the context has no role data and `RequireRole` will always deny access.
+
+**How to fix:** Add `LoadRoles` to the middleware chain before `RequireRole`:
+
+```go
+// BEFORE — RequireRole has no role data to check
+r.Group("/admin", middleware.Auth, middleware.RequireRole("admin"), func(r *pickle.Router) { ... })
+
+// AFTER — LoadRoles populates roles before the check
+r.Group("/admin", middleware.Auth, middleware.LoadRoles, middleware.RequireRole("admin"), func(r *pickle.Router) { ... })
+```
+
+### default_role_missing
+
+**Severity:** error
+
+**What it catches:** A roles migration that defines roles but none of them is marked as the default role. New users need a default role assignment.
+
+**How to fix:** Mark one role as the default in your roles seed migration.
+
+### ungated_action
+
+**Severity:** error
+
+**What it catches:** A controller action that performs a state-changing operation (Create, Update, Delete) without any authorization gate — no ownership scoping, no role check, no explicit opt-out. Any authenticated user can execute the action.
+
+**How to fix:** Add ownership scoping (`WhereOwnedBy`), role middleware (`RequireRole`), or call `.AnyOwner()` to explicitly acknowledge the lack of gating.
+
+### direct_execute_call
+
+**Severity:** error
+
+**What it catches:** Direct calls to `db.Exec()` or `db.Query()` with raw SQL in controller code. Raw SQL bypasses the query builder's safety guarantees (parameterization, ownership scoping, immutability).
+
+**How to fix:** Use the generated query builder methods. If raw SQL is genuinely needed, move it to a model method or repository function where it can be audited.
+
+### scope_builder_leak
+
+**Severity:** error
+
+**What it catches:** A scope builder (`XxxScopeBuilder`) that is returned from a function or assigned to a variable outside of its intended scope function. Scope builders are restricted types meant to stay within scope definitions.
+
+**How to fix:** Use scope builders only within scope functions. Return the final query result, not the builder.
+
+### query_builder_in_scope
+
+**Severity:** error
+
+**What it catches:** A scope function that uses the full `QueryBuilder` or `XxxQuery` type instead of the restricted `XxxScopeBuilder`. Scopes must use the scope builder to prevent unrestricted query access.
+
+**How to fix:** Accept and return `*XxxScopeBuilder` in scope functions, not `*XxxQuery`.
 
 ### no_printf
 

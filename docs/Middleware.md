@@ -102,6 +102,54 @@ Behavior:
 
 Requires `SESSION_SECRET` in your `.env`. The squeeze `csrf_missing` rule flags any state-changing route missing CSRF when your project uses sessions.
 
+## Role middleware
+
+Pickle provides built-in middleware for role-based access control. The role middleware chain runs after authentication.
+
+**LoadRoles** — queries the database for the authenticated user's roles and populates the context:
+
+```go
+func LoadRoles(ctx *pickle.Context, next func() pickle.Response) pickle.Response
+```
+
+Must run after `Auth`. It calls `ctx.SetRoles()` with the user's assigned roles from the `user_roles` / `roles` tables.
+
+**RequireRole** — parameterized middleware that checks for specific roles:
+
+```go
+func RequireRole(roles ...string) pickle.MiddlewareFunc {
+    return func(ctx *pickle.Context, next func() pickle.Response) pickle.Response {
+        if !ctx.HasAnyRole(roles...) {
+            return ctx.Forbidden("insufficient permissions")
+        }
+        return next()
+    }
+}
+```
+
+**RequireAdmin** — shorthand for `RequireRole("admin")`:
+
+```go
+func RequireAdmin(ctx *pickle.Context, next func() pickle.Response) pickle.Response
+```
+
+### Middleware ordering
+
+Role middleware must follow this order: `Auth` -> `LoadRoles` -> `RequireRole`. Auth sets the user identity, LoadRoles fetches their roles, and RequireRole gates access.
+
+```go
+r.Group("/admin", middleware.Auth, middleware.LoadRoles, middleware.RequireRole("admin"), func(r *pickle.Router) {
+    r.Get("/dashboard", controllers.AdminController{}.Dashboard)
+    r.Resource("/users", controllers.UserController{})
+})
+
+r.Group("/editor", middleware.Auth, middleware.LoadRoles, middleware.RequireRole("editor", "admin"), func(r *pickle.Router) {
+    r.Get("/drafts", controllers.PostController{}.Drafts)
+})
+```
+
+Squeeze's `role_without_load` rule flags routes that use `RequireRole` without `LoadRoles` in the middleware chain.
+
 ## Middleware location
 
 Middleware files live in `app/http/middleware/`. They're plain Go — no code generation needed.

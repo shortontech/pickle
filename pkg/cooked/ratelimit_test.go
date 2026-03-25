@@ -1,8 +1,10 @@
 package cooked
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -45,57 +47,177 @@ func TestRateBucketRetryAfter(t *testing.T) {
 	}
 }
 
-func TestClientIP(t *testing.T) {
-	tests := []struct {
-		name     string
-		headers  map[string]string
-		remote   string
-		expected string
-	}{
-		{
-			name:     "X-Forwarded-For single",
-			headers:  map[string]string{"X-Forwarded-For": "1.2.3.4"},
-			remote:   "5.6.7.8:1234",
-			expected: "1.2.3.4",
-		},
-		{
-			name:     "X-Forwarded-For chain",
-			headers:  map[string]string{"X-Forwarded-For": "1.2.3.4, 10.0.0.1"},
-			remote:   "5.6.7.8:1234",
-			expected: "1.2.3.4",
-		},
-		{
-			name:     "X-Real-IP",
-			headers:  map[string]string{"X-Real-IP": "9.8.7.6"},
-			remote:   "5.6.7.8:1234",
-			expected: "9.8.7.6",
-		},
-		{
-			name:     "RemoteAddr with port",
-			headers:  map[string]string{},
-			remote:   "5.6.7.8:1234",
-			expected: "5.6.7.8",
-		},
-		{
-			name:     "RemoteAddr without port",
-			headers:  map[string]string{},
-			remote:   "5.6.7.8",
-			expected: "5.6.7.8",
-		},
-	}
+// resetTrustedProxies resets the trusted proxies state for testing.
+func resetTrustedProxies() {
+	trustedProxiesOnce = syncOnceZero()
+	trustedProxies = nil
+	trustedProxiesAll = false
+}
 
+// syncOnceZero returns a zero-value sync.Once (not yet executed).
+func syncOnceZero() syncOnce { return syncOnce{} }
+
+type syncOnce = sync.Once
+
+func TestClientIPNoTrustedProxies(t *testing.T) {
+	resetTrustedProxies()
+	t.Setenv("TRUSTED_PROXIES", "")
+
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "5.6.7.8:1234"
+	r.Header.Set("X-Forwarded-For", "1.2.3.4")
+
+	got := clientIP(r)
+	if got != "5.6.7.8" {
+		t.Errorf("expected RemoteAddr when no trusted proxies, got %q", got)
+	}
+}
+
+func TestClientIPTrustedCIDR(t *testing.T) {
+	resetTrustedProxies()
+	t.Setenv("TRUSTED_PROXIES", "10.0.0.0/8")
+
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "10.0.0.1:1234"
+	r.Header.Set("X-Forwarded-For", "1.2.3.4")
+
+	got := clientIP(r)
+	if got != "1.2.3.4" {
+		t.Errorf("expected XFF client IP when proxy trusted, got %q", got)
+	}
+}
+
+func TestClientIPUntrustedProxy(t *testing.T) {
+	resetTrustedProxies()
+	t.Setenv("TRUSTED_PROXIES", "10.0.0.0/8")
+
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "5.6.7.8:1234"
+	r.Header.Set("X-Forwarded-For", "1.2.3.4")
+
+	got := clientIP(r)
+	if got != "5.6.7.8" {
+		t.Errorf("expected RemoteAddr when proxy not trusted, got %q", got)
+	}
+}
+
+func TestClientIPTrustAll(t *testing.T) {
+	resetTrustedProxies()
+	t.Setenv("TRUSTED_PROXIES", "all")
+
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "5.6.7.8:1234"
+	r.Header.Set("X-Forwarded-For", "1.2.3.4")
+
+	got := clientIP(r)
+	if got != "1.2.3.4" {
+		t.Errorf("expected XFF client IP in trust-all mode, got %q", got)
+	}
+}
+
+func TestClientIPMultiHopChain(t *testing.T) {
+	resetTrustedProxies()
+	t.Setenv("TRUSTED_PROXIES", "10.0.0.0/8,172.16.0.0/12")
+
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "10.0.0.1:1234"
+	r.Header.Set("X-Forwarded-For", "1.2.3.4, 10.0.0.5, 172.16.0.1")
+
+	got := clientIP(r)
+	if got != "1.2.3.4" {
+		t.Errorf("expected first untrusted IP from chain, got %q", got)
+	}
+}
+
+func TestClientIPMultiHopPartialTrust(t *testing.T) {
+	resetTrustedProxies()
+	t.Setenv("TRUSTED_PROXIES", "10.0.0.0/8")
+
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "10.0.0.1:1234"
+	r.Header.Set("X-Forwarded-For", "1.2.3.4, 9.9.9.9, 10.0.0.5")
+
+	got := clientIP(r)
+	// Walking right-to-left: 10.0.0.5 is trusted, 9.9.9.9 is not → return 9.9.9.9
+	if got != "9.9.9.9" {
+		t.Errorf("expected first untrusted IP from right, got %q", got)
+	}
+}
+
+func TestClientIPXRealIPTrusted(t *testing.T) {
+	resetTrustedProxies()
+	t.Setenv("TRUSTED_PROXIES", "10.0.0.0/8")
+
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "10.0.0.1:1234"
+	r.Header.Set("X-Real-IP", "9.8.7.6")
+
+	got := clientIP(r)
+	if got != "9.8.7.6" {
+		t.Errorf("expected X-Real-IP when proxy trusted, got %q", got)
+	}
+}
+
+func TestClientIPRemoteAddrFallback(t *testing.T) {
+	resetTrustedProxies()
+	t.Setenv("TRUSTED_PROXIES", "all")
+
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "5.6.7.8:1234"
+
+	got := clientIP(r)
+	if got != "5.6.7.8" {
+		t.Errorf("expected RemoteAddr fallback, got %q", got)
+	}
+}
+
+func TestClientIPBareIPTrust(t *testing.T) {
+	resetTrustedProxies()
+	t.Setenv("TRUSTED_PROXIES", "10.0.0.1")
+
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "10.0.0.1:1234"
+	r.Header.Set("X-Forwarded-For", "1.2.3.4")
+
+	got := clientIP(r)
+	if got != "1.2.3.4" {
+		t.Errorf("expected XFF when bare IP trusted, got %q", got)
+	}
+}
+
+func TestFirstUntrustedIPAllTrusted(t *testing.T) {
+	resetTrustedProxies()
+	t.Setenv("TRUSTED_PROXIES", "10.0.0.0/8")
+
+	// When all IPs in the chain are trusted, return leftmost.
+	got := firstUntrustedIP("10.0.0.1, 10.0.0.2, 10.0.0.3")
+	if got != "10.0.0.1" {
+		t.Errorf("expected leftmost IP when all trusted, got %q", got)
+	}
+}
+
+func TestProxyHeadersTrustedInvalidIP(t *testing.T) {
+	resetTrustedProxies()
+	t.Setenv("TRUSTED_PROXIES", "10.0.0.0/8")
+
+	if proxyHeadersTrusted("not-an-ip") {
+		t.Error("invalid IP should not be trusted")
+	}
+}
+
+func TestStripPort(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{"1.2.3.4:5678", "1.2.3.4"},
+		{"1.2.3.4", "1.2.3.4"},
+		{"[::1]:8080", "::1"},
+	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r := httptest.NewRequest("GET", "/", nil)
-			r.RemoteAddr = tt.remote
-			for k, v := range tt.headers {
-				r.Header.Set(k, v)
-			}
-			got := clientIP(r)
-			if got != tt.expected {
-				t.Errorf("clientIP() = %q, want %q", got, tt.expected)
-			}
-		})
+		got := stripPort(tt.input)
+		if got != tt.want {
+			t.Errorf("stripPort(%q) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }
 
@@ -126,6 +248,9 @@ func TestRateLimiterStoreAllowAndDeny(t *testing.T) {
 }
 
 func TestRateLimitMiddleware(t *testing.T) {
+	resetTrustedProxies()
+	t.Setenv("TRUSTED_PROXIES", "")
+
 	mw := RateLimit(100, 1)
 
 	handler := func() Response {
@@ -151,5 +276,8 @@ func TestRateLimitMiddleware(t *testing.T) {
 		t.Fatal("expected Retry-After header")
 	}
 }
+
+// Verify net import is used (for compilation).
+var _ = net.ParseIP
 
 func now() time.Time { return time.Now() }

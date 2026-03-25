@@ -85,7 +85,86 @@ func (s *rateLimiterStore) cleanup() {
 var (
 	globalLimiter     *rateLimiterStore
 	globalLimiterOnce sync.Once
+
+	trustedProxies     []net.IPNet
+	trustedProxiesAll  bool
+	trustedProxiesOnce sync.Once
 )
+
+func initTrustedProxies() {
+	trustedProxiesOnce.Do(func() {
+		raw := Env("TRUSTED_PROXIES", "")
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		if raw == "all" {
+			trustedProxiesAll = true
+			return
+		}
+		for _, entry := range strings.Split(raw, ",") {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			// If it's a bare IP, make it a /32 or /128.
+			if !strings.Contains(entry, "/") {
+				ip := net.ParseIP(entry)
+				if ip == nil {
+					continue
+				}
+				if ip.To4() != nil {
+					entry += "/32"
+				} else {
+					entry += "/128"
+				}
+			}
+			_, cidr, err := net.ParseCIDR(entry)
+			if err != nil {
+				continue
+			}
+			trustedProxies = append(trustedProxies, *cidr)
+		}
+	})
+}
+
+// proxyHeadersTrusted returns true if the remote IP is in the TRUSTED_PROXIES list.
+func proxyHeadersTrusted(remoteIP string) bool {
+	initTrustedProxies()
+	if trustedProxiesAll {
+		return true
+	}
+	if len(trustedProxies) == 0 {
+		return false
+	}
+	ip := net.ParseIP(remoteIP)
+	if ip == nil {
+		return false
+	}
+	for _, cidr := range trustedProxies {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// firstUntrustedIP walks an X-Forwarded-For chain right-to-left, skipping
+// IPs that are in TRUSTED_PROXIES, and returns the first untrusted IP.
+func firstUntrustedIP(xff string) string {
+	parts := strings.Split(xff, ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		ip := strings.TrimSpace(parts[i])
+		if ip == "" {
+			continue
+		}
+		if !proxyHeadersTrusted(ip) {
+			return ip
+		}
+	}
+	// All IPs in chain are trusted — return the leftmost.
+	return strings.TrimSpace(parts[0])
+}
 
 func initGlobalLimiter() {
 	globalLimiterOnce.Do(func() {
@@ -192,25 +271,32 @@ func RateLimit(rps float64, burst int) MiddlewareFunc {
 	}
 }
 
-// clientIP extracts the client IP from the request, checking proxy headers
-// (X-Forwarded-For, X-Real-IP) before falling back to RemoteAddr.
+// clientIP extracts the client IP from the request. Proxy headers
+// (X-Forwarded-For, X-Real-IP) are only trusted when the immediate
+// remote address is in the TRUSTED_PROXIES list.
 func clientIP(r *http.Request) string {
-	// X-Forwarded-For: client, proxy1, proxy2 — first entry is the client.
+	remote := stripPort(r.RemoteAddr)
+
+	if !proxyHeadersTrusted(remote) {
+		return remote
+	}
+
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if ip, _, ok := strings.Cut(xff, ","); ok {
-			return strings.TrimSpace(ip)
-		}
-		return strings.TrimSpace(xff)
+		return firstUntrustedIP(xff)
 	}
 
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
 		return strings.TrimSpace(xri)
 	}
 
-	// Strip port from RemoteAddr.
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	return remote
+}
+
+// stripPort removes the port from an address like "1.2.3.4:5678".
+func stripPort(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		return r.RemoteAddr
+		return addr
 	}
 	return host
 }

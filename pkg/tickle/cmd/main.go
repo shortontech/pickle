@@ -95,6 +95,11 @@ var templates = []struct {
 		output:  "pkg/generator/embed_graphql_migrations.go",
 		perFile: true,
 	},
+	{
+		srcDir:  "pkg/cooked/audit/migrations",
+		output:  "pkg/generator/embed_audit_migrations.go",
+		perFile: true,
+	},
 }
 
 func main() {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,7 +51,7 @@ func expectValidToken(mock sqlmock.Sqlmock) {
 
 func TestSignAndValidate(t *testing.T) {
 	d, mock := testDriver(t, map[string]string{
-		"JWT_SECRET": "test-secret-key",
+		"JWT_SECRET": "test-secret-key-that-is-32-bytes!",
 		"JWT_ISSUER": "test-app",
 	})
 	expectInsert(mock)
@@ -79,7 +80,7 @@ func TestSignAndValidate(t *testing.T) {
 
 func TestExpiredToken(t *testing.T) {
 	d, mock := testDriver(t, map[string]string{
-		"JWT_SECRET": "test-secret-key",
+		"JWT_SECRET": "test-secret-key-that-is-32-bytes!",
 	})
 	expectInsert(mock)
 
@@ -102,8 +103,8 @@ func TestExpiredToken(t *testing.T) {
 }
 
 func TestInvalidSignature(t *testing.T) {
-	d1, mock1 := testDriver(t, map[string]string{"JWT_SECRET": "secret-1"})
-	d2, _ := testDriver(t, map[string]string{"JWT_SECRET": "secret-2"})
+	d1, mock1 := testDriver(t, map[string]string{"JWT_SECRET": "secret-1-that-is-at-least-32-b!!"})
+	d2, _ := testDriver(t, map[string]string{"JWT_SECRET": "secret-2-that-is-at-least-32-b!!"})
 	expectInsert(mock1)
 
 	token, err := d1.SignToken(Claims{Subject: "user-123"})
@@ -122,7 +123,7 @@ func TestInvalidSignature(t *testing.T) {
 
 func TestInvalidIssuer(t *testing.T) {
 	d, mock := testDriver(t, map[string]string{
-		"JWT_SECRET": "test-secret",
+		"JWT_SECRET": "test-secret-that-is-at-least-32b!",
 		"JWT_ISSUER": "expected-app",
 	})
 	expectInsert(mock)
@@ -143,7 +144,7 @@ func TestInvalidIssuer(t *testing.T) {
 
 func TestAuthenticate(t *testing.T) {
 	d, mock := testDriver(t, map[string]string{
-		"JWT_SECRET": "test-secret",
+		"JWT_SECRET": "test-secret-that-is-at-least-32b!",
 	})
 	expectInsert(mock)
 
@@ -164,7 +165,7 @@ func TestAuthenticate(t *testing.T) {
 
 func TestAuthenticateMissingBearer(t *testing.T) {
 	d, _ := testDriver(t, map[string]string{
-		"JWT_SECRET": "test-secret",
+		"JWT_SECRET": "test-secret-that-is-at-least-32b!",
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -176,7 +177,7 @@ func TestAuthenticateMissingBearer(t *testing.T) {
 
 func TestHS384(t *testing.T) {
 	d, mock := testDriver(t, map[string]string{
-		"JWT_SECRET":    "test-secret",
+		"JWT_SECRET":    "test-secret-that-is-at-least-forty-eight-bytes!!",
 		"JWT_ALGORITHM": "HS384",
 	})
 	expectInsert(mock)
@@ -198,7 +199,7 @@ func TestHS384(t *testing.T) {
 
 func TestHS512(t *testing.T) {
 	d, mock := testDriver(t, map[string]string{
-		"JWT_SECRET":    "test-secret",
+		"JWT_SECRET":    "test-secret-that-is-at-least-sixty-four-bytes-long-for-hs512-alg!",
 		"JWT_ALGORITHM": "HS512",
 	})
 	expectInsert(mock)
@@ -220,7 +221,7 @@ func TestHS512(t *testing.T) {
 
 func TestAuthInfoType(t *testing.T) {
 	d, mock := testDriver(t, map[string]string{
-		"JWT_SECRET": "test-secret",
+		"JWT_SECRET": "test-secret-that-is-at-least-32b!",
 	})
 	expectInsert(mock)
 	expectValidToken(mock)
@@ -232,24 +233,38 @@ func TestAuthInfoType(t *testing.T) {
 }
 
 func TestNoSecret(t *testing.T) {
-	d, _ := testDriver(t, map[string]string{})
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic when secret is empty")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "JWT_SECRET is required") {
+			t.Fatalf("unexpected panic: %v", r)
+		}
+	}()
+	testDriver(t, map[string]string{})
+}
 
-	_, err := d.SignToken(Claims{Subject: "user"})
-	if err == nil {
-		t.Fatal("expected error when secret is empty")
-	}
-
-	_, err = d.ValidateToken("some.fake.token")
-	if err == nil {
-		t.Fatal("expected error when secret is empty")
-	}
+func TestShortSecret(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic when secret is too short")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "must be at least") {
+			t.Fatalf("unexpected panic: %v", r)
+		}
+	}()
+	testDriver(t, map[string]string{"JWT_SECRET": "too-short"})
 }
 
 // --- Revocation tests ---
 
 func TestRevokedTokenRejected(t *testing.T) {
 	d, mock := testDriver(t, map[string]string{
-		"JWT_SECRET": "test-secret",
+		"JWT_SECRET": "test-secret-that-is-at-least-32b!",
 	})
 	expectInsert(mock)
 
@@ -274,7 +289,7 @@ func TestRevokedTokenRejected(t *testing.T) {
 
 func TestMissingTokenRejected(t *testing.T) {
 	d, mock := testDriver(t, map[string]string{
-		"JWT_SECRET": "test-secret",
+		"JWT_SECRET": "test-secret-that-is-at-least-32b!",
 	})
 	expectInsert(mock)
 
@@ -298,7 +313,7 @@ func TestMissingTokenRejected(t *testing.T) {
 
 func TestRevokeToken(t *testing.T) {
 	d, mock := testDriver(t, map[string]string{
-		"JWT_SECRET": "test-secret",
+		"JWT_SECRET": "test-secret-that-is-at-least-32b!",
 	})
 
 	mock.ExpectExec("UPDATE jwt_tokens SET revoked_at").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -311,7 +326,7 @@ func TestRevokeToken(t *testing.T) {
 
 func TestRevokeAllForUser(t *testing.T) {
 	d, mock := testDriver(t, map[string]string{
-		"JWT_SECRET": "test-secret",
+		"JWT_SECRET": "test-secret-that-is-at-least-32b!",
 	})
 
 	mock.ExpectExec("UPDATE jwt_tokens SET revoked_at").WillReturnResult(sqlmock.NewResult(0, 3))
@@ -324,7 +339,7 @@ func TestRevokeAllForUser(t *testing.T) {
 
 func TestSignTokenGeneratesJTI(t *testing.T) {
 	d, mock := testDriver(t, map[string]string{
-		"JWT_SECRET": "test-secret",
+		"JWT_SECRET": "test-secret-that-is-at-least-32b!",
 	})
 	expectInsert(mock)
 

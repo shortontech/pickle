@@ -950,3 +950,31 @@ func TestAlterTableWithRelationship(t *testing.T) {
 		t.Fatalf("expected 3 operations, got %d", len(m.Operations))
 	}
 }
+
+func TestColumnRoleSees(t *testing.T) {
+	col := &Column{Name: "ssn", Type: String}
+	col.RoleSees("compliance").RoleSees("support_lead")
+
+	if len(col.VisibleTo) != 2 {
+		t.Fatalf("expected 2 entries in VisibleTo, got %d", len(col.VisibleTo))
+	}
+	if !col.VisibleTo["compliance"] {
+		t.Error("expected compliance in VisibleTo")
+	}
+	if !col.VisibleTo["support_lead"] {
+		t.Error("expected support_lead in VisibleTo")
+	}
+}
+
+func TestColumnRoleSeesChainable(t *testing.T) {
+	tbl := &Table{Name: "users"}
+	tbl.String("ssn", 11).NotNull().RoleSees("compliance").RoleSees("support_lead").Encrypted()
+
+	col := tbl.Columns[0]
+	if !col.IsEncrypted {
+		t.Error("expected encrypted after chaining with RoleSees")
+	}
+	if len(col.VisibleTo) != 2 {
+		t.Error("expected 2 VisibleTo entries")
+	}
+}

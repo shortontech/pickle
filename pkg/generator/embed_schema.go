@@ -29,6 +29,7 @@ type Column struct {
 	IsSealed         bool
 	IsUnsafePublic   bool
 	FKMetadataOnly   bool // FK is for ORM relationship metadata only; no SQL REFERENCES constraint
+	VisibleTo        map[string]bool // role slugs that can see this column
 }
 
 func (c *Column) PrimaryKey() *Column {
@@ -92,6 +93,15 @@ func (c *Column) Sealed() *Column {
 // marked Public. Without this, Squeeze flags the Public/sensitive combination as an error.
 func (c *Column) UnsafePublic() *Column {
 	c.IsUnsafePublic = true
+	return c
+}
+
+// RoleSees marks this column as visible to the specified role slug.
+func (c *Column) RoleSees(slug string) *Column {
+	if c.VisibleTo == nil {
+		c.VisibleTo = map[string]bool{}
+	}
+	c.VisibleTo[slug] = true
 	return c
 }
 

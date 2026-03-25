@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -18,6 +19,10 @@ import (
 
 	pickle "github.com/shortontech/pickle/pkg/cooked"
 )
+
+// ErrInvalidToken is returned for all token validation failures.
+// The specific reason is logged server-side but never exposed to callers.
+var ErrInvalidToken = errors.New("jwt: invalid token")
 
 // Driver implements JWT-based authentication using HMAC signing (HS256/HS384/HS512).
 // All crypto uses Go's stdlib — no third-party JWT library.
@@ -141,24 +146,28 @@ func (d *Driver) SignToken(claims Claims) (string, error) {
 // ValidateToken parses and validates a JWT string, returning AuthInfo on success.
 func (d *Driver) ValidateToken(tokenStr string) (*pickle.AuthInfo, error) {
 	if d.secret == "" {
-		return nil, errors.New("jwt: secret not configured")
+		log.Printf("jwt: rejected token reason=secret_not_configured")
+		return nil, ErrInvalidToken
 	}
 
 	parts := strings.SplitN(tokenStr, ".", 3)
 	if len(parts) != 3 {
-		return nil, errors.New("jwt: malformed token")
+		log.Printf("jwt: rejected token reason=malformed_token")
+		return nil, ErrInvalidToken
 	}
 
 	// Decode header and verify algorithm matches
 	headerJSON, err := base64URLDecode(parts[0])
 	if err != nil {
-		return nil, errors.New("jwt: invalid header encoding")
+		log.Printf("jwt: rejected token reason=invalid_header_encoding")
+		return nil, ErrInvalidToken
 	}
 	var header struct {
 		Alg string `json:"alg"`
 	}
 	if err := json.Unmarshal(headerJSON, &header); err != nil {
-		return nil, errors.New("jwt: invalid header")
+		log.Printf("jwt: rejected token reason=invalid_header")
+		return nil, ErrInvalidToken
 	}
 
 	alg := d.algorithm
@@ -166,37 +175,44 @@ func (d *Driver) ValidateToken(tokenStr string) (*pickle.AuthInfo, error) {
 		alg = "HS256"
 	}
 	if header.Alg != alg {
-		return nil, errors.New("jwt: algorithm mismatch (header=" + header.Alg + ", expected=" + alg + ")")
+		log.Printf("jwt: rejected token reason=algorithm_mismatch header=%s expected=%s", header.Alg, alg)
+		return nil, ErrInvalidToken
 	}
 
 	// Verify signature
 	signingInput := parts[0] + "." + parts[1]
 	sig, err := base64URLDecode(parts[2])
 	if err != nil {
-		return nil, errors.New("jwt: invalid signature encoding")
+		log.Printf("jwt: rejected token reason=invalid_signature_encoding")
+		return nil, ErrInvalidToken
 	}
 	if !hmacVerify([]byte(signingInput), sig, []byte(d.secret), alg) {
-		return nil, errors.New("jwt: invalid signature")
+		log.Printf("jwt: rejected token reason=invalid_signature")
+		return nil, ErrInvalidToken
 	}
 
 	// Decode claims
 	claimsJSON, err := base64URLDecode(parts[1])
 	if err != nil {
-		return nil, errors.New("jwt: invalid payload encoding")
+		log.Printf("jwt: rejected token reason=invalid_payload_encoding")
+		return nil, ErrInvalidToken
 	}
 	var claims Claims
 	if err := json.Unmarshal(claimsJSON, &claims); err != nil {
-		return nil, errors.New("jwt: invalid claims")
+		log.Printf("jwt: rejected token reason=invalid_claims")
+		return nil, ErrInvalidToken
 	}
 
 	// Check expiry
 	if claims.ExpiresAt > 0 && time.Now().Unix() > claims.ExpiresAt {
-		return nil, errors.New("jwt: token expired")
+		log.Printf("jwt: rejected token jti=%s reason=token_expired", claims.JTI)
+		return nil, ErrInvalidToken
 	}
 
 	// Check issuer
 	if d.issuer != "" && claims.Issuer != d.issuer {
-		return nil, errors.New("jwt: invalid issuer")
+		log.Printf("jwt: rejected token jti=%s reason=invalid_issuer issuer=%s expected=%s", claims.JTI, claims.Issuer, d.issuer)
+		return nil, ErrInvalidToken
 	}
 
 	// Check revocation allowlist
@@ -207,13 +223,16 @@ func (d *Driver) ValidateToken(tokenStr string) (*pickle.AuthInfo, error) {
 			claims.JTI,
 		).Scan(&revokedAt)
 		if err == sql.ErrNoRows {
-			return nil, errors.New("jwt: token not found (revoked or never issued)")
+			log.Printf("jwt: rejected token jti=%s reason=token_not_found", claims.JTI)
+			return nil, ErrInvalidToken
 		}
 		if err != nil {
-			return nil, errors.New("jwt: database error")
+			log.Printf("jwt: rejected token jti=%s reason=database_error err=%v", claims.JTI, err)
+			return nil, ErrInvalidToken
 		}
 		if revokedAt.Valid {
-			return nil, errors.New("jwt: token revoked")
+			log.Printf("jwt: rejected token jti=%s reason=token_revoked", claims.JTI)
+			return nil, ErrInvalidToken
 		}
 	}
 

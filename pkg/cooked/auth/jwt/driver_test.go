@@ -2,6 +2,7 @@ package jwt
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -95,8 +96,8 @@ func TestExpiredToken(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for expired token")
 	}
-	if err.Error() != "jwt: token expired" {
-		t.Errorf("error = %q, want %q", err.Error(), "jwt: token expired")
+	if !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("error = %q, want ErrInvalidToken", err.Error())
 	}
 }
 
@@ -114,8 +115,8 @@ func TestInvalidSignature(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for wrong secret")
 	}
-	if err.Error() != "jwt: invalid signature" {
-		t.Errorf("error = %q, want %q", err.Error(), "jwt: invalid signature")
+	if !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("error = %q, want ErrInvalidToken", err.Error())
 	}
 }
 
@@ -266,8 +267,8 @@ func TestRevokedTokenRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for revoked token")
 	}
-	if err.Error() != "jwt: token revoked" {
-		t.Errorf("error = %q, want %q", err.Error(), "jwt: token revoked")
+	if !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("error = %q, want ErrInvalidToken", err.Error())
 	}
 }
 
@@ -290,8 +291,8 @@ func TestMissingTokenRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing token")
 	}
-	if err.Error() != "jwt: token not found (revoked or never issued)" {
-		t.Errorf("error = %q, want %q", err.Error(), "jwt: token not found (revoked or never issued)")
+	if !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("error = %q, want ErrInvalidToken", err.Error())
 	}
 }
 

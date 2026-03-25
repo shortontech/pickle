@@ -19,6 +19,9 @@ type AnalysisContext struct {
 	Config       SqueezeConfig
 	FuncRegistry FuncRegistry
 	HasGraphQL   bool // true if the project has a graphql/ directory
+	RBACRoles    *RBACRoleSet
+	RBACDefaults []RBACDefault
+	Actions      []ActionInfo
 }
 
 // Rule is a function that inspects the analysis context and returns findings.
@@ -61,6 +64,14 @@ func AllRules() map[string]Rule {
 		"float_column":                           ruleFloatColumn,
 		"float_request_field":                    ruleFloatRequestField,
 		"raw_query_builder_access":               ruleRawQueryBuilderAccess,
+		"stale_role_annotation":                  ruleStaleRoleAnnotation,
+		"unknown_role_annotation":                ruleUnknownRoleAnnotation,
+		"role_without_load":                      ruleRoleWithoutLoad,
+		"default_role_missing":                   ruleDefaultRoleMissing,
+		"ungated_action":                         ruleUngatedAction,
+		"direct_execute_call":                    ruleDirectExecuteCall,
+		"scope_builder_leak":                     ruleScopeBuilderLeak,
+		"query_builder_in_scope":                 ruleQueryBuilderInScope,
 	}
 }
 

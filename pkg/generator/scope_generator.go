@@ -206,6 +206,9 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 	b.WriteString(fmt.Sprintf("\treturn q\n"))
 	b.WriteString("}\n\n")
 
+	// Generate role-aware SelectFor/SelectForRoles/SelectForOwner
+	generateRoleAwareScopes(&b, table, queryType, publicCols, ownerCols)
+
 	// Generate table-level scopes (FetchResource / FetchResources)
 	tableScopeBody := tickle.GenerateTableScopes(blocks, structName, HasOwnership(table))
 	b.WriteString(tableScopeBody)
@@ -568,6 +571,124 @@ func collectScopeImports(table *schema.Table, blocks []tickle.ScopeBlock) []stri
 		}
 	}
 	return append(std, ext...)
+}
+
+// generateRoleAwareScopes emits SelectFor, SelectForRoles, and SelectForOwner methods.
+func generateRoleAwareScopes(b *bytes.Buffer, table *schema.Table, queryType string, publicCols, ownerCols []string) {
+	// Collect role → visible columns mapping
+	roleCols := map[string][]string{} // role slug → column names
+	var roleSlugs []string
+
+	for _, col := range table.Columns {
+		if col.VisibleTo == nil {
+			continue
+		}
+		for slug := range col.VisibleTo {
+			if roleCols[slug] == nil {
+				roleSlugs = append(roleSlugs, slug)
+			}
+			roleCols[slug] = append(roleCols[slug], col.Name)
+		}
+	}
+
+	// Sort role slugs for deterministic output
+	for i := 0; i < len(roleSlugs); i++ {
+		for j := i + 1; j < len(roleSlugs); j++ {
+			if roleSlugs[i] > roleSlugs[j] {
+				roleSlugs[i], roleSlugs[j] = roleSlugs[j], roleSlugs[i]
+			}
+		}
+	}
+
+	// SelectFor(role string) — switch on role slug
+	b.WriteString(fmt.Sprintf("// SelectFor selects columns visible to the given role.\n"))
+	b.WriteString(fmt.Sprintf("// Manages roles see all columns. Unknown roles see public columns only.\n"))
+	b.WriteString(fmt.Sprintf("func (q *%s) SelectFor(role string) *%s {\n", queryType, queryType))
+	b.WriteString("\tswitch role {\n")
+	for _, slug := range roleSlugs {
+		// Merge public + role-specific columns, dedup
+		merged := mergeColSets(publicCols, roleCols[slug])
+		b.WriteString(fmt.Sprintf("\tcase %q:\n", slug))
+		b.WriteString(fmt.Sprintf("\t\tq.selectedCols = []string{%s}\n", quoteColList(merged)))
+	}
+	b.WriteString("\tdefault:\n")
+	if len(publicCols) > 0 {
+		b.WriteString(fmt.Sprintf("\t\tq.selectedCols = []string{%s}\n", quoteColList(publicCols)))
+	} else {
+		b.WriteString("\t\tq.selectedCols = nil\n")
+	}
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn q\n")
+	b.WriteString("}\n\n")
+
+	// SelectForRoles(roles []string) — union of all role columns
+	b.WriteString(fmt.Sprintf("// SelectForRoles selects the union of columns visible to any of the given roles.\n"))
+	b.WriteString(fmt.Sprintf("func (q *%s) SelectForRoles(roles []string) *%s {\n", queryType, queryType))
+	b.WriteString("\tseen := map[string]bool{}\n")
+	if len(publicCols) > 0 {
+		b.WriteString("\tvar cols []string\n")
+		b.WriteString(fmt.Sprintf("\tfor _, c := range []string{%s} {\n", quoteColList(publicCols)))
+		b.WriteString("\t\tif !seen[c] { cols = append(cols, c); seen[c] = true }\n")
+		b.WriteString("\t}\n")
+	} else {
+		b.WriteString("\tvar cols []string\n")
+	}
+	b.WriteString("\tfor _, role := range roles {\n")
+	b.WriteString("\t\tvar roleCols []string\n")
+	b.WriteString("\t\tswitch role {\n")
+	for _, slug := range roleSlugs {
+		b.WriteString(fmt.Sprintf("\t\tcase %q:\n", slug))
+		b.WriteString(fmt.Sprintf("\t\t\troleCols = []string{%s}\n", quoteColList(roleCols[slug])))
+	}
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\tfor _, c := range roleCols {\n")
+	b.WriteString("\t\t\tif !seen[c] { cols = append(cols, c); seen[c] = true }\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tq.selectedCols = cols\n")
+	b.WriteString("\treturn q\n")
+	b.WriteString("}\n\n")
+
+	// SelectForOwner(roles []string) — union + owner-sees columns
+	b.WriteString(fmt.Sprintf("// SelectForOwner selects columns visible to the given roles plus OwnerSees columns.\n"))
+	b.WriteString(fmt.Sprintf("func (q *%s) SelectForOwner(roles []string) *%s {\n", queryType, queryType))
+	b.WriteString("\tq.SelectForRoles(roles)\n")
+	if len(ownerCols) > 0 {
+		b.WriteString("\tseen := map[string]bool{}\n")
+		b.WriteString("\tfor _, c := range q.selectedCols { seen[c] = true }\n")
+		b.WriteString(fmt.Sprintf("\tfor _, c := range []string{%s} {\n", quoteColList(ownerCols)))
+		b.WriteString("\t\tif !seen[c] { q.selectedCols = append(q.selectedCols, c); seen[c] = true }\n")
+		b.WriteString("\t}\n")
+	}
+	b.WriteString("\tq.setVisibility(visibilityOwner)\n")
+	b.WriteString("\treturn q\n")
+	b.WriteString("}\n\n")
+}
+
+func mergeColSets(a, b []string) []string {
+	seen := map[string]bool{}
+	var result []string
+	for _, c := range a {
+		if !seen[c] {
+			result = append(result, c)
+			seen[c] = true
+		}
+	}
+	for _, c := range b {
+		if !seen[c] {
+			result = append(result, c)
+			seen[c] = true
+		}
+	}
+	return result
+}
+
+func quoteColList(cols []string) string {
+	var parts []string
+	for _, c := range cols {
+		parts = append(parts, fmt.Sprintf("%q", c))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // generateOrderByMethods emits typed OrderBy{Column}(direction string) methods

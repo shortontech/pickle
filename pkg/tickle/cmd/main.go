@@ -51,6 +51,12 @@ var templates = []struct {
 	{
 		srcDir: "pkg/migration",
 		output: "pkg/generator/embed_migration.go",
+		skip:   map[string]bool{"policy_runner.go": true, "graphql_policy_runner.go": true},
+	},
+	{
+		srcDir: "pkg/migration",
+		output: "pkg/generator/embed_policy.go",
+		only:   map[string]bool{"policy_runner.go": true, "graphql_policy_runner.go": true},
 	},
 	{
 		srcDir: "pkg/cooked/auth/jwt",

@@ -45,3 +45,10 @@ func GenerateCoreGraphQL(packageName string) []byte {
 func GenerateCoreScheduler(packageName string) []byte {
 	return []byte(strings.ReplaceAll(embedSCHEDULER, packagePlaceholder, packageName))
 }
+
+// GenerateCorePolicy returns the policy runner types (PolicyRunner,
+// GraphQLPolicyRunner, derive functions) with the package name set to
+// the target package.
+func GenerateCorePolicy(packageName string) []byte {
+	return []byte(strings.ReplaceAll(embedPOLICY, packagePlaceholder, packageName))
+}

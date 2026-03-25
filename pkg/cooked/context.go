@@ -27,6 +27,8 @@ type Context struct {
 	params   map[string]string
 	auth     *AuthInfo
 	bodyBuf  []byte // cached request body for PeekJSON
+	roles    []string
+	isAdmin  bool
 }
 
 // NewContext creates a Context from an HTTP request/response pair.
@@ -231,6 +233,63 @@ func (c *Context) BadRequest(msg string) Response {
 		Body:       map[string]string{"error": msg},
 		Headers:    map[string]string{"Content-Type": "application/json"},
 	}
+}
+
+// RoleInfo describes a user's role membership, used by SetRoles.
+type RoleInfo struct {
+	Slug     string
+	Manages  bool
+}
+
+// SetRoles stores the user's role memberships on the context.
+// Called by LoadRoles middleware after querying the role_user table.
+func (c *Context) SetRoles(roles []RoleInfo) {
+	c.roles = make([]string, len(roles))
+	c.isAdmin = false
+	for i, r := range roles {
+		c.roles[i] = r.Slug
+		if r.Manages {
+			c.isAdmin = true
+		}
+	}
+}
+
+// Role returns the primary role slug (first role). Returns "" if no roles.
+func (c *Context) Role() string {
+	if len(c.roles) == 0 {
+		return ""
+	}
+	return c.roles[0]
+}
+
+// Roles returns all role slugs for the authenticated user.
+func (c *Context) Roles() []string {
+	return c.roles
+}
+
+// HasRole returns true if the user has the given role.
+func (c *Context) HasRole(slug string) bool {
+	for _, r := range c.roles {
+		if r == slug {
+			return true
+		}
+	}
+	return false
+}
+
+// HasAnyRole returns true if the user has any of the given roles.
+func (c *Context) HasAnyRole(slugs ...string) bool {
+	for _, slug := range slugs {
+		if c.HasRole(slug) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsAdmin returns true if the user has any role with Manages() set.
+func (c *Context) IsAdmin() bool {
+	return c.isAdmin
 }
 
 // PeekJSON reads a top-level string field from a JSON request body without

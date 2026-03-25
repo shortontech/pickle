@@ -114,3 +114,72 @@ func TestContextResponseHelpers(t *testing.T) {
 		t.Errorf("Forbidden status = %d, want 403", r.StatusCode)
 	}
 }
+
+func TestContextRoles(t *testing.T) {
+	ctx := NewContext(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+
+	// Before SetRoles
+	if ctx.Role() != "" {
+		t.Error("expected empty role before SetRoles")
+	}
+	if len(ctx.Roles()) != 0 {
+		t.Error("expected empty roles before SetRoles")
+	}
+	if ctx.HasRole("admin") {
+		t.Error("expected HasRole false before SetRoles")
+	}
+	if ctx.IsAdmin() {
+		t.Error("expected IsAdmin false before SetRoles")
+	}
+
+	// Set roles
+	ctx.SetRoles([]RoleInfo{
+		{Slug: "editor", Manages: false},
+		{Slug: "admin", Manages: true},
+	})
+
+	if ctx.Role() != "editor" {
+		t.Errorf("Role() = %q, want 'editor'", ctx.Role())
+	}
+	if len(ctx.Roles()) != 2 {
+		t.Errorf("Roles() len = %d, want 2", len(ctx.Roles()))
+	}
+	if !ctx.HasRole("admin") {
+		t.Error("expected HasRole('admin') to be true")
+	}
+	if !ctx.HasRole("editor") {
+		t.Error("expected HasRole('editor') to be true")
+	}
+	if ctx.HasRole("viewer") {
+		t.Error("expected HasRole('viewer') to be false")
+	}
+	if !ctx.IsAdmin() {
+		t.Error("expected IsAdmin true when admin role has Manages")
+	}
+}
+
+func TestContextHasAnyRole(t *testing.T) {
+	ctx := NewContext(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	ctx.SetRoles([]RoleInfo{{Slug: "editor"}})
+
+	if !ctx.HasAnyRole("admin", "editor") {
+		t.Error("expected HasAnyRole true with partial match")
+	}
+	if ctx.HasAnyRole("admin", "viewer") {
+		t.Error("expected HasAnyRole false with no match")
+	}
+	if ctx.HasAnyRole() {
+		t.Error("expected HasAnyRole false with empty args")
+	}
+}
+
+func TestContextIsAdminFalse(t *testing.T) {
+	ctx := NewContext(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	ctx.SetRoles([]RoleInfo{
+		{Slug: "editor", Manages: false},
+		{Slug: "viewer", Manages: false},
+	})
+	if ctx.IsAdmin() {
+		t.Error("expected IsAdmin false when no role has Manages")
+	}
+}

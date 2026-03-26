@@ -25,7 +25,7 @@
       "args": ["run", "./cmd/pickle/", "mcp", "--project", "./testdata/zero-graphql/"]
     },
     "go-edit": {
-      "command": "go-edit-mcp"
+      "command": "./go-edit-mcp"
     }
   }
 }

@@ -4,6 +4,13 @@ package config
 type DatabaseConfig struct {
 	Default     string
 	Connections map[string]ConnectionConfig
+	Encryption  EncryptionConfig
+}
+
+// EncryptionConfig holds env var names for encryption keys.
+type EncryptionConfig struct {
+	CurrentKeyEnv string
+	NextKeyEnv    string
 }
 
 func database() DatabaseConfig {
@@ -22,6 +29,10 @@ func database() DatabaseConfig {
 				Driver: "sqlite",
 				Name:   Env("DB_DATABASE", "database.sqlite"),
 			},
+		},
+		Encryption: EncryptionConfig{
+			CurrentKeyEnv: "PICKLE_ENCRYPTION_KEY",
+			NextKeyEnv:    "PICKLE_ENCRYPTION_KEY_NEXT",
 		},
 	}
 }

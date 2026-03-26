@@ -14,11 +14,15 @@ type AccountController struct {
 }
 
 func (c AccountController) Index(ctx *pickle.Context) pickle.Response {
-	ownerID := uuid.MustParse(ctx.Auth().UserID)
+	ownerID, err := uuid.Parse(ctx.Auth().UserID)
+	if err != nil {
+		return ctx.Unauthorized("invalid auth")
+	}
 
 	accounts, err := models.QueryAccount().
 		WhereOwnerID(ownerID).
 		SelectAll().
+		Limit(100).
 		All()
 	if err != nil {
 		return ctx.Error(err)
@@ -33,9 +37,14 @@ func (c AccountController) Show(ctx *pickle.Context) pickle.Response {
 		return ctx.BadRequest("invalid account id")
 	}
 
+	ownerID, err := uuid.Parse(ctx.Auth().UserID)
+	if err != nil {
+		return ctx.Unauthorized("invalid auth")
+	}
+
 	account, err := models.QueryAccount().
 		WhereID(id).
-		WhereOwnerID(uuid.MustParse(ctx.Auth().UserID)).
+		WhereOwnerID(ownerID).
 		SelectAll().
 		First()
 	if err != nil {
@@ -46,13 +55,18 @@ func (c AccountController) Show(ctx *pickle.Context) pickle.Response {
 }
 
 func (c AccountController) Store(ctx *pickle.Context) pickle.Response {
+	ownerID, err := uuid.Parse(ctx.Auth().UserID)
+	if err != nil {
+		return ctx.Unauthorized("invalid auth")
+	}
+
 	req, bindErr := requests.BindCreateAccountRequest(ctx.Request())
 	if bindErr != nil {
 		return ctx.JSON(bindErr.Status, bindErr)
 	}
 
 	account := &models.Account{
-		OwnerID:  uuid.MustParse(ctx.Auth().UserID),
+		OwnerID:  ownerID,
 		Name:     req.Name,
 		Currency: req.Currency,
 		Type:     req.Type,
@@ -72,6 +86,11 @@ func (c AccountController) Update(ctx *pickle.Context) pickle.Response {
 		return ctx.BadRequest("invalid account id")
 	}
 
+	ownerID, err := uuid.Parse(ctx.Auth().UserID)
+	if err != nil {
+		return ctx.Unauthorized("invalid auth")
+	}
+
 	req, bindErr := requests.BindUpdateAccountRequest(ctx.Request())
 	if bindErr != nil {
 		return ctx.JSON(bindErr.Status, bindErr)
@@ -79,7 +98,7 @@ func (c AccountController) Update(ctx *pickle.Context) pickle.Response {
 
 	account, err := models.QueryAccount().
 		WhereID(id).
-		WhereOwnerID(uuid.MustParse(ctx.Auth().UserID)).
+		WhereOwnerID(ownerID).
 		SelectAll().
 		First()
 	if err != nil {
@@ -108,9 +127,14 @@ func (c AccountController) Balance(ctx *pickle.Context) pickle.Response {
 		return ctx.BadRequest("invalid account id")
 	}
 
+	ownerID, err := uuid.Parse(ctx.Auth().UserID)
+	if err != nil {
+		return ctx.Unauthorized("invalid auth")
+	}
+
 	account, err := models.QueryAccount().
 		WhereID(id).
-		WhereOwnerID(uuid.MustParse(ctx.Auth().UserID)).
+		WhereOwnerID(ownerID).
 		SelectAll().
 		First()
 	if err != nil {
@@ -166,9 +190,14 @@ func (c AccountController) Destroy(ctx *pickle.Context) pickle.Response {
 		return ctx.BadRequest("invalid account id")
 	}
 
+	ownerID, err := uuid.Parse(ctx.Auth().UserID)
+	if err != nil {
+		return ctx.Unauthorized("invalid auth")
+	}
+
 	account, err := models.QueryAccount().
 		WhereID(id).
-		WhereOwnerID(uuid.MustParse(ctx.Auth().UserID)).
+		WhereOwnerID(ownerID).
 		SelectAll().
 		First()
 	if err != nil {

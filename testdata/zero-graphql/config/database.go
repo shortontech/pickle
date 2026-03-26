@@ -4,6 +4,12 @@ package config
 type DatabaseConfig struct {
 	Default     string
 	Connections map[string]ConnectionConfig
+	Encryption  EncryptionConfig
+}
+
+type EncryptionConfig struct {
+	CurrentKeyEnv string
+	NextKeyEnv    string
 }
 
 func database() DatabaseConfig {
@@ -19,6 +25,10 @@ func database() DatabaseConfig {
 				Password: Env("DB_PASSWORD", ""),
 				Options:  map[string]string{"sslmode": "disable"},
 			},
+		},
+		Encryption: EncryptionConfig{
+			CurrentKeyEnv: "PICKLE_ENCRYPTION_KEY",
+			NextKeyEnv:    "PICKLE_ENCRYPTION_KEY_NEXT",
 		},
 	}
 }

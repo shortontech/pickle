@@ -20,9 +20,14 @@ func verifyAccountOwnership(ctx *pickle.Context) (*models.Account, pickle.Respon
 		return nil, ctx.BadRequest("invalid account id")
 	}
 
+	ownerID, err := uuid.Parse(ctx.Auth().UserID)
+	if err != nil {
+		return nil, ctx.Unauthorized("invalid auth")
+	}
+
 	account, err := models.QueryAccount().
 		WhereID(accountID).
-		WhereOwnerID(uuid.MustParse(ctx.Auth().UserID)).
+		WhereOwnerID(ownerID).
 		SelectAll().
 		First()
 	if err != nil {
@@ -40,6 +45,7 @@ func (c TransactionController) Index(ctx *pickle.Context) pickle.Response {
 
 	transactions, err := models.QueryTransaction().
 		WhereAccountID(account.ID).
+		Limit(100).
 		All()
 	if err != nil {
 		return ctx.Error(err)

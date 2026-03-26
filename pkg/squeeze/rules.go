@@ -3,6 +3,8 @@ package squeeze
 import (
 	"go/ast"
 	"go/token"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/shortontech/pickle/pkg/generator"
@@ -21,7 +23,9 @@ type AnalysisContext struct {
 	HasGraphQL   bool // true if the project has a graphql/ directory
 	RBACRoles    *RBACRoleSet
 	RBACDefaults []RBACDefault
-	Actions      []ActionInfo
+	Actions        []ActionInfo
+	GraphQLExposed map[string]bool // table/model names exposed via GraphQL policies (nil = no policies)
+	ProjectDir     string
 }
 
 // Rule is a function that inspects the analysis context and returns findings.
@@ -245,8 +249,19 @@ var sensitiveSuffixes = []string{
 	"_credential",
 }
 
+// alreadyHashedColumns are columns that store hashed or integrity values —
+// encrypting them adds no security benefit.
+var alreadyHashedColumns = map[string]bool{
+	"password_hash": true,
+	"row_hash":      true,
+	"prev_hash":     true,
+}
+
 // isSensitiveColumn returns true if the column name matches a known sensitive pattern.
 func isSensitiveColumn(name string) bool {
+	if alreadyHashedColumns[name] {
+		return false
+	}
 	if sensitiveExactNames[name] {
 		return true
 	}
@@ -390,6 +405,9 @@ func rulePublicProjection(ctx *AnalysisContext) []Finding {
 func ruleRequiredFields(ctx *AnalysisContext) []Finding {
 	var findings []Finding
 
+	// Columns computed by the query builder for immutable/append-only tables
+	computedHashCols := map[string]bool{"row_hash": true, "prev_hash": true}
+
 	// Build a map of table name -> required fields (not nullable, no default, not PK)
 	requiredByTable := make(map[string][]string)
 	for _, table := range ctx.Tables {
@@ -400,6 +418,10 @@ func ruleRequiredFields(ctx *AnalysisContext) []Finding {
 			}
 			// Skip timestamp columns (created_at, updated_at) — typically auto-set
 			if col.Name == "created_at" || col.Name == "updated_at" {
+				continue
+			}
+			// Skip hash chain columns on immutable/append-only tables — computed by query builder
+			if (table.IsImmutable || table.IsAppendOnly) && computedHashCols[col.Name] {
 				continue
 			}
 			required = append(required, col.Name)
@@ -1048,8 +1070,14 @@ func ruleIntegrityHashOverride(ctx *AnalysisContext) []Finding {
 // Sensitive columns that are .Public() without .UnsafePublic() will be visible
 // to unauthenticated GraphQL queries.
 func ruleGraphQLPublicSensitive(ctx *AnalysisContext) []Finding {
+	if ctx.GraphQLExposed == nil {
+		return nil
+	}
 	var findings []Finding
 	for _, table := range ctx.Tables {
+		if !ctx.GraphQLExposed[table.Name] {
+			continue
+		}
 		for _, col := range table.Columns {
 			if col.IsPublic && isSensitiveColumn(col.Name) && !col.IsUnsafePublic {
 				findings = append(findings, Finding{
@@ -1068,8 +1096,14 @@ func ruleGraphQLPublicSensitive(ctx *AnalysisContext) []Finding {
 // ruleGraphQLOwnerColumnMissing flags tables with @ownerOnly fields but no IsOwner column.
 // Without an owner column, @ownerOnly can't determine who owns the record.
 func ruleGraphQLOwnerColumnMissing(ctx *AnalysisContext) []Finding {
+	if ctx.GraphQLExposed == nil {
+		return nil
+	}
 	var findings []Finding
 	for _, table := range ctx.Tables {
+		if !ctx.GraphQLExposed[table.Name] {
+			continue
+		}
 		hasOwnerSees := false
 		hasOwnerColumn := false
 		for _, col := range table.Columns {
@@ -1098,11 +1132,14 @@ func ruleGraphQLOwnerColumnMissing(ctx *AnalysisContext) []Finding {
 // (require authentication) which may be unintentional — the developer should explicitly
 // mark fields as .Public() or .OwnerSees() to document their access model.
 func ruleGraphQLNoVisibilityAnnotations(ctx *AnalysisContext) []Finding {
-	if !ctx.HasGraphQL {
+	if !ctx.HasGraphQL || ctx.GraphQLExposed == nil {
 		return nil
 	}
 	var findings []Finding
 	for _, table := range ctx.Tables {
+		if !ctx.GraphQLExposed[table.Name] {
+			continue
+		}
 		// Skip tables without a PK (not exposed in GraphQL)
 		hasPK := false
 		for _, col := range table.Columns {
@@ -1313,23 +1350,42 @@ func ruleEncryptedSealedConflict(ctx *AnalysisContext) []Finding {
 
 // ruleEncryptedMissingKeyConfig flags tables with encrypted/sealed columns but no encryption key config.
 func ruleEncryptedMissingKeyConfig(ctx *AnalysisContext) []Finding {
-	var findings []Finding
+	hasEncryptedTable := false
 	for _, table := range ctx.Tables {
-		hasEncrypted := false
 		for _, col := range table.Columns {
 			if col.IsEncrypted || col.IsSealed {
-				hasEncrypted = true
+				hasEncryptedTable = true
 				break
 			}
 		}
-		if hasEncrypted {
-			findings = append(findings, Finding{
-				Rule:     "encrypted_missing_key_config",
-				Severity: SeverityWarning,
-				File:     "",
-				Line:     0,
-				Message:  `table "` + table.Name + `" has .Encrypted() or .Sealed() columns — ensure Encryption.CurrentKeyEnv is configured in config/database.go`,
-			})
+		if hasEncryptedTable {
+			break
+		}
+	}
+	if !hasEncryptedTable {
+		return nil
+	}
+
+	// Check if config/database.go contains CurrentKeyEnv
+	dbConfig := filepath.Join(ctx.ProjectDir, "config", "database.go")
+	data, err := os.ReadFile(dbConfig)
+	if err == nil && strings.Contains(string(data), "CurrentKeyEnv") {
+		return nil
+	}
+
+	var findings []Finding
+	for _, table := range ctx.Tables {
+		for _, col := range table.Columns {
+			if col.IsEncrypted || col.IsSealed {
+				findings = append(findings, Finding{
+					Rule:     "encrypted_missing_key_config",
+					Severity: SeverityWarning,
+					File:     "",
+					Line:     0,
+					Message:  `table "` + table.Name + `" has .Encrypted() or .Sealed() columns — ensure Encryption.CurrentKeyEnv is configured in config/database.go`,
+				})
+				break
+			}
 		}
 	}
 	return findings

@@ -137,7 +137,7 @@ func GetUserByEmail(email string) (*models.User, error) {
 	}
 }
 
-func TestParseProjectFunctions_SkipsControllers(t *testing.T) {
+func TestParseProjectFunctions_IncludesControllerHelpers(t *testing.T) {
 	projectDir := t.TempDir()
 	ctrlDir := filepath.Join(projectDir, "app", "http", "controllers")
 	if err := os.MkdirAll(ctrlDir, 0755); err != nil {
@@ -147,14 +147,20 @@ func TestParseProjectFunctions_SkipsControllers(t *testing.T) {
 	src := `package controllers
 
 func helper() {}
+
+type Ctrl struct{}
+func (c Ctrl) Index() {}
 `
 	if err := os.WriteFile(filepath.Join(ctrlDir, "helpers.go"), []byte(src), 0644); err != nil {
 		t.Fatalf("writing file: %v", err)
 	}
 
 	registry := ParseProjectFunctions(projectDir)
-	if _, ok := registry["controllers.helper"]; ok {
-		t.Error("controllers directory should be skipped")
+	if _, ok := registry["controllers.helper"]; !ok {
+		t.Error("standalone controller helpers should be in registry")
+	}
+	if _, ok := registry["controllers.Index"]; ok {
+		t.Error("controller methods (with receiver) should not be in registry")
 	}
 }
 

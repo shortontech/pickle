@@ -1555,6 +1555,7 @@ func Handler() {
 
 func TestRuleGraphQLPublicSensitive(t *testing.T) {
 	ctx := &AnalysisContext{
+		GraphQLExposed: map[string]bool{"users": true},
 		Tables: []*schema.Table{
 			{
 				Name: "users",
@@ -1576,6 +1577,7 @@ func TestRuleGraphQLPublicSensitive(t *testing.T) {
 
 func TestRuleGraphQLPublicSensitive_UnsafePublicExempt(t *testing.T) {
 	ctx := &AnalysisContext{
+		GraphQLExposed: map[string]bool{"users": true},
 		Tables: []*schema.Table{
 			{
 				Name: "users",
@@ -1594,6 +1596,7 @@ func TestRuleGraphQLPublicSensitive_UnsafePublicExempt(t *testing.T) {
 
 func TestRuleGraphQLOwnerColumnMissing(t *testing.T) {
 	ctx := &AnalysisContext{
+		GraphQLExposed: map[string]bool{"posts": true},
 		Tables: []*schema.Table{
 			{
 				Name: "posts",
@@ -1617,7 +1620,8 @@ func TestRuleGraphQLOwnerColumnMissing(t *testing.T) {
 
 func TestRuleGraphQLNoVisibilityAnnotations(t *testing.T) {
 	ctx := &AnalysisContext{
-		HasGraphQL: true,
+		HasGraphQL:     true,
+		GraphQLExposed: map[string]bool{"users": true},
 		Tables: []*schema.Table{
 			{
 				Name: "users",
@@ -1641,7 +1645,8 @@ func TestRuleGraphQLNoVisibilityAnnotations(t *testing.T) {
 
 func TestRuleGraphQLNoVisibilityAnnotations_WithAnnotations(t *testing.T) {
 	ctx := &AnalysisContext{
-		HasGraphQL: true,
+		HasGraphQL:     true,
+		GraphQLExposed: map[string]bool{"users": true},
 		Tables: []*schema.Table{
 			{
 				Name: "users",
@@ -1682,6 +1687,7 @@ func TestRuleGraphQLNoVisibilityAnnotations_NoGraphQL(t *testing.T) {
 
 func TestRuleGraphQLOwnerColumnMissing_WithOwner(t *testing.T) {
 	ctx := &AnalysisContext{
+		GraphQLExposed: map[string]bool{"posts": true},
 		Tables: []*schema.Table{
 			{
 				Name: "posts",

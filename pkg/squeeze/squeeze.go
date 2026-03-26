@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/shortontech/pickle/pkg/generator"
 )
@@ -34,13 +36,21 @@ func Run(projectDir string) ([]Finding, error) {
 	controllersDir := filepath.Join(project.Dir, "app", "http", "controllers")
 	methods, err := ParseControllers(controllersDir)
 	if err != nil {
-		return nil, fmt.Errorf("parsing controllers: %w", err)
+		if os.IsNotExist(err) || strings.Contains(err.Error(), "not found") {
+			methods = make(map[string]*ControllerMethod)
+		} else {
+			return nil, fmt.Errorf("parsing controllers: %w", err)
+		}
 	}
 
 	// 5. Scan request structs
 	requests, err := generator.ScanRequests(project.Layout.RequestsDir)
 	if err != nil {
-		return nil, fmt.Errorf("scanning requests: %w", err)
+		if os.IsNotExist(err) || strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "no such file") {
+			requests = nil
+		} else {
+			return nil, fmt.Errorf("scanning requests: %w", err)
+		}
 	}
 
 	// 6. Get schema from migrations
@@ -73,6 +83,9 @@ func Run(projectDir string) ([]Finding, error) {
 		}
 	}
 
+	// 6d. Scan GraphQL policies to determine which tables are actually exposed
+	graphQLExposed := scanGraphQLExposedTables(filepath.Join(project.Dir, "database", "policies", "graphql"))
+
 	// 7. Build analysis context
 	actx := &AnalysisContext{
 		Routes:       routes,
@@ -81,7 +94,9 @@ func Run(projectDir string) ([]Finding, error) {
 		Tables:       tables,
 		Config:       cfg.Squeeze,
 		FuncRegistry: funcRegistry,
-		HasGraphQL:   hasGraphQL,
+		HasGraphQL:       hasGraphQL,
+		GraphQLExposed:   graphQLExposed,
+		ProjectDir:       projectDir,
 	}
 
 	// 8. Run enabled rules
@@ -102,4 +117,41 @@ func Run(projectDir string) ([]Finding, error) {
 	})
 
 	return findings, nil
+}
+
+var (
+	reExpose   = regexp.MustCompile(`Expose\("([^"]+)"`)
+	reUnexpose = regexp.MustCompile(`Unexpose\("([^"]+)"\)`)
+)
+
+// scanGraphQLExposedTables reads GraphQL policy files and returns the set of
+// model/table names that are exposed. Uses string matching since policy files
+// have //go:build ignore and can't be compiled.
+func scanGraphQLExposedTables(dir string) map[string]bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	exposed := map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		src := string(data)
+		for _, match := range reExpose.FindAllStringSubmatch(src, -1) {
+			exposed[match[1]] = true
+		}
+		for _, match := range reUnexpose.FindAllStringSubmatch(src, -1) {
+			delete(exposed, match[1])
+		}
+	}
+	if len(exposed) == 0 {
+		return nil
+	}
+	return exposed
 }

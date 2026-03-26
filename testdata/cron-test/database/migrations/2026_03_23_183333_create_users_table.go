@@ -8,8 +8,8 @@ func (m *CreateUsersTable_2026_03_23_183333) Up() {
 	m.CreateTable("users", func(t *Table) {
 		t.UUID("id").PrimaryKey().Default("gen_random_uuid()")
 		t.String("name").NotNull()
-		t.String("email").NotNull().Unique()
-		t.String("password").NotNull()
+		t.String("email").NotNull().Unique().Encrypted()
+		t.String("password_hash").NotNull()
 		t.Timestamps()
 	})
 }

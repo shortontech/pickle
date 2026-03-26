@@ -8,7 +8,7 @@ func (m *CreateUsersTable_2026_03_20_100000) Up() {
 	m.CreateTable("users", func(t *Table) {
 		t.UUID("id").PrimaryKey().Default("gen_random_uuid()")
 		t.String("name", 255).NotNull().Public()
-		t.String("email", 255).NotNull().Unique().Public()
+		t.String("email", 255).NotNull().Unique().Encrypted().UnsafePublic()
 		t.String("password_hash", 255).NotNull()
 		t.Text("bio").Nullable().Public()
 		t.Timestamps()

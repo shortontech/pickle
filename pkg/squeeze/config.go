@@ -51,7 +51,11 @@ type MiddlewareConfig struct {
 }
 
 // IsAuthMiddleware returns true if the given middleware name is classified as auth.
+// Defaults to matching "Auth" if no auth middleware is configured.
 func (mc MiddlewareConfig) IsAuthMiddleware(name string) bool {
+	if len(mc.Auth) == 0 && len(mc.Admin) == 0 {
+		return name == "Auth"
+	}
 	for _, m := range mc.Auth {
 		if m == name {
 			return true
@@ -67,7 +71,11 @@ func (mc MiddlewareConfig) IsAuthMiddleware(name string) bool {
 }
 
 // IsAdminMiddleware returns true if the given middleware name is classified as admin.
+// Defaults to matching "RequireAdmin" if no admin middleware is configured.
 func (mc MiddlewareConfig) IsAdminMiddleware(name string) bool {
+	if len(mc.Admin) == 0 {
+		return name == "RequireAdmin"
+	}
 	for _, m := range mc.Admin {
 		if m == name {
 			return true
@@ -77,7 +85,11 @@ func (mc MiddlewareConfig) IsAdminMiddleware(name string) bool {
 }
 
 // IsRateLimitMiddleware returns true if the given middleware name is classified as rate limiting.
+// Defaults to matching "RateLimit" if no rate limit middleware is configured.
 func (mc MiddlewareConfig) IsRateLimitMiddleware(name string) bool {
+	if len(mc.RateLimit) == 0 {
+		return name == "RateLimit"
+	}
 	for _, m := range mc.RateLimit {
 		if m == name {
 			return true

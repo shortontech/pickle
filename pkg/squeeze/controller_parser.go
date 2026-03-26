@@ -586,11 +586,6 @@ func ParseProjectFunctions(projectDir string) FuncRegistry {
 			strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		// Skip controllers — they're already parsed separately
-		if strings.Contains(path, filepath.Join("http", "controllers")) {
-			return nil
-		}
-
 		fset := token.NewFileSet()
 		f, parseErr := parser.ParseFile(fset, path, nil, 0)
 		if parseErr != nil {
@@ -634,17 +629,23 @@ func ExtractCallChainsRecursive(body *ast.BlockStmt, fset *token.FileSet, regist
 			if !ok {
 				return true
 			}
-			// Look for pkg.Func() calls
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			pkgIdent, ok := sel.X.(*ast.Ident)
-			if !ok {
-				return true
-			}
 
-			key := pkgIdent.Name + "." + sel.Sel.Name
+			// Resolve the registry key for this call
+			var key string
+			switch fn := call.Fun.(type) {
+			case *ast.SelectorExpr:
+				// pkg.Func() calls
+				pkgIdent, ok := fn.X.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				key = pkgIdent.Name + "." + fn.Sel.Name
+			case *ast.Ident:
+				// Same-package bare function calls like verifyAccountOwnership(ctx)
+				key = "controllers." + fn.Name
+			default:
+				return true
+			}
 			fn, ok := registry[key]
 			if !ok || visited[key] {
 				return true

@@ -8,7 +8,7 @@ import (
 
 var API = pickle.Routes(func(r *pickle.Router) {
 	r.Group("/api", func(r *pickle.Router) {
-		r.Post("/auth/login", controllers.AuthController{}.Login)
+		r.Post("/auth/login", controllers.AuthController{}.Login, pickle.RateLimit(5, 10))
 
 		r.Group("/accounts", func(r *pickle.Router) {
 			r.Get("/", controllers.AccountController{}.Index)

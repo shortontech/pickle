@@ -9,9 +9,9 @@ type CreateGraphqlChangelogTable_2026_03_25_000001 struct {
 
 func (m *CreateGraphqlChangelogTable_2026_03_25_000001) Up() {
 	m.CreateTable("graphql_changelog", func(t *Table) {
-		t.String("id", 255).PrimaryKey()
+		t.String("id").PrimaryKey()
 		t.Integer("batch").NotNull()
-		t.String("state", 20).NotNull()
+		t.String("state").NotNull()
 		t.Text("error").Nullable()
 		t.Timestamp("started_at").Nullable()
 		t.Timestamp("completed_at").Nullable()

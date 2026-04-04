@@ -39,6 +39,12 @@ func main() {
 		cmdMCP()
 	case "migrate", "migrate:rollback", "migrate:fresh", "migrate:status":
 		cmdMigrate()
+	case "policies:rollback", "policies:status":
+		cmdMigrate()
+	case "graphql:rollback", "graphql:status":
+		cmdMigrate()
+	case "graphql:schema":
+		cmdGraphQLSchema()
 	case "make:controller":
 		cmdMakeController()
 	case "make:migration":
@@ -49,6 +55,14 @@ func main() {
 		cmdMakeMiddleware()
 	case "make:job":
 		cmdMakeJob()
+	case "make:policy":
+		cmdMakePolicy()
+	case "make:action":
+		cmdMakeAction()
+	case "make:scope":
+		cmdMakeScope()
+	case "make:graphql-policy":
+		cmdMakeGraphQLPolicy()
 	case "squeeze":
 		cmdSqueeze()
 	case "--help", "-h", "help":
@@ -75,12 +89,21 @@ Commands:
   migrate:rollback  Roll back the last batch of migrations
   migrate:fresh     Drop all tables and re-run all migrations
   migrate:status    Show migration status
+  policies:rollback Roll back the last batch of role policies
+  policies:status   Show role policy status
+  graphql:rollback  Roll back the last batch of GraphQL policies
+  graphql:status    Show GraphQL policy status
   make:controller   Scaffold a new controller
   make:migration    Scaffold a new migration
   make:request      Scaffold a new request class
   make:middleware    Scaffold a new middleware
-  make:job           Scaffold a new job
-  squeeze            Run static analysis on your Pickle project
+  make:job              Scaffold a new job
+  make:policy          Scaffold a new role policy
+  make:action          Scaffold a new action + gate (model/action)
+  make:scope           Scaffold a new scope (model/scope)
+  make:graphql-policy  Scaffold a new GraphQL policy
+  graphql:schema       Print the current GraphQL SDL
+  squeeze              Run static analysis on your Pickle project
 
 Options:
   --project <dir>   Project directory (default: current directory)
@@ -682,6 +705,129 @@ func cmdMakeJob() {
 		os.Exit(1)
 	}
 	fmt.Printf("  created %s\n", relPath)
+}
+
+func cmdMakePolicy() {
+	name, projectDir := parseMakeArgs()
+	if name == "" {
+		fmt.Fprintf(os.Stderr, "Usage: pickle make:policy <name>\n")
+		os.Exit(1)
+	}
+	project, err := generator.DetectProject(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	relPath, err := scaffold.MakePolicy(name, project.Dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("  created %s\n", relPath)
+}
+
+func cmdMakeAction() {
+	name, projectDir := parseMakeArgs()
+	if name == "" {
+		fmt.Fprintf(os.Stderr, "Usage: pickle make:action <model>/<action>\n")
+		os.Exit(1)
+	}
+	project, err := generator.DetectProject(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	relPath, err := scaffold.MakeAction(name, project.Dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("  created %s\n", relPath)
+	// Also print gate file path
+	fmt.Printf("  created %s\n", strings.TrimSuffix(relPath, ".go")+"_gate.go")
+}
+
+func cmdMakeScope() {
+	name, projectDir := parseMakeArgs()
+	if name == "" {
+		fmt.Fprintf(os.Stderr, "Usage: pickle make:scope <model>/<scope>\n")
+		os.Exit(1)
+	}
+	project, err := generator.DetectProject(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	relPath, err := scaffold.MakeScope(name, project.Dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("  created %s\n", relPath)
+}
+
+func cmdMakeGraphQLPolicy() {
+	name, projectDir := parseMakeArgs()
+	if name == "" {
+		fmt.Fprintf(os.Stderr, "Usage: pickle make:graphql-policy <name>\n")
+		os.Exit(1)
+	}
+	project, err := generator.DetectProject(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	relPath, err := scaffold.MakeGraphQLPolicy(name, project.Dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("  created %s\n", relPath)
+}
+
+func cmdGraphQLSchema() {
+	projectDir := "."
+	args := os.Args[2:]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--project" && i+1 < len(args) {
+			projectDir = args[i+1]
+			i++
+		}
+	}
+
+	project, err := generator.DetectProject(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+
+	picklePkgDir := findPicklePkgDir()
+
+	// Regenerate to ensure schema is current
+	fmt.Fprintln(os.Stderr, "  generating...")
+	if err := generator.Generate(project, picklePkgDir); err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: generate failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Delegate to the project binary which has access to the compiled SchemaSDL
+	cmd := exec.Command("go", "run", "./cmd/server/", "graphql:schema")
+	cmd.Dir = project.Dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	cmd.Env = os.Environ()
+	dotEnv := generator.ParseDotEnv(filepath.Join(project.Dir, ".env"))
+	for k, v := range dotEnv {
+		if os.Getenv(k) == "" {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
+
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: graphql:schema: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func cmdSqueeze() {

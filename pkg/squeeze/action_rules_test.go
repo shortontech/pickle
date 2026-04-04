@@ -238,3 +238,77 @@ func Apply() {
 		t.Fatalf("expected 1 finding, got %d", len(findings))
 	}
 }
+
+// ---- scope_side_effect ----
+
+func TestScopeSideEffect_FlagsDisallowedCall(t *testing.T) {
+	m := method(t, `package scopes
+func Apply() {
+	sb.First()
+}
+`)
+	m.File = "database/scopes/user/active.go"
+	ctx := &AnalysisContext{
+		Methods:             map[string]*ControllerMethod{"UserScope.Apply": m},
+		FuncRegistry:        make(FuncRegistry),
+		ScopeAllowedMethods: map[string]bool{"Where": true, "WhereIn": true, "OrderBy": true},
+	}
+	findings := ruleScopeSideEffect(ctx)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if findings[0].Rule != "scope_side_effect" {
+		t.Errorf("rule = %q", findings[0].Rule)
+	}
+	if findings[0].Severity != SeverityError {
+		t.Errorf("severity = %v, want error", findings[0].Severity)
+	}
+}
+
+func TestScopeSideEffect_AllowsAllowedCall(t *testing.T) {
+	m := method(t, `package scopes
+func Apply() {
+	sb.Where(x)
+}
+`)
+	m.File = "database/scopes/user/active.go"
+	ctx := &AnalysisContext{
+		Methods:             map[string]*ControllerMethod{"UserScope.Apply": m},
+		FuncRegistry:        make(FuncRegistry),
+		ScopeAllowedMethods: map[string]bool{"Where": true, "WhereIn": true, "OrderBy": true},
+	}
+	findings := ruleScopeSideEffect(ctx)
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings, got %d", len(findings))
+	}
+}
+
+func TestScopeSideEffect_IgnoresNonScopeFile(t *testing.T) {
+	m := method(t, `package controllers
+func Index() {
+	sb.First()
+}
+`)
+	m.File = "app/http/controllers/user_controller.go"
+	ctx := &AnalysisContext{
+		Methods:             map[string]*ControllerMethod{"UserController.Index": m},
+		FuncRegistry:        make(FuncRegistry),
+		ScopeAllowedMethods: map[string]bool{"Where": true},
+	}
+	findings := ruleScopeSideEffect(ctx)
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings for non-scope file, got %d", len(findings))
+	}
+}
+
+func TestScopeSideEffect_NoAllowedMethods(t *testing.T) {
+	ctx := &AnalysisContext{
+		Methods:             map[string]*ControllerMethod{},
+		FuncRegistry:        make(FuncRegistry),
+		ScopeAllowedMethods: map[string]bool{},
+	}
+	findings := ruleScopeSideEffect(ctx)
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings when no allowed methods, got %d", len(findings))
+	}
+}

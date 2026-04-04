@@ -16,6 +16,7 @@ func (m *CreateActionTypesTable_2026_03_25_000002) Up() {
 	})
 
 	m.AddIndex("action_types", "model_type_id")
+	m.AddUniqueIndex("action_types", "model_type_id", "name")
 }
 
 func (m *CreateActionTypesTable_2026_03_25_000002) Down() {

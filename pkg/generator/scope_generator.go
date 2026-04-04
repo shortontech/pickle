@@ -132,20 +132,10 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 	b.WriteString("\treturn q\n")
 	b.WriteString("}\n\n")
 
-	// Generate Where* methods on the ScopeBuilder for each column
-	for _, col := range table.Columns {
-		if col.IsEncrypted || col.IsSealed {
-			continue
-		}
-		pascal := snakeToPascal(col.Name)
-		goType := columnGoType(col)
-		b.WriteString(fmt.Sprintf("func (sb *%s) Where%s(%s %s) *%s {\n", scopeBuilderType, pascal, toLowerFirst(pascal), goType, scopeBuilderType))
-		b.WriteString(fmt.Sprintf("\tsb.where(%q, %s)\n", col.Name, toLowerFirst(pascal)))
-		b.WriteString("\treturn sb\n")
-		b.WriteString("}\n\n")
-	}
+	// Generate typed Where* methods on the ScopeBuilder for each column
+	generateScopeBuilderWhereMethods(&b, table, scopeBuilderType)
 
-	// ScopeBuilder Limit/Offset/OrderBy chainable wrappers
+	// ScopeBuilder Limit/Offset chainable wrappers
 	for _, m := range []struct{ name, sig, call string }{
 		{"Limit", "n int", "Limit(n)"},
 		{"Offset", "n int", "Offset(n)"},
@@ -155,6 +145,23 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 		b.WriteString("\treturn sb\n")
 		b.WriteString("}\n\n")
 	}
+
+	// Generate typed OrderBy methods on the ScopeBuilder per column
+	generateScopeBuilderOrderByMethods(&b, table, scopeBuilderType)
+
+	// Compute visibility columns for ScopeBuilder and later use
+	var publicCols, ownerCols []string
+	for _, col := range table.Columns {
+		if col.IsPublic {
+			publicCols = append(publicCols, col.Name)
+			ownerCols = append(ownerCols, col.Name)
+		} else if col.IsOwnerSees {
+			ownerCols = append(ownerCols, col.Name)
+		}
+	}
+
+	// Generate visibility methods on ScopeBuilder
+	generateScopeBuilderVisibility(&b, table, scopeBuilderType, publicCols, ownerCols)
 
 	// Generate LockInfo() for all table types
 	b.WriteString(fmt.Sprintf("// LockInfo returns the current lock status for the %s table.\n", table.Name))
@@ -196,15 +203,9 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 	}
 
 	// Generate visibility scope methods (SelectPublic, SelectOwner, SelectAll)
-	hasVisibility := false
-	var publicCols, ownerCols []string
+	hasVisibility := len(publicCols) > 0 || len(ownerCols) > 0
 	for _, col := range table.Columns {
-		if col.IsPublic {
-			publicCols = append(publicCols, col.Name)
-			ownerCols = append(ownerCols, col.Name)
-			hasVisibility = true
-		} else if col.IsOwnerSees {
-			ownerCols = append(ownerCols, col.Name)
+		if col.IsPublic || col.IsOwnerSees {
 			hasVisibility = true
 		}
 	}
@@ -617,7 +618,14 @@ func collectScopeImports(table *schema.Table, blocks []tickle.ScopeBlock) []stri
 
 // generateRoleAwareScopes emits SelectFor, SelectForRoles, and SelectForOwner methods.
 func generateRoleAwareScopes(b *bytes.Buffer, table *schema.Table, queryType string, publicCols, ownerCols []string) {
-	// Collect role → visible columns mapping
+	generateRoleAwareScopesWithBirth(b, table, queryType, publicCols, ownerCols, nil, nil)
+}
+
+// generateRoleAwareScopesWithBirth generates SelectFor/SelectForRoles/SelectForOwner
+// with birth-timestamp filtering. roleBirths maps role slug to the policy ID that
+// created the role. managesRoles lists slugs of Manages roles (they see all columns).
+func generateRoleAwareScopesWithBirth(b *bytes.Buffer, table *schema.Table, queryType string, publicCols, ownerCols []string, roleBirths map[string]string, managesRoles map[string]bool) {
+	// Collect role → visible columns mapping, respecting birth timestamps
 	roleCols := map[string][]string{} // role slug → column names
 	var roleSlugs []string
 
@@ -626,6 +634,15 @@ func generateRoleAwareScopes(b *bytes.Buffer, table *schema.Table, queryType str
 			continue
 		}
 		for slug := range col.VisibleTo {
+			// Birth timestamp filtering: skip annotations from migrations
+			// that predate the role's current birth.
+			if roleBirths != nil && col.VisibleToSource != nil {
+				birth, hasBirth := roleBirths[slug]
+				source, hasSource := col.VisibleToSource[slug]
+				if hasBirth && hasSource && source < birth {
+					continue
+				}
+			}
 			if roleCols[slug] == nil {
 				roleSlugs = append(roleSlugs, slug)
 			}
@@ -642,13 +659,38 @@ func generateRoleAwareScopes(b *bytes.Buffer, table *schema.Table, queryType str
 		}
 	}
 
-	// SelectFor(role string) — switch on role slug
+	// SelectFor(role string) — switch on role slug.
+	// Manages roles return all columns (nil selectedCols).
 	b.WriteString(fmt.Sprintf("// SelectFor selects columns visible to the given role.\n"))
 	b.WriteString(fmt.Sprintf("// Manages roles see all columns. Unknown roles see public columns only.\n"))
 	b.WriteString(fmt.Sprintf("func (q *%s) SelectFor(role string) *%s {\n", queryType, queryType))
 	b.WriteString("\tswitch role {\n")
+
+	// Manages roles: return all columns
+	if managesRoles != nil {
+		var managesSlugs []string
+		for slug := range managesRoles {
+			managesSlugs = append(managesSlugs, slug)
+		}
+		// Sort for deterministic output
+		for i := 0; i < len(managesSlugs); i++ {
+			for j := i + 1; j < len(managesSlugs); j++ {
+				if managesSlugs[i] > managesSlugs[j] {
+					managesSlugs[i], managesSlugs[j] = managesSlugs[j], managesSlugs[i]
+				}
+			}
+		}
+		for _, slug := range managesSlugs {
+			b.WriteString(fmt.Sprintf("\tcase %q:\n", slug))
+			b.WriteString("\t\tq.selectedCols = nil\n")
+		}
+	}
+
 	for _, slug := range roleSlugs {
-		// Merge public + role-specific columns, dedup
+		// Skip manages roles — already handled above
+		if managesRoles != nil && managesRoles[slug] {
+			continue
+		}
 		merged := mergeColSets(publicCols, roleCols[slug])
 		b.WriteString(fmt.Sprintf("\tcase %q:\n", slug))
 		b.WriteString(fmt.Sprintf("\t\tq.selectedCols = []string{%s}\n", quoteColList(merged)))
@@ -676,9 +718,39 @@ func generateRoleAwareScopes(b *bytes.Buffer, table *schema.Table, queryType str
 		b.WriteString("\tvar cols []string\n")
 	}
 	b.WriteString("\tfor _, role := range roles {\n")
+
+	// Manages roles: return nil (all columns) immediately
+	if managesRoles != nil && len(managesRoles) > 0 {
+		var managesSlugs []string
+		for slug := range managesRoles {
+			managesSlugs = append(managesSlugs, slug)
+		}
+		for i := 0; i < len(managesSlugs); i++ {
+			for j := i + 1; j < len(managesSlugs); j++ {
+				if managesSlugs[i] > managesSlugs[j] {
+					managesSlugs[i], managesSlugs[j] = managesSlugs[j], managesSlugs[i]
+				}
+			}
+		}
+		for i, slug := range managesSlugs {
+			if i == 0 {
+				b.WriteString(fmt.Sprintf("\t\tif role == %q", slug))
+			} else {
+				b.WriteString(fmt.Sprintf(" || role == %q", slug))
+			}
+		}
+		b.WriteString(" {\n")
+		b.WriteString("\t\t\tq.selectedCols = nil\n")
+		b.WriteString("\t\t\treturn q\n")
+		b.WriteString("\t\t}\n")
+	}
+
 	b.WriteString("\t\tvar roleCols []string\n")
 	b.WriteString("\t\tswitch role {\n")
 	for _, slug := range roleSlugs {
+		if managesRoles != nil && managesRoles[slug] {
+			continue
+		}
 		b.WriteString(fmt.Sprintf("\t\tcase %q:\n", slug))
 		b.WriteString(fmt.Sprintf("\t\t\troleCols = []string{%s}\n", quoteColList(roleCols[slug])))
 	}
@@ -750,6 +822,132 @@ func generateOrderByMethods(b *bytes.Buffer, table *schema.Table, queryType, bui
 		b.WriteString(fmt.Sprintf("\treturn q\n"))
 		b.WriteString("}\n\n")
 	}
+}
+
+// generateScopeBuilderWhereMethods emits typed Where* methods on the ScopeBuilder
+// for each column, matching the same variants generated for QueryBuilder.
+func generateScopeBuilderWhereMethods(b *bytes.Buffer, table *schema.Table, scopeBuilderType string) {
+	for _, col := range table.Columns {
+		if col.IsSealed {
+			continue
+		}
+		pascal := snakeToPascal(col.Name)
+		goType := columnGoType(col)
+		paramName := toLowerFirst(pascal)
+		scope := tickle.ScopeForType(col.Type)
+
+		// Encrypted columns: only equality scopes
+		if col.IsEncrypted {
+			// WhereXxx (equality)
+			b.WriteString(fmt.Sprintf("func (sb *%s) Where%s(%s %s) *%s {\n", scopeBuilderType, pascal, paramName, goType, scopeBuilderType))
+			b.WriteString(fmt.Sprintf("\tsb.where(%q, %s)\n", col.Name, paramName))
+			b.WriteString("\treturn sb\n}\n\n")
+
+			// WhereXxxIn
+			b.WriteString(fmt.Sprintf("func (sb *%s) Where%sIn(vals []%s) *%s {\n", scopeBuilderType, pascal, goType, scopeBuilderType))
+			b.WriteString(fmt.Sprintf("\tsb.whereIn(%q, vals)\n", col.Name))
+			b.WriteString("\treturn sb\n}\n\n")
+			continue
+		}
+
+		// All columns: Where, WhereNot, WhereIn, WhereNotIn
+		b.WriteString(fmt.Sprintf("func (sb *%s) Where%s(%s %s) *%s {\n", scopeBuilderType, pascal, paramName, goType, scopeBuilderType))
+		b.WriteString(fmt.Sprintf("\tsb.where(%q, %s)\n", col.Name, paramName))
+		b.WriteString("\treturn sb\n}\n\n")
+
+		b.WriteString(fmt.Sprintf("func (sb *%s) Where%sNot(%s %s) *%s {\n", scopeBuilderType, pascal, paramName, goType, scopeBuilderType))
+		b.WriteString(fmt.Sprintf("\tsb.whereOp(%q, \"!=\", %s)\n", col.Name, paramName))
+		b.WriteString("\treturn sb\n}\n\n")
+
+		b.WriteString(fmt.Sprintf("func (sb *%s) Where%sIn(vals []%s) *%s {\n", scopeBuilderType, pascal, goType, scopeBuilderType))
+		b.WriteString(fmt.Sprintf("\tsb.whereIn(%q, vals)\n", col.Name))
+		b.WriteString("\treturn sb\n}\n\n")
+
+		b.WriteString(fmt.Sprintf("func (sb *%s) Where%sNotIn(vals []%s) *%s {\n", scopeBuilderType, pascal, goType, scopeBuilderType))
+		b.WriteString(fmt.Sprintf("\tsb.whereNotIn(%q, vals)\n", col.Name))
+		b.WriteString("\treturn sb\n}\n\n")
+
+		// String columns: Like, NotLike
+		if scope == "string" {
+			b.WriteString(fmt.Sprintf("func (sb *%s) Where%sLike(val string) *%s {\n", scopeBuilderType, pascal, scopeBuilderType))
+			b.WriteString(fmt.Sprintf("\tsb.whereOp(%q, \"LIKE\", val)\n", col.Name))
+			b.WriteString("\treturn sb\n}\n\n")
+
+			b.WriteString(fmt.Sprintf("func (sb *%s) Where%sNotLike(val string) *%s {\n", scopeBuilderType, pascal, scopeBuilderType))
+			b.WriteString(fmt.Sprintf("\tsb.whereOp(%q, \"NOT LIKE\", val)\n", col.Name))
+			b.WriteString("\treturn sb\n}\n\n")
+		}
+
+		// Numeric columns: GT, GTE, LT, LTE
+		if scope == "numeric" {
+			for _, op := range []struct{ suffix, sqlOp string }{
+				{"GT", ">"},
+				{"GTE", ">="},
+				{"LT", "<"},
+				{"LTE", "<="},
+			} {
+				b.WriteString(fmt.Sprintf("func (sb *%s) Where%s%s(%s %s) *%s {\n", scopeBuilderType, pascal, op.suffix, paramName, goType, scopeBuilderType))
+				b.WriteString(fmt.Sprintf("\tsb.whereOp(%q, %q, %s)\n", col.Name, op.sqlOp, paramName))
+				b.WriteString("\treturn sb\n}\n\n")
+			}
+		}
+
+		// Timestamp columns: Before, After, Between
+		if scope == "timestamp" {
+			b.WriteString(fmt.Sprintf("func (sb *%s) Where%sBefore(val time.Time) *%s {\n", scopeBuilderType, pascal, scopeBuilderType))
+			b.WriteString(fmt.Sprintf("\tsb.whereOp(%q, \"<\", val)\n", col.Name))
+			b.WriteString("\treturn sb\n}\n\n")
+
+			b.WriteString(fmt.Sprintf("func (sb *%s) Where%sAfter(val time.Time) *%s {\n", scopeBuilderType, pascal, scopeBuilderType))
+			b.WriteString(fmt.Sprintf("\tsb.whereOp(%q, \">\", val)\n", col.Name))
+			b.WriteString("\treturn sb\n}\n\n")
+
+			b.WriteString(fmt.Sprintf("func (sb *%s) Where%sBetween(start, end time.Time) *%s {\n", scopeBuilderType, pascal, scopeBuilderType))
+			b.WriteString(fmt.Sprintf("\tsb.whereOp(%q, \">=\", start)\n", col.Name))
+			b.WriteString(fmt.Sprintf("\tsb.whereOp(%q, \"<=\", end)\n", col.Name))
+			b.WriteString("\treturn sb\n}\n\n")
+		}
+	}
+}
+
+// generateScopeBuilderOrderByMethods emits typed OrderBy{Column}(direction string) methods
+// on the ScopeBuilder for each column in the table.
+func generateScopeBuilderOrderByMethods(b *bytes.Buffer, table *schema.Table, scopeBuilderType string) {
+	for _, col := range table.Columns {
+		if col.IsEncrypted || col.IsSealed {
+			continue
+		}
+		pascal := snakeToPascal(col.Name)
+		b.WriteString(fmt.Sprintf("// OrderBy%s orders results by the %s column.\n", pascal, col.Name))
+		b.WriteString(fmt.Sprintf("func (sb *%s) OrderBy%s(direction string) *%s {\n", scopeBuilderType, pascal, scopeBuilderType))
+		b.WriteString(fmt.Sprintf("\tsb.ScopeBuilder.OrderBy(%q, direction)\n", col.Name))
+		b.WriteString("\treturn sb\n")
+		b.WriteString("}\n\n")
+	}
+}
+
+// generateScopeBuilderVisibility emits visibility methods on the ScopeBuilder.
+func generateScopeBuilderVisibility(b *bytes.Buffer, table *schema.Table, scopeBuilderType string, publicCols, ownerCols []string) {
+	hasVisibility := len(publicCols) > 0 || len(ownerCols) > 0
+
+	if hasVisibility && len(publicCols) > 0 {
+		b.WriteString(fmt.Sprintf("// SelectPublic selects only columns marked Public().\n"))
+		b.WriteString(fmt.Sprintf("func (sb *%s) SelectPublic() *%s {\n", scopeBuilderType, scopeBuilderType))
+		b.WriteString(fmt.Sprintf("\tsb.selectedCols = []string{%s}\n", quoteColList(publicCols)))
+		b.WriteString("\tsb.setVisibility(visibilityPublic)\n")
+		b.WriteString("\treturn sb\n}\n\n")
+
+		b.WriteString(fmt.Sprintf("// SelectOwner selects columns visible to the resource owner.\n"))
+		b.WriteString(fmt.Sprintf("func (sb *%s) SelectOwner() *%s {\n", scopeBuilderType, scopeBuilderType))
+		b.WriteString(fmt.Sprintf("\tsb.selectedCols = []string{%s}\n", quoteColList(ownerCols)))
+		b.WriteString("\tsb.setVisibility(visibilityOwner)\n")
+		b.WriteString("\treturn sb\n}\n\n")
+	}
+
+	b.WriteString(fmt.Sprintf("// SelectAll selects all columns.\n"))
+	b.WriteString(fmt.Sprintf("func (sb *%s) SelectAll() *%s {\n", scopeBuilderType, scopeBuilderType))
+	b.WriteString("\tsb.setVisibility(visibilityAll)\n")
+	b.WriteString("\treturn sb\n}\n\n")
 }
 
 // selectCols returns a comma-separated list of column names for a table, for use in SELECT statements.

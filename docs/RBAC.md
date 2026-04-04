@@ -149,7 +149,7 @@ Pickle generates migrations in `database/migrations/rbac/`:
 
 | Table | Purpose |
 |-------|---------|
-| `roles` | Role definitions (slug, display_name, is_manages, is_default) |
+| `roles` | Role definitions (slug, name, manages, is_default) |
 | `role_actions` | Permissions granted to each role (role_slug, action) |
 | `role_user` | User-to-role assignments |
 | `rbac_changelog` | Policy execution state tracking (same pattern as migrations table) |

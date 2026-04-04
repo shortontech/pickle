@@ -36,7 +36,8 @@ type Table struct {
 	Relationships []*Relationship
 	IsImmutable   bool // set by Immutable() — versioned, (id, version_id) composite PK
 	IsAppendOnly  bool // set by AppendOnly() — insert-only, single id PK, no updates/deletes
-	HasSoftDelete bool // set by SoftDeletes() — adds deleted_at nullable column
+	HasSoftDelete      bool     // set by SoftDeletes() — adds deleted_at nullable column
+	CompositePrimaryKeys []string // set by PrimaryKey() — explicit composite PK columns
 }
 
 func (t *Table) addColumn(name string, colType ColumnType) *Column {
@@ -227,6 +228,25 @@ func (t *Table) AppendOnly() {
 		Type: Binary,
 	}
 	t.Columns = append([]*Column{id, rowHash, prevHash}, t.Columns...)
+}
+
+// PrimaryKey declares a composite primary key on the named columns.
+// The columns must already exist in the table.
+func (t *Table) PrimaryKey(cols ...string) {
+	for _, name := range cols {
+		found := false
+		for _, c := range t.Columns {
+			if c.Name == name {
+				c.IsPrimaryKey = true
+				found = true
+				break
+			}
+		}
+		if !found {
+			panic("pickle: PrimaryKey references unknown column \"" + name + "\" on table \"" + t.Name + "\"")
+		}
+	}
+	t.CompositePrimaryKeys = cols
 }
 
 // SoftDeletes adds a nullable deleted_at timestamp column.

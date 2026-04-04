@@ -91,6 +91,11 @@ var templates = []struct {
 		perFile: true,
 	},
 	{
+		srcDir:  "pkg/cooked/rbac/models",
+		output:  "pkg/generator/embed_rbac_models.go",
+		perFile: true,
+	},
+	{
 		srcDir:  "pkg/cooked/graphql/migrations",
 		output:  "pkg/generator/embed_graphql_migrations.go",
 		perFile: true,
@@ -98,6 +103,11 @@ var templates = []struct {
 	{
 		srcDir:  "pkg/cooked/audit/migrations",
 		output:  "pkg/generator/embed_audit_migrations.go",
+		perFile: true,
+	},
+	{
+		srcDir:  "pkg/cooked/audit/models",
+		output:  "pkg/generator/embed_audit_models.go",
 		perFile: true,
 	},
 }

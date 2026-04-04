@@ -140,10 +140,13 @@ func (s *Server) schemaShow(_ context.Context, _ *mcp.CallToolRequest, input tab
 		return errResult("schema inspection failed: " + err.Error()), nil, nil
 	}
 
+	// Get GraphQL models for exposure annotations
+	rbacState := DeriveRBACState(s.project.Dir)
+
 	if input.Table != "" {
 		for _, t := range tables {
 			if t.Name == input.Table {
-				return textResult(formatTable(t)), nil, nil
+				return textResult(enhanceSchemaWithVisibility(t, rbacState.GraphQLModels)), nil, nil
 			}
 		}
 		for _, v := range views {
@@ -159,7 +162,7 @@ func (s *Server) schemaShow(_ context.Context, _ *mcp.CallToolRequest, input tab
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		b.WriteString(formatTable(t))
+		b.WriteString(enhanceSchemaWithVisibility(t, rbacState.GraphQLModels))
 	}
 	for _, v := range views {
 		b.WriteString("\n")

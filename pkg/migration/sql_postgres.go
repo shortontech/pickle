@@ -77,6 +77,10 @@ func (g *postgresGenerator) columnDefWithPK(col *Column, suppressInlinePK bool) 
 	}
 	if col.ForeignKeyTable != "" && !col.FKMetadataOnly {
 		b.WriteString(fmt.Sprintf(" REFERENCES %s(%s)", qi(col.ForeignKeyTable), qi(col.ForeignKeyColumn)))
+		if col.OnDeleteAction != "" {
+			b.WriteString(" ON DELETE ")
+			b.WriteString(col.OnDeleteAction)
+		}
 	}
 	return b.String()
 }

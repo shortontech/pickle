@@ -135,6 +135,220 @@ func ruleDefaultRoleMissing(ctx *AnalysisContext) []Finding {
 	return findings
 }
 
+// rulePreBirthAnnotation flags migrations that use XxxSees() for a role whose birth policy
+// timestamp is after the migration timestamp. This happens when a role is dropped and recreated.
+func rulePreBirthAnnotation(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+
+	if ctx.RBACRoles == nil || len(ctx.RoleBirths) == 0 {
+		return nil
+	}
+
+	for _, m := range ctx.Methods {
+		migTimestamp := extractTimestamp(m.File)
+		if migTimestamp == "" {
+			continue
+		}
+		hits := findSeesCallsForDefined(m.Body, m.Fset, ctx.RBACRoles.Defined)
+		for _, hit := range hits {
+			birth, ok := ctx.RoleBirths[hit.Role]
+			if !ok {
+				continue
+			}
+			if migTimestamp < birth {
+				findings = append(findings, Finding{
+					Rule:     "pre_birth_annotation",
+					Severity: SeverityWarning,
+					File:     m.File,
+					Line:     hit.Line,
+					Message:  hit.Role + "Sees() predates role \"" + hit.Role + "\" birth policy " + birth + " — annotation has no effect",
+				})
+			}
+		}
+	}
+
+	return findings
+}
+
+// ruleMissingVisibilityScope flags controllers behind LoadRoles that query a model with
+// visibility annotations but don't call SelectForRoles/SelectForRole/SelectAll.
+func ruleMissingVisibilityScope(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+
+	if ctx.RBACRoles == nil || len(ctx.TablesWithVisibility) == 0 {
+		return nil
+	}
+
+	for _, route := range ctx.Routes {
+		hasLoadRoles := false
+		for _, mw := range route.Middleware {
+			if mw == "LoadRoles" {
+				hasLoadRoles = true
+				break
+			}
+		}
+		if !hasLoadRoles {
+			continue
+		}
+
+		key := route.ControllerType + "." + route.MethodName
+		method, ok := ctx.Methods[key]
+		if !ok {
+			continue
+		}
+
+		// Check if the method has a Query call for a table with visibility annotations
+		if hasQueryForVisibleTable(method.Body, ctx.TablesWithVisibility) && !hasVisibilityCall(method.Body) {
+			findings = append(findings, Finding{
+				Rule:     "missing_visibility_scope",
+				Severity: SeverityError,
+				File:     method.File,
+				Line:     method.Line,
+				Message:  route.Method + " " + route.Path + " — query has no visibility scope — call SelectForRoles(ctx.Roles()) or SelectAll()",
+			})
+		}
+	}
+
+	return findings
+}
+
+// ruleHardcodedRoleSelect flags SelectFor("literal") calls in controller code.
+func ruleHardcodedRoleSelect(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+
+	if ctx.RBACRoles == nil {
+		return nil
+	}
+
+	for _, m := range ctx.Methods {
+		lines := findHardcodedSelectFor(m.Body, m.Fset)
+		for _, line := range lines {
+			findings = append(findings, Finding{
+				Rule:     "hardcoded_role_select",
+				Severity: SeverityError,
+				File:     m.File,
+				Line:     line,
+				Message:  "SelectFor() uses hardcoded role string — use ctx.Role() or ctx.Roles()",
+			})
+		}
+	}
+
+	return findings
+}
+
+// extractTimestamp extracts a migration timestamp from a file path.
+// e.g. "database/migrations/2026_04_10_create_posts.go" -> "2026_04_10"
+func extractTimestamp(path string) string {
+	// Find the filename part
+	name := path
+	if idx := strings.LastIndex(path, "/"); idx >= 0 {
+		name = path[idx+1:]
+	}
+	if idx := strings.LastIndex(name, "\\"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	// Extract leading timestamp (digits and underscores)
+	i := 0
+	digitCount := 0
+	for i < len(name) && (name[i] >= '0' && name[i] <= '9' || name[i] == '_') {
+		if name[i] >= '0' && name[i] <= '9' {
+			digitCount++
+		}
+		i++
+	}
+	if digitCount >= 4 && i > 0 {
+		ts := strings.TrimRight(name[:i], "_")
+		return ts
+	}
+	return ""
+}
+
+// findSeesCallsForDefined scans for XxxSees() calls where Xxx is in the defined set.
+func findSeesCallsForDefined(body *ast.BlockStmt, fset *token.FileSet, defined map[string]bool) []RoleHit {
+	var hits []RoleHit
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := callName(call)
+		if strings.HasSuffix(name, "Sees") {
+			role := strings.TrimSuffix(name, "Sees")
+			if role != "" && defined[role] {
+				hits = append(hits, RoleHit{Role: role, Line: fset.Position(call.Pos()).Line})
+			}
+		}
+		return true
+	})
+	return hits
+}
+
+// hasQueryForVisibleTable checks if a method body contains a Query* call for a table
+// that has visibility annotations.
+func hasQueryForVisibleTable(body *ast.BlockStmt, visibleTables map[string]bool) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := callName(call)
+		if strings.HasPrefix(name, "Query") && len(name) > 5 {
+			model := name[5:] // e.g. "Post" from "QueryPost"
+			if visibleTables[model] {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// hasVisibilityCall checks if a method body calls SelectForRoles, SelectForRole, or SelectAll.
+func hasVisibilityCall(body *ast.BlockStmt) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := callName(call)
+		if name == "SelectForRoles" || name == "SelectForRole" || name == "SelectAll" {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// findHardcodedSelectFor finds SelectFor("literal") calls and returns their line numbers.
+func findHardcodedSelectFor(body *ast.BlockStmt, fset *token.FileSet) []int {
+	var lines []int
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := callName(call)
+		if name == "SelectFor" && len(call.Args) > 0 {
+			// Check if the argument is a string literal
+			if _, ok := call.Args[0].(*ast.BasicLit); ok {
+				lines = append(lines, fset.Position(call.Pos()).Line)
+			}
+		}
+		return true
+	})
+	return lines
+}
+
 // findSeesCallsForRoles scans an AST block for XxxSees() calls where Xxx is in the given role set.
 func findSeesCallsForRoles(body *ast.BlockStmt, fset *token.FileSet, roles map[string]bool) []RoleHit {
 	if len(roles) == 0 {

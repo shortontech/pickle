@@ -15,6 +15,7 @@ type AnalyzedRoute struct {
 	Path           string   // full path including group prefixes
 	ControllerType string   // e.g. "PostController"
 	MethodName     string   // e.g. "Destroy"
+	HandlerPackage string   // package qualifier, e.g. "controllers" or "" if unqualified
 	Middleware     []string // accumulated middleware names from groups + per-route
 	File           string
 	Line           int
@@ -243,7 +244,7 @@ func parseResource(call *ast.CallExpr, parentPrefix string, parentMW []string, f
 	}
 
 	resourcePath := extractStringLit(call.Args[0])
-	ctrlType := extractControllerType(call.Args[1])
+	ctrlType, handlerPkg := extractControllerTypeAndPackage(call.Args[1])
 
 	var mwNames []string
 	for _, arg := range call.Args[2:] {
@@ -260,11 +261,11 @@ func parseResource(call *ast.CallExpr, parentPrefix string, parentMW []string, f
 	line := fset.Position(call.Pos()).Line
 
 	return []AnalyzedRoute{
-		{Method: "GET", Path: fullPath, ControllerType: ctrlType, MethodName: "Index", Middleware: allMW, File: file, Line: line},
-		{Method: "GET", Path: fullPath + "/:id", ControllerType: ctrlType, MethodName: "Show", Middleware: allMW, File: file, Line: line},
-		{Method: "POST", Path: fullPath, ControllerType: ctrlType, MethodName: "Store", Middleware: allMW, File: file, Line: line},
-		{Method: "PUT", Path: fullPath + "/:id", ControllerType: ctrlType, MethodName: "Update", Middleware: allMW, File: file, Line: line},
-		{Method: "DELETE", Path: fullPath + "/:id", ControllerType: ctrlType, MethodName: "Destroy", Middleware: allMW, File: file, Line: line},
+		{Method: "GET", Path: fullPath, ControllerType: ctrlType, MethodName: "Index", HandlerPackage: handlerPkg, Middleware: allMW, File: file, Line: line},
+		{Method: "GET", Path: fullPath + "/:id", ControllerType: ctrlType, MethodName: "Show", HandlerPackage: handlerPkg, Middleware: allMW, File: file, Line: line},
+		{Method: "POST", Path: fullPath, ControllerType: ctrlType, MethodName: "Store", HandlerPackage: handlerPkg, Middleware: allMW, File: file, Line: line},
+		{Method: "PUT", Path: fullPath + "/:id", ControllerType: ctrlType, MethodName: "Update", HandlerPackage: handlerPkg, Middleware: allMW, File: file, Line: line},
+		{Method: "DELETE", Path: fullPath + "/:id", ControllerType: ctrlType, MethodName: "Destroy", HandlerPackage: handlerPkg, Middleware: allMW, File: file, Line: line},
 	}
 }
 
@@ -275,7 +276,7 @@ func parseRoute(method string, call *ast.CallExpr, parentPrefix string, parentMW
 	}
 
 	routePath := extractStringLit(call.Args[0])
-	ctrlType, methodName := extractHandlerRef(call.Args[1])
+	ctrlType, methodName, handlerPkg := extractHandlerRef(call.Args[1])
 
 	var mwNames []string
 	for _, arg := range call.Args[2:] {
@@ -293,6 +294,7 @@ func parseRoute(method string, call *ast.CallExpr, parentPrefix string, parentMW
 		Path:           parentPrefix + routePath,
 		ControllerType: ctrlType,
 		MethodName:     methodName,
+		HandlerPackage: handlerPkg,
 		Middleware:      allMW,
 		File:           file,
 		Line:           fset.Position(call.Pos()).Line,
@@ -323,12 +325,12 @@ func extractMiddlewareName(expr ast.Expr) string {
 	return ""
 }
 
-// extractHandlerRef extracts controller type and method name from a handler expression.
-// Handles: controllers.PostController{}.Store → ("PostController", "Store")
-func extractHandlerRef(expr ast.Expr) (ctrlType, method string) {
+// extractHandlerRef extracts controller type, method name, and package qualifier from a handler expression.
+// Handles: controllers.PostController{}.Store → ("PostController", "Store", "controllers")
+func extractHandlerRef(expr ast.Expr) (ctrlType, method, pkg string) {
 	sel, ok := expr.(*ast.SelectorExpr)
 	if !ok {
-		return "", ""
+		return "", "", ""
 	}
 
 	method = sel.Sel.Name
@@ -336,28 +338,42 @@ func extractHandlerRef(expr ast.Expr) (ctrlType, method string) {
 	// The X should be a composite literal: controllers.PostController{}
 	switch x := sel.X.(type) {
 	case *ast.CompositeLit:
-		ctrlType = extractControllerType(x)
+		ctrlType, pkg = extractControllerTypeAndPackage(x)
 	case *ast.Ident:
 		ctrlType = x.Name
 	}
 
-	return ctrlType, method
+	return ctrlType, method, pkg
 }
 
 // extractControllerType extracts the type name from a composite literal or expression.
 func extractControllerType(expr ast.Expr) string {
+	name, _ := extractControllerTypeAndPackage(expr)
+	return name
+}
+
+// extractControllerTypeAndPackage extracts the type name and package qualifier from an expression.
+// For controllers.PostController{}, returns ("PostController", "controllers").
+// For unqualified PostController{}, returns ("PostController", "").
+func extractControllerTypeAndPackage(expr ast.Expr) (typeName, pkg string) {
 	switch e := expr.(type) {
 	case *ast.CompositeLit:
 		switch t := e.Type.(type) {
 		case *ast.SelectorExpr:
-			return t.Sel.Name
+			if ident, ok := t.X.(*ast.Ident); ok {
+				pkg = ident.Name
+			}
+			return t.Sel.Name, pkg
 		case *ast.Ident:
-			return t.Name
+			return t.Name, ""
 		}
 	case *ast.SelectorExpr:
-		return e.Sel.Name
+		if ident, ok := e.X.(*ast.Ident); ok {
+			pkg = ident.Name
+		}
+		return e.Sel.Name, pkg
 	case *ast.Ident:
-		return e.Name
+		return e.Name, ""
 	}
-	return ""
+	return "", ""
 }

@@ -31,9 +31,10 @@ type GateDef struct {
 
 // ActionSet groups actions and gates for a model.
 type ActionSet struct {
-	Model   string // directory name / model name
-	Actions []ActionDef
-	Gates   []GateDef
+	Model       string // directory name / model name
+	Actions     []ActionDef
+	Gates       []GateDef
+	IsImmutable bool // true if the model's table is immutable (has VersionID)
 }
 
 // ScanActions scans database/actions/{model}/ for action and gate files.
@@ -181,7 +182,8 @@ func ValidateActions(set *ActionSet) error {
 }
 
 // GenerateActionWiring produces a Go source file with gated action methods on the model struct.
-func GenerateActionWiring(set *ActionSet, packageName, actionImportPath string) ([]byte, error) {
+// httpImportPath is the import path for the HTTP package (e.g. "myapp/app/http") which provides Context.
+func GenerateActionWiring(set *ActionSet, packageName, actionImportPath, httpImportPath string) ([]byte, error) {
 	if len(set.Actions) == 0 && len(set.Gates) == 0 {
 		return nil, nil
 	}
@@ -197,7 +199,10 @@ func GenerateActionWiring(set *ActionSet, packageName, actionImportPath string) 
 
 	needsImport := len(set.Actions) > 0
 	if needsImport {
-		buf.WriteString(fmt.Sprintf("import actions %q\n\n", actionImportPath))
+		buf.WriteString("import (\n")
+		buf.WriteString(fmt.Sprintf("\tpickle %q\n", httpImportPath))
+		buf.WriteString(fmt.Sprintf("\tactions %q\n", actionImportPath))
+		buf.WriteString(")\n\n")
 	}
 
 	// Build gate lookup for source comments
@@ -215,7 +220,7 @@ func GenerateActionWiring(set *ActionSet, packageName, actionImportPath string) 
 		}
 
 		if action.HasResult {
-			buf.WriteString(fmt.Sprintf("func (m *%s) %s(ctx *Context, action actions.%s) (%s, error) {\n",
+			buf.WriteString(fmt.Sprintf("func (m *%s) %s(ctx *pickle.Context, action actions.%s) (%s, error) {\n",
 				structName, action.Name, action.StructName, action.ResultType))
 			buf.WriteString(fmt.Sprintf("\troleID := actions.Can%s(ctx, m)\n", action.Name))
 			buf.WriteString("\tif roleID == nil {\n")
@@ -223,7 +228,7 @@ func GenerateActionWiring(set *ActionSet, packageName, actionImportPath string) 
 			buf.WriteString("\t}\n")
 			buf.WriteString(fmt.Sprintf("\treturn action.%s(ctx, m)\n", toLowerFirst(action.Name)))
 		} else {
-			buf.WriteString(fmt.Sprintf("func (m *%s) %s(ctx *Context, action actions.%s) error {\n",
+			buf.WriteString(fmt.Sprintf("func (m *%s) %s(ctx *pickle.Context, action actions.%s) error {\n",
 				structName, action.Name, action.StructName))
 			buf.WriteString(fmt.Sprintf("\troleID := actions.Can%s(ctx, m)\n", action.Name))
 			buf.WriteString("\tif roleID == nil {\n")

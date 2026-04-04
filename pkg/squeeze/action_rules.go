@@ -155,6 +155,77 @@ func ruleQueryBuilderInScope(ctx *AnalysisContext) []Finding {
 	return findings
 }
 
+// ruleScopeSideEffect flags method calls in scope files that are not on the allowed
+// ScopeBuilder method list. Scopes should only call filtering/scoping methods.
+func ruleScopeSideEffect(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+
+	if len(ctx.ScopeAllowedMethods) == 0 {
+		return nil
+	}
+
+	for _, m := range ctx.Methods {
+		if !isScopeFile(m.File) {
+			continue
+		}
+
+		lines := findDisallowedScopeCalls(m.Body, m.Fset, ctx.ScopeAllowedMethods)
+		for _, hit := range lines {
+			findings = append(findings, Finding{
+				Rule:     "scope_side_effect",
+				Severity: SeverityError,
+				File:     m.File,
+				Line:     hit.Line,
+				Message:  hit.Role + "() is not available on ScopeBuilder — scopes must only filter, not execute",
+			})
+		}
+	}
+
+	for _, pf := range ctx.FuncRegistry {
+		file := pf.Fset.Position(pf.Body.Pos()).Filename
+		if !isScopeFile(file) {
+			continue
+		}
+
+		lines := findDisallowedScopeCalls(pf.Body, pf.Fset, ctx.ScopeAllowedMethods)
+		for _, hit := range lines {
+			findings = append(findings, Finding{
+				Rule:     "scope_side_effect",
+				Severity: SeverityError,
+				File:     file,
+				Line:     hit.Line,
+				Message:  hit.Role + "() is not available on ScopeBuilder — scopes must only filter, not execute",
+			})
+		}
+	}
+
+	return findings
+}
+
+// findDisallowedScopeCalls finds method calls on selector expressions that are not in the
+// allowed set. Returns RoleHit where Role is actually the method name (reusing the struct).
+func findDisallowedScopeCalls(body *ast.BlockStmt, fset *token.FileSet, allowed map[string]bool) []RoleHit {
+	var hits []RoleHit
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		methodName := sel.Sel.Name
+		// Only flag methods that look like they're on a builder (selector calls)
+		// and are not in the allowed list
+		if !allowed[methodName] {
+			hits = append(hits, RoleHit{Role: methodName, Line: fset.Position(call.Pos()).Line})
+		}
+		return true
+	})
+	return hits
+}
+
 // ActionInfo describes an action file for squeeze analysis.
 type ActionInfo struct {
 	Name     string // action name, e.g. "CreateTransfer"

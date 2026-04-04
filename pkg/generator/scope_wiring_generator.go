@@ -88,6 +88,19 @@ func parseScopeDir(dir, modelDir string) ([]ScopeDef, error) {
 	return scopes, nil
 }
 
+// terminalMethods are methods that must never be called from a scope function.
+// These perform data access or mutation and belong only on QueryBuilder.
+var terminalMethods = map[string]bool{
+	"First":     true,
+	"All":       true,
+	"Count":     true,
+	"Create":    true,
+	"Update":    true,
+	"Delete":    true,
+	"Raw":       true,
+	"aggregate": true,
+}
+
 func parseScopeFunc(fn *ast.FuncDecl, sourceFile string) (*ScopeDef, error) {
 	params := fn.Type.Params
 	if params == nil || len(params.List) == 0 {
@@ -98,6 +111,11 @@ func parseScopeFunc(fn *ast.FuncDecl, sourceFile string) (*ScopeDef, error) {
 	firstParam := params.List[0]
 	if _, ok := firstParam.Type.(*ast.StarExpr); !ok {
 		return nil, fmt.Errorf("scope %s: first parameter must be a pointer to ScopeBuilder", fn.Name.Name)
+	}
+
+	// AST validation: check that no terminal methods are called in the function body
+	if err := validateNoTerminalCalls(fn); err != nil {
+		return nil, fmt.Errorf("scope %s in %s: %w", fn.Name.Name, sourceFile, err)
 	}
 
 	scope := &ScopeDef{
@@ -118,6 +136,37 @@ func parseScopeFunc(fn *ast.FuncDecl, sourceFile string) (*ScopeDef, error) {
 	}
 
 	return scope, nil
+}
+
+// validateNoTerminalCalls walks the AST of a scope function and returns an error
+// if any terminal method (First, All, Count, Create, Update, Delete, etc.) is called.
+func validateNoTerminalCalls(fn *ast.FuncDecl) error {
+	if fn.Body == nil {
+		return nil
+	}
+	var found string
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if found != "" {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if terminalMethods[sel.Sel.Name] {
+			found = sel.Sel.Name
+			return false
+		}
+		return true
+	})
+	if found != "" {
+		return fmt.Errorf("calls terminal method %s() — scope functions may only use filter/sort methods", found)
+	}
+	return nil
 }
 
 func exprToString(expr ast.Expr) string {

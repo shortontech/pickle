@@ -546,6 +546,134 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 	}
 
+	// 2b. Write policy types and runner into database/policies/ and database/policies/graphql/
+	policiesDir := filepath.Join(project.Dir, "database", "policies")
+	graphqlPoliciesDir := filepath.Join(policiesDir, "graphql")
+
+	if _, err := os.Stat(policiesDir); err == nil {
+		fmt.Println("  generating policies/types_gen.go")
+		if err := writeFile(filepath.Join(policiesDir, "types_gen.go"), GenerateCoreSchema("policies")); err != nil {
+			return err
+		}
+
+		fmt.Println("  generating policies/runner_gen.go")
+		if err := writeFile(filepath.Join(policiesDir, "runner_gen.go"), GenerateCorePolicy("policies")); err != nil {
+			return err
+		}
+
+		fmt.Println("  generating policies/registry_gen.go")
+		policyEntries, err := ScanPolicyFiles(policiesDir)
+		if err != nil {
+			return fmt.Errorf("scanning policy files: %w", err)
+		}
+		policySrc, err := GeneratePolicyRegistry("policies", policyEntries)
+		if err != nil {
+			return fmt.Errorf("generating policy registry: %w", err)
+		}
+		if err := writeFile(filepath.Join(policiesDir, "registry_gen.go"), policySrc); err != nil {
+			return err
+		}
+	}
+
+	if _, err := os.Stat(graphqlPoliciesDir); err == nil {
+		fmt.Println("  generating policies/graphql/types_gen.go")
+		if err := writeFile(filepath.Join(graphqlPoliciesDir, "types_gen.go"), GenerateCoreSchema("graphql")); err != nil {
+			return err
+		}
+
+		fmt.Println("  generating policies/graphql/runner_gen.go")
+		if err := writeFile(filepath.Join(graphqlPoliciesDir, "runner_gen.go"), GenerateCorePolicy("graphql")); err != nil {
+			return err
+		}
+
+		fmt.Println("  generating policies/graphql/registry_gen.go")
+		graphqlPolicyEntries, err := ScanGraphQLPolicyFiles(graphqlPoliciesDir)
+		if err != nil {
+			return fmt.Errorf("scanning graphql policy files: %w", err)
+		}
+		graphqlPolicySrc, err := GenerateGraphQLPolicyRegistry("graphql", graphqlPolicyEntries)
+		if err != nil {
+			return fmt.Errorf("generating graphql policy registry: %w", err)
+		}
+		if err := writeFile(filepath.Join(graphqlPoliciesDir, "registry_gen.go"), graphqlPolicySrc); err != nil {
+			return err
+		}
+	}
+
+	// 2c. Write RBAC migration files into database/migrations/rbac/
+	if _, err := os.Stat(policiesDir); err == nil {
+		if err := WriteRBACMigrations(migrationsDir, "migrations"); err != nil {
+			return fmt.Errorf("writing RBAC migrations: %w", err)
+		}
+
+		// Generate LoadRoles middleware wiring (load_roles_gen.go)
+		middlewareDir := filepath.Join(project.Dir, "app", "http", "middleware")
+		if _, err := os.Stat(middlewareDir); err == nil {
+			userFile := filepath.Join(middlewareDir, "load_roles.go")
+			genFile := filepath.Join(middlewareDir, "load_roles_gen.go")
+			if _, err := os.Stat(userFile); os.IsNotExist(err) {
+				httpImport := project.ModulePath + "/app/http"
+				fmt.Println("  generating middleware/load_roles_gen.go")
+				src, err := GenerateLoadRolesMiddleware(httpImport)
+				if err != nil {
+					return fmt.Errorf("generating LoadRoles middleware: %w", err)
+				}
+				if err := writeFile(genFile, src); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	// 2c-ii. Write RBAC model files into app/models/auth/
+	if _, err := os.Stat(policiesDir); err == nil {
+		fmt.Println("  generating models/auth/ (Role, RoleUser)")
+		if err := WriteRBACModels(modelsDir); err != nil {
+			return fmt.Errorf("writing RBAC models: %w", err)
+		}
+	}
+
+	// 2c-iii. Write audit migration and model files
+	actionsDir := filepath.Join(project.Dir, "database", "actions")
+	if _, err := os.Stat(actionsDir); err == nil {
+		fmt.Println("  generating audit migrations")
+		if err := WriteAuditMigrations(migrationsDir, "audit"); err != nil {
+			return fmt.Errorf("writing audit migrations: %w", err)
+		}
+		fmt.Println("  generating models/audit/ (ModelType, ActionType, UserAction)")
+		if err := WriteAuditModels(modelsDir); err != nil {
+			return fmt.Errorf("writing audit models: %w", err)
+		}
+	}
+
+	// 2d. Write GraphQL migration files into database/migrations/graphql/
+	if _, err := os.Stat(graphqlPoliciesDir); err == nil {
+		if err := WriteGraphQLMigrations(migrationsDir, "migrations"); err != nil {
+			return fmt.Errorf("writing GraphQL migrations: %w", err)
+		}
+	}
+
+	// 2e. Generate per-role column annotation methods from policies.
+	// Only non-Manages roles get XxxSees() methods.
+	if _, err := os.Stat(policiesDir); err == nil {
+		if _, err := os.Stat(migrationsDir); err == nil {
+			annotations, err := NonManagesRoleAnnotations(policiesDir)
+			if err != nil {
+				return fmt.Errorf("deriving role annotations: %w", err)
+			}
+			if len(annotations) > 0 {
+				fmt.Println("  generating migrations/column_annotations_gen.go")
+				src, err := GenerateColumnAnnotations("migrations", annotations)
+				if err != nil {
+					return fmt.Errorf("generating column annotations: %w", err)
+				}
+				if err := writeFile(filepath.Join(migrationsDir, "column_annotations_gen.go"), src); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
 	// 3. Run schema inspector to get tables, views, and relationships from migrations
 	var tables []*schema.Table
 	var views []*schema.View
@@ -688,6 +816,92 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 	}
 
+	// 5d. Generate RBAC-enriched gates from policy Can() declarations
+	if _, err := os.Stat(policiesDir); err == nil {
+		gateFiles, err := GenerateRBACGates(actionsDir, policiesDir)
+		if err != nil {
+			return fmt.Errorf("generating RBAC gates: %w", err)
+		}
+		for path, src := range gateFiles {
+			fmt.Printf("  generating RBAC gate: %s\n", filepath.Base(path))
+			if err := writeFile(path, src); err != nil {
+				return err
+			}
+		}
+	}
+
+	// 5e. Generate action wiring into models/
+	var actionSets map[string]*ActionSet
+	if _, err := os.Stat(actionsDir); err == nil {
+		fmt.Println("  scanning actions")
+		actionSets, err = ScanActions(actionsDir)
+		if err != nil {
+			return fmt.Errorf("scanning actions: %w", err)
+		}
+
+		auditImportPath := project.ModulePath + "/app/models/audit"
+		for modelName, set := range actionSets {
+			// Validate: every action must have a gate
+			if err := ValidateActions(set); err != nil {
+				return fmt.Errorf("action validation: %w", err)
+			}
+
+			if len(set.Actions) == 0 {
+				continue // standalone gates only — no wiring file needed
+			}
+
+			actionImportPath := project.ModulePath + "/database/actions/" + modelName
+			httpImportPath := project.ModulePath + "/app/http"
+			targetDir, pkgName := resolveModelDir(modelsDir, modelName+"s", nestingMap)
+			fmt.Printf("  generating action wiring: %s\n", modelName)
+			src, err := GenerateActionWiringWithAudit(set, pkgName, actionImportPath, httpImportPath, auditImportPath)
+			if err != nil {
+				return fmt.Errorf("generating action wiring for %s: %w", modelName, err)
+			}
+			filename := toLowerFirst(tableToStructName(modelName+"s")) + "_actions.go"
+			if err := writeFile(filepath.Join(targetDir, filename), src); err != nil {
+				return err
+			}
+		}
+	}
+
+	// 5e-ii. Generate audit trail seed data and constants
+	if actionSets != nil && len(actionSets) > 0 {
+		fmt.Println("  generating audit seed and constants")
+		if err := WriteAuditSeedAndConstants(project, actionSets); err != nil {
+			return fmt.Errorf("writing audit seed and constants: %w", err)
+		}
+	}
+
+	// 5f. Generate scope wiring into models/
+	scopesDir := filepath.Join(project.Dir, "database", "scopes")
+	if _, err := os.Stat(scopesDir); err == nil {
+		fmt.Println("  scanning scopes")
+		scopeMap, err := ScanScopes(scopesDir)
+		if err != nil {
+			return fmt.Errorf("scanning scopes: %w", err)
+		}
+
+		for modelDir, scopes := range scopeMap {
+			if len(scopes) == 0 {
+				continue
+			}
+			// modelDir is e.g. "user" → table name is "users"
+			tableName := modelDir + "s"
+			scopeImportPath := project.ModulePath + "/database/scopes/" + modelDir
+			targetDir, pkgName := resolveModelDir(modelsDir, tableName, nestingMap)
+			fmt.Printf("  generating scope wiring: %s\n", modelDir)
+			src, err := GenerateScopeWiring(tableName, scopes, pkgName, scopeImportPath)
+			if err != nil {
+				return fmt.Errorf("generating scope wiring for %s: %w", modelDir, err)
+			}
+			filename := toLowerFirst(tableToStructName(tableName)) + "_scopes_gen.go"
+			if err := writeFile(filepath.Join(targetDir, filename), src); err != nil {
+				return err
+			}
+		}
+	}
+
 	// 6–8: Per-service generation
 	if len(project.Services) > 0 {
 		// Multi-service mode: generate HTTP core + bindings per service
@@ -733,7 +947,16 @@ func Generate(project *Project, picklePkgDir string) error {
 		graphqlDir := filepath.Join(project.Dir, "app", "graphql")
 		if _, err := os.Stat(graphqlDir); err == nil {
 			fmt.Println("  generating graphql layer")
-			if err := GenerateGraphQL(project, tables, relationships, requests); err != nil {
+
+			// Derive GraphQL exposure state from policies if the directory exists
+			var exposureState *DerivedGraphQLState
+			gqlPoliciesDir := filepath.Join(project.Dir, "database", "policies", "graphql")
+			if _, statErr := os.Stat(gqlPoliciesDir); statErr == nil {
+				state := DeriveGraphQLStateFromDir(gqlPoliciesDir)
+				exposureState = &state
+			}
+
+			if err := GenerateGraphQL(project, tables, relationships, requests, exposureState); err != nil {
 				return fmt.Errorf("graphql generation: %w", err)
 			}
 		}
@@ -756,6 +979,8 @@ func Generate(project *Project, picklePkgDir string) error {
 				if scanErr != nil {
 					return fmt.Errorf("scanning route vars: %w", scanErr)
 				}
+				// Advisory: warn about handlers from non-controllers packages
+				warnNonControllerHandlers(routesDir)
 			}
 
 			// Check if auth directory exists

@@ -11,8 +11,8 @@ func (m *CreateRolesTable_2026_03_23_000001) Up() {
 	m.CreateTable("roles", func(t *Table) {
 		t.UUID("id").PrimaryKey().Default("uuid_generate_v7()")
 		t.String("slug", 50).NotNull().Unique()
-		t.String("display_name", 100).NotNull()
-		t.Boolean("is_manages").NotNull().Default("false")
+		t.String("name", 100).NotNull()
+		t.Boolean("manages").NotNull().Default("false")
 		t.Boolean("is_default").NotNull().Default("false")
 		t.String("birth_policy", 100).NotNull()
 		t.Timestamps()

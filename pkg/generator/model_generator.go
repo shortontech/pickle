@@ -257,10 +257,96 @@ func GenerateModel(table *schema.Table, packageName string) ([]byte, error) {
 		buf.WriteString(fmt.Sprintf("}\n"))
 	}
 
+	// Generate ForRoles and ForOwner serialization methods if table has role visibility
+	generateModelRoleViews(&buf, table, tableToStructName(table.Name))
+
 	formatted, err := format.Source(buf.Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("go format: %w", err)
 	}
 
 	return formatted, nil
+}
+
+// generateModelRoleViews emits ForRoles(roles) and ForOwner(roles) serialization
+// methods on the model struct. These return a map[string]any containing only the
+// fields visible to the given role set.
+func generateModelRoleViews(buf *bytes.Buffer, table *schema.Table, structName string) {
+	// Collect role visibility info
+	hasRoles := false
+	for _, col := range table.Columns {
+		if len(col.VisibleTo) > 0 {
+			hasRoles = true
+			break
+		}
+	}
+	if !hasRoles {
+		return
+	}
+
+	// Build column -> role slugs mapping and public/owner sets
+	type colVis struct {
+		Name      string
+		GoField   string
+		IsPublic  bool
+		IsOwner   bool
+		RoleSlugs map[string]bool
+	}
+	var cols []colVis
+	for _, col := range table.Columns {
+		if col.Name == "password" || col.Name == "password_hash" ||
+			col.Name == "row_hash" || col.Name == "prev_hash" {
+			continue // never serialized
+		}
+		if col.IsEncrypted || col.IsSealed {
+			continue // plaintext field has db:"-", encrypted is json:"-"
+		}
+		cv := colVis{
+			Name:      col.Name,
+			GoField:   snakeToPascal(col.Name),
+			IsPublic:  col.IsPublic,
+			IsOwner:   col.IsOwnerSees,
+			RoleSlugs: col.VisibleTo,
+		}
+		cols = append(cols, cv)
+	}
+
+	receiver := strings.ToLower(structName[:1])
+
+	// ForRoles(roles []string) map[string]any
+	buf.WriteString(fmt.Sprintf("// ForRoles returns a filtered map of the model's fields visible to the given roles.\n"))
+	buf.WriteString(fmt.Sprintf("// Public columns are always included. Manages roles see all fields.\n"))
+	buf.WriteString(fmt.Sprintf("func (%s *%s) ForRoles(roles []string) map[string]any {\n", receiver, structName))
+	buf.WriteString("\troleSet := map[string]bool{}\n")
+	buf.WriteString("\tfor _, r := range roles { roleSet[r] = true }\n")
+	buf.WriteString("\tout := map[string]any{}\n")
+	for _, cv := range cols {
+		if cv.IsPublic {
+			buf.WriteString(fmt.Sprintf("\tout[%q] = %s.%s\n", cv.Name, receiver, cv.GoField))
+		} else if len(cv.RoleSlugs) > 0 {
+			var slugChecks []string
+			for slug := range cv.RoleSlugs {
+				slugChecks = append(slugChecks, fmt.Sprintf("roleSet[%q]", slug))
+			}
+			sort.Strings(slugChecks)
+			buf.WriteString(fmt.Sprintf("\tif %s {\n", strings.Join(slugChecks, " || ")))
+			buf.WriteString(fmt.Sprintf("\t\tout[%q] = %s.%s\n", cv.Name, receiver, cv.GoField))
+			buf.WriteString("\t}\n")
+		}
+		// Non-public, non-role columns are omitted
+	}
+	buf.WriteString("\treturn out\n")
+	buf.WriteString("}\n\n")
+
+	// ForOwner(roles []string) map[string]any
+	buf.WriteString(fmt.Sprintf("// ForOwner returns a filtered map including role-visible and OwnerSees fields.\n"))
+	buf.WriteString(fmt.Sprintf("func (%s *%s) ForOwner(roles []string) map[string]any {\n", receiver, structName))
+	buf.WriteString(fmt.Sprintf("\tout := %s.ForRoles(roles)\n", receiver))
+	for _, cv := range cols {
+		if cv.IsOwner && !cv.IsPublic {
+			buf.WriteString(fmt.Sprintf("\tout[%q] = %s.%s\n", cv.Name, receiver, cv.GoField))
+		}
+	}
+	buf.WriteString("\treturn out\n")
+	buf.WriteString("}\n\n")
 }

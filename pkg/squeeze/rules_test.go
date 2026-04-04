@@ -773,6 +773,7 @@ func TestRulePublicSensitiveConflict_FlagsPublicSensitive(t *testing.T) {
 				},
 			},
 		},
+		GraphQLExposed: map[string]bool{"users": true},
 	}
 	findings := rulePublicSensitiveConflict(ctx)
 	if len(findings) != 1 {

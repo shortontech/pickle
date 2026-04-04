@@ -21,6 +21,7 @@ const (
 	OpAddUniqueIndex
 	OpCreateView
 	OpDropView
+	OpRawSQL
 )
 
 // Operation records a single schema change.
@@ -34,6 +35,7 @@ type Operation struct {
 	OldName      string // for rename operations
 	ColumnName   string // for drop/rename column
 	ColumnDef    func(*Table)
+	SQL          string // for RawSQL operations
 }
 
 // Migration is the base type embedded by all migration structs.
@@ -206,6 +208,15 @@ func (m *Migration) DropView(name string) {
 	m.Operations = append(m.Operations, Operation{
 		Type:  OpDropView,
 		Table: name,
+	})
+}
+
+// RawSQL records a raw SQL statement to be executed during migration.
+// Used for seed data and other operations not covered by the schema DSL.
+func (m *Migration) RawSQL(sql string) {
+	m.Operations = append(m.Operations, Operation{
+		Type: OpRawSQL,
+		SQL:  sql,
 	})
 }
 

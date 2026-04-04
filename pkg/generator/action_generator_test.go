@@ -104,13 +104,13 @@ func TestGenerateActionWiring(t *testing.T) {
 		},
 	}
 
-	src, err := GenerateActionWiring(set, "models", "myapp/database/actions/user")
+	src, err := GenerateActionWiring(set, "models", "myapp/database/actions/user", "myapp/app/http")
 	if err != nil {
 		t.Fatal(err)
 	}
 	content := string(src)
 
-	if !strings.Contains(content, "func (m *User) Ban(ctx *Context, action actions.BanAction) error") {
+	if !strings.Contains(content, "func (m *User) Ban(ctx *pickle.Context, action actions.BanAction) error") {
 		t.Error("expected Ban method on User")
 	}
 	if !strings.Contains(content, "actions.CanBan(ctx, m)") {
@@ -144,7 +144,7 @@ func TestGenerateActionWiringWithResult(t *testing.T) {
 		},
 	}
 
-	src, err := GenerateActionWiring(set, "models", "myapp/database/actions/customer")
+	src, err := GenerateActionWiring(set, "models", "myapp/database/actions/customer", "myapp/app/http")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -20,8 +20,10 @@ type Column struct {
 	IsEncrypted      bool
 	IsSealed         bool
 	IsUnsafePublic   bool
+	OnDeleteAction   string          // e.g. "CASCADE", "SET NULL" — appended to FK constraint
 	FKMetadataOnly   bool // FK is for ORM relationship metadata only; no SQL REFERENCES constraint
-	VisibleTo        map[string]bool // role slugs that can see this column
+	VisibleTo        map[string]bool   // role slugs that can see this column
+	VisibleToSource  map[string]string // role slug → migration ID that added the annotation
 }
 
 func (c *Column) PrimaryKey() *Column {
@@ -94,6 +96,24 @@ func (c *Column) RoleSees(slug string) *Column {
 		c.VisibleTo = map[string]bool{}
 	}
 	c.VisibleTo[slug] = true
+	return c
+}
+
+// RoleSeesFrom marks this column as visible to the specified role slug,
+// recording the migration ID that introduced the annotation. Used for
+// birth-timestamp filtering: annotations from before a role's birth are skipped.
+func (c *Column) RoleSeesFrom(slug, migrationID string) *Column {
+	c.RoleSees(slug)
+	if c.VisibleToSource == nil {
+		c.VisibleToSource = map[string]string{}
+	}
+	c.VisibleToSource[slug] = migrationID
+	return c
+}
+
+// OnDelete sets the ON DELETE action for a foreign key column (e.g. "CASCADE", "SET NULL").
+func (c *Column) OnDelete(action string) *Column {
+	c.OnDeleteAction = action
 	return c
 }
 

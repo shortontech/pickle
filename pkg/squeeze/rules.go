@@ -26,6 +26,9 @@ type AnalysisContext struct {
 	Actions        []ActionInfo
 	GraphQLExposed map[string]bool // table/model names exposed via GraphQL policies (nil = no policies)
 	ProjectDir     string
+	RoleBirths     map[string]string // role -> birth policy timestamp (for pre_birth_annotation)
+	ScopeAllowedMethods map[string]bool // method names allowed on ScopeBuilder (for scope_side_effect)
+	TablesWithVisibility map[string]bool // table names that have visibility annotations (for missing_visibility_scope)
 }
 
 // Rule is a function that inspects the analysis context and returns findings.
@@ -76,7 +79,18 @@ func AllRules() map[string]Rule {
 		"ungated_action":                         ruleUngatedAction,
 		"direct_execute_call":                    ruleDirectExecuteCall,
 		"scope_builder_leak":                     ruleScopeBuilderLeak,
+		"scope_side_effect":                      ruleScopeSideEffect,
 		"query_builder_in_scope":                 ruleQueryBuilderInScope,
+		"pre_birth_annotation":                   rulePreBirthAnnotation,
+		"missing_visibility_scope":               ruleMissingVisibilityScope,
+		"hardcoded_role_select":                  ruleHardcodedRoleSelect,
+		"graphql_exposed_no_auth":                ruleGraphQLExposedNoAuth,
+		"graphql_unexposed_mutation":             ruleGraphQLUnexposedMutation,
+		"graphql_exposed_no_migration":           ruleGraphQLExposedNoMigration,
+		"graphql_action_no_controller":           ruleGraphQLActionNoController,
+		"graphql_stale_expose":                   ruleGraphQLStaleExpose,
+		"plaintext_password":                     rulePlaintextPassword,
+		"handler_package":                        ruleHandlerPackage,
 	}
 }
 
@@ -293,9 +307,16 @@ func ruleSensitiveFieldEncryption(ctx *AnalysisContext) []Finding {
 }
 
 // rulePublicSensitiveConflict flags sensitive columns marked .Public() without .UnsafePublic().
+// Only fires for tables exposed via GraphQL, since .Public() only matters for external serialization.
 func rulePublicSensitiveConflict(ctx *AnalysisContext) []Finding {
+	if ctx.GraphQLExposed == nil {
+		return nil
+	}
 	var findings []Finding
 	for _, table := range ctx.Tables {
+		if !ctx.GraphQLExposed[table.Name] {
+			continue
+		}
 		for _, col := range table.Columns {
 			if col.IsPublic && isSensitiveColumn(col.Name) && !col.IsUnsafePublic {
 				findings = append(findings, Finding{
@@ -597,6 +618,41 @@ func ruleUnboundedQuery(ctx *AnalysisContext) []Finding {
 					File:     method.File,
 					Line:     method.Line,
 					Message:  route.Method + " " + route.Path + " — .All() without .Limit() (unbounded response size)",
+				})
+			}
+		}
+	}
+
+	// Also scan standalone functions in the FuncRegistry (service layer / helpers)
+	for name, fn := range ctx.FuncRegistry {
+		chains := ExtractCallChains(fn.Body, fn.Fset)
+
+		for _, chain := range chains {
+			chainNames := chain.Names()
+
+			isQueryChain := false
+			hasAll := false
+			hasLimit := false
+			for _, n := range chainNames {
+				if strings.HasPrefix(n, "Query") {
+					isQueryChain = true
+				}
+				if n == "All" {
+					hasAll = true
+				}
+				if n == "Limit" || n == "Paginate" {
+					hasLimit = true
+				}
+			}
+
+			if isQueryChain && hasAll && !hasLimit {
+				file := fn.Fset.Position(fn.Body.Pos()).Filename
+				findings = append(findings, Finding{
+					Rule:     "unbounded_query",
+					Severity: SeverityError,
+					File:     file,
+					Line:     fn.Fset.Position(fn.Body.Pos()).Line,
+					Message:  name + "() — .All() without .Limit() (unbounded result set)",
 				})
 			}
 		}
@@ -1553,29 +1609,17 @@ func ruleRawSQL(ctx *AnalysisContext) []Finding {
 			if !ok || !sqlMethods[sel.Sel.Name] {
 				return true
 			}
-			if len(call.Args) == 0 {
-				return true
+			msg := "raw SQL via " + sel.Sel.Name + "() — use the generated query builder instead"
+			if via != "" {
+				msg = "raw SQL via " + sel.Sel.Name + "() in " + via + " — use the generated query builder instead"
 			}
-			lit, ok := call.Args[0].(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING {
-				return true
-			}
-			upper := strings.ToUpper(strings.Trim(lit.Value, "`\""))
-			if strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "INSERT") ||
-				strings.HasPrefix(upper, "UPDATE") || strings.HasPrefix(upper, "DELETE") ||
-				strings.HasPrefix(upper, "WITH") {
-				msg := "raw SQL via " + sel.Sel.Name + "() — use the generated query builder instead"
-				if via != "" {
-					msg = "raw SQL via " + sel.Sel.Name + "() in " + via + " — use the generated query builder instead"
-				}
-				out = append(out, Finding{
-					Rule:     "raw_sql",
-					Severity: SeverityError,
-					File:     file,
-					Line:     fset.Position(call.Pos()).Line,
-					Message:  msg,
-				})
-			}
+			out = append(out, Finding{
+				Rule:     "raw_sql",
+				Severity: SeverityError,
+				File:     file,
+				Line:     fset.Position(call.Pos()).Line,
+				Message:  msg,
+			})
 			return true
 		})
 		return out
@@ -1588,6 +1632,44 @@ func ruleRawSQL(ctx *AnalysisContext) []Finding {
 	for name, fn := range ctx.FuncRegistry {
 		file := fn.Fset.Position(fn.Body.Pos()).Filename
 		findings = append(findings, findRawSQL(fn.Body, fn.Fset, file, name+"()")...)
+	}
+	return findings
+}
+
+// rulePlaintextPassword flags columns named exactly "password", which implies plaintext storage.
+// The correct convention is "password_hash" with bcrypt/argon2 hashing before storing.
+func rulePlaintextPassword(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+	for _, table := range ctx.Tables {
+		for _, col := range table.Columns {
+			if col.Name == "password" {
+				findings = append(findings, Finding{
+					Rule:     "plaintext_password",
+					Severity: SeverityError,
+					File:     "",
+					Line:     0,
+					Message:  table.Name + ".password -- column named \"password\" implies plaintext storage; rename to \"password_hash\" and hash before storing",
+				})
+			}
+		}
+	}
+	return findings
+}
+
+// ruleHandlerPackage flags route handlers that reference types from a package other than "controllers".
+// Pickle convention requires all handlers to live in the controllers package.
+func ruleHandlerPackage(ctx *AnalysisContext) []Finding {
+	var findings []Finding
+	for _, route := range ctx.Routes {
+		if route.HandlerPackage != "" && route.HandlerPackage != "controllers" {
+			findings = append(findings, Finding{
+				Rule:     "handler_package",
+				Severity: SeverityError,
+				File:     route.File,
+				Line:     route.Line,
+				Message:  route.Method + " " + route.Path + " -- handler from package \"" + route.HandlerPackage + "\", must be in \"controllers\" package",
+			})
+		}
 	}
 	return findings
 }

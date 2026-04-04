@@ -145,7 +145,7 @@ func (r *PolicyRunner) execRoleOp(op RoleOperation, tx *sql.Tx) error {
 	switch op.Type {
 	case "create":
 		q := fmt.Sprintf(
-			"INSERT INTO roles (slug, display_name, is_manages, is_default) VALUES (%s, %s, %s, %s)",
+			"INSERT INTO roles (slug, name, manages, is_default) VALUES (%s, %s, %s, %s)",
 			r.placeholder(1), r.placeholder(2), r.placeholder(3), r.placeholder(4),
 		)
 		if err := exec(q, op.Role.Slug, op.Role.DisplayName, op.Role.IsManages, op.Role.IsDefault); err != nil {
@@ -165,21 +165,21 @@ func (r *PolicyRunner) execRoleOp(op RoleOperation, tx *sql.Tx) error {
 	case "alter":
 		// Update fields if set
 		if op.Role.DisplayName != "" {
-			q := fmt.Sprintf("UPDATE roles SET display_name = %s WHERE slug = %s",
+			q := fmt.Sprintf("UPDATE roles SET name = %s WHERE slug = %s",
 				r.placeholder(1), r.placeholder(2))
 			if err := exec(q, op.Role.DisplayName, op.Role.Slug); err != nil {
 				return fmt.Errorf("altering role %q: %w", op.Role.Slug, err)
 			}
 		}
 		if op.Role.IsManages {
-			q := fmt.Sprintf("UPDATE roles SET is_manages = %s WHERE slug = %s",
+			q := fmt.Sprintf("UPDATE roles SET manages = %s WHERE slug = %s",
 				r.placeholder(1), r.placeholder(2))
 			if err := exec(q, true, op.Role.Slug); err != nil {
 				return err
 			}
 		}
 		if op.Role.RemoveManages {
-			q := fmt.Sprintf("UPDATE roles SET is_manages = %s WHERE slug = %s",
+			q := fmt.Sprintf("UPDATE roles SET manages = %s WHERE slug = %s",
 				r.placeholder(1), r.placeholder(2))
 			if err := exec(q, false, op.Role.Slug); err != nil {
 				return err

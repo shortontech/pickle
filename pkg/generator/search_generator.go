@@ -262,7 +262,16 @@ func writeFilterCase(b *bytes.Buffer, col searchColumnInfo, valVar string) {
 	}
 }
 
+// opFilterArg returns "parsed" or "&parsed" depending on whether the column is nullable.
+func opFilterArg(col searchColumnInfo) string {
+	if strings.HasPrefix(col.GoType, "*") {
+		return "&parsed"
+	}
+	return "parsed"
+}
+
 func writeOpFilterCase(b *bytes.Buffer, col searchColumnInfo, op filterOp) {
+	arg := opFilterArg(col)
 	switch col.ColType {
 	case schema.String, schema.Text:
 		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s%s(fop.Value)\n", col.PascalName, op.methodSuffix))
@@ -271,24 +280,25 @@ func writeOpFilterCase(b *bytes.Buffer, col searchColumnInfo, op filterOp) {
 		b.WriteString("\t\t\t\tif err != nil {\n")
 		b.WriteString("\t\t\t\t\treturn nil, nil, fmt.Errorf(\"invalid integer for filter %s[%s]: %w\", fop.Column, fop.Operator, err)\n")
 		b.WriteString("\t\t\t\t}\n")
-		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s%s(parsed)\n", col.PascalName, op.methodSuffix))
+		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s%s(%s)\n", col.PascalName, op.methodSuffix, arg))
 	case schema.BigInteger:
 		b.WriteString("\t\t\t\tparsed, err := strconv.ParseInt(fop.Value, 10, 64)\n")
 		b.WriteString("\t\t\t\tif err != nil {\n")
 		b.WriteString("\t\t\t\t\treturn nil, nil, fmt.Errorf(\"invalid integer for filter %s[%s]: %w\", fop.Column, fop.Operator, err)\n")
 		b.WriteString("\t\t\t\t}\n")
-		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s%s(parsed)\n", col.PascalName, op.methodSuffix))
+		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s%s(%s)\n", col.PascalName, op.methodSuffix, arg))
 	case schema.Decimal:
 		b.WriteString("\t\t\t\tparsed, err := decimal.NewFromString(fop.Value)\n")
 		b.WriteString("\t\t\t\tif err != nil {\n")
 		b.WriteString("\t\t\t\t\treturn nil, nil, fmt.Errorf(\"invalid decimal for filter %s[%s]: %w\", fop.Column, fop.Operator, err)\n")
 		b.WriteString("\t\t\t\t}\n")
-		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s%s(parsed)\n", col.PascalName, op.methodSuffix))
+		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s%s(%s)\n", col.PascalName, op.methodSuffix, arg))
 	case schema.Timestamp, schema.Date:
 		b.WriteString("\t\t\t\tparsed, err := time.Parse(time.RFC3339, fop.Value)\n")
 		b.WriteString("\t\t\t\tif err != nil {\n")
 		b.WriteString("\t\t\t\t\treturn nil, nil, fmt.Errorf(\"invalid timestamp for filter %s[%s]: %w\", fop.Column, fop.Operator, err)\n")
 		b.WriteString("\t\t\t\t}\n")
+		// Before/After/Between methods always take time.Time (value type), even for nullable columns
 		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s%s(parsed)\n", col.PascalName, op.methodSuffix))
 	}
 }

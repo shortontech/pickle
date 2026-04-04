@@ -4,11 +4,23 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+
+// env returns the value of the environment variable named by key,
+// or fallback if the variable is not set. This is a local helper so
+// the rate-limiter code is self-contained when embedded into generated
+// packages that don't include the config module.
+func env(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
 
 // MiddlewareProvider is implemented by types that can produce a MiddlewareFunc.
 // Route registration methods check for this interface and unwrap automatically,
@@ -48,8 +60,8 @@ type AuthRateLimitConfig struct {
 // Uses ctx.Auth().UserID as the default key. Call builder methods to customize.
 // Reads defaults from AUTH_RATE_LIMIT_RPS (default 30) and AUTH_RATE_LIMIT_BURST (default 60).
 func AuthRateLimit() *AuthRateLimitConfig {
-	rps, _ := strconv.ParseFloat(Env("AUTH_RATE_LIMIT_RPS", "30"), 64)
-	burst, _ := strconv.Atoi(Env("AUTH_RATE_LIMIT_BURST", "60"))
+	rps, _ := strconv.ParseFloat(env("AUTH_RATE_LIMIT_RPS", "30"), 64)
+	burst, _ := strconv.Atoi(env("AUTH_RATE_LIMIT_BURST", "60"))
 	if burst < 1 {
 		burst = 1
 	}
@@ -311,7 +323,7 @@ var (
 
 func initTrustedProxies() {
 	trustedProxiesOnce.Do(func() {
-		raw := Env("TRUSTED_PROXIES", "")
+		raw := env("TRUSTED_PROXIES", "")
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
 			return
@@ -386,9 +398,9 @@ func firstUntrustedIP(xff string) string {
 
 func initGlobalLimiter() {
 	globalLimiterOnce.Do(func() {
-		enabled := Env("RATE_LIMIT", "true")
-		rps, _ := strconv.ParseFloat(Env("RATE_LIMIT_RPS", "10"), 64)
-		burst, _ := strconv.Atoi(Env("RATE_LIMIT_BURST", "20"))
+		enabled := env("RATE_LIMIT", "true")
+		rps, _ := strconv.ParseFloat(env("RATE_LIMIT_RPS", "10"), 64)
+		burst, _ := strconv.Atoi(env("RATE_LIMIT_BURST", "20"))
 
 		if burst < 1 {
 			burst = 1

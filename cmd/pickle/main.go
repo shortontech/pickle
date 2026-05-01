@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/shortontech/pickle/pkg/exporter"
 	"github.com/shortontech/pickle/pkg/generator"
 	picklemcp "github.com/shortontech/pickle/pkg/mcp"
 	"github.com/shortontech/pickle/pkg/scaffold"
@@ -35,6 +36,8 @@ func main() {
 		cmdCreate()
 	case "generate":
 		cmdGenerate()
+	case "export":
+		cmdExport()
 	case "mcp":
 		cmdMCP()
 	case "migrate", "migrate:rollback", "migrate:fresh", "migrate:status":
@@ -82,6 +85,7 @@ func usage() {
 Commands:
   create <name>     Create a new Pickle project
   generate          Generate all files from project sources
+  export            Export a standalone Go application
   --watch           Watch for changes and regenerate on save
   mcp               Start the MCP server (stdio transport)
   mcp --http :9921  Start the MCP server (SSE over HTTP)
@@ -110,6 +114,67 @@ Options:
   --app <name>      Target a specific app in a monorepo (requires pickle.yaml with apps)
   --help, -h        Show this help
   --version, -v     Show version`)
+}
+
+func cmdExport() {
+	projectDir := "."
+	outDir := ""
+	orm := "gorm"
+	force := false
+	dryRun := false
+	reportPath := ""
+	args := os.Args[2:]
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--project":
+			if i+1 < len(args) {
+				projectDir = args[i+1]
+				i++
+			}
+		case "--out":
+			if i+1 < len(args) {
+				outDir = args[i+1]
+				i++
+			}
+		case "--orm":
+			if i+1 < len(args) {
+				orm = args[i+1]
+				i++
+			}
+		case "--report":
+			if i+1 < len(args) {
+				reportPath = args[i+1]
+				i++
+			}
+		case "--force":
+			force = true
+		case "--dry-run":
+			dryRun = true
+		}
+	}
+	if outDir == "" {
+		fmt.Fprintln(os.Stderr, "Usage: pickle export --out <dir> [--project <dir>] [--orm gorm] [--force]")
+		os.Exit(1)
+	}
+
+	result, err := exporter.Export(exporter.Options{
+		ProjectDir:   projectDir,
+		OutDir:       outDir,
+		ORM:          orm,
+		Force:        force,
+		DryRun:       dryRun,
+		ReportPath:   reportPath,
+		PicklePkgDir: findPicklePkgDir(),
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle export: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Exported standalone Go app to %s\n", result.OutDir)
+	fmt.Printf("Report: %s\n", result.ReportPath)
+	if len(result.Findings) > 0 {
+		fmt.Printf("Findings: %d unsupported item(s) need review\n", len(result.Findings))
+	}
 }
 
 func cmdCreate() {

@@ -115,8 +115,8 @@ func WriteAuditModels(modelsDir string) error {
 type IDRegistry struct {
 	NextModelTypeID  int                  `json:"next_model_type_id"`
 	NextActionTypeID int                  `json:"next_action_type_id"`
-	ModelTypes       map[string]int       `json:"model_types"`       // model name → ID
-	ActionTypes      map[string]ActionReg `json:"action_types"`      // "Model.Action" → registration
+	ModelTypes       map[string]int       `json:"model_types"`  // model name → ID
+	ActionTypes      map[string]ActionReg `json:"action_types"` // "Model.Action" → registration
 }
 
 // ActionReg stores the registered ID and model type link for an action type.
@@ -286,24 +286,30 @@ func GenerateAuditConstants(reg *IDRegistry, packageName string) ([]byte, error)
 // WriteAuditSeedAndConstants scans actions, updates the ID registry, and writes
 // the seed migration and constants files.
 func WriteAuditSeedAndConstants(project *Project, actionSets map[string]*ActionSet) error {
-	registryPath := filepath.Join(project.Dir, "database", "audit", "id_registry.json")
-	reg, err := LoadIDRegistry(registryPath)
-	if err != nil {
-		return fmt.Errorf("loading ID registry: %w", err)
+	reg := &IDRegistry{
+		NextModelTypeID:  1,
+		NextActionTypeID: 1,
+		ModelTypes:       map[string]int{},
+		ActionTypes:      map[string]ActionReg{},
 	}
 
-	// Register all model+action pairs
-	for _, set := range actionSets {
+	// Register all model+action pairs deterministically from the current source.
+	// This keeps generation/export self-contained without requiring a sidecar JSON file.
+	var models []string
+	setsByModel := map[string]*ActionSet{}
+	for model, set := range actionSets {
+		models = append(models, model)
+		setsByModel[model] = set
+	}
+	sort.Strings(models)
+	for _, model := range models {
+		set := setsByModel[model]
 		modelName := tableToStructName(set.Model)
 		reg.EnsureModelType(modelName)
+		sort.Slice(set.Actions, func(i, j int) bool { return set.Actions[i].Name < set.Actions[j].Name })
 		for _, action := range set.Actions {
 			reg.EnsureActionType(modelName, action.Name)
 		}
-	}
-
-	// Save registry
-	if err := SaveIDRegistry(registryPath, reg); err != nil {
-		return fmt.Errorf("saving ID registry: %w", err)
 	}
 
 	// Write seed migration

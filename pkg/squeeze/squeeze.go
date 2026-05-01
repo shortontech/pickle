@@ -11,8 +11,9 @@ import (
 	"github.com/shortontech/pickle/pkg/generator"
 )
 
-// Run executes all enabled squeeze rules against the project and returns findings.
-func Run(projectDir string) ([]Finding, error) {
+// Analyze parses a Pickle project into the shared analysis context used by
+// Squeeze rules and by tooling that needs the same framework-aware view.
+func Analyze(projectDir string) (*AnalysisContext, error) {
 	// 1. Load config
 	cfg, err := LoadConfig(projectDir)
 	if err != nil {
@@ -86,23 +87,30 @@ func Run(projectDir string) ([]Finding, error) {
 	// 6d. Scan GraphQL policies to determine which tables are actually exposed
 	graphQLExposed := scanGraphQLExposedTables(filepath.Join(project.Dir, "database", "policies", "graphql"))
 
-	// 7. Build analysis context
-	actx := &AnalysisContext{
-		Routes:       routes,
-		Methods:      methods,
-		Requests:     requests,
-		Tables:       tables,
-		Config:       cfg.Squeeze,
-		FuncRegistry: funcRegistry,
-		HasGraphQL:       hasGraphQL,
-		GraphQLExposed:   graphQLExposed,
-		ProjectDir:       projectDir,
+	return &AnalysisContext{
+		Routes:         routes,
+		Methods:        methods,
+		Requests:       requests,
+		Tables:         tables,
+		Config:         cfg.Squeeze,
+		FuncRegistry:   funcRegistry,
+		HasGraphQL:     hasGraphQL,
+		GraphQLExposed: graphQLExposed,
+		ProjectDir:     projectDir,
+	}, nil
+}
+
+// Run executes all enabled squeeze rules against the project and returns findings.
+func Run(projectDir string) ([]Finding, error) {
+	actx, err := Analyze(projectDir)
+	if err != nil {
+		return nil, err
 	}
 
-	// 8. Run enabled rules
+	// Run enabled rules
 	var findings []Finding
 	for name, rule := range AllRules() {
-		if !cfg.Squeeze.RuleEnabled(name) {
+		if !actx.Config.RuleEnabled(name) {
 			continue
 		}
 		findings = append(findings, rule(actx)...)

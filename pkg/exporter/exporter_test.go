@@ -76,6 +76,29 @@ func TestExportLedgerCompiles(t *testing.T) {
 	runExported(t, out, "go", "test", "./...")
 }
 
+func TestExportEncryptionCompilesWithFinding(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "encryption-test"))
+	out := filepath.Join(t.TempDir(), "exported")
+	res, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err != nil {
+		t.Fatalf("Export failed: %v", err)
+	}
+	if !hasFinding(res.Findings, "encrypted_columns") {
+		t.Fatalf("expected encrypted_columns finding, got %+v", res.Findings)
+	}
+
+	assertFileContains(t, filepath.Join(out, "app", "models", "user.go"), "func (m *User) Public() UserPublic")
+	assertFileContains(t, filepath.Join(out, "app", "models", "user.go"), "func PublicUsers(records []User) []UserPublic")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "encrypted_columns")
+	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
+	runExported(t, out, "go", "test", "./...")
+}
+
 func TestExportZeroGraphQLCompilesWithFinding(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "zero-graphql"))
 	out := filepath.Join(t.TempDir(), "exported")
@@ -88,7 +111,7 @@ func TestExportZeroGraphQLCompilesWithFinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Export failed: %v", err)
 	}
-	if len(res.Findings) != 1 || res.Findings[0].Rule != "generated_graphql" {
+	if !hasFinding(res.Findings, "generated_graphql") {
 		t.Fatalf("expected generated_graphql finding, got %+v", res.Findings)
 	}
 
@@ -146,6 +169,50 @@ func TestExportFailsUnknownViewMigrations(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unknown view active_users") {
 		t.Fatalf("expected unsupported view migration error, got %v", err)
 	}
+}
+
+func TestRewriteMutableQueryVariable(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"User": true},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func Index(role string) ([]models.User, error) {
+	q := models.QueryUser()
+	q.WhereRole(role)
+	q.OrderByID("ASC")
+	return q.All()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	compact := strings.Join(strings.Fields(got), " ")
+	for _, want := range []string{
+		"q := models.DB.Model(&models. User{})",
+		`q = q.Where("role = ?", role, )`,
+		`q = q.Order("id" + " " + "ASC")`,
+		"return func() ([]models.User, error)",
+	} {
+		if !strings.Contains(compact, want) {
+			t.Fatalf("rewritten source missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func hasFinding(findings []Finding, rule string) bool {
+	for _, finding := range findings {
+		if finding.Rule == rule {
+			return true
+		}
+	}
+	return false
 }
 
 func copyProject(t *testing.T, src string) string {

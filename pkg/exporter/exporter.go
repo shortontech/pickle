@@ -150,6 +150,7 @@ func Export(opts Options) (*Result, error) {
 		return nil, err
 	}
 	ex.addGeneratedSubsystemFindings()
+	ex.addSchemaFindings(tables)
 	if err := ex.writeReport(opts.ORM); err != nil {
 		return nil, err
 	}
@@ -356,6 +357,9 @@ func (e *exporter) rewriteGoFile(path string, data []byte) ([]byte, error) {
 }
 
 func (e *exporter) isServiceHTTPImport(path string) bool {
+	if e.project == nil {
+		return false
+	}
 	for _, svc := range e.project.Services {
 		rel, err := filepath.Rel(e.project.Dir, svc.HTTPDir)
 		if err != nil {
@@ -378,8 +382,9 @@ func (e *exporter) rewriteQueryStatements(path string, fset *token.FileSet, f *a
 		if !ok {
 			return true
 		}
+		queryVars := map[string]string{}
 		for i, stmt := range block.List {
-			rewritten, err := e.rewriteStmt(path, fset, stmt)
+			rewritten, err := e.rewriteStmt(path, fset, stmt, queryVars)
 			if err != nil {
 				firstErr = err
 				return false
@@ -391,12 +396,42 @@ func (e *exporter) rewriteQueryStatements(path string, fset *token.FileSet, f *a
 	return firstErr
 }
 
-func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt) (ast.Stmt, error) {
+func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, queryVars map[string]string) (ast.Stmt, error) {
 	switch s := stmt.(type) {
 	case *ast.AssignStmt:
 		if len(s.Rhs) == 1 {
 			call, ok := s.Rhs[0].(*ast.CallExpr)
 			if ok {
+				if terminal, ok, err := parseQueryVarTerminal(call, queryVars); err != nil {
+					return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+				} else if ok {
+					expr, err := e.gormVarTerminalExpr(terminal)
+					if err != nil {
+						return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+					}
+					s.Rhs[0] = expr
+					return stmt, nil
+				}
+
+				if len(s.Lhs) == 1 {
+					chain, chainOK, err := parseQueryBuilderChain(call)
+					if err != nil {
+						return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+					}
+					if chainOK && chain.Terminal == "" {
+						ident, identOK := s.Lhs[0].(*ast.Ident)
+						if identOK {
+							expr, err := e.gormBuilderExpr(chain)
+							if err != nil {
+								return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+							}
+							s.Rhs[0] = expr
+							queryVars[ident.Name] = chain.Model
+							return stmt, nil
+						}
+					}
+				}
+
 				chain, ok, err := parseQueryChain(call)
 				if err != nil {
 					return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
@@ -410,9 +445,40 @@ func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt) 
 				}
 			}
 		}
+	case *ast.ExprStmt:
+		call, ok := s.X.(*ast.CallExpr)
+		if !ok {
+			return stmt, nil
+		}
+		assign, ok, err := rewriteQueryVarMutation(call, queryVars)
+		if err != nil {
+			return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+		}
+		if ok {
+			return assign, nil
+		}
+	case *ast.ReturnStmt:
+		for i, result := range s.Results {
+			call, ok := result.(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			terminal, ok, err := parseQueryVarTerminal(call, queryVars)
+			if err != nil {
+				return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+			}
+			if !ok {
+				continue
+			}
+			expr, err := e.gormVarTerminalExpr(terminal)
+			if err != nil {
+				return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+			}
+			s.Results[i] = expr
+		}
 	case *ast.IfStmt:
 		if s.Init != nil {
-			rewritten, err := e.rewriteStmt(path, fset, s.Init)
+			rewritten, err := e.rewriteStmt(path, fset, s.Init, queryVars)
 			if err != nil {
 				return nil, err
 			}
@@ -459,6 +525,14 @@ type queryFilter struct {
 }
 
 func parseQueryChain(call *ast.CallExpr) (queryChain, bool, error) {
+	return parseQueryChainWithTerminal(call, true)
+}
+
+func parseQueryBuilderChain(call *ast.CallExpr) (queryChain, bool, error) {
+	return parseQueryChainWithTerminal(call, false)
+}
+
+func parseQueryChainWithTerminal(call *ast.CallExpr, requireTerminal bool) (queryChain, bool, error) {
 	var methods []struct {
 		name string
 		args []ast.Expr
@@ -473,19 +547,22 @@ func parseQueryChain(call *ast.CallExpr) (queryChain, bool, error) {
 		if !ok {
 			return queryChain{}, false, nil
 		}
+		if id, ok := sel.X.(*ast.Ident); ok && id.Name == "models" && strings.HasPrefix(sel.Sel.Name, "Query") {
+			return buildQueryChain(strings.TrimPrefix(sel.Sel.Name, "Query"), methods, requireTerminal)
+		}
 		methods = append(methods, struct {
 			name string
 			args []ast.Expr
 		}{name: sel.Sel.Name, args: c.Args})
 		if root, ok := sel.X.(*ast.SelectorExpr); ok {
 			if id, ok := root.X.(*ast.Ident); ok && id.Name == "models" && strings.HasPrefix(root.Sel.Name, "Query") {
-				return buildQueryChain(strings.TrimPrefix(root.Sel.Name, "Query"), methods)
+				return buildQueryChain(strings.TrimPrefix(root.Sel.Name, "Query"), methods, requireTerminal)
 			}
 		}
 		if rootCall, ok := sel.X.(*ast.CallExpr); ok {
 			if root, ok := rootCall.Fun.(*ast.SelectorExpr); ok {
 				if id, ok := root.X.(*ast.Ident); ok && id.Name == "models" && strings.HasPrefix(root.Sel.Name, "Query") {
-					return buildQueryChain(strings.TrimPrefix(root.Sel.Name, "Query"), methods)
+					return buildQueryChain(strings.TrimPrefix(root.Sel.Name, "Query"), methods, requireTerminal)
 				}
 			}
 		}
@@ -496,7 +573,7 @@ func parseQueryChain(call *ast.CallExpr) (queryChain, bool, error) {
 func buildQueryChain(model string, methods []struct {
 	name string
 	args []ast.Expr
-}) (queryChain, bool, error) {
+}, requireTerminal bool) (queryChain, bool, error) {
 	qc := queryChain{Model: model}
 	for i := len(methods) - 1; i >= 0; i-- {
 		m := methods[i]
@@ -545,10 +622,115 @@ func buildQueryChain(model string, methods []struct {
 			return qc, true, fmt.Errorf("unsupported query method %s", m.name)
 		}
 	}
-	if qc.Terminal == "" {
+	if requireTerminal && qc.Terminal == "" {
 		return qc, true, fmt.Errorf("query chain has no terminal operation")
 	}
 	return qc, true, nil
+}
+
+type queryVarTerminal struct {
+	Var      string
+	Model    string
+	Terminal string
+}
+
+func parseQueryVarTerminal(call *ast.CallExpr, queryVars map[string]string) (queryVarTerminal, bool, error) {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return queryVarTerminal{}, false, nil
+	}
+	id, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return queryVarTerminal{}, false, nil
+	}
+	model, ok := queryVars[id.Name]
+	if !ok {
+		return queryVarTerminal{}, false, nil
+	}
+	if sel.Sel.Name != "First" && sel.Sel.Name != "All" && sel.Sel.Name != "Count" && !strings.HasPrefix(sel.Sel.Name, "Sum") && !strings.HasPrefix(sel.Sel.Name, "Avg") {
+		return queryVarTerminal{}, false, nil
+	}
+	if len(call.Args) != 0 {
+		return queryVarTerminal{}, true, fmt.Errorf("%s does not accept arguments", sel.Sel.Name)
+	}
+	return queryVarTerminal{Var: id.Name, Model: model, Terminal: sel.Sel.Name}, true, nil
+}
+
+func rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[string]string) (ast.Stmt, bool, error) {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return nil, false, nil
+	}
+	id, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return nil, false, nil
+	}
+	model, ok := queryVars[id.Name]
+	if !ok {
+		return nil, false, nil
+	}
+
+	var expr ast.Expr
+	var err error
+	switch {
+	case strings.HasPrefix(sel.Sel.Name, "Where"):
+		if len(call.Args) != 1 {
+			return nil, true, fmt.Errorf("%s requires one argument", sel.Sel.Name)
+		}
+		col, op, ok := whereMethodColumn(sel.Sel.Name, model)
+		if !ok {
+			return nil, true, fmt.Errorf("unsupported query method %s", sel.Sel.Name)
+		}
+		expr, err = gormVarWhereExpr(id.Name, col, op, call.Args[0])
+	case strings.HasPrefix(sel.Sel.Name, "With"):
+		if len(call.Args) != 0 {
+			return nil, true, fmt.Errorf("%s does not accept arguments", sel.Sel.Name)
+		}
+		expr, err = parseExpr(fmt.Sprintf("%s.Preload(%q)", id.Name, strings.TrimPrefix(sel.Sel.Name, "With")))
+	case sel.Sel.Name == "Limit" || sel.Sel.Name == "Offset":
+		if len(call.Args) != 1 {
+			return nil, true, fmt.Errorf("%s requires one argument", sel.Sel.Name)
+		}
+		arg, argErr := exprString(call.Args[0])
+		if argErr != nil {
+			return nil, true, argErr
+		}
+		expr, err = parseExpr(fmt.Sprintf("%s.%s(%s)", id.Name, sel.Sel.Name, arg))
+	case strings.HasPrefix(sel.Sel.Name, "OrderBy") && sel.Sel.Name != "OrderBy":
+		if len(call.Args) != 1 {
+			return nil, true, fmt.Errorf("%s requires one argument", sel.Sel.Name)
+		}
+		arg, argErr := exprString(call.Args[0])
+		if argErr != nil {
+			return nil, true, argErr
+		}
+		column := pascalToSnake(strings.TrimPrefix(sel.Sel.Name, "OrderBy"))
+		expr, err = parseExpr(fmt.Sprintf("%s.Order(%q + \" \" + %s)", id.Name, column, arg))
+	case sel.Sel.Name == "OrderBy":
+		if len(call.Args) != 2 {
+			return nil, true, fmt.Errorf("OrderBy requires two arguments")
+		}
+		col, colErr := exprString(call.Args[0])
+		if colErr != nil {
+			return nil, true, colErr
+		}
+		dir, dirErr := exprString(call.Args[1])
+		if dirErr != nil {
+			return nil, true, dirErr
+		}
+		expr, err = parseExpr(fmt.Sprintf("%s.Order(%s + \" \" + %s)", id.Name, col, dir))
+	case sel.Sel.Name == "SelectAll" || sel.Sel.Name == "AnyOwner":
+		if len(call.Args) != 0 {
+			return nil, true, fmt.Errorf("%s does not accept arguments", sel.Sel.Name)
+		}
+		return &ast.EmptyStmt{}, true, nil
+	default:
+		return nil, true, fmt.Errorf("unsupported query method %s", sel.Sel.Name)
+	}
+	if err != nil {
+		return nil, true, err
+	}
+	return &ast.AssignStmt{Lhs: []ast.Expr{id}, Tok: token.ASSIGN, Rhs: []ast.Expr{expr}}, true, nil
 }
 
 func (e *exporter) gormExpr(q queryChain) (ast.Expr, error) {
@@ -595,6 +777,52 @@ func (e *exporter) gormExpr(q queryChain) (ast.Expr, error) {
 	default:
 		return nil, fmt.Errorf("unsupported terminal query method %s", q.Terminal)
 	}
+}
+
+func (e *exporter) gormBuilderExpr(q queryChain) (ast.Expr, error) {
+	if !e.models[q.Model] {
+		return nil, fmt.Errorf("unknown exported model %s", q.Model)
+	}
+	return parseExpr(q.gormChain())
+}
+
+func (e *exporter) gormVarTerminalExpr(q queryVarTerminal) (ast.Expr, error) {
+	if !e.models[q.Model] {
+		return nil, fmt.Errorf("unknown exported model %s", q.Model)
+	}
+	switch {
+	case q.Terminal == "First":
+		return parseExpr(fmt.Sprintf("func() (*models.%s, error) { var record models.%s; err := %s.First(&record).Error; return &record, err }()", q.Model, q.Model, q.Var))
+	case q.Terminal == "All":
+		return parseExpr(fmt.Sprintf("func() ([]models.%s, error) { var records []models.%s; err := %s.Find(&records).Error; return records, err }()", q.Model, q.Model, q.Var))
+	case q.Terminal == "Count":
+		return parseExpr(fmt.Sprintf("func() (int64, error) { var count int64; err := %s.Count(&count).Error; return count, err }()", q.Var))
+	case strings.HasPrefix(q.Terminal, "Sum") || strings.HasPrefix(q.Terminal, "Avg"):
+		fn := "SUM"
+		field := strings.TrimPrefix(q.Terminal, "Sum")
+		if strings.HasPrefix(q.Terminal, "Avg") {
+			fn = "AVG"
+			field = strings.TrimPrefix(q.Terminal, "Avg")
+		}
+		if field == "" {
+			return nil, fmt.Errorf("unsupported aggregate query method %s", q.Terminal)
+		}
+		column := pascalToSnake(field)
+		return parseExpr(fmt.Sprintf("func() (*float64, error) { var value *float64; err := %s.Select(%q).Scan(&value).Error; return value, err }()", q.Var, fn+"("+column+")"))
+	default:
+		return nil, fmt.Errorf("unsupported terminal query method %s", q.Terminal)
+	}
+}
+
+func gormVarWhereExpr(varName, col, op string, arg ast.Expr) (ast.Expr, error) {
+	if col == "__owner__" {
+		col = "user_id"
+	}
+	argStr, err := exprString(arg)
+	if err != nil {
+		return nil, err
+	}
+	return parseExpr(fmt.Sprintf("%s.Where(%q, %s)", varName, col+" "+op+" ?", argStr))
 }
 
 func (q queryChain) gormChain() string {
@@ -1080,6 +1308,23 @@ func (e *exporter) addGeneratedSubsystemFindings() {
 	}
 }
 
+func (e *exporter) addSchemaFindings(tables []*schema.Table) {
+	for _, table := range tables {
+		if table.IsImmutable || table.IsAppendOnly {
+			e.result.Findings = append(e.result.Findings, Finding{File: "database/migrations", Rule: "integrity_tables", Message: "immutable/append-only hash-chain runtime behavior is not lowered in v1"})
+			break
+		}
+	}
+	for _, table := range tables {
+		for _, col := range table.Columns {
+			if col.IsEncrypted || col.IsSealed {
+				e.result.Findings = append(e.result.Findings, Finding{File: "database/migrations", Rule: "encrypted_columns", Message: "encrypted/sealed column runtime behavior is not lowered in v1"})
+				return
+			}
+		}
+	}
+}
+
 func (e *exporter) writeReport(orm string) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Export Report\n\n")
@@ -1392,9 +1637,6 @@ func publicFields(fields []modelField) []modelField {
 		if f.JSON != "-" {
 			out = append(out, f)
 		}
-	}
-	if len(out) == len(fields) {
-		return nil
 	}
 	return out
 }

@@ -76,6 +76,29 @@ func TestExportLedgerCompiles(t *testing.T) {
 	runExported(t, out, "go", "test", "./...")
 }
 
+func TestExportZeroGraphQLCompilesWithFinding(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "zero-graphql"))
+	out := filepath.Join(t.TempDir(), "exported")
+	res, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err != nil {
+		t.Fatalf("Export failed: %v", err)
+	}
+	if len(res.Findings) != 1 || res.Findings[0].Rule != "generated_graphql" {
+		t.Fatalf("expected generated_graphql finding, got %+v", res.Findings)
+	}
+
+	assertPathMissing(t, filepath.Join(out, "app", "graphql"))
+	assertFileContains(t, filepath.Join(out, "app", "http", "requests", "bindings.go"), "package requests")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "generated_graphql")
+	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
+	runExported(t, out, "go", "test", "./...")
+}
+
 func TestExportRefusesNonEmptyOutputWithoutForce(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
 	out := t.TempDir()

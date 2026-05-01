@@ -1270,6 +1270,9 @@ func publicFields(fields []modelField) []modelField {
 }
 
 func generateBindings(requests []generator.RequestDef) ([]byte, error) {
+	if len(requests) == 0 {
+		return []byte("package requests\n"), nil
+	}
 	data := struct{ Requests []generator.RequestDef }{Requests: requests}
 	var buf bytes.Buffer
 	if err := bindingsTemplate.Execute(&buf, data); err != nil {

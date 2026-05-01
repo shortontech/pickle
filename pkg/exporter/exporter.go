@@ -137,6 +137,9 @@ func Export(opts Options) (*Result, error) {
 	if err := ex.writeBindings(); err != nil {
 		return nil, err
 	}
+	if err := ex.writeJobsSupport(); err != nil {
+		return nil, err
+	}
 	if err := ex.writeConfigSupport(); err != nil {
 		return nil, err
 	}
@@ -987,7 +990,7 @@ func (e *exporter) generateSQLMigrations(tables []*schema.Table, views []*schema
 			if !ok {
 				return nil, fmt.Errorf("migration %s references unknown table %s", entry.Name(), tableName)
 			}
-			out = append(out, sqlMigration{Name: exportName, Up: createTableSQL(table) + ";\n", Down: dropTableSQL(table.Name) + ";\n"})
+			out = append(out, sqlMigration{Name: exportName, Up: createTableSQL(table) + tableIndexesSQL(table) + ";\n", Down: dropTableSQL(table.Name) + ";\n"})
 		case strings.HasPrefix(operation, "create_") && strings.HasSuffix(operation, "_view"):
 			viewName := strings.TrimSuffix(strings.TrimPrefix(operation, "create_"), "_view")
 			view, ok := viewsByName[viewName]
@@ -1035,6 +1038,37 @@ func createTableSQL(table *schema.Table) string {
 
 func dropTableSQL(name string) string {
 	return "DROP TABLE IF EXISTS " + quoteIdent(name) + " CASCADE"
+}
+
+func tableIndexesSQL(table *schema.Table) string {
+	if len(table.Indexes) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, idx := range table.Indexes {
+		parts = append(parts, createIndexSQL(idx))
+	}
+	return ";\n" + strings.Join(parts, ";\n")
+}
+
+func createIndexSQL(idx *schema.Index) string {
+	var cols []string
+	for _, col := range idx.Columns {
+		cols = append(cols, quoteIdent(col))
+	}
+	unique := ""
+	if idx.Unique {
+		unique = "UNIQUE "
+	}
+	return fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", unique, quoteIdent(indexName(idx)), quoteIdent(idx.Table), strings.Join(cols, ", "))
+}
+
+func indexName(idx *schema.Index) string {
+	kind := "idx"
+	if idx.Unique {
+		kind = "uidx"
+	}
+	return kind + "_" + idx.Table + "_" + strings.Join(idx.Columns, "_")
 }
 
 func createViewSQL(view *schema.View) string {
@@ -1198,6 +1232,17 @@ func (e *exporter) writeBindings() error {
 	return e.writeFile(filepath.Join("app", "http", "requests", "bindings.go"), data)
 }
 
+func (e *exporter) writeJobsSupport() error {
+	jobsDir := filepath.Join(e.project.Dir, "app", "jobs")
+	if _, err := os.Stat(jobsDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return e.writeFile(filepath.Join("app", "jobs", "support.go"), []byte(jobsSupportSource))
+}
+
 func (e *exporter) writeConfigSupport() error {
 	scan, err := generator.ScanConfigs(e.project.Layout.ConfigDir)
 	if err != nil {
@@ -1300,6 +1345,10 @@ func (e *exporter) addGeneratedSubsystemFindings() {
 		msg  string
 	}{
 		{"app/graphql", "generated_graphql", "generated GraphQL runtime is not lowered in v1"},
+		{"app/jobs", "generated_jobs", "scheduler runtime is exported with minimal standalone support in v1"},
+		{"app/commands", "generated_commands", "Pickle command runtime is not lowered in v1"},
+		{"database/policies", "generated_policies", "RBAC and GraphQL policy runners are not lowered in v1"},
+		{"database/actions", "generated_actions", "action gate and audit wiring is not lowered in v1"},
 	}
 	for _, c := range checks {
 		if _, err := os.Stat(filepath.Join(e.project.Dir, c.path)); err == nil {
@@ -2118,6 +2167,84 @@ func hmacVerify(data, sig, secret []byte, alg string) bool {
 func base64URLEncode(data []byte) string { return base64.RawURLEncoding.EncodeToString(data) }
 
 func base64URLDecode(s string) ([]byte, error) { return base64.RawURLEncoding.DecodeString(s) }
+`
+
+const jobsSupportSource = `package jobs
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"sync"
+	"time"
+
+	"github.com/robfig/cron/v3"
+)
+
+type Job interface { Handle() error }
+
+type JobEntry struct {
+	Schedule string
+	Job Job
+	maxRetries int
+	retryDelay time.Duration
+	timeout time.Duration
+	allowOverlap bool
+}
+
+type Scheduler struct { entries []*JobEntry }
+
+func Cron(fn func(s *Scheduler)) *Scheduler { s := &Scheduler{}; fn(s); return s }
+
+func (s *Scheduler) Job(schedule string, job Job) *JobEntry { e := &JobEntry{Schedule: schedule, Job: job}; s.entries = append(s.entries, e); return e }
+
+func (s *Scheduler) Entries() []*JobEntry { return s.entries }
+
+func (e *JobEntry) MaxRetries(n int) *JobEntry { e.maxRetries = n; return e }
+func (e *JobEntry) RetryDelay(d time.Duration) *JobEntry { e.retryDelay = d; return e }
+func (e *JobEntry) Timeout(d time.Duration) *JobEntry { e.timeout = d; return e }
+func (e *JobEntry) SkipIfRunning() *JobEntry { e.allowOverlap = false; return e }
+func (e *JobEntry) AllowOverlap() *JobEntry { e.allowOverlap = true; return e }
+
+func (s *Scheduler) Start(ctx context.Context) {
+	c := cron.New()
+	for _, entry := range s.entries {
+		entry := entry
+		var mu sync.Mutex
+		running := false
+		_, err := c.AddFunc(entry.Schedule, func() {
+			if !entry.allowOverlap {
+				mu.Lock()
+				if running { mu.Unlock(); log.Printf("job %T skipped: previous run still in progress", entry.Job); return }
+				running = true
+				mu.Unlock()
+				defer func() { mu.Lock(); running = false; mu.Unlock() }()
+			}
+			runJob(entry)
+		})
+		if err != nil { log.Printf("job %T schedule %q rejected: %v", entry.Job, entry.Schedule, err) }
+	}
+	c.Start()
+	<-ctx.Done()
+	c.Stop()
+}
+
+func runJob(entry *JobEntry) {
+	attempts := entry.maxRetries + 1
+	for i := 0; i < attempts; i++ {
+		var err error
+		if entry.timeout > 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), entry.timeout)
+			done := make(chan error, 1)
+			go func() { done <- entry.Job.Handle() }()
+			select { case err = <-done: case <-ctx.Done(): err = fmt.Errorf("job timed out after %s", entry.timeout) }
+			cancel()
+		} else { err = entry.Job.Handle() }
+		if err == nil { return }
+		log.Printf("job %T failed (attempt %d/%d): %v", entry.Job, i+1, attempts, err)
+		if i < attempts-1 && entry.retryDelay > 0 { time.Sleep(entry.retryDelay) }
+	}
+}
 `
 
 const serverMainSource = `package main

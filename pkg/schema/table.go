@@ -30,13 +30,14 @@ func (r *Relationship) TopLevelModel() *Relationship {
 
 // Table collects column definitions for a database table.
 type Table struct {
-	Name          string
-	Connection    string // database connection name ("" = default)
-	Columns       []*Column
-	Relationships []*Relationship
-	IsImmutable   bool // set by Immutable() — versioned, (id, version_id) composite PK
-	IsAppendOnly  bool // set by AppendOnly() — insert-only, single id PK, no updates/deletes
-	HasSoftDelete      bool     // set by SoftDeletes() — adds deleted_at nullable column
+	Name                 string
+	Connection           string // database connection name ("" = default)
+	Columns              []*Column
+	Indexes              []*Index
+	Relationships        []*Relationship
+	IsImmutable          bool     // set by Immutable() — versioned, (id, version_id) composite PK
+	IsAppendOnly         bool     // set by AppendOnly() — insert-only, single id PK, no updates/deletes
+	HasSoftDelete        bool     // set by SoftDeletes() — adds deleted_at nullable column
 	CompositePrimaryKeys []string // set by PrimaryKey() — explicit composite PK columns
 }
 

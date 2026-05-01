@@ -25,12 +25,16 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	if res.FilesWritten == 0 {
 		t.Fatal("expected exported files")
 	}
+	if !hasFinding(res.Findings, "generated_policies") {
+		t.Fatalf("expected generated_policies finding, got %+v", res.Findings)
+	}
 	assertFileContains(t, filepath.Join(out, "go.mod"), "gorm.io/gorm")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user.go"), "type User struct")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_post_stat.go"), "type UserPostStat struct")
 	assertFileContains(t, filepath.Join(out, "app", "models", "db.go"), "var DB *gorm.DB")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.up.sql"), "CREATE TABLE")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.down.sql"), "DROP TABLE")
+	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.up.sql"), "CREATE INDEX")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260228100000_create_user_post_stats_view.up.sql"), "CREATE VIEW")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func Env(key, fallback string) string")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "type ConnectionConfig struct")
@@ -140,6 +144,32 @@ func TestExportMonorepoCompiles(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "apiRoutes")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "workerRoutes")
 	assertNoGoFileContains(t, out, "QueryOrder")
+	runExported(t, out, "go", "test", "./...")
+}
+
+func TestExportCronCompilesWithFinding(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "cron-test"))
+	out := filepath.Join(t.TempDir(), "exported")
+	res, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err != nil {
+		t.Fatalf("Export failed: %v", err)
+	}
+	if !hasFinding(res.Findings, "generated_jobs") {
+		t.Fatalf("expected generated_jobs finding, got %+v", res.Findings)
+	}
+	if !hasFinding(res.Findings, "generated_commands") {
+		t.Fatalf("expected generated_commands finding, got %+v", res.Findings)
+	}
+
+	assertFileContains(t, filepath.Join(out, "app", "jobs", "support.go"), "type Scheduler struct")
+	assertFileContains(t, filepath.Join(out, "schedule", "jobs.go"), "jobs.Cron")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "generated_jobs")
+	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	runExported(t, out, "go", "test", "./...")
 }
 

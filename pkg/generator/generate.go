@@ -20,15 +20,15 @@ import (
 // Layout describes where generated and user-written files live.
 // Follows Laravel conventions: app/http/, app/models/, database/migrations/.
 type Layout struct {
-	HTTPDir       string // absolute path: where pickle_gen.go (Context, Response, Router) goes
-	HTTPPkg       string // package name for HTTPDir ("pickle")
-	RequestsDir   string // absolute path: where request structs + bindings_gen.go live
-	ModelsDir     string // absolute path: where generated models live
-	MigrationsDir string // absolute path: where migration files live
-	MigrationsRel string // relative to module root (e.g. "database/migrations")
-	ConfigDir     string // absolute path: where config files live
-	CommandsDir   string // absolute path: where app/commands/ lives
-	AuthDir       string // absolute path: where app/http/auth/ lives
+	HTTPDir       string         // absolute path: where pickle_gen.go (Context, Response, Router) goes
+	HTTPPkg       string         // package name for HTTPDir ("pickle")
+	RequestsDir   string         // absolute path: where request structs + bindings_gen.go live
+	ModelsDir     string         // absolute path: where generated models live
+	MigrationsDir string         // absolute path: where migration files live
+	MigrationsRel string         // relative to module root (e.g. "database/migrations")
+	ConfigDir     string         // absolute path: where config files live
+	CommandsDir   string         // absolute path: where app/commands/ lives
+	AuthDir       string         // absolute path: where app/http/auth/ lives
 	MigrationDirs []MigrationDir // monorepo: multiple migration directories (empty = use MigrationsDir)
 }
 
@@ -339,6 +339,9 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, []Sc
 			}
 			t.Columns = append(t.Columns, col)
 		}
+		for _, ii := range ti.Indexes {
+			t.Indexes = append(t.Indexes, &schema.Index{Table: ti.Name, Columns: ii.Columns, Unique: ii.Unique})
+		}
 		tables = append(tables, t)
 	}
 
@@ -384,7 +387,6 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, []Sc
 
 	return tables, views, rels, nil
 }
-
 
 // Generate runs all generators for a project and writes output.
 //
@@ -449,7 +451,6 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 
 		httpImport := project.ModulePath + "/app/http"
-
 
 		// Write driver_gen.go for built-in drivers that haven't been overridden
 		for _, d := range drivers {

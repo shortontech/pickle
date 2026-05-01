@@ -99,6 +99,27 @@ func TestExportZeroGraphQLCompilesWithFinding(t *testing.T) {
 	runExported(t, out, "go", "test", "./...")
 }
 
+func TestExportMonorepoCompiles(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "monorepo"))
+	out := filepath.Join(t.TempDir(), "exported")
+	_, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err != nil {
+		t.Fatalf("Export failed: %v", err)
+	}
+
+	assertFileContains(t, filepath.Join(out, "services", "api", "http", "controllers", "order_controller.go"), "monorepo/internal/httpx")
+	assertFileContains(t, filepath.Join(out, "services", "api", "http", "requests", "bindings.go"), "BindCreateOrderRequest")
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "apiRoutes")
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "workerRoutes")
+	assertNoGoFileContains(t, out, "QueryOrder")
+	runExported(t, out, "go", "test", "./...")
+}
+
 func TestExportRefusesNonEmptyOutputWithoutForce(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
 	out := t.TempDir()

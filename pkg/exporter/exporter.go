@@ -69,6 +69,16 @@ func Export(opts Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg, err := squeeze.LoadConfig(project.Dir)
+	if err != nil {
+		return nil, fmt.Errorf("loading pickle.yaml: %w", err)
+	}
+	if cfg.IsMonorepo() {
+		return nil, errors.New("pickle export does not support multi-app monorepos yet")
+	}
+	if cfg.IsMultiService() {
+		configureMultiServiceProject(project, cfg)
+	}
 	outDir, err := filepath.Abs(opts.OutDir)
 	if err != nil {
 		return nil, err
@@ -155,6 +165,27 @@ type exporter struct {
 	result       *Result
 	dryRun       bool
 	models       map[string]bool
+}
+
+func configureMultiServiceProject(project *generator.Project, cfg *squeeze.Config) {
+	project.Services = nil
+	var names []string
+	for name := range cfg.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		svc := cfg.Services[name]
+		absDir := filepath.Join(project.Dir, svc.Dir)
+		project.Services = append(project.Services, generator.ServiceLayout{
+			Name:        name,
+			Dir:         absDir,
+			HTTPDir:     filepath.Join(absDir, "http"),
+			HTTPPkg:     "pickle",
+			RequestsDir: filepath.Join(absDir, "http", "requests"),
+			CommandsDir: filepath.Join(absDir, "commands"),
+		})
+	}
 }
 
 type exportError struct {
@@ -286,6 +317,9 @@ func (e *exporter) rewriteGoFile(path string, data []byte) ([]byte, error) {
 		case p == e.sourceModule+"/app/http":
 			imp.Path.Value = strconv.Quote(e.modulePath + "/internal/httpx")
 			imp.Name = ast.NewIdent("httpx")
+		case e.isServiceHTTPImport(p):
+			imp.Path.Value = strconv.Quote(e.modulePath + "/internal/httpx")
+			imp.Name = ast.NewIdent("httpx")
 		case strings.HasPrefix(p, e.sourceModule+"/"):
 			imp.Path.Value = strconv.Quote(e.modulePath + strings.TrimPrefix(p, e.sourceModule))
 		}
@@ -319,6 +353,19 @@ func (e *exporter) rewriteGoFile(path string, data []byte) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+func (e *exporter) isServiceHTTPImport(path string) bool {
+	for _, svc := range e.project.Services {
+		rel, err := filepath.Rel(e.project.Dir, svc.HTTPDir)
+		if err != nil {
+			continue
+		}
+		if path == e.sourceModule+"/"+filepath.ToSlash(rel) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *exporter) rewriteQueryStatements(path string, fset *token.FileSet, f *ast.File) error {
@@ -886,9 +933,32 @@ func quoteIdent(name string) string {
 }
 
 func (e *exporter) writeBindings() error {
+	if len(e.project.Services) > 0 {
+		for _, svc := range e.project.Services {
+			requests, err := generator.ScanRequests(svc.RequestsDir)
+			if err != nil {
+				if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file") {
+					continue
+				}
+				return err
+			}
+			data, err := generateBindings(requests)
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(e.project.Dir, svc.RequestsDir)
+			if err != nil {
+				return err
+			}
+			if err := e.writeFile(filepath.Join(rel, "bindings.go"), data); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	requests, err := generator.ScanRequests(e.project.Layout.RequestsDir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file") {
 			return nil
 		}
 		return err
@@ -927,12 +997,72 @@ func (e *exporter) writeServerMain() error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	if len(e.project.Services) > 0 {
+		data, err := e.generateMultiServiceServerMain(scan != nil && scan.HasDatabaseConfig)
+		if err != nil {
+			return err
+		}
+		return e.writeFile(filepath.Join("cmd", "server", "main.go"), data)
+	}
 	source := serverMainSource
 	if scan != nil && scan.HasDatabaseConfig {
 		source = serverMainWithDatabaseSource
 		return e.writeFile(filepath.Join("cmd", "server", "main.go"), []byte(fmt.Sprintf(source, e.modulePath, e.modulePath, e.modulePath)))
 	}
 	return e.writeFile(filepath.Join("cmd", "server", "main.go"), []byte(fmt.Sprintf(source, e.modulePath, e.modulePath)))
+}
+
+func (e *exporter) generateMultiServiceServerMain(hasDatabaseConfig bool) ([]byte, error) {
+	var b strings.Builder
+	b.WriteString("package main\n\n")
+	b.WriteString("import (\n")
+	b.WriteString("\t\"log\"\n")
+	b.WriteString("\t\"net/http\"\n\n")
+	if hasDatabaseConfig {
+		b.WriteString(fmt.Sprintf("\t\"%s/app/models\"\n", e.modulePath))
+	}
+	b.WriteString(fmt.Sprintf("\t\"%s/config\"\n", e.modulePath))
+	for _, svc := range e.project.Services {
+		rel, err := filepath.Rel(e.project.Dir, filepath.Join(svc.Dir, "routes"))
+		if err != nil {
+			return nil, err
+		}
+		b.WriteString(fmt.Sprintf("\t%sRoutes \"%s/%s\"\n", safeImportAlias(svc.Name), e.modulePath, filepath.ToSlash(rel)))
+	}
+	b.WriteString(")\n\n")
+	b.WriteString("func main() {\n")
+	b.WriteString("\tconfig.Init()\n")
+	if hasDatabaseConfig {
+		b.WriteString("\tmodels.SetDB(config.Database.OpenGORM())\n")
+	}
+	b.WriteString("\tmux := http.NewServeMux()\n")
+	for i, svc := range e.project.Services {
+		prefix := "/" + strings.Trim(svc.Name, "/") + "/"
+		if i == 0 && svc.Name == "api" {
+			prefix = "/api/"
+		}
+		b.WriteString(fmt.Sprintf("\tmux.Handle(%q, %sRoutes.API)\n", prefix, safeImportAlias(svc.Name)))
+	}
+	b.WriteString("\taddr := \":\" + config.App.Port\n")
+	b.WriteString("\tlog.Printf(\"listening on %s\", addr)\n")
+	b.WriteString("\tif err := http.ListenAndServe(addr, mux); err != nil {\n")
+	b.WriteString("\t\tlog.Fatal(err)\n")
+	b.WriteString("\t}\n")
+	b.WriteString("}\n")
+	return format.Source([]byte(b.String()))
+}
+
+func safeImportAlias(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "service"
+	}
+	return b.String()
 }
 
 func (e *exporter) addGeneratedSubsystemFindings() {
@@ -1525,6 +1655,7 @@ type Context struct { request *http.Request; auth *AuthInfo; params map[string]s
 func NewContext(r *http.Request) *Context { return &Context{request: r, params: map[string]string{}} }
 func (c *Context) Request() *http.Request { return c.request }
 func (c *Context) Param(name string) string { return c.params[name] }
+func (c *Context) BearerToken() string { h := c.request.Header.Get("Authorization"); parts := strings.Fields(h); if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") { return parts[1] }; return "" }
 func (c *Context) Auth() *AuthInfo { if c.auth == nil { return &AuthInfo{} }; return c.auth }
 func (c *Context) SetAuth(info *AuthInfo) { c.auth = info }
 func (c *Context) JSON(status int, body any) Response { return Response{Status: status, StatusCode: status, Body: body} }

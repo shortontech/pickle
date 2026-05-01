@@ -835,7 +835,7 @@ func (e *exporter) writeAuthSupport() error {
 }
 
 func (e *exporter) writeServerMain() error {
-	return e.writeFile(filepath.Join("cmd", "server", "main.go"), []byte(serverMainSource))
+	return e.writeFile(filepath.Join("cmd", "server", "main.go"), []byte(fmt.Sprintf(serverMainSource, e.modulePath, e.modulePath)))
 }
 
 func (e *exporter) addGeneratedSubsystemFindings() {
@@ -1359,6 +1359,7 @@ const httpxSource = `package httpx
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 type Controller struct{}
@@ -1381,14 +1382,53 @@ func (r Response) Write(w http.ResponseWriter) { for k, v := range r.Headers { w
 
 type HandlerFunc func(*Context) Response
 type MiddlewareFunc func(*Context, func() Response) Response
-type Router struct{}
+type route struct { method string; path string; handler HandlerFunc; middleware []MiddlewareFunc }
+type Router struct{ prefix string; middleware []MiddlewareFunc; routes []route }
 func Routes(fn func(*Router)) *Router { r := &Router{}; fn(r); return r }
-func (r *Router) Group(path string, args ...any) {}
-func (r *Router) Get(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {}
-func (r *Router) Post(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {}
-func (r *Router) Put(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {}
-func (r *Router) Patch(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {}
-func (r *Router) Delete(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {}
+func (r *Router) Group(path string, args ...any) {
+	child := &Router{prefix: joinPath(r.prefix, path), middleware: append([]MiddlewareFunc{}, r.middleware...)}
+	for _, arg := range args {
+		switch v := arg.(type) {
+		case MiddlewareFunc:
+			child.middleware = append(child.middleware, v)
+		case func(*Router):
+			v(child)
+		}
+	}
+	r.routes = append(r.routes, child.routes...)
+}
+func (r *Router) Get(path string, handler HandlerFunc, middleware ...MiddlewareFunc) { r.add("GET", path, handler, middleware...) }
+func (r *Router) Post(path string, handler HandlerFunc, middleware ...MiddlewareFunc) { r.add("POST", path, handler, middleware...) }
+func (r *Router) Put(path string, handler HandlerFunc, middleware ...MiddlewareFunc) { r.add("PUT", path, handler, middleware...) }
+func (r *Router) Patch(path string, handler HandlerFunc, middleware ...MiddlewareFunc) { r.add("PATCH", path, handler, middleware...) }
+func (r *Router) Delete(path string, handler HandlerFunc, middleware ...MiddlewareFunc) { r.add("DELETE", path, handler, middleware...) }
+func (r *Router) add(method, path string, handler HandlerFunc, middleware ...MiddlewareFunc) { r.routes = append(r.routes, route{method: method, path: joinPath(r.prefix, path), handler: handler, middleware: append(append([]MiddlewareFunc{}, r.middleware...), middleware...)}) }
+func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	defer func() { if recovered := recover(); recovered != nil { http.Error(w, "internal server error", http.StatusInternalServerError) } }()
+	for _, rt := range r.routes {
+		params, ok := matchPath(rt.path, req.URL.Path)
+		if rt.method != req.Method || !ok { continue }
+		ctx := NewContext(req); ctx.params = params
+		i := len(rt.middleware) - 1
+		var next func() Response
+		next = func() Response {
+			if i < 0 { return rt.handler(ctx) }
+			mw := rt.middleware[i]; i--; return mw(ctx, next)
+		}
+		next().Write(w)
+		return
+	}
+	http.NotFound(w, req)
+}
+func joinPath(prefix, path string) string { if path == "/" { path = "" }; out := "/" + strings.Trim(strings.TrimRight(prefix, "/") + "/" + strings.Trim(path, "/"), "/"); if out == "/" { return "/" }; return out }
+func matchPath(pattern, actual string) (map[string]string, bool) {
+	pp := strings.Split(strings.Trim(pattern, "/"), "/")
+	aa := strings.Split(strings.Trim(actual, "/"), "/")
+	if len(pp) != len(aa) { return nil, false }
+	params := map[string]string{}
+	for i := range pp { if strings.HasPrefix(pp[i], ":") { params[strings.TrimPrefix(pp[i], ":")] = aa[i]; continue }; if pp[i] != aa[i] { return nil, false } }
+	return params, true
+}
 func RateLimit(rps, burst int) MiddlewareFunc { return func(ctx *Context, next func() Response) Response { return next() } }
 `
 
@@ -1455,9 +1495,20 @@ func (d *Driver) ValidateToken(token string) (Claims, error) {
 
 const serverMainSource = `package main
 
-import "fmt"
+import (
+	"log"
+	"net/http"
+
+	"%s/config"
+	"%s/routes"
+)
 
 func main() {
-	fmt.Println("exported app: wire database and HTTP server startup here")
+	config.Init()
+	addr := ":" + config.App.Port
+	log.Printf("listening on %%s", addr)
+	if err := http.ListenAndServe(addr, routes.API); err != nil {
+		log.Fatal(err)
+	}
 }
 `

@@ -833,7 +833,7 @@ func generateScopeBuilderWhereMethods(b *bytes.Buffer, table *schema.Table, scop
 		}
 		pascal := snakeToPascal(col.Name)
 		goType := columnGoType(col)
-		paramName := toLowerFirst(pascal)
+		paramName := safeParamName(toLowerFirst(pascal))
 		scope := tickle.ScopeForType(col.Type)
 
 		// Encrypted columns: only equality scopes

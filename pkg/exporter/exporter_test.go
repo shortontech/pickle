@@ -53,6 +53,29 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	runExported(t, out, "go", "test", "./...")
 }
 
+func TestExportLedgerCompiles(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "ledger"))
+	out := filepath.Join(t.TempDir(), "exported")
+	_, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err != nil {
+		t.Fatalf("Export failed: %v", err)
+	}
+
+	assertFileContains(t, filepath.Join(out, "app", "models", "transaction.go"), "decimal.Decimal")
+	assertFileContains(t, filepath.Join(out, "app", "models", "account.go"), "RowHash")
+	assertFileContains(t, filepath.Join(out, "app", "models", "account.go"), "[]byte")
+	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "account_controller.go"), "models.DB.Model(&models.Account{})")
+	assertPathMissing(t, filepath.Join(out, "integrity_test.go"))
+	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
+	assertNoGoFileContains(t, out, "QueryAccount")
+	runExported(t, out, "go", "test", "./...")
+}
+
 func TestExportRefusesNonEmptyOutputWithoutForce(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
 	out := t.TempDir()
@@ -145,6 +168,15 @@ func assertNoGoFileContains(t *testing.T, root, needle string) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func assertPathMissing(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err == nil {
+		t.Fatalf("expected %s to be absent", path)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat %s: %v", path, err)
 	}
 }
 

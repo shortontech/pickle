@@ -258,7 +258,7 @@ func shouldSkipFile(rel string) bool {
 	if base == "go.mod" || base == "go.sum" {
 		return true
 	}
-	if strings.HasSuffix(base, "_gen.go") || strings.HasSuffix(base, "_query.go") {
+	if strings.HasSuffix(base, "_gen.go") || strings.HasSuffix(base, "_query.go") || strings.HasSuffix(base, "_test.go") {
 		return true
 	}
 	if strings.HasPrefix(filepath.ToSlash(rel), "database/migrations/") && strings.HasSuffix(base, ".go") {
@@ -465,6 +465,10 @@ func buildQueryChain(model string, methods []struct {
 				return qc, true, fmt.Errorf("Offset requires one argument")
 			}
 			qc.Offset = m.args[0]
+		case m.name == "SelectAll":
+			if len(m.args) != 0 {
+				return qc, true, fmt.Errorf("SelectAll does not accept arguments")
+			}
 		case strings.HasPrefix(m.name, "Where"):
 			if len(m.args) != 1 {
 				return qc, true, fmt.Errorf("%s requires one argument", m.name)
@@ -479,7 +483,10 @@ func buildQueryChain(model string, methods []struct {
 				return qc, true, fmt.Errorf("%s does not accept arguments", m.name)
 			}
 			qc.Preloads = append(qc.Preloads, strings.TrimPrefix(m.name, "With"))
-		case m.name == "First" || m.name == "All":
+		case m.name == "First" || m.name == "All" || m.name == "Count" || strings.HasPrefix(m.name, "Sum") || strings.HasPrefix(m.name, "Avg"):
+			if len(m.args) != 0 {
+				return qc, true, fmt.Errorf("%s does not accept arguments", m.name)
+			}
 			qc.Terminal = m.name
 		case m.name == "Create" || m.name == "Update" || m.name == "Delete":
 			if len(m.args) != 1 {
@@ -501,24 +508,38 @@ func (e *exporter) gormExpr(q queryChain) (ast.Expr, error) {
 	if !e.models[q.Model] {
 		return nil, fmt.Errorf("unknown exported model %s", q.Model)
 	}
-	switch q.Terminal {
-	case "First":
+	switch {
+	case q.Terminal == "First":
 		return parseExpr(fmt.Sprintf("func() (*models.%s, error) { var record models.%s; err := %s.First(&record).Error; return &record, err }()", q.Model, q.Model, q.gormChain()))
-	case "All":
+	case q.Terminal == "All":
 		return parseExpr(fmt.Sprintf("func() ([]models.%s, error) { var records []models.%s; err := %s.Find(&records).Error; return records, err }()", q.Model, q.Model, q.gormChain()))
-	case "Create":
+	case q.Terminal == "Count":
+		return parseExpr(fmt.Sprintf("func() (int64, error) { var count int64; err := %s.Count(&count).Error; return count, err }()", q.gormChain()))
+	case strings.HasPrefix(q.Terminal, "Sum") || strings.HasPrefix(q.Terminal, "Avg"):
+		fn := "SUM"
+		field := strings.TrimPrefix(q.Terminal, "Sum")
+		if strings.HasPrefix(q.Terminal, "Avg") {
+			fn = "AVG"
+			field = strings.TrimPrefix(q.Terminal, "Avg")
+		}
+		if field == "" {
+			return nil, fmt.Errorf("unsupported aggregate query method %s", q.Terminal)
+		}
+		column := pascalToSnake(field)
+		return parseExpr(fmt.Sprintf("func() (*float64, error) { var value *float64; err := %s.Select(%q).Scan(&value).Error; return value, err }()", q.gormChain(), fn+"("+column+")"))
+	case q.Terminal == "Create":
 		arg, err := exprString(q.Arg)
 		if err != nil {
 			return nil, err
 		}
 		return parseExpr(fmt.Sprintf("models.DB.Create(%s).Error", arg))
-	case "Update":
+	case q.Terminal == "Update":
 		arg, err := exprString(q.Arg)
 		if err != nil {
 			return nil, err
 		}
 		return parseExpr(fmt.Sprintf("models.DB.Save(%s).Error", arg))
-	case "Delete":
+	case q.Terminal == "Delete":
 		arg, err := exprString(q.Arg)
 		if err != nil {
 			return nil, err
@@ -1174,15 +1195,21 @@ func gormGoType(col *schema.Column) (string, string) {
 		switch col.Type {
 		case schema.UUID:
 			return "uuid.UUID", "github.com/google/uuid"
-		case schema.String, schema.Text, schema.Decimal, schema.JSONB, schema.Binary:
+		case schema.String, schema.Text, schema.Time:
 			return "string", ""
+		case schema.Decimal:
+			return "decimal.Decimal", "github.com/shopspring/decimal"
+		case schema.JSONB:
+			return "json.RawMessage", "encoding/json"
+		case schema.Binary:
+			return "[]byte", ""
 		case schema.Integer:
 			return "int", ""
 		case schema.BigInteger:
 			return "int64", ""
 		case schema.Boolean:
 			return "bool", ""
-		case schema.Timestamp, schema.Date, schema.Time:
+		case schema.Timestamp, schema.Date:
 			return "time.Time", "time"
 		case schema.Float:
 			return "float32", ""
@@ -1488,7 +1515,7 @@ import (
 )
 
 type Controller struct{}
-type Response struct { Status int; Body any; Headers map[string]string }
+type Response struct { Status int; StatusCode int; Body any; Headers map[string]string }
 type AuthInfo struct { UserID string; Role string }
 type Context struct { request *http.Request; auth *AuthInfo; params map[string]string }
 
@@ -1497,13 +1524,14 @@ func (c *Context) Request() *http.Request { return c.request }
 func (c *Context) Param(name string) string { return c.params[name] }
 func (c *Context) Auth() *AuthInfo { if c.auth == nil { return &AuthInfo{} }; return c.auth }
 func (c *Context) SetAuth(info *AuthInfo) { c.auth = info }
-func (c *Context) JSON(status int, body any) Response { return Response{Status: status, Body: body} }
+func (c *Context) JSON(status int, body any) Response { return Response{Status: status, StatusCode: status, Body: body} }
 func (c *Context) Error(err error) Response { return c.JSON(500, map[string]string{"error": err.Error()}) }
+func (c *Context) BadRequest(msg string) Response { return c.JSON(400, map[string]string{"error": msg}) }
 func (c *Context) Unauthorized(msg string) Response { return c.JSON(401, map[string]string{"error": msg}) }
 func (c *Context) NotFound(msg string) Response { return c.JSON(404, map[string]string{"error": msg}) }
-func (c *Context) NoContent() Response { return Response{Status: 204} }
+func (c *Context) NoContent() Response { return Response{Status: 204, StatusCode: 204} }
 
-func (r Response) Write(w http.ResponseWriter) { for k, v := range r.Headers { w.Header().Set(k, v) }; if r.Status == 0 { r.Status = 200 }; w.WriteHeader(r.Status); if r.Body != nil { _ = json.NewEncoder(w).Encode(r.Body) } }
+func (r Response) Write(w http.ResponseWriter) { for k, v := range r.Headers { w.Header().Set(k, v) }; status := r.Status; if status == 0 { status = r.StatusCode }; if status == 0 { status = 200 }; w.WriteHeader(status); if r.Body != nil { _ = json.NewEncoder(w).Encode(r.Body) } }
 
 type HandlerFunc func(*Context) Response
 type MiddlewareFunc func(*Context, func() Response) Response

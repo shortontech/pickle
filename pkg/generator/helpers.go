@@ -31,3 +31,38 @@ func toLowerFirst(s string) string {
 	r, size := utf8.DecodeRuneInString(s)
 	return string(unicode.ToLower(r)) + s[size:]
 }
+
+func safeParamName(s string) string {
+	if goKeywords[s] {
+		return s + "Value"
+	}
+	return s
+}
+
+var goKeywords = map[string]bool{
+	"break":       true,
+	"default":     true,
+	"func":        true,
+	"interface":   true,
+	"select":      true,
+	"case":        true,
+	"defer":       true,
+	"go":          true,
+	"map":         true,
+	"struct":      true,
+	"chan":        true,
+	"else":        true,
+	"goto":        true,
+	"package":     true,
+	"switch":      true,
+	"const":       true,
+	"fallthrough": true,
+	"if":          true,
+	"range":       true,
+	"type":        true,
+	"continue":    true,
+	"for":         true,
+	"import":      true,
+	"return":      true,
+	"var":         true,
+}

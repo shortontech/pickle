@@ -865,6 +865,15 @@ func TestToLowerFirst(t *testing.T) {
 	}
 }
 
+func TestSafeParamName(t *testing.T) {
+	if got := safeParamName("type"); got != "typeValue" {
+		t.Errorf("safeParamName(type) = %q", got)
+	}
+	if got := safeParamName("name"); got != "name" {
+		t.Errorf("safeParamName(name) = %q", got)
+	}
+}
+
 // ─── auth_generator.go (WriteDriverMigrations) ───────────────────────────────
 
 func TestWriteDriverMigrationsJWT(t *testing.T) {

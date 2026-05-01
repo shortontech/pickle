@@ -49,6 +49,18 @@ Pickle also runs the generator and `go mod tidy`, so the project compiles immedi
 
 Repeat. The generated files update every time you save.
 
+## Exporting to plain Go
+
+Pickle is a build-time tool, not something your production binary depends on. If you want to leave the Pickle workflow, export the project:
+
+```bash
+pickle export --out ./dist/myapp
+cd ./dist/myapp
+go test ./...
+```
+
+The exported app contains standalone Go code: routes, controllers, config, request binding, SQL migrations, and GORM models. It has no Pickle imports and no runtime dependency on Pickle.
+
 ## Step by step: adding a resource
 
 ### 1. Migration

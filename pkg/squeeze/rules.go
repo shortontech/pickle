@@ -14,21 +14,22 @@ import (
 
 // AnalysisContext holds all parsed project data for rules to inspect.
 type AnalysisContext struct {
-	Routes       []AnalyzedRoute
-	Methods      map[string]*ControllerMethod
-	Requests     []generator.RequestDef
-	Tables       []*schema.Table
-	Config       SqueezeConfig
-	FuncRegistry FuncRegistry
-	HasGraphQL   bool // true if the project has a graphql/ directory
-	RBACRoles    *RBACRoleSet
-	RBACDefaults []RBACDefault
-	Actions        []ActionInfo
-	GraphQLExposed map[string]bool // table/model names exposed via GraphQL policies (nil = no policies)
-	ProjectDir     string
-	RoleBirths     map[string]string // role -> birth policy timestamp (for pre_birth_annotation)
-	ScopeAllowedMethods map[string]bool // method names allowed on ScopeBuilder (for scope_side_effect)
-	TablesWithVisibility map[string]bool // table names that have visibility annotations (for missing_visibility_scope)
+	Routes               []AnalyzedRoute
+	Methods              map[string]*ControllerMethod
+	Requests             []generator.RequestDef
+	Tables               []*schema.Table
+	Views                []*schema.View
+	Config               SqueezeConfig
+	FuncRegistry         FuncRegistry
+	HasGraphQL           bool // true if the project has a graphql/ directory
+	RBACRoles            *RBACRoleSet
+	RBACDefaults         []RBACDefault
+	Actions              []ActionInfo
+	GraphQLExposed       map[string]bool // table/model names exposed via GraphQL policies (nil = no policies)
+	ProjectDir           string
+	RoleBirths           map[string]string // role -> birth policy timestamp (for pre_birth_annotation)
+	ScopeAllowedMethods  map[string]bool   // method names allowed on ScopeBuilder (for scope_side_effect)
+	TablesWithVisibility map[string]bool   // table names that have visibility annotations (for missing_visibility_scope)
 }
 
 // Rule is a function that inspects the analysis context and returns findings.
@@ -821,7 +822,6 @@ func immutableTableNames(ctx *AnalysisContext) map[string]bool {
 	}
 	return names
 }
-
 
 // findRawSQLStrings walks an AST block and returns all string literal values
 // along with their source line numbers.

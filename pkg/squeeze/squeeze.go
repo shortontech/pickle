@@ -55,7 +55,7 @@ func Analyze(projectDir string) (*AnalysisContext, error) {
 	}
 
 	// 6. Get schema from migrations
-	tables, _, _, err := generator.RunSchemaInspector(project)
+	tables, views, _, err := generator.RunSchemaInspector(project)
 	if err != nil {
 		// Schema inspection is optional — warn and continue
 		fmt.Printf("  warning: schema inspection failed: %v\n", err)
@@ -92,6 +92,7 @@ func Analyze(projectDir string) (*AnalysisContext, error) {
 		Methods:        methods,
 		Requests:       requests,
 		Tables:         tables,
+		Views:          views,
 		Config:         cfg.Squeeze,
 		FuncRegistry:   funcRegistry,
 		HasGraphQL:     hasGraphQL,

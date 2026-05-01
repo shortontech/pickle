@@ -103,7 +103,11 @@ func Export(opts Options) (*Result, error) {
 		return nil, fmt.Errorf("analyze project: %w", err)
 	}
 	tables := analysis.Tables
+	views := analysis.Views
 	ex.models = modelSet(tables)
+	for _, view := range views {
+		ex.models[tableToStruct(view.Name)] = true
+	}
 
 	if err := ex.writeGoMod(); err != nil {
 		return nil, err
@@ -114,10 +118,10 @@ func Export(opts Options) (*Result, error) {
 	if err := ex.writeHTTPX(); err != nil {
 		return nil, err
 	}
-	if err := ex.writeModels(tables); err != nil {
+	if err := ex.writeModels(tables, views); err != nil {
 		return nil, err
 	}
-	if err := ex.writeSQLMigrations(tables); err != nil {
+	if err := ex.writeSQLMigrations(tables, views); err != nil {
 		return nil, err
 	}
 	if err := ex.writeBindings(); err != nil {
@@ -175,7 +179,7 @@ func (e *exporter) prepareOutDir(force bool) error {
 }
 
 func (e *exporter) writeGoMod() error {
-	content := fmt.Sprintf("module %s\n\ngo 1.24.0\n\nrequire (\n\tgithub.com/go-playground/validator/v10 v10.30.1\n\tgithub.com/google/uuid v1.6.0\n\tgorm.io/gorm v1.31.1\n)\n", e.modulePath)
+	content := fmt.Sprintf("module %s\n\ngo 1.24.0\n\nrequire (\n\tgithub.com/go-playground/validator/v10 v10.30.1\n\tgithub.com/google/uuid v1.6.0\n\tgorm.io/driver/mysql v1.6.0\n\tgorm.io/driver/postgres v1.6.0\n\tgorm.io/driver/sqlite v1.6.0\n\tgorm.io/gorm v1.31.1\n)\n", e.modulePath)
 	return e.writeFile("go.mod", []byte(content))
 }
 
@@ -612,7 +616,7 @@ func (e *exporter) writeHTTPX() error {
 	return e.writeFile("internal/httpx/httpx.go", []byte(httpxSource))
 }
 
-func (e *exporter) writeModels(tables []*schema.Table) error {
+func (e *exporter) writeModels(tables []*schema.Table, views []*schema.View) error {
 	if err := e.writeFile("app/models/db.go", []byte("package models\n\nimport \"gorm.io/gorm\"\n\nvar DB *gorm.DB\n\nfunc SetDB(db *gorm.DB) { DB = db }\n")); err != nil {
 		return err
 	}
@@ -625,11 +629,20 @@ func (e *exporter) writeModels(tables []*schema.Table) error {
 			return err
 		}
 	}
+	for _, view := range views {
+		data, err := generateViewModelFile(view)
+		if err != nil {
+			return err
+		}
+		if err := e.writeFile(filepath.Join("app", "models", modelFileName(view.Name)+".go"), data); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-func (e *exporter) writeSQLMigrations(tables []*schema.Table) error {
-	migrations, err := e.generateSQLMigrations(tables)
+func (e *exporter) writeSQLMigrations(tables []*schema.Table, views []*schema.View) error {
+	migrations, err := e.generateSQLMigrations(tables, views)
 	if err != nil {
 		return err
 	}
@@ -650,10 +663,14 @@ type sqlMigration struct {
 	Down string
 }
 
-func (e *exporter) generateSQLMigrations(tables []*schema.Table) ([]sqlMigration, error) {
+func (e *exporter) generateSQLMigrations(tables []*schema.Table, views []*schema.View) ([]sqlMigration, error) {
 	byName := map[string]*schema.Table{}
 	for _, table := range tables {
 		byName[table.Name] = table
+	}
+	viewsByName := map[string]*schema.View{}
+	for _, view := range views {
+		viewsByName[view.Name] = view
 	}
 	entries, err := os.ReadDir(e.project.Layout.MigrationsDir)
 	if err != nil {
@@ -676,7 +693,12 @@ func (e *exporter) generateSQLMigrations(tables []*schema.Table) ([]sqlMigration
 			}
 			out = append(out, sqlMigration{Name: exportName, Up: createTableSQL(table) + ";\n", Down: dropTableSQL(table.Name) + ";\n"})
 		case strings.HasPrefix(operation, "create_") && strings.HasSuffix(operation, "_view"):
-			out = append(out, sqlMigration{Name: exportName, Up: "-- TODO(export): lower database view definition from Pickle migration.\n", Down: "-- TODO(export): drop exported database view.\n"})
+			viewName := strings.TrimSuffix(strings.TrimPrefix(operation, "create_"), "_view")
+			view, ok := viewsByName[viewName]
+			if !ok {
+				return nil, fmt.Errorf("migration %s references unknown view %s", entry.Name(), viewName)
+			}
+			out = append(out, sqlMigration{Name: exportName, Up: createViewSQL(view) + ";\n", Down: dropViewSQL(view.Name) + ";\n"})
 		default:
 			return nil, fmt.Errorf("unsupported migration export for %s", entry.Name())
 		}
@@ -717,6 +739,51 @@ func createTableSQL(table *schema.Table) string {
 
 func dropTableSQL(name string) string {
 	return "DROP TABLE IF EXISTS " + quoteIdent(name) + " CASCADE"
+}
+
+func createViewSQL(view *schema.View) string {
+	var selectCols []string
+	for _, col := range view.Columns {
+		if col.RawExpr != "" {
+			selectCols = append(selectCols, "\t"+col.RawExpr+" AS "+quoteIdent(col.OutputName()))
+			continue
+		}
+		expr := quoteIdent(col.SourceAlias) + "." + quoteIdent(col.SourceColumn)
+		if col.OutputAlias != "" && col.OutputAlias != col.SourceColumn {
+			expr += " AS " + quoteIdent(col.OutputAlias)
+		}
+		selectCols = append(selectCols, "\t"+expr)
+	}
+
+	var fromParts []string
+	for i, src := range view.Sources {
+		if i == 0 && src.JoinType == "" {
+			fromParts = append(fromParts, quoteIdent(src.Table)+" AS "+quoteIdent(src.Alias))
+			continue
+		}
+		joinType := src.JoinType
+		if joinType == "" {
+			joinType = "JOIN"
+		}
+		fromParts = append(fromParts, joinType+" "+quoteIdent(src.Table)+" AS "+quoteIdent(src.Alias)+" ON "+src.JoinCondition)
+	}
+
+	var b strings.Builder
+	b.WriteString("CREATE VIEW ")
+	b.WriteString(quoteIdent(view.Name))
+	b.WriteString(" AS\nSELECT\n")
+	b.WriteString(strings.Join(selectCols, ",\n"))
+	b.WriteString("\nFROM ")
+	b.WriteString(strings.Join(fromParts, "\n"))
+	if len(view.GroupByCols) > 0 {
+		b.WriteString("\nGROUP BY ")
+		b.WriteString(strings.Join(view.GroupByCols, ", "))
+	}
+	return b.String()
+}
+
+func dropViewSQL(name string) string {
+	return "DROP VIEW IF EXISTS " + quoteIdent(name)
 }
 
 func columnSQL(col *schema.Column) string {
@@ -835,7 +902,16 @@ func (e *exporter) writeAuthSupport() error {
 }
 
 func (e *exporter) writeServerMain() error {
-	return e.writeFile(filepath.Join("cmd", "server", "main.go"), []byte(fmt.Sprintf(serverMainSource, e.modulePath, e.modulePath)))
+	scan, err := generator.ScanConfigs(e.project.Layout.ConfigDir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	source := serverMainSource
+	if scan != nil && scan.HasDatabaseConfig {
+		source = serverMainWithDatabaseSource
+		return e.writeFile(filepath.Join("cmd", "server", "main.go"), []byte(fmt.Sprintf(source, e.modulePath, e.modulePath, e.modulePath)))
+	}
+	return e.writeFile(filepath.Join("cmd", "server", "main.go"), []byte(fmt.Sprintf(source, e.modulePath, e.modulePath)))
 }
 
 func (e *exporter) addGeneratedSubsystemFindings() {
@@ -950,6 +1026,30 @@ func generateModelFile(table *schema.Table) ([]byte, error) {
 			imports[imp] = true
 		}
 		mi.Fields = append(mi.Fields, modelField{Name: snakeToPascal(col.Name), Type: goType, JSON: jsonTag(col), GORM: gormTag(col)})
+	}
+	mi.PublicFields = publicFields(mi.Fields)
+	var sorted []string
+	for imp := range imports {
+		sorted = append(sorted, imp)
+	}
+	sort.Strings(sorted)
+	var buf bytes.Buffer
+	if err := singleModelTemplate.Execute(&buf, modelTemplateData{Imports: sorted, Models: []modelInfo{mi}}); err != nil {
+		return nil, err
+	}
+	return format.Source(buf.Bytes())
+}
+
+func generateViewModelFile(view *schema.View) ([]byte, error) {
+	imports := map[string]bool{}
+	mi := modelInfo{Name: tableToStruct(view.Name), Table: view.Name}
+	for _, col := range view.Columns {
+		goType, imp := gormGoType(&col.Column)
+		if imp != "" {
+			imports[imp] = true
+		}
+		name := col.OutputName()
+		mi.Fields = append(mi.Fields, modelField{Name: snakeToPascal(name), Type: goType, JSON: jsonTag(&col.Column), GORM: "column:" + name + ";->"})
 	}
 	mi.PublicFields = publicFields(mi.Fields)
 	var sorted []string
@@ -1170,6 +1270,11 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 var envOnce sync.Once
@@ -1246,6 +1351,24 @@ func OpenDB(conn ConnectionConfig) *sql.DB {
 	return db
 }
 
+func OpenGORM(conn ConnectionConfig) *gorm.DB {
+	sqlDB := OpenDB(conn)
+	var dialector gorm.Dialector
+	switch conn.Driver {
+	case "pgsql", "postgres":
+		dialector = postgres.New(postgres.Config{Conn: sqlDB})
+	case "mysql":
+		dialector = mysql.New(mysql.Config{Conn: sqlDB})
+	case "sqlite":
+		dialector = sqlite.Dialector{Conn: sqlDB}
+	default:
+		panic("unsupported database driver: " + conn.Driver)
+	}
+	db, err := gorm.Open(dialector, &gorm.Config{})
+	if err != nil { log.Fatalf("config: failed to initialize gorm: %v", err) }
+	return db
+}
+
 {{ range .Configs }}var {{ .VarName }} {{ .ReturnType }}
 {{ end }}
 
@@ -1264,6 +1387,8 @@ func Init() {
 }
 
 func (d DatabaseConfig) Open(name ...string) *sql.DB { return OpenDB(d.Connection(name...)) }
+
+func (d DatabaseConfig) OpenGORM(name ...string) *gorm.DB { return OpenGORM(d.Connection(name...)) }
 {{ end }}
 `))
 
@@ -1505,6 +1630,28 @@ import (
 
 func main() {
 	config.Init()
+	addr := ":" + config.App.Port
+	log.Printf("listening on %%s", addr)
+	if err := http.ListenAndServe(addr, routes.API); err != nil {
+		log.Fatal(err)
+	}
+}
+`
+
+const serverMainWithDatabaseSource = `package main
+
+import (
+	"log"
+	"net/http"
+
+	"%s/app/models"
+	"%s/config"
+	"%s/routes"
+)
+
+func main() {
+	config.Init()
+	models.SetDB(config.Database.OpenGORM())
 	addr := ":" + config.App.Port
 	log.Printf("listening on %%s", addr)
 	if err := http.ListenAndServe(addr, routes.API); err != nil {

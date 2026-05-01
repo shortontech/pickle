@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/shortontech/pickle/pkg/generator"
 )
 
 func TestExportBasicCRUDNoPickleImports(t *testing.T) {
@@ -25,12 +27,16 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	}
 	assertFileContains(t, filepath.Join(out, "go.mod"), "gorm.io/gorm")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user.go"), "type User struct")
+	assertFileContains(t, filepath.Join(out, "app", "models", "user_post_stat.go"), "type UserPostStat struct")
 	assertFileContains(t, filepath.Join(out, "app", "models", "db.go"), "var DB *gorm.DB")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.up.sql"), "CREATE TABLE")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.down.sql"), "DROP TABLE")
+	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260228100000_create_user_post_stats_view.up.sql"), "CREATE VIEW")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func Env(key, fallback string) string")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "type ConnectionConfig struct")
+	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func OpenGORM(conn ConnectionConfig) *gorm.DB")
 	assertFileContains(t, filepath.Join(out, "config", "app.go"), "func app() AppConfig")
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "models.SetDB(config.Database.OpenGORM())")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "models.DB.Model(&models.User{})")
 	assertNoGoFileContains(t, out, "QueryUser")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "basic-crud/internal/httpx")
@@ -57,6 +63,18 @@ func TestExportRefusesNonEmptyOutputWithoutForce(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "not empty") {
 		t.Fatalf("expected non-empty output error, got %v", err)
+	}
+}
+
+func TestExportFailsUnknownViewMigrations(t *testing.T) {
+	migrationsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(migrationsDir, "2026_02_21_100000_create_active_users_view.go"), []byte("package migrations\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ex := &exporter{project: &generator.Project{Layout: generator.Layout{MigrationsDir: migrationsDir}}}
+	_, err := ex.generateSQLMigrations(nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "unknown view active_users") {
+		t.Fatalf("expected unsupported view migration error, got %v", err)
 	}
 }
 

@@ -63,6 +63,32 @@ The Pickle CLI includes scaffolding commands (run from your project root):
 | `pickle make:middleware` | Scaffold a new middleware |
 | `pickle make:job` | Scaffold a new cron job (creates a job struct in `app/jobs/`) |
 
+## Export
+
+`pickle export` converts a Pickle project into a standalone Go application. Use it when you want to leave the Pickle workflow and continue with plain Go.
+
+```bash
+pickle export --out ./dist/myapp
+cd ./dist/myapp
+go test ./...
+```
+
+The exported project includes:
+
+- GORM models generated from migrations and views
+- SQL migration files as `.up.sql` and `.down.sql` pairs
+- copied controllers, routes, requests, middleware, and config
+- standalone HTTP, auth, request binding, and server support code
+- `EXPORT_REPORT.md` describing unsupported generated subsystems
+
+Generated Pickle imports are removed. The exported app has no runtime dependency on Pickle.
+
+Use `--force` to export into a non-empty output directory:
+
+```bash
+pickle export --out ./dist/myapp --force
+```
+
 ## Encryption key management
 
 These commands manage encryption keys for columns marked `.Encrypted()` or `.Sealed()`. They are planned and may not be fully implemented yet.

@@ -14,6 +14,16 @@ You write routes.go.       Pickle wires it all together.
 
 The generated code is readable, debuggable, and `grep`-friendly. The goal is not magic; it is explicit code generated from explicit constraints.
 
+### No Lock-In
+
+Pickle gives you leverage while you are building, but it does not own your application.
+
+`pickle export` converts a Pickle project into a standalone Go app with idiomatic GORM models, SQL migrations, config, routes, and controllers. The output has no Pickle imports and no generated framework dependency.
+
+Use Pickle for velocity. Export when you want plain Go.
+
+Frameworks usually ask for trust. Pickle earns it by letting you leave.
+
 ### Why Pickle?
 
 AI agents are most useful when the codebase gives them stable structure, typed constraints, and fast feedback. Pickle is designed around that idea: the source of truth is small, conventional, and queryable; generated code is ordinary Go; and framework-aware static analysis catches common backend mistakes before deployment.

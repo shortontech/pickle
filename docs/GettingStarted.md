@@ -4,7 +4,7 @@ Everything you need to go from zero to a running Pickle app.
 
 ## What Pickle does
 
-You write controllers, migrations, request classes, and middleware in a Laravel-like syntax. Pickle watches your project and generates all the Go boilerplate — models, query builders, request bindings, config glue, and the app entrypoint. The output is plain Go. No runtime dependency, no reflection magic, just a static binary.
+Pickle is a Go code generation framework for secure, agent-ready backend development. You write controllers, migrations, request classes, and middleware in a Laravel-like syntax. Pickle watches your project and generates the repetitive Go code: models, query builders, request bindings, config glue, and the app entrypoint. The output is plain Go with no runtime dependency on Pickle.
 
 ## Prerequisites
 
@@ -216,15 +216,15 @@ DB_USERNAME=postgres
 DB_PASSWORD=secret
 ```
 
-## Squeeze your pickle
+## Static Analysis with Squeeze
 
-Run `pickle squeeze` to check your project for security vulnerabilities. Squeeze understands Pickle's framework semantics — routes, middleware stacks, migrations, request validation — and catches issues that generic Go linters can't see:
+Run `pickle squeeze` to check framework-level security invariants. Squeeze understands Pickle's project structure - routes, middleware stacks, migrations, request validation, and generated query builders - and flags issues that generic Go linters cannot see:
 
 ```bash
 pickle squeeze
 ```
 
-This catches IDOR vulnerabilities, missing rate limiting on auth endpoints, unbounded public queries, sensitive field leakage, unsafe UUID parsing, and more. See the **Squeeze** documentation for the full rule list and how to fix each finding.
+This flags IDOR patterns, missing rate limiting on auth endpoints, unbounded public queries, sensitive field leakage, unsafe UUID parsing, and more. See the **Squeeze** documentation for the full rule list and how to fix each finding.
 
 Use `--hard` in CI to treat warnings as errors:
 
@@ -235,11 +235,11 @@ pickle squeeze --hard
 Add it to your CI pipeline:
 
 ```yaml
-- name: Squeeze the pickle
+- name: Run Pickle static analysis
   run: pickle squeeze --hard
 ```
 
-A project that doesn't squeeze doesn't know if it's secure.
+Use Squeeze alongside `go test`, `go vet`, and your normal security tooling. It is a framework-aware check, not a replacement for review or testing.
 
 ## Installation
 

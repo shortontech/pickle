@@ -1,6 +1,6 @@
 # GraphQL
 
-Pickle generates a complete GraphQL API from your migrations. No controllers, no request structs, no routes file. Write a migration, run `pickle generate`, get queries, mutations, pagination, auth, dataloaders, and input validation.
+Pickle generates a GraphQL API from your migrations. No controllers, no request structs, no routes file. Write a migration, run `pickle generate`, get queries, mutations, pagination, auth, dataloaders, and input validation generated from the same schema source of truth as the rest of the app.
 
 ## What Gets Generated
 
@@ -350,7 +350,7 @@ m.CreateTable("users", func(t *Table) {
 })
 ```
 
-Produces a complete GraphQL API with:
+Produces generated GraphQL support with:
 
 - `users` / `user(id)` queries with Relay pagination
 - `posts` / `post(id)` queries with filtering and sorting

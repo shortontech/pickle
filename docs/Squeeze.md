@@ -1,6 +1,6 @@
 # Squeeze
 
-Static security analysis for Pickle projects. Squeeze understands your framework — routes, middleware, migrations, request classes — and catches vulnerabilities that generic Go linters can't see.
+Static security analysis for Pickle projects. Squeeze understands routes, middleware, migrations, request classes, generated query builders, RBAC policies, and actions. It complements generic Go linters by checking framework-level invariants.
 
 ## Running squeeze
 
@@ -70,7 +70,7 @@ Add RBAC and action/scope rules to the config as needed:
 
 **Severity:** error
 
-**What it catches:** PUT, PATCH, and DELETE routes behind auth that query a model without scoping by the authenticated user. This is an IDOR (Insecure Direct Object Reference) vulnerability — any logged-in user can modify or delete another user's data.
+**What it catches:** PUT, PATCH, and DELETE routes behind auth that query a model without scoping by the authenticated user. This pattern can create an IDOR (Insecure Direct Object Reference) vulnerability where a logged-in user can modify or delete another user's data.
 
 **How to fix:** Add `WhereOwnedBy()` to your query chain, passing the authenticated user's ID:
 

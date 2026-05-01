@@ -82,7 +82,7 @@ pickle/
 │   ├── scaffold/                  ← CLI scaffolding
 │   │   ├── scaffold.go            ← Core scaffolds (controller, migration, etc.)
 │   │   └── rbac_scaffold.go       ← Policy, action, scope, graphql-policy scaffolds
-│   ├── mcp/                       ← MCP server for AI assistants
+│   ├── mcp/                       ← MCP server for AI agents
 │   │   ├── server.go
 │   │   └── rbac_tools.go          ← roles:list, roles:show, graphql:list
 │   └── watcher/

@@ -1,8 +1,8 @@
-# Pickle 🥒
+# Pickle
 
-**The world's most secure web framework.**
+**Building secure foundations for agentic software development.**
 
-Pickle is a code generation framework for Go that makes secure applications trivial to build — for humans and AI alike. You write controllers, migrations, request classes, and middleware. Pickle generates plain, idiomatic Go. The output compiles to a single static binary with no runtime dependency on Pickle.
+Pickle is a Go code generation framework for backend applications that need to be understandable by people, auditable by tools, and safe for AI agents to modify. You write controllers, migrations, request classes, and middleware. Pickle generates plain, idiomatic Go. The output compiles to a single static binary with no runtime dependency on Pickle.
 
 ```
 You write controllers.     Pickle generates models.
@@ -12,23 +12,23 @@ You write request classes.  Pickle generates validation + deserialization.
 You write routes.go.       Pickle wires it all together.
 ```
 
-The generated code is readable, debuggable, and `grep`-friendly. It's not magic. It's just code you didn't have to type.
+The generated code is readable, debuggable, and `grep`-friendly. The goal is not magic; it is explicit code generated from explicit constraints.
 
-### Why "Most Secure"?
+### Why Pickle?
 
-Every framework claims to care about security. Django has CSRF tokens. Rails has strong parameters. Spring has Security. These are best practices bolted onto runtime frameworks — they help, but they rely on developers remembering to use them correctly every time.
+AI agents are most useful when the codebase gives them stable structure, typed constraints, and fast feedback. Pickle is designed around that idea: the source of truth is small, conventional, and queryable; generated code is ordinary Go; and framework-aware static analysis catches common backend mistakes before deployment.
 
-Pickle is different. It makes entire vulnerability classes structurally impossible, architecturally visible, or caught at build time before code ships.
+Pickle reduces the number of security-critical decisions developers and agents have to make by hand. Some unsafe patterns are avoided by generated APIs, some are made visible by convention, and others are flagged by Squeeze before code ships.
 
-**Impossible by construction:**
+**Constrained by generated APIs:**
 
-- **SQL injection** — The generated query builder uses parameterized queries exclusively. There is no API for string interpolation. The unsafe path doesn't exist.
+- **SQL injection** — The generated query builder uses parameterized queries exclusively. Application code uses typed query methods instead of interpolating SQL strings.
 - **Mass assignment** — Request structs define exactly which fields are accepted. If `CreateUserRequest` doesn't have a `Role` field, POSTing `{"role": "admin"}` does nothing. The model never sees unvalidated input.
-- **Validation bypass** — Controllers receive pre-validated, typed request structs. The generated binding layer runs validation before your code executes. There is no code path around it.
+- **Validation bypass** — Controllers use generated binding functions that deserialize and validate before returning typed request structs.
 - **Encryption at rest** — Columns marked `.Encrypted()` are transparently encrypted before storage and decrypted on read. Columns marked `.Sealed()` are write-only — they can be verified but never retrieved in plaintext. The query builder enforces both: no range queries on encrypted columns, no WHERE clauses on sealed columns.
 - **Data tampering** — Immutable and append-only tables are cryptographically hash-chained. Every row's `row_hash` includes the previous row's hash — tampering with any historical record breaks the chain. Periodic Merkle tree checkpoints give O(log n) inclusion proofs you can hand to an auditor.
 
-**Impossible by construction (RBAC and actions):**
+**Constrained RBAC and actions:**
 
 - **Ungated actions** — every action requires a gate function. The generator refuses to produce output if a gate is missing. The action method is renamed to unexported in the compiled output, so it can only be called through the gated model method.
 - **Role visibility leaks** — column annotations (`ComplianceSees()`, `SupportSees()`) generate `SelectFor(role)` query scopes. Unknown roles see only `Public()` columns. `Manages()` roles see everything. Squeeze flags controllers that query role-annotated models without calling `SelectFor*`.
@@ -36,18 +36,18 @@ Pickle is different. It makes entire vulnerability classes structurally impossib
 
 **Visible by convention:**
 
-- Every endpoint, its middleware stack, and its grouping are in one file: `routes/web.go`. A missing `Auth`, `LoadRoles`, or `RequireRole` is immediately obvious — to you and to any AI reviewing your code. One file, entire API surface, 30-second security review.
+- Every endpoint, its middleware stack, and its grouping are in one file: `routes/web.go`. A missing `Auth`, `LoadRoles`, or `RequireRole` is visible to reviewers, static tools, and AI agents working in the project.
 
 **Caught at build time by Squeeze:**
 
-- **IDOR (Insecure Direct Object Reference)** — The security industry has accepted IDOR as a manual-testing problem. No tool, framework, or scanner claims to detect all IDORs. Squeeze does. It traces route → middleware → controller → query and verifies the chain is scoped by owner. This is possible because Pickle owns all three layers: migrations define ownership columns, the router defines middleware, controllers use generated query scopes. No other framework has this because no other framework was designed to make its own security properties statically analyzable.
-- **Data leakage, unbounded queries, missing rate limits, enum validation, UUID panics, missing required fields** — all caught before deployment. See [Squeeze](#squeeze-make-sure-nothings-oozing) below.
+- **IDOR (Insecure Direct Object Reference)** — Squeeze traces route -> middleware -> controller -> query and checks whether protected resource access is scoped by owner in conventional Pickle code. This works because migrations define ownership columns, the router defines middleware, and controllers use generated query scopes.
+- **Data leakage, unbounded queries, missing rate limits, enum validation, UUID panics, missing required fields** — flagged before deployment. See [Squeeze](#squeeze-static-analysis-for-pickle) below.
 
 **Standard security tooling works out of the box.** Generated code is plain Go — `go vet`, `gosec`, `staticcheck`, Snyk, and Semgrep work with zero configuration. No framework abstractions to unwrap. Security scanners see exactly what runs in production.
 
-### Squeeze: Make Sure Nothing's Oozing
+### Squeeze: Static Analysis for Pickle
 
-`pickle squeeze` is static security analysis that understands your framework — routes, middleware, migrations, request classes — and catches vulnerabilities that generic linters can't see.
+`pickle squeeze` is static security analysis that understands Pickle projects: routes, middleware, migrations, request classes, generated query builders, RBAC policies, and actions. It complements generic Go linters by checking framework-level invariants.
 
 ```bash
 pickle squeeze              # Run full validation
@@ -55,19 +55,19 @@ pickle squeeze --hard       # Strict mode: warnings become failures
 ```
 
 ```
-🥒 Squeezing your pickle...
-🥒 Your pickle is crunchy.
+Analyzing Pickle project...
+No findings.
 ```
 
 If something's wrong, Squeeze tells you exactly where:
 
 ```
-🥒 Squeezing your pickle...
+Analyzing Pickle project...
 
   app/http/controllers/post_controller.go
     line 28 [ownership_scoping] PUT /api/posts/:id — query not scoped by owner (IDOR)
 
-🥒 Your pickle is oozing. 1 error(s), 0 warning(s)
+Found 1 error(s), 0 warning(s)
 ```
 
 #### Rules
@@ -103,21 +103,21 @@ If something's wrong, Squeeze tells you exactly where:
 | `scope_builder_leak` | error | `ScopeBuilder` referenced outside `database/scopes/` |
 | `query_builder_in_scope` | error | `XxxQuery` referenced inside `database/scopes/` |
 
-No pickle ships without being squeezed first.
+Run Squeeze in CI so generated constraints and handwritten code are checked together.
 
 ```yaml
 # .github/workflows/squeeze.yml
-- name: Squeeze the pickle
+- name: Run Pickle static analysis
   run: pickle squeeze --hard
 ```
 
-### Built for AI
+### Built for Agentic Development
 
-Pickle isn't just secure — it's the most AI-friendly backend framework you can use. Every convention serves two audiences: the developer who needs to ship, and the AI model that needs to help.
+Pickle is designed for collaboration between developers, AI agents, and static tools. Every convention serves two audiences: the developer who needs to ship and the model that needs to make correct changes with limited context.
 
-A functioning Pickle app is ~2,000 tokens of source. Controllers are pure business logic — no boilerplate to read past. Request structs are self-documenting API contracts. Migrations are the single source of truth for schema. An AI model doesn't need to parse framework wiring to understand what your endpoint does.
+A functioning Pickle app is ~2,000 tokens of source. Controllers are pure business logic — no boilerplate to read past. Request structs are self-documenting API contracts. Migrations are the single source of truth for schema. An agent does not need to parse framework wiring to understand what an endpoint does.
 
-Pickle ships an MCP server that gives AI models queryable access to your project's structure — without dumping source files into context.
+Pickle ships an MCP server that gives AI agents queryable access to your project's structure without dumping source files into context.
 
 ```
 pickle schema:show transfers    → exact table structure with visibility annotations
@@ -128,13 +128,13 @@ pickle graphql:list             → exposed GraphQL models with operations
 pickle make:controller          → scaffold via tooling, not by writing boilerplate
 ```
 
-The model doesn't read your code. It queries your constraints. It discovers what fields exist, what's validated, what middleware protects each route, what relationships are defined — all through structured tool calls. Even lightweight models produce code that respects your schema, validation rules, and security boundaries.
+The model can query constraints instead of inferring them from scattered source files. It can discover what fields exist, what is validated, what middleware protects each route, and what relationships are defined through structured tool calls.
 
-This is why Pickle can do in 5 minutes what takes other frameworks hours. It's not faster typing. It's less context required to make correct decisions.
+The practical goal is simple: reduce the context required for humans and agents to make correct, security-aware changes.
 
 ---
 
-## Getting Started: Unboxing Your First Pickle
+## Getting Started
 
 See the [Getting Started guide](docs/GettingStarted.md) to create your first Pickle project.
 
@@ -226,7 +226,7 @@ ok := models.VerifyProof(proof) // pure function, no DB needed
 
 Every row is chained to its predecessor via SHA-256. Merkle tree checkpoints roll the chain into a binary tree for efficient verification. Tampering with any historical row breaks the chain — detectable by `VerifyChain()` and provable via `VerifyProof()`.
 
-Three layers of enforcement: **schema DSL** (no unsafe methods generated), **Go compiler** (can't call what doesn't exist), **database permissions** (SELECT + INSERT only). Any one is sufficient. All three together means you can prove it to an auditor.
+Three layers reinforce the invariant: **schema DSL** (unsafe methods are not generated), **Go compiler** (missing methods cannot be called), and **database permissions** (SELECT + INSERT only for immutable tables). Together, they make the intended data model easier to verify and audit.
 
 ### Cron Jobs
 
@@ -249,10 +249,10 @@ Pickle is open to contributions. Here's how to get started:
 ```bash
 git clone https://github.com/shortontech/pickle.git
 cd pickle
-go run ./pkg/tickle/cmd/                                        # tickle your pickle
+go run ./pkg/tickle/cmd/                                        # regenerate embedded templates
 go build ./...                                                   # build
-go run ./cmd/pickle/ generate --project ./testdata/basic-crud/   # pickle the test app
-go run ./cmd/pickle/ squeeze --project ./testdata/basic-crud/    # squeeze it
+go run ./cmd/pickle/ generate --project ./testdata/basic-crud/   # generate the test app
+go run ./cmd/pickle/ squeeze --project ./testdata/basic-crud/    # run static analysis
 go test ./...                                                    # test
 ```
 
@@ -268,8 +268,8 @@ Tickle-generated embeds and testdata output are gitignored. You generate them lo
 **Guidelines:**
 
 - Generated files (`*_gen.go`) are never edited by hand. Change the source in `pkg/cooked/`, `pkg/schema/`, or the generator, then regenerate.
-- Squeeze rules should have zero false positives. If a rule fires, it should be a real problem. Noisy rules get disabled by users and stop providing value.
-- Security is the priority. If a change weakens any security guarantee — even for convenience — it won't be merged.
+- Squeeze rules should be precise. If a rule fires, it should point to a real risk. Noisy rules get disabled by users and stop providing value.
+- Security is the priority. If a change weakens a security invariant for convenience, it needs a strong justification.
 - Keep the dependency list minimal. Pickle's output has zero dependency on Pickle. New runtime dependencies need strong justification.
 
-**Expressive DX. Go binary. No runtime. 🥒**
+**Expressive DX. Go binary. No runtime. Agent-ready by design.**

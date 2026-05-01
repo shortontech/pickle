@@ -1,16 +1,16 @@
 # Security Architecture
 
-Pickle makes the secure path the default and the insecure path impossible or visibly wrong.
+Pickle makes the secure path the default, keeps security-relevant structure visible, and flags many framework-level mistakes before deployment.
 
 ## By Design — Structural Prevention
 
-- **SQL injection** — impossible. `QueryBuilder[T]` generates parameterized queries. There's no API for string interpolation.
+- **SQL injection** — generated query builders use parameterized queries and typed methods instead of string interpolation in application code.
 - **Mass assignment** — request structs define exactly which fields are accepted. POSTing `{"role": "admin"}` does nothing if `CreateUserRequest` doesn't have a `Role` field.
 - **Validation bypass** — controllers call generated `Bind` functions that validate before returning the typed struct.
 - **CSRF** — the session auth driver ships HMAC double-submit cookie CSRF middleware (`session.CSRF`). Tokens are generated from a random nonce HMAC-signed with the session ID using `SESSION_SECRET`. Safe methods (GET, HEAD, OPTIONS) pass through; state-changing methods require a valid `X-CSRF-TOKEN` header. Bearer-token API requests skip CSRF automatically. Cookies are set with `Secure`, `SameSite=Strict`, and `HttpOnly=false` (JS must read the token).
 - **Rate limiting** — built into the router, not just middleware. Every request hits a per-IP token bucket *before* middleware or handlers execute — same level as panic recovery. Configured via `RATE_LIMIT_RPS` (default: 10) and `RATE_LIMIT_BURST` (default: 20) in `.env`. Returns 429 with `Retry-After` header. Disabled with `RATE_LIMIT=false`. For per-route overrides, `pickle.RateLimit(rps, burst)` returns a `MiddlewareFunc` that runs its own independent limiter. Proxy-aware: reads `X-Forwarded-For` and `X-Real-IP` before falling back to `RemoteAddr`. Stale buckets are cleaned up automatically. `AuthRateLimit()` provides identity-aware rate limiting with per-user tiers via `AUTH_RATE_LIMIT_RPS` and `AUTH_RATE_LIMIT_BURST`.
 - **Panic recovery** — the router catches panics in handlers and returns a 500 response instead of crashing the process. Recovered panics are forwarded to the `OnError` reporter for external error tracking (Sentry, Datadog, etc.).
-- **Secrets** — `pickle new` scaffolds a `.gitignore` that excludes `.env` and `.env.local`. Secrets never end up in version control by default.
+- **Secrets** — `pickle new` scaffolds a `.gitignore` that excludes `.env` and `.env.local`, reducing the risk of committing local credentials.
 
 ## By Design — RBAC and Gates
 
@@ -30,10 +30,10 @@ Pickle ships opinionated auth drivers that eliminate common JWT and session pitf
 ## By Review — One-File Audit
 
 - **IDOR / broken access control** — open `routes/web.go`, see every endpoint and its middleware stack. Missing `Auth` or `RequireRole` is immediately visible.
-- **Middleware gaps** — the central route file makes it obvious which endpoints are public and which are protected. A security review is a 30-second read.
+- **Middleware gaps** — the central route file makes it easier to see which endpoints are public and which are protected.
 
 ## By Tooling — Standard Scanner Compatibility
 
 Generated code is plain, idiomatic Go. `go vet`, `gosec`, `staticcheck`, Snyk, Semgrep — they all work on Pickle's output with zero configuration. No framework abstractions to unwrap, no `interface{}` soup, no runtime reflection. Security scanners see exactly what runs in production.
 
-This is the advantage of code generation over runtime frameworks. A scanner can't reason about Goravel's magic method resolution or custom abstractions. It can reason about a struct, a function, and a parameterized query — because that's just Go.
+This is the advantage of code generation over runtime-heavy abstractions. Scanners and reviewers can inspect structs, functions, and parameterized queries because the generated output is ordinary Go.

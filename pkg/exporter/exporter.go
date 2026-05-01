@@ -114,6 +114,7 @@ func Export(opts Options) (*Result, error) {
 	}
 	tables := analysis.Tables
 	views := analysis.Views
+	ex.migrations = analysis.Migrations
 	ex.models = modelSet(tables)
 	for _, view := range views {
 		ex.models[tableToStruct(view.Name)] = true
@@ -169,6 +170,7 @@ type exporter struct {
 	result       *Result
 	dryRun       bool
 	models       map[string]bool
+	migrations   []generator.MigrationOps
 }
 
 func configureMultiServiceProject(project *generator.Project, cfg *squeeze.Config) {
@@ -963,6 +965,22 @@ type sqlMigration struct {
 }
 
 func (e *exporter) generateSQLMigrations(tables []*schema.Table, views []*schema.View) ([]sqlMigration, error) {
+	if len(e.migrations) > 0 {
+		var out []sqlMigration
+		for _, migration := range e.migrations {
+			up, err := sqlForMigrationOps(migration.Up)
+			if err != nil {
+				return nil, fmt.Errorf("unsupported migration export for %s: %w", migration.Name, err)
+			}
+			down, err := sqlForMigrationOps(migration.Down)
+			if err != nil {
+				return nil, fmt.Errorf("unsupported migration export for %s: %w", migration.Name, err)
+			}
+			out = append(out, sqlMigration{Name: migrationExportNameFromStruct(migration.Name), Up: up, Down: down})
+		}
+		return out, nil
+	}
+
 	byName := map[string]*schema.Table{}
 	for _, table := range tables {
 		byName[table.Name] = table
@@ -1005,6 +1023,70 @@ func (e *exporter) generateSQLMigrations(tables []*schema.Table, views []*schema
 	return out, nil
 }
 
+func sqlForMigrationOps(ops []generator.MigrationOperation) (string, error) {
+	var statements []string
+	for _, op := range ops {
+		sql, err := sqlForMigrationOp(op)
+		if err != nil {
+			return "", err
+		}
+		if sql != "" {
+			statements = append(statements, sql)
+		}
+	}
+	if len(statements) == 0 {
+		return "", nil
+	}
+	return strings.Join(statements, ";\n") + ";\n", nil
+}
+
+func sqlForMigrationOp(op generator.MigrationOperation) (string, error) {
+	switch op.Type {
+	case "create_table":
+		if op.TableDef == nil {
+			return "", fmt.Errorf("create_table missing table definition")
+		}
+		return createTableSQL(op.TableDef) + tableIndexesSQL(op.TableDef), nil
+	case "drop_table_if_exists":
+		return dropTableSQL(op.Table), nil
+	case "rename_table":
+		return "ALTER TABLE " + quoteIdent(op.OldName) + " RENAME TO " + quoteIdent(op.NewName), nil
+	case "add_column":
+		if len(op.Columns) == 0 {
+			return "", fmt.Errorf("add_column on %s did not define a column", op.Table)
+		}
+		var statements []string
+		for _, col := range op.Columns {
+			statements = append(statements, "ALTER TABLE "+quoteIdent(op.Table)+" ADD COLUMN "+columnSQL(col))
+		}
+		return strings.Join(statements, ";\n"), nil
+	case "drop_column":
+		return "ALTER TABLE " + quoteIdent(op.Table) + " DROP COLUMN " + quoteIdent(op.ColumnName), nil
+	case "rename_column":
+		return "ALTER TABLE " + quoteIdent(op.Table) + " RENAME COLUMN " + quoteIdent(op.OldName) + " TO " + quoteIdent(op.NewName), nil
+	case "add_index", "add_unique_index":
+		if op.Index == nil {
+			return "", fmt.Errorf("%s on %s missing index definition", op.Type, op.Table)
+		}
+		idx := *op.Index
+		if idx.Table == "" {
+			idx.Table = op.Table
+		}
+		return createIndexSQL(&idx), nil
+	case "create_view":
+		if op.ViewDef == nil {
+			return "", fmt.Errorf("create_view missing view definition")
+		}
+		return createViewSQL(op.ViewDef), nil
+	case "drop_view":
+		return dropViewSQL(op.Table), nil
+	case "raw_sql":
+		return "", fmt.Errorf("raw-sql migrations are not lowered yet")
+	default:
+		return "", fmt.Errorf("%s migrations are not lowered yet", op.Type)
+	}
+}
+
 func unsupportedMigrationError(fileName, operation string) error {
 	var kind string
 	switch {
@@ -1030,6 +1112,16 @@ func migrationExportName(base string) string {
 		return base
 	}
 	return parts[0] + parts[1] + parts[2] + parts[3] + "_" + parts[4]
+}
+
+func migrationExportNameFromStruct(name string) string {
+	const suffixLen = len("_2006_01_02_150405")
+	if len(name) <= suffixLen || name[len(name)-suffixLen] != '_' {
+		return pascalToSnake(name)
+	}
+	prefix := name[:len(name)-suffixLen]
+	timestamp := strings.ReplaceAll(name[len(name)-suffixLen+1:], "_", "")
+	return timestamp + "_" + pascalToSnake(prefix)
 }
 
 func migrationOperationName(base string) string {

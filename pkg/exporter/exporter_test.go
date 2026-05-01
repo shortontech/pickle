@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/shortontech/pickle/pkg/generator"
+	"github.com/shortontech/pickle/pkg/schema"
 )
 
 func TestExportBasicCRUDNoPickleImports(t *testing.T) {
@@ -219,6 +220,50 @@ func TestExportFailsUnsupportedMigrationWithActionableKind(t *testing.T) {
 	_, err := ex.generateSQLMigrations(nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "add-column/index migrations are not lowered yet") {
 		t.Fatalf("expected actionable unsupported migration error, got %v", err)
+	}
+}
+
+func TestGenerateSQLMigrationsLowersCapturedOperations(t *testing.T) {
+	ex := &exporter{migrations: []generator.MigrationOps{
+		{
+			Name: "AddEmailToUsers_2026_02_21_100000",
+			Up: []generator.MigrationOperation{
+				{Type: "add_column", Table: "users", Columns: []*schema.Column{{Name: "email", Type: schema.String, Length: 255, IsUnique: true}}},
+				{Type: "rename_column", Table: "users", OldName: "name", NewName: "full_name"},
+				{Type: "add_unique_index", Table: "users", Index: &schema.Index{Table: "users", Columns: []string{"email"}, Unique: true}},
+			},
+			Down: []generator.MigrationOperation{
+				{Type: "rename_column", Table: "users", OldName: "full_name", NewName: "name"},
+				{Type: "drop_column", Table: "users", ColumnName: "email"},
+			},
+		},
+	}}
+	migrations, err := ex.generateSQLMigrations(nil, nil)
+	if err != nil {
+		t.Fatalf("generateSQLMigrations: %v", err)
+	}
+	if len(migrations) != 1 {
+		t.Fatalf("got %d migrations, want 1", len(migrations))
+	}
+	if migrations[0].Name != "20260221100000_add_email_to_users" {
+		t.Fatalf("migration name = %q", migrations[0].Name)
+	}
+	for _, want := range []string{
+		`ALTER TABLE "users" ADD COLUMN "email" VARCHAR(255) NOT NULL UNIQUE`,
+		`ALTER TABLE "users" RENAME COLUMN "name" TO "full_name"`,
+		`CREATE UNIQUE INDEX "uidx_users_email" ON "users" ("email")`,
+	} {
+		if !strings.Contains(migrations[0].Up, want) {
+			t.Fatalf("up migration missing %q:\n%s", want, migrations[0].Up)
+		}
+	}
+	for _, want := range []string{
+		`ALTER TABLE "users" RENAME COLUMN "full_name" TO "name"`,
+		`ALTER TABLE "users" DROP COLUMN "email"`,
+	} {
+		if !strings.Contains(migrations[0].Down, want) {
+			t.Fatalf("down migration missing %q:\n%s", want, migrations[0].Down)
+		}
 	}
 }
 

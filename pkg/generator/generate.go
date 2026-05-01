@@ -163,6 +163,7 @@ type inspectorColumnInfo struct {
 	PrimaryKey       bool   `json:"primary_key,omitempty"`
 	Unique           bool   `json:"unique,omitempty"`
 	Default          any    `json:"default,omitempty"`
+	HasDefault       bool   `json:"has_default,omitempty"`
 	ForeignKeyTable  string `json:"foreign_key_table,omitempty"`
 	ForeignKeyColumn string `json:"foreign_key_column,omitempty"`
 	Length           int    `json:"length,omitempty"`
@@ -215,10 +216,30 @@ type inspectorRelationshipInfo struct {
 	TopLevel    bool   `json:"top_level,omitempty"`
 }
 
+type inspectorOperationInfo struct {
+	Type       string                `json:"type"`
+	Table      string                `json:"table,omitempty"`
+	OldName    string                `json:"old_name,omitempty"`
+	NewName    string                `json:"new_name,omitempty"`
+	ColumnName string                `json:"column_name,omitempty"`
+	Columns    []inspectorColumnInfo `json:"columns,omitempty"`
+	Index      *inspectorIndexInfo   `json:"index,omitempty"`
+	TableDef   *inspectorTableInfo   `json:"table_def,omitempty"`
+	ViewDef    *inspectorViewInfo    `json:"view_def,omitempty"`
+	SQL        string                `json:"sql,omitempty"`
+}
+
+type inspectorMigrationInfo struct {
+	Name string                   `json:"name"`
+	Up   []inspectorOperationInfo `json:"up"`
+	Down []inspectorOperationInfo `json:"down"`
+}
+
 type inspectorOutput struct {
 	Tables        []inspectorTableInfo        `json:"tables"`
 	Views         []inspectorViewInfo         `json:"views,omitempty"`
 	Relationships []inspectorRelationshipInfo `json:"relationships,omitempty"`
+	Migrations    []inspectorMigrationInfo    `json:"migrations,omitempty"`
 }
 
 var typeNameToColumnType = map[string]schema.ColumnType{
@@ -234,6 +255,29 @@ var typeNameToColumnType = map[string]schema.ColumnType{
 	"date":       schema.Date,
 	"time":       schema.Time,
 	"binary":     schema.Binary,
+	"float":      schema.Float,
+	"double":     schema.Double,
+}
+
+// MigrationOperation is a serializable schema operation captured from a migration.
+type MigrationOperation struct {
+	Type       string
+	Table      string
+	OldName    string
+	NewName    string
+	ColumnName string
+	Columns    []*schema.Column
+	Index      *schema.Index
+	TableDef   *schema.Table
+	ViewDef    *schema.View
+	SQL        string
+}
+
+// MigrationOps groups the Up and Down operations captured for one migration struct.
+type MigrationOps struct {
+	Name string
+	Up   []MigrationOperation
+	Down []MigrationOperation
 }
 
 // SchemaRelationship describes a parent-child nesting from the inspector output.
@@ -248,6 +292,13 @@ type SchemaRelationship struct {
 // RunSchemaInspector generates a temp inspector program, compiles and runs it,
 // and returns the parsed schema tables, views, and relationships.
 func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, []SchemaRelationship, error) {
+	tables, views, rels, _, err := RunSchemaInspectorWithMigrations(project)
+	return tables, views, rels, err
+}
+
+// RunSchemaInspectorWithMigrations returns final schema state plus the recorded
+// per-migration operations used by tools that need lossless migration lowering.
+func RunSchemaInspectorWithMigrations(project *Project) ([]*schema.Table, []*schema.View, []SchemaRelationship, []MigrationOps, error) {
 	var entries []MigrationEntry
 
 	if len(project.Layout.MigrationDirs) > 0 {
@@ -255,7 +306,7 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, []Sc
 		for _, md := range project.Layout.MigrationDirs {
 			structNames, err := ScanMigrationStructs(md.Dir)
 			if err != nil {
-				return nil, nil, nil, fmt.Errorf("scanning migrations in %s: %w", md.Dir, err)
+				return nil, nil, nil, nil, fmt.Errorf("scanning migrations in %s: %w", md.Dir, err)
 			}
 			for _, name := range structNames {
 				entries = append(entries, MigrationEntry{StructName: name, ImportPath: md.ImportPath})
@@ -266,7 +317,7 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, []Sc
 		migrationsDir := project.Layout.MigrationsDir
 		structNames, err := ScanMigrationStructs(migrationsDir)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("scanning migrations: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("scanning migrations: %w", err)
 		}
 		migrationsImport := project.ModulePath + "/" + project.Layout.MigrationsRel
 		for _, name := range structNames {
@@ -275,72 +326,44 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, []Sc
 	}
 
 	if len(entries) == 0 {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 
 	inspectorSrc, err := GenerateSchemaInspector(entries)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("generating inspector: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("generating inspector: %w", err)
 	}
 
 	// Write to a temp directory inside the project so it can resolve local imports
 	tmpDir := filepath.Join(project.Dir, ".pickle-tmp")
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
-		return nil, nil, nil, fmt.Errorf("creating temp directory: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("creating temp directory: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
 	inspectorPath := filepath.Join(tmpDir, "main.go")
 	if err := os.WriteFile(inspectorPath, inspectorSrc, 0o644); err != nil {
-		return nil, nil, nil, fmt.Errorf("writing inspector: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("writing inspector: %w", err)
 	}
 
 	cmd := exec.Command("go", "run", inspectorPath, "--json")
 	cmd.Dir = project.Dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("running inspector: %w\n%s", err, output)
+		return nil, nil, nil, nil, fmt.Errorf("running inspector: %w\n%s", err, output)
 	}
 
 	var result inspectorOutput
 	if err := json.Unmarshal(output, &result); err != nil {
-		return nil, nil, nil, fmt.Errorf("parsing inspector output: %w\n%s", err, output)
+		return nil, nil, nil, nil, fmt.Errorf("parsing inspector output: %w\n%s", err, output)
 	}
 
 	// Convert to schema.Table
 	var tables []*schema.Table
 	for _, ti := range result.Tables {
-		t := &schema.Table{Name: ti.Name, Connection: ti.Connection, IsImmutable: ti.IsImmutable, IsAppendOnly: ti.IsAppendOnly, HasSoftDelete: ti.HasSoftDelete}
-		for _, ci := range ti.Columns {
-			colType, ok := typeNameToColumnType[ci.Type]
-			if !ok {
-				return nil, nil, nil, fmt.Errorf("unknown column type %q for column %s.%s", ci.Type, ti.Name, ci.Name)
-			}
-			col := &schema.Column{
-				Name:             ci.Name,
-				Type:             colType,
-				IsNullable:       ci.Nullable,
-				IsPrimaryKey:     ci.PrimaryKey,
-				IsUnique:         ci.Unique,
-				ForeignKeyTable:  ci.ForeignKeyTable,
-				ForeignKeyColumn: ci.ForeignKeyColumn,
-				Length:           ci.Length,
-				Precision:        ci.Precision,
-				Scale:            ci.Scale,
-				IsPublic:         ci.Public,
-				IsOwnerSees:      ci.OwnerSees,
-				IsOwnerColumn:    ci.OwnerColumn,
-				IsEncrypted:      ci.Encrypted,
-				IsSealed:         ci.Sealed,
-				IsUnsafePublic:   ci.UnsafePublic,
-			}
-			if ci.Default != nil {
-				col.DefaultValue = ci.Default
-			}
-			t.Columns = append(t.Columns, col)
-		}
-		for _, ii := range ti.Indexes {
-			t.Indexes = append(t.Indexes, &schema.Index{Table: ti.Name, Columns: ii.Columns, Unique: ii.Unique})
+		t, err := convertInspectorTable(ti)
+		if err != nil {
+			return nil, nil, nil, nil, err
 		}
 		tables = append(tables, t)
 	}
@@ -348,27 +371,9 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, []Sc
 	// Convert to schema.View
 	var views []*schema.View
 	for _, vi := range result.Views {
-		v := &schema.View{Name: vi.Name, GroupByCols: vi.GroupBy}
-		for _, src := range vi.Sources {
-			v.Sources = append(v.Sources, schema.ViewSource{
-				Table:         src.Table,
-				Alias:         src.Alias,
-				JoinType:      src.JoinType,
-				JoinCondition: src.JoinCondition,
-			})
-		}
-		for _, ci := range vi.Columns {
-			vc := &schema.ViewColumn{
-				SourceAlias:  ci.SourceAlias,
-				SourceColumn: ci.SourceColumn,
-				RawExpr:      ci.RawExpr,
-			}
-			vc.Name = ci.Name
-			vc.Type = typeNameToColumnType[ci.Type]
-			vc.IsNullable = ci.Nullable
-			vc.Precision = ci.Precision
-			vc.Scale = ci.Scale
-			v.Columns = append(v.Columns, vc)
+		v, err := convertInspectorView(vi)
+		if err != nil {
+			return nil, nil, nil, nil, err
 		}
 		views = append(views, v)
 	}
@@ -385,7 +390,118 @@ func RunSchemaInspector(project *Project) ([]*schema.Table, []*schema.View, []Sc
 		})
 	}
 
-	return tables, views, rels, nil
+	var migrations []MigrationOps
+	for _, mi := range result.Migrations {
+		up, err := convertInspectorOperations(mi.Up)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("converting migration %s up operations: %w", mi.Name, err)
+		}
+		down, err := convertInspectorOperations(mi.Down)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("converting migration %s down operations: %w", mi.Name, err)
+		}
+		migrations = append(migrations, MigrationOps{Name: mi.Name, Up: up, Down: down})
+	}
+
+	return tables, views, rels, migrations, nil
+}
+
+func convertInspectorColumn(ci inspectorColumnInfo, owner string) (*schema.Column, error) {
+	colType, ok := typeNameToColumnType[ci.Type]
+	if !ok {
+		return nil, fmt.Errorf("unknown column type %q for column %s.%s", ci.Type, owner, ci.Name)
+	}
+	col := &schema.Column{
+		Name:             ci.Name,
+		Type:             colType,
+		IsNullable:       ci.Nullable,
+		IsPrimaryKey:     ci.PrimaryKey,
+		IsUnique:         ci.Unique,
+		ForeignKeyTable:  ci.ForeignKeyTable,
+		ForeignKeyColumn: ci.ForeignKeyColumn,
+		Length:           ci.Length,
+		Precision:        ci.Precision,
+		Scale:            ci.Scale,
+		IsPublic:         ci.Public,
+		IsOwnerSees:      ci.OwnerSees,
+		IsOwnerColumn:    ci.OwnerColumn,
+		IsEncrypted:      ci.Encrypted,
+		IsSealed:         ci.Sealed,
+		IsUnsafePublic:   ci.UnsafePublic,
+		HasDefault:       ci.HasDefault,
+	}
+	if ci.HasDefault || ci.Default != nil {
+		col.DefaultValue = ci.Default
+	}
+	return col, nil
+}
+
+func convertInspectorTable(ti inspectorTableInfo) (*schema.Table, error) {
+	t := &schema.Table{Name: ti.Name, Connection: ti.Connection, IsImmutable: ti.IsImmutable, IsAppendOnly: ti.IsAppendOnly, HasSoftDelete: ti.HasSoftDelete}
+	for _, ci := range ti.Columns {
+		col, err := convertInspectorColumn(ci, ti.Name)
+		if err != nil {
+			return nil, err
+		}
+		t.Columns = append(t.Columns, col)
+	}
+	for _, ii := range ti.Indexes {
+		t.Indexes = append(t.Indexes, &schema.Index{Table: ti.Name, Columns: ii.Columns, Unique: ii.Unique})
+	}
+	return t, nil
+}
+
+func convertInspectorView(vi inspectorViewInfo) (*schema.View, error) {
+	v := &schema.View{Name: vi.Name, GroupByCols: vi.GroupBy}
+	for _, src := range vi.Sources {
+		v.Sources = append(v.Sources, schema.ViewSource{Table: src.Table, Alias: src.Alias, JoinType: src.JoinType, JoinCondition: src.JoinCondition})
+	}
+	for _, ci := range vi.Columns {
+		colType, ok := typeNameToColumnType[ci.Type]
+		if !ok {
+			return nil, fmt.Errorf("unknown column type %q for view column %s.%s", ci.Type, vi.Name, ci.Name)
+		}
+		v.Columns = append(v.Columns, &schema.ViewColumn{
+			Column:       schema.Column{Name: ci.Name, Type: colType, IsNullable: ci.Nullable, Precision: ci.Precision, Scale: ci.Scale},
+			SourceAlias:  ci.SourceAlias,
+			SourceColumn: ci.SourceColumn,
+			RawExpr:      ci.RawExpr,
+		})
+	}
+	return v, nil
+}
+
+func convertInspectorOperations(in []inspectorOperationInfo) ([]MigrationOperation, error) {
+	var out []MigrationOperation
+	for _, oi := range in {
+		op := MigrationOperation{Type: oi.Type, Table: oi.Table, OldName: oi.OldName, NewName: oi.NewName, ColumnName: oi.ColumnName, SQL: oi.SQL}
+		for _, ci := range oi.Columns {
+			col, err := convertInspectorColumn(ci, oi.Table)
+			if err != nil {
+				return nil, err
+			}
+			op.Columns = append(op.Columns, col)
+		}
+		if oi.Index != nil {
+			op.Index = &schema.Index{Table: oi.Table, Columns: oi.Index.Columns, Unique: oi.Index.Unique}
+		}
+		if oi.TableDef != nil {
+			table, err := convertInspectorTable(*oi.TableDef)
+			if err != nil {
+				return nil, err
+			}
+			op.TableDef = table
+		}
+		if oi.ViewDef != nil {
+			view, err := convertInspectorView(*oi.ViewDef)
+			if err != nil {
+				return nil, err
+			}
+			op.ViewDef = view
+		}
+		out = append(out, op)
+	}
+	return out, nil
 }
 
 // Generate runs all generators for a project and writes output.

@@ -31,6 +31,7 @@ type columnInfo struct {
 	PrimaryKey       bool   ` + "`" + `json:"primary_key,omitempty"` + "`" + `
 	Unique           bool   ` + "`" + `json:"unique,omitempty"` + "`" + `
 	Default          any    ` + "`" + `json:"default,omitempty"` + "`" + `
+	HasDefault       bool   ` + "`" + `json:"has_default,omitempty"` + "`" + `
 	ForeignKeyTable  string ` + "`" + `json:"foreign_key_table,omitempty"` + "`" + `
 	ForeignKeyColumn string ` + "`" + `json:"foreign_key_column,omitempty"` + "`" + `
 	Length           int    ` + "`" + `json:"length,omitempty"` + "`" + `
@@ -83,6 +84,25 @@ type viewInfo struct {
 	Sources []viewSourceInfo ` + "`" + `json:"sources"` + "`" + `
 	Columns []viewColumnInfo ` + "`" + `json:"columns"` + "`" + `
 	GroupBy []string         ` + "`" + `json:"group_by,omitempty"` + "`" + `
+}
+
+type operationInfo struct {
+	Type       string       ` + "`" + `json:"type"` + "`" + `
+	Table      string       ` + "`" + `json:"table,omitempty"` + "`" + `
+	OldName    string       ` + "`" + `json:"old_name,omitempty"` + "`" + `
+	NewName    string       ` + "`" + `json:"new_name,omitempty"` + "`" + `
+	ColumnName string       ` + "`" + `json:"column_name,omitempty"` + "`" + `
+	Columns    []columnInfo ` + "`" + `json:"columns,omitempty"` + "`" + `
+	Index      *indexInfo   ` + "`" + `json:"index,omitempty"` + "`" + `
+	TableDef   *tableInfo   ` + "`" + `json:"table_def,omitempty"` + "`" + `
+	ViewDef    *viewInfo    ` + "`" + `json:"view_def,omitempty"` + "`" + `
+	SQL        string       ` + "`" + `json:"sql,omitempty"` + "`" + `
+}
+
+type migrationInfo struct {
+	Name string          ` + "`" + `json:"name"` + "`" + `
+	Up   []operationInfo ` + "`" + `json:"up"` + "`" + `
+	Down []operationInfo ` + "`" + `json:"down"` + "`" + `
 }
 
 var typeNames = map[{{ .TypesPkg }}.ColumnType]string{
@@ -139,43 +159,151 @@ func collectRelationships(t *{{ .TypesPkg }}.Table, rels *[]relationshipInfo) {
 	}
 }
 
+func columnToInfo(col *{{ .TypesPkg }}.Column) columnInfo {
+	goType := goTypeNames[col.Type]
+	if col.IsNullable && goType != "[]byte" {
+		goType = "*" + goType
+	}
+	return columnInfo{
+		Name:             col.Name,
+		Type:             typeNames[col.Type],
+		GoType:           goType,
+		Nullable:         col.IsNullable,
+		PrimaryKey:       col.IsPrimaryKey,
+		Unique:           col.IsUnique,
+		Default:          col.DefaultValue,
+		HasDefault:       col.HasDefault,
+		ForeignKeyTable:  col.ForeignKeyTable,
+		ForeignKeyColumn: col.ForeignKeyColumn,
+		Length:           col.Length,
+		Precision:        col.Precision,
+		Scale:            col.Scale,
+		Public:           col.IsPublic,
+		OwnerSees:        col.IsOwnerSees,
+		OwnerColumn:      col.IsOwnerColumn,
+		Encrypted:        col.IsEncrypted,
+		Sealed:           col.IsSealed,
+		UnsafePublic:     col.IsUnsafePublic,
+	}
+}
+
+func tableToInfo(t *{{ .TypesPkg }}.Table, conn string) *tableInfo {
+	ti := &tableInfo{
+		Name:          t.Name,
+		Connection:    conn,
+		IsImmutable:   t.IsImmutable,
+		IsAppendOnly:  t.IsAppendOnly,
+		HasSoftDelete: t.HasSoftDelete,
+	}
+	for _, col := range t.Columns {
+		ti.Columns = append(ti.Columns, columnToInfo(col))
+	}
+	return ti
+}
+
+func viewToInfo(vd *{{ .TypesPkg }}.View, tables map[string]*tableInfo) *viewInfo {
+	vi := &viewInfo{Name: vd.Name, GroupBy: vd.GroupByCols}
+	for _, src := range vd.Sources {
+		vi.Sources = append(vi.Sources, viewSourceInfo{
+			Table:         src.Table,
+			Alias:         src.Alias,
+			JoinType:      src.JoinType,
+			JoinCondition: src.JoinCondition,
+		})
+	}
+	aliasTable := map[string]string{}
+	for _, src := range vd.Sources {
+		aliasTable[src.Alias] = src.Table
+	}
+	for _, vc := range vd.Columns {
+		vci := viewColumnInfo{
+			Name:         vc.OutputName(),
+			SourceAlias:  vc.SourceAlias,
+			SourceColumn: vc.SourceColumn,
+			RawExpr:      vc.RawExpr,
+			Nullable:     vc.IsNullable,
+			Precision:    vc.Precision,
+			Scale:        vc.Scale,
+		}
+		if vc.RawExpr != "" {
+			vci.Type = typeNames[vc.Type]
+			vci.GoType = goTypeNames[vc.Type]
+		} else {
+			srcTable := aliasTable[vc.SourceAlias]
+			if ti, ok := tables[srcTable]; ok {
+				for _, tc := range ti.Columns {
+					if tc.Name == vc.SourceColumn {
+						vci.Type = tc.Type
+						vci.GoType = tc.GoType
+						vci.Nullable = tc.Nullable
+						vci.Precision = tc.Precision
+						vci.Scale = tc.Scale
+						break
+					}
+				}
+			}
+		}
+		if vci.Nullable && vci.GoType != "" && vci.GoType != "[]byte" && !strings.HasPrefix(vci.GoType, "*") {
+			vci.GoType = "*" + vci.GoType
+		}
+		vi.Columns = append(vi.Columns, vci)
+	}
+	return vi
+}
+
+func operationsToInfo(ops []{{ .TypesPkg }}.Operation, tables map[string]*tableInfo, conn string) []operationInfo {
+	var out []operationInfo
+	for _, op := range ops {
+		info := operationInfo{Table: op.Table, OldName: op.OldName, NewName: op.NewName, ColumnName: op.ColumnName, SQL: op.SQL}
+		switch op.Type {
+		case {{ .TypesPkg }}.OpCreateTable:
+			info.Type = "create_table"
+			info.TableDef = tableToInfo(op.TableDef, conn)
+		case {{ .TypesPkg }}.OpDropTableIfExists:
+			info.Type = "drop_table_if_exists"
+		case {{ .TypesPkg }}.OpRenameTable:
+			info.Type = "rename_table"
+		case {{ .TypesPkg }}.OpAddColumn:
+			info.Type = "add_column"
+			if op.ColumnDef != nil {
+				t := &{{ .TypesPkg }}.Table{Name: op.Table}
+				op.ColumnDef(t)
+				for _, col := range t.Columns {
+					info.Columns = append(info.Columns, columnToInfo(col))
+				}
+			}
+		case {{ .TypesPkg }}.OpDropColumn:
+			info.Type = "drop_column"
+		case {{ .TypesPkg }}.OpRenameColumn:
+			info.Type = "rename_column"
+		case {{ .TypesPkg }}.OpAddIndex:
+			info.Type = "add_index"
+			if op.Index != nil {
+				info.Index = &indexInfo{Columns: op.Index.Columns, Unique: op.Index.Unique}
+			}
+		case {{ .TypesPkg }}.OpAddUniqueIndex:
+			info.Type = "add_unique_index"
+			if op.Index != nil {
+				info.Index = &indexInfo{Columns: op.Index.Columns, Unique: true}
+			}
+		case {{ .TypesPkg }}.OpCreateView:
+			info.Type = "create_view"
+			info.ViewDef = viewToInfo(op.ViewDef, tables)
+		case {{ .TypesPkg }}.OpDropView:
+			info.Type = "drop_view"
+		case {{ .TypesPkg }}.OpRawSQL:
+			info.Type = "raw_sql"
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
 func processOps(ops []{{ .TypesPkg }}.Operation, tables map[string]*tableInfo, order *[]string, views map[string]*viewInfo, viewOrder *[]string, rels *[]relationshipInfo, conn string) {
 	for _, op := range ops {
 		switch op.Type {
 		case {{ .TypesPkg }}.OpCreateTable:
-			ti := &tableInfo{
-				Name:          op.Table,
-				Connection:    conn,
-				IsImmutable:   op.TableDef.IsImmutable,
-				IsAppendOnly:  op.TableDef.IsAppendOnly,
-				HasSoftDelete: op.TableDef.HasSoftDelete,
-			}
-			for _, col := range op.TableDef.Columns {
-				goType := goTypeNames[col.Type]
-				if col.IsNullable && goType != "[]byte" {
-					goType = "*" + goType
-				}
-				ti.Columns = append(ti.Columns, columnInfo{
-					Name:             col.Name,
-					Type:             typeNames[col.Type],
-					GoType:           goType,
-					Nullable:         col.IsNullable,
-					PrimaryKey:       col.IsPrimaryKey,
-					Unique:           col.IsUnique,
-					Default:          col.DefaultValue,
-					ForeignKeyTable:  col.ForeignKeyTable,
-					ForeignKeyColumn: col.ForeignKeyColumn,
-					Length:           col.Length,
-					Precision:        col.Precision,
-					Scale:            col.Scale,
-					Public:           col.IsPublic,
-					OwnerSees:        col.IsOwnerSees,
-					OwnerColumn:      col.IsOwnerColumn,
-					Encrypted:        col.IsEncrypted,
-					Sealed:           col.IsSealed,
-					UnsafePublic:     col.IsUnsafePublic,
-				})
-			}
+			ti := tableToInfo(op.TableDef, conn)
 			tables[op.Table] = ti
 			*order = append(*order, op.Table)
 			// Collect relationship metadata
@@ -192,58 +320,9 @@ func processOps(ops []{{ .TypesPkg }}.Operation, tables map[string]*tableInfo, o
 				})
 			}
 		case {{ .TypesPkg }}.OpCreateView:
-			vd := op.ViewDef
-			vi := &viewInfo{Name: vd.Name, GroupBy: vd.GroupByCols}
-			for _, src := range vd.Sources {
-				vi.Sources = append(vi.Sources, viewSourceInfo{
-					Table:         src.Table,
-					Alias:         src.Alias,
-					JoinType:      src.JoinType,
-					JoinCondition: src.JoinCondition,
-				})
-			}
-			// Build alias→table lookup for resolving plain column types
-			aliasTable := map[string]string{}
-			for _, src := range vd.Sources {
-				aliasTable[src.Alias] = src.Table
-			}
-			for _, vc := range vd.Columns {
-				vci := viewColumnInfo{
-					Name:         vc.OutputName(),
-					SourceAlias:  vc.SourceAlias,
-					SourceColumn: vc.SourceColumn,
-					RawExpr:      vc.RawExpr,
-					Nullable:     vc.IsNullable,
-					Precision:    vc.Precision,
-					Scale:        vc.Scale,
-				}
-				if vc.RawExpr != "" {
-					// SelectRaw — type explicitly declared
-					vci.Type = typeNames[vc.Type]
-					vci.GoType = goTypeNames[vc.Type]
-				} else {
-					// Plain column — resolve from source table
-					srcTable := aliasTable[vc.SourceAlias]
-					if ti, ok := tables[srcTable]; ok {
-						for _, tc := range ti.Columns {
-							if tc.Name == vc.SourceColumn {
-								vci.Type = tc.Type
-								vci.GoType = tc.GoType
-								vci.Nullable = tc.Nullable
-								vci.Precision = tc.Precision
-								vci.Scale = tc.Scale
-								break
-							}
-						}
-					}
-				}
-				if vci.Nullable && vci.GoType != "" && vci.GoType != "[]byte" && !strings.HasPrefix(vci.GoType, "*") {
-					vci.GoType = "*" + vci.GoType
-				}
-				vi.Columns = append(vi.Columns, vci)
-			}
-			views[vd.Name] = vi
-			*viewOrder = append(*viewOrder, vd.Name)
+			vi := viewToInfo(op.ViewDef, tables)
+			views[op.ViewDef.Name] = vi
+			*viewOrder = append(*viewOrder, op.ViewDef.Name)
 		case {{ .TypesPkg }}.OpDropView:
 			delete(views, op.Table)
 		}
@@ -350,6 +429,7 @@ type inspectorOutput struct {
 	Tables        []tableInfo        ` + "`" + `json:"tables"` + "`" + `
 	Views         []viewInfo         ` + "`" + `json:"views,omitempty"` + "`" + `
 	Relationships []relationshipInfo ` + "`" + `json:"relationships,omitempty"` + "`" + `
+	Migrations    []migrationInfo    ` + "`" + `json:"migrations,omitempty"` + "`" + `
 }
 
 func main() {
@@ -358,12 +438,18 @@ func main() {
 	views := map[string]*viewInfo{}
 	var viewOrder []string
 	var rels []relationshipInfo
+	var migrationOps []migrationInfo
 
 {{ range .Migrations }}	{
 		m := {{ .PkgAlias }}.{{ .StructName }}{}
 		conn := m.Connection()
 		m.Up()
+		upOps := operationsToInfo(m.Operations, tables, conn)
 		processOps(m.Operations, tables, &order, views, &viewOrder, &rels, conn)
+		m.Reset()
+		m.Down()
+		downOps := operationsToInfo(m.Operations, tables, conn)
+		migrationOps = append(migrationOps, migrationInfo{Name: "{{ .StructName }}", Up: upOps, Down: downOps})
 	}
 {{ end }}
 	// Parse args: [--json] [table_name]
@@ -396,6 +482,7 @@ func main() {
 				out.Views = append(out.Views, *views[name])
 			}
 			out.Relationships = rels
+			out.Migrations = migrationOps
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")

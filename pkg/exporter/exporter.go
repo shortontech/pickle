@@ -999,10 +999,29 @@ func (e *exporter) generateSQLMigrations(tables []*schema.Table, views []*schema
 			}
 			out = append(out, sqlMigration{Name: exportName, Up: createViewSQL(view) + ";\n", Down: dropViewSQL(view.Name) + ";\n"})
 		default:
-			return nil, fmt.Errorf("unsupported migration export for %s", entry.Name())
+			return nil, unsupportedMigrationError(entry.Name(), operation)
 		}
 	}
 	return out, nil
+}
+
+func unsupportedMigrationError(fileName, operation string) error {
+	var kind string
+	switch {
+	case strings.HasPrefix(operation, "add_"):
+		kind = "add-column/index"
+	case strings.HasPrefix(operation, "drop_"):
+		kind = "drop-column/table/view"
+	case strings.HasPrefix(operation, "rename_"):
+		kind = "rename-table/column"
+	case strings.Contains(operation, "index"):
+		kind = "index"
+	case strings.Contains(operation, "raw") || strings.Contains(operation, "sql"):
+		kind = "raw-sql"
+	default:
+		kind = "unknown"
+	}
+	return fmt.Errorf("unsupported migration export for %s: %s migrations are not lowered yet", fileName, kind)
 }
 
 func migrationExportName(base string) string {

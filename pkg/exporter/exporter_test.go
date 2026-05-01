@@ -201,6 +201,18 @@ func TestExportFailsUnknownViewMigrations(t *testing.T) {
 	}
 }
 
+func TestExportFailsUnsupportedMigrationWithActionableKind(t *testing.T) {
+	migrationsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(migrationsDir, "2026_02_21_100000_add_email_to_users_table.go"), []byte("package migrations\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ex := &exporter{project: &generator.Project{Layout: generator.Layout{MigrationsDir: migrationsDir}}}
+	_, err := ex.generateSQLMigrations(nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "add-column/index migrations are not lowered yet") {
+		t.Fatalf("expected actionable unsupported migration error, got %v", err)
+	}
+}
+
 func TestRewriteMutableQueryVariable(t *testing.T) {
 	ex := &exporter{
 		sourceModule: "example.com/app",

@@ -895,7 +895,7 @@ func (e *exporter) writeConfigSupport() error {
 }
 
 func (e *exporter) writeAuthSupport() error {
-	if err := e.writeFile(filepath.Join("app", "http", "auth", "auth.go"), []byte(fmt.Sprintf(authSupportSource, e.modulePath, e.modulePath))); err != nil {
+	if err := e.writeFile(filepath.Join("app", "http", "auth", "auth.go"), []byte(fmt.Sprintf(authSupportSource, e.modulePath, e.modulePath, e.modulePath))); err != nil {
 		return err
 	}
 	return e.writeFile(filepath.Join("app", "http", "auth", "jwt", "jwt.go"), []byte(jwtSupportSource))
@@ -1565,10 +1565,11 @@ import (
 	"strings"
 
 	"%s/app/http/auth/jwt"
+	"%s/config"
 	"%s/internal/httpx"
 )
 
-var jwtDriver = &jwt.Driver{}
+var jwtDriver = jwt.NewDriver(config.Env)
 
 func Driver(name string) any {
 	switch name {
@@ -1598,24 +1599,121 @@ func Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
 
 const jwtSupportSource = `package jwt
 
-import "errors"
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/sha512"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"hash"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+var ErrInvalidToken = errors.New("jwt: invalid token")
 
 type Claims struct {
-	Subject string
-	Role string
+	JTI       string         ` + "`" + `json:"jti,omitempty"` + "`" + `
+	Subject   string         ` + "`" + `json:"sub,omitempty"` + "`" + `
+	Issuer    string         ` + "`" + `json:"iss,omitempty"` + "`" + `
+	ExpiresAt int64          ` + "`" + `json:"exp,omitempty"` + "`" + `
+	IssuedAt  int64          ` + "`" + `json:"iat,omitempty"` + "`" + `
+	Role      string         ` + "`" + `json:"role,omitempty"` + "`" + `
+	Extra     map[string]any ` + "`" + `json:"-"` + "`" + `
 }
 
-type Driver struct{}
+type Driver struct {
+	secret    string
+	issuer    string
+	expiry    int
+	algorithm string
+}
+
+func NewDriver(env func(string, string) string) *Driver {
+	expiry := 3600
+	if v := env("JWT_EXPIRY", ""); v != "" {
+		n := 0
+		for _, c := range v { if c >= '0' && c <= '9' { n = n*10 + int(c-'0') } }
+		if n > 0 { expiry = n }
+	}
+	return &Driver{
+		secret:    env("JWT_SECRET", ""),
+		issuer:    env("JWT_ISSUER", ""),
+		expiry:    expiry,
+		algorithm: env("JWT_ALGORITHM", "HS256"),
+	}
+}
 
 func (d *Driver) SignToken(claims Claims) (string, error) {
+	if d.secret == "" { return "", errors.New("jwt: secret not configured") }
 	if claims.Subject == "" { return "", errors.New("jwt: missing subject") }
-	return claims.Subject, nil
+	now := time.Now().Unix()
+	if claims.IssuedAt == 0 { claims.IssuedAt = now }
+	if claims.ExpiresAt == 0 && d.expiry > 0 { claims.ExpiresAt = now + int64(d.expiry) }
+	if claims.Issuer == "" && d.issuer != "" { claims.Issuer = d.issuer }
+	if claims.JTI == "" { claims.JTI = uuid.New().String() }
+	alg := d.algorithm
+	if alg == "" { alg = "HS256" }
+	header := base64URLEncode([]byte(` + "`" + `{"alg":"` + "`" + ` + alg + ` + "`" + `","typ":"JWT"}` + "`" + `))
+	payload, err := json.Marshal(claims)
+	if err != nil { return "", err }
+	signingInput := header + "." + base64URLEncode(payload)
+	sig, err := hmacSign([]byte(signingInput), []byte(d.secret), alg)
+	if err != nil { return "", err }
+	return signingInput + "." + base64URLEncode(sig), nil
 }
 
 func (d *Driver) ValidateToken(token string) (Claims, error) {
-	if token == "" { return Claims{}, errors.New("jwt: invalid token") }
-	return Claims{Subject: token, Role: "user"}, nil
+	if d.secret == "" { return Claims{}, ErrInvalidToken }
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) != 3 { return Claims{}, ErrInvalidToken }
+	headerJSON, err := base64URLDecode(parts[0])
+	if err != nil { return Claims{}, ErrInvalidToken }
+	var header struct{ Alg string ` + "`" + `json:"alg"` + "`" + ` }
+	if err := json.Unmarshal(headerJSON, &header); err != nil { return Claims{}, ErrInvalidToken }
+	alg := d.algorithm
+	if alg == "" { alg = "HS256" }
+	if header.Alg != alg { return Claims{}, ErrInvalidToken }
+	signingInput := parts[0] + "." + parts[1]
+	sig, err := base64URLDecode(parts[2])
+	if err != nil { return Claims{}, ErrInvalidToken }
+	if !hmacVerify([]byte(signingInput), sig, []byte(d.secret), alg) { return Claims{}, ErrInvalidToken }
+	claimsJSON, err := base64URLDecode(parts[1])
+	if err != nil { return Claims{}, ErrInvalidToken }
+	var claims Claims
+	if err := json.Unmarshal(claimsJSON, &claims); err != nil { return Claims{}, ErrInvalidToken }
+	if claims.ExpiresAt > 0 && time.Now().Unix() > claims.ExpiresAt { return Claims{}, ErrInvalidToken }
+	if d.issuer != "" && claims.Issuer != d.issuer { return Claims{}, ErrInvalidToken }
+	if claims.Subject == "" { return Claims{}, ErrInvalidToken }
+	return claims, nil
 }
+
+func hmacSign(data, secret []byte, alg string) ([]byte, error) {
+	var h func() hash.Hash
+	switch alg {
+	case "HS256": h = sha256.New
+	case "HS384": h = sha512.New384
+	case "HS512": h = sha512.New
+	default: return nil, fmt.Errorf("jwt: unsupported algorithm %s", alg)
+	}
+	mac := hmac.New(h, secret)
+	mac.Write(data)
+	return mac.Sum(nil), nil
+}
+
+func hmacVerify(data, sig, secret []byte, alg string) bool {
+	expected, err := hmacSign(data, secret, alg)
+	if err != nil { return false }
+	return hmac.Equal(sig, expected)
+}
+
+func base64URLEncode(data []byte) string { return base64.RawURLEncoding.EncodeToString(data) }
+
+func base64URLDecode(s string) ([]byte, error) { return base64.RawURLEncoding.DecodeString(s) }
 `
 
 const serverMainSource = `package main

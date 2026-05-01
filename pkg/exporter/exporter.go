@@ -1373,7 +1373,7 @@ func (e *exporter) writeAuthSupport() error {
 	if err := e.writeFile(filepath.Join("app", "http", "auth", "auth.go"), []byte(fmt.Sprintf(authSupportSource, e.modulePath, e.modulePath, e.modulePath))); err != nil {
 		return err
 	}
-	return e.writeFile(filepath.Join("app", "http", "auth", "jwt", "jwt.go"), []byte(jwtSupportSource))
+	return e.writeFile(filepath.Join("app", "http", "auth", "jwt", "jwt.go"), []byte(fmt.Sprintf(jwtSupportSource, e.modulePath)))
 }
 
 func (e *exporter) writeServerMain() error {
@@ -2160,41 +2160,86 @@ func RateLimit(rps, burst int) MiddlewareFunc { return func(ctx *Context, next f
 const authSupportSource = `package auth
 
 import (
-	"errors"
+	"database/sql"
+	"fmt"
 	"net/http"
-	"strings"
 
 	"%s/app/http/auth/jwt"
 	"%s/config"
 	"%s/internal/httpx"
 )
 
-var jwtDriver = jwt.NewDriver(config.Env)
+type AuthDriver interface {
+	Authenticate(r *http.Request) (*httpx.AuthInfo, error)
+}
 
-func Driver(name string) any {
-	switch name {
-	case "jwt":
-		return jwtDriver
-	default:
-		return nil
+type unsupportedDriver struct{ name string }
+
+func (d unsupportedDriver) Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
+	return nil, fmt.Errorf("auth: %%s driver requires manual implementation after export", d.name)
+}
+
+var (
+	jwtDriver = jwt.NewDriver(config.Env)
+	registry = map[string]AuthDriver{
+		"jwt": jwtDriver,
+		"oauth": unsupportedDriver{name: "oauth"},
+		"session": unsupportedDriver{name: "session"},
 	}
+	envFunc = config.Env
+)
+
+func Init(env func(string, string) string, db *sql.DB) {
+	if env != nil {
+		envFunc = env
+		jwtDriver = jwt.NewDriver(env)
+		registry["jwt"] = jwtDriver
+	}
+	_ = db
+}
+
+func Driver(name string) AuthDriver {
+	d, ok := registry[name]
+	if !ok {
+		return unsupportedDriver{name: name}
+	}
+	return d
+	}
+
+func ActiveDriver() AuthDriver {
+	return Driver(activeDriverName())
+	}
+
+func activeDriverName() string {
+	if envFunc != nil {
+		if name := envFunc("AUTH_DRIVER", "jwt"); name != "" {
+			return name
+		}
+	}
+	return "jwt"
+	}
+
+func ActiveDriverName() string {
+	return activeDriverName()
 }
 
 func Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
-	header := r.Header.Get("Authorization")
-	if header == "" {
-		return nil, errors.New("missing authorization header")
-	}
-	parts := strings.Fields(header)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-		return nil, errors.New("invalid authorization header")
-	}
-	claims, err := jwtDriver.ValidateToken(parts[1])
-	if err != nil {
-		return nil, err
-	}
-	return &httpx.AuthInfo{UserID: claims.Subject, Role: claims.Role}, nil
+	return ActiveDriver().Authenticate(r)
 }
+
+func DefaultAuthMiddleware(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
+	info, err := Authenticate(ctx.Request())
+	if err != nil {
+		return ctx.Unauthorized(err.Error())
+	}
+	ctx.SetAuth(info)
+	return next()
+}
+
+func Env() string {
+	return activeDriverName()
+}
+
 `
 
 const jwtSupportSource = `package jwt
@@ -2208,8 +2253,11 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"net/http"
 	"strings"
 	"time"
+
+	"%s/internal/httpx"
 
 	"github.com/google/uuid"
 )
@@ -2292,13 +2340,23 @@ func (d *Driver) ValidateToken(token string) (Claims, error) {
 	return claims, nil
 }
 
+func (d *Driver) Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
+	header := r.Header.Get("Authorization")
+	if header == "" { return nil, errors.New("missing authorization header") }
+	parts := strings.Fields(header)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") { return nil, errors.New("invalid authorization header") }
+	claims, err := d.ValidateToken(parts[1])
+	if err != nil { return nil, err }
+	return &httpx.AuthInfo{UserID: claims.Subject, Role: claims.Role}, nil
+}
+
 func hmacSign(data, secret []byte, alg string) ([]byte, error) {
 	var h func() hash.Hash
 	switch alg {
 	case "HS256": h = sha256.New
 	case "HS384": h = sha512.New384
 	case "HS512": h = sha512.New
-	default: return nil, fmt.Errorf("jwt: unsupported algorithm %s", alg)
+	default: return nil, fmt.Errorf("jwt: unsupported algorithm %%s", alg)
 	}
 	mac := hmac.New(h, secret)
 	mac.Write(data)

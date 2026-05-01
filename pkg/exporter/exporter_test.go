@@ -25,6 +25,9 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	if res.FilesWritten == 0 {
 		t.Fatal("expected exported files")
 	}
+	if !hasFinding(res.Findings, "generated_auth") {
+		t.Fatalf("expected generated_auth finding, got %+v", res.Findings)
+	}
 	if !hasFinding(res.Findings, "generated_policies") {
 		t.Fatalf("expected generated_policies finding, got %+v", res.Findings)
 	}
@@ -36,6 +39,10 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.down.sql"), "DROP TABLE")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.up.sql"), "CREATE INDEX")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260228100000_create_user_post_stats_view.up.sql"), "CREATE VIEW")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Exported")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Partial Support")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "generated_auth")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Omitted")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func Env(key, fallback string) string")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "type ConnectionConfig struct")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func OpenGORM(conn ConnectionConfig) *gorm.DB")
@@ -98,6 +105,7 @@ func TestExportEncryptionCompilesWithFinding(t *testing.T) {
 
 	assertFileContains(t, filepath.Join(out, "app", "models", "user.go"), "func (m *User) Public() UserPublic")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user.go"), "func PublicUsers(records []User) []UserPublic")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Manual Review")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "encrypted_columns")
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	runExported(t, out, "go", "test", "./...")
@@ -168,6 +176,7 @@ func TestExportCronCompilesWithFinding(t *testing.T) {
 
 	assertFileContains(t, filepath.Join(out, "app", "jobs", "support.go"), "type Scheduler struct")
 	assertFileContains(t, filepath.Join(out, "schedule", "jobs.go"), "jobs.Cron")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Partial Support")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "generated_jobs")
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	runExported(t, out, "go", "test", "./...")

@@ -1363,6 +1363,7 @@ func (e *exporter) addGeneratedSubsystemFindings() {
 		rule string
 		msg  string
 	}{
+		{"app/http/auth", "generated_auth", "auth runtime is exported with standalone JWT support; sessions, OAuth, and JWT allowlist/revocation need manual review"},
 		{"app/graphql", "generated_graphql", "generated GraphQL runtime is not lowered in v1"},
 		{"app/jobs", "generated_jobs", "scheduler runtime is exported with minimal standalone support in v1"},
 		{"app/commands", "generated_commands", "Pickle command runtime is not lowered in v1"},
@@ -1401,17 +1402,18 @@ func (e *exporter) writeReport(orm string) error {
 	fmt.Fprintf(&b, "Target ORM: `%s`\n\n", orm)
 	fmt.Fprintf(&b, "Generated at: `%s`\n\n", time.Now().UTC().Format(time.RFC3339))
 	fmt.Fprintf(&b, "Files written: `%d`\n\n", e.result.FilesWritten)
+	b.WriteString("## Exported\n\n")
+	b.WriteString("- Standalone Go module with rewritten imports and no Pickle runtime dependency\n")
+	b.WriteString("- GORM models and database handle setup\n")
+	b.WriteString("- SQL migrations for supported schema operations\n")
+	b.WriteString("- HTTP routing, request binding, auth, config, and server support\n\n")
 	if len(e.result.Findings) == 0 {
+		b.WriteString("## Manual Review\n\n")
 		b.WriteString("No unsupported export findings.\n")
 	} else {
-		b.WriteString("## Findings\n\n")
-		for _, f := range e.result.Findings {
-			loc := f.File
-			if f.Line > 0 {
-				loc = fmt.Sprintf("%s:%d", f.File, f.Line)
-			}
-			fmt.Fprintf(&b, "- `%s` `%s` - %s\n", loc, f.Rule, f.Message)
-		}
+		e.writeFindingSection(&b, "Partial Support", "partial")
+		e.writeFindingSection(&b, "Omitted", "omitted")
+		e.writeFindingSection(&b, "Manual Review", "manual")
 	}
 	rel, err := filepath.Rel(e.outDir, e.result.ReportPath)
 	if err != nil || strings.HasPrefix(rel, "..") {
@@ -1424,6 +1426,40 @@ func (e *exporter) writeReport(orm string) error {
 		return os.WriteFile(e.result.ReportPath, []byte(b.String()), 0o644)
 	}
 	return e.writeFile(rel, []byte(b.String()))
+}
+
+func (e *exporter) writeFindingSection(b *strings.Builder, title, category string) {
+	var findings []Finding
+	for _, finding := range e.result.Findings {
+		if findingCategory(finding.Rule) == category {
+			findings = append(findings, finding)
+		}
+	}
+	if len(findings) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "## %s\n\n", title)
+	for _, f := range findings {
+		loc := f.File
+		if f.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", f.File, f.Line)
+		}
+		fmt.Fprintf(b, "- `%s` `%s` - %s\n", loc, f.Rule, f.Message)
+	}
+	b.WriteString("\n")
+}
+
+func findingCategory(rule string) string {
+	switch rule {
+	case "generated_auth", "generated_jobs":
+		return "partial"
+	case "generated_graphql", "generated_commands", "generated_policies", "generated_actions":
+		return "omitted"
+	case "encrypted_columns", "integrity_tables":
+		return "manual"
+	default:
+		return "manual"
+	}
 }
 
 func (e *exporter) writeFile(rel string, data []byte) error {

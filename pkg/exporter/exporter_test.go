@@ -40,7 +40,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertNoGoFileContains(t, out, "pickle.")
 	assertNoGoFileContains(t, out, "Pickle")
 	assertNoGoFileContains(t, out, "PICKLE_")
-	runExported(t, out, "go", "mod", "tidy")
+	assertFileContains(t, filepath.Join(out, "go.sum"), "gorm.io/gorm")
 	runExported(t, out, "go", "test", "./...")
 }
 

@@ -10,6 +10,7 @@ import (
 	"go/token"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -131,6 +132,9 @@ func Export(opts Options) (*Result, error) {
 	if err := ex.writeServerMain(); err != nil {
 		return nil, err
 	}
+	if err := ex.tidyModule(); err != nil {
+		return nil, err
+	}
 	ex.addGeneratedSubsystemFindings()
 	if err := ex.writeReport(opts.ORM); err != nil {
 		return nil, err
@@ -173,6 +177,19 @@ func (e *exporter) prepareOutDir(force bool) error {
 func (e *exporter) writeGoMod() error {
 	content := fmt.Sprintf("module %s\n\ngo 1.24.0\n\nrequire (\n\tgithub.com/go-playground/validator/v10 v10.30.1\n\tgithub.com/google/uuid v1.6.0\n\tgorm.io/gorm v1.31.1\n)\n", e.modulePath)
 	return e.writeFile("go.mod", []byte(content))
+}
+
+func (e *exporter) tidyModule() error {
+	if e.dryRun {
+		return nil
+	}
+	cmd := exec.Command("go", "mod", "tidy")
+	cmd.Dir = e.outDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("running go mod tidy in exported app: %w\n%s", err, out)
+	}
+	return nil
 }
 
 func (e *exporter) copyAndRewriteUserSource() error {
@@ -827,8 +844,6 @@ func (e *exporter) addGeneratedSubsystemFindings() {
 		rule string
 		msg  string
 	}{
-		{"app/http/auth", "generated_auth", "generated auth drivers were replaced with standalone exported auth support"},
-		{"app/commands", "generated_commands", "generated command runtime was replaced with a standalone server entrypoint"},
 		{"app/graphql", "generated_graphql", "generated GraphQL runtime is not lowered in v1"},
 	}
 	for _, c := range checks {

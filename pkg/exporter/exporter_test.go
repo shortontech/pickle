@@ -30,8 +30,11 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	if !hasFinding(res.Findings, "generated_auth") {
 		t.Fatalf("expected generated_auth finding, got %+v", res.Findings)
 	}
-	if !hasFinding(res.Findings, "generated_policies") {
-		t.Fatalf("expected generated_policies finding, got %+v", res.Findings)
+	if !hasFinding(res.Findings, "rbac_policy_export") {
+		t.Fatalf("expected rbac_policy_export finding, got %+v", res.Findings)
+	}
+	if !hasFinding(res.Findings, "generated_graphql_policies") {
+		t.Fatalf("expected generated_graphql_policies finding, got %+v", res.Findings)
 	}
 	if !hasFinding(res.Findings, "actions_audit") {
 		t.Fatalf("expected actions_audit finding, got %+v", res.Findings)
@@ -47,6 +50,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Exported")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Partial Support")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "generated_auth")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "rbac_policy_export")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "generated_graphql_policies")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Omitted")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func Env(key, fallback string) string")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "type ConnectionConfig struct")

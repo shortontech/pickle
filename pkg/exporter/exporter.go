@@ -1759,7 +1759,8 @@ func (e *exporter) addGeneratedSubsystemFindings() {
 		{"app/graphql", "generated_graphql", "generated GraphQL runtime is not lowered in v1"},
 		{"app/jobs", "generated_jobs", "scheduler runtime is exported with minimal standalone support in v1"},
 		{"app/commands", "generated_commands", "Pickle command runtime is not lowered in v1"},
-		{"database/policies", "generated_policies", "RBAC and GraphQL policy runners are not lowered in v1"},
+		{"database/policies", "rbac_policy_export", "RBAC role grants are reflected in exported gates where statically derivable; policy runners and changelog state are not exported"},
+		{"database/policies/graphql", "generated_graphql_policies", "GraphQL policy runner and exposure state are not lowered in v1"},
 	}
 	for _, c := range checks {
 		if _, err := os.Stat(filepath.Join(e.project.Dir, c.path)); err == nil {
@@ -1842,9 +1843,9 @@ func (e *exporter) writeFindingSection(b *strings.Builder, title, category strin
 
 func findingCategory(rule string) string {
 	switch rule {
-	case "generated_auth", "generated_jobs":
+	case "generated_auth", "generated_jobs", "rbac_policy_export":
 		return "partial"
-	case "generated_graphql", "generated_commands", "generated_policies", "generated_actions":
+	case "generated_graphql", "generated_graphql_policies", "generated_commands", "generated_policies", "generated_actions":
 		return "omitted"
 	case "encrypted_columns", "integrity_tables":
 		return "manual"

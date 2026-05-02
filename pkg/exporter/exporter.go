@@ -998,10 +998,6 @@ func (e *exporter) writeActionSet(set *generator.ActionSet) error {
 		}
 	}
 	for _, gate := range set.Gates {
-		if gate.IsGenerated {
-			e.result.Findings = append(e.result.Findings, Finding{File: gate.SourceFile, Rule: "gate_export_policy_dependency", Message: "generated RBAC gate requires manual review after export"})
-			continue
-		}
 		if err := e.copyActionSource(gate.SourceFile, set.Model, seen); err != nil {
 			return err
 		}
@@ -1071,6 +1067,7 @@ func (e *exporter) rewriteActionSourceToModels(path string, data []byte) ([]byte
 		return nil, err
 	}
 	f.Name.Name = "models"
+	f.Comments = filterPickleComments(f.Comments)
 	var modelAliases []string
 	for _, imp := range f.Imports {
 		p, err := strconv.Unquote(imp.Path.Value)
@@ -1096,11 +1093,26 @@ func (e *exporter) rewriteActionSourceToModels(path string, data []byte) ([]byte
 	for _, alias := range modelAliases {
 		out = strings.ReplaceAll(out, alias+".", "")
 	}
+	if strings.HasSuffix(filepath.Base(path), "_gate_gen.go") {
+		out = strings.ReplaceAll(out, "model interface{ OwnerID() string }", "model any")
+		out = strings.ReplaceAll(out, "model interface {\n\tOwnerID() string\n}", "model any")
+	}
 	formatted, err := format.Source([]byte(out))
 	if err != nil {
 		return []byte(out), err
 	}
 	return formatted, nil
+}
+
+func filterPickleComments(groups []*ast.CommentGroup) []*ast.CommentGroup {
+	var out []*ast.CommentGroup
+	for _, group := range groups {
+		if strings.Contains(group.Text(), "Pickle") {
+			continue
+		}
+		out = append(out, group)
+	}
+	return out
 }
 
 func removeImportsByPath(f *ast.File, path string) {
@@ -1163,19 +1175,6 @@ func (e *exporter) generateActionModelWiring(set *generator.ActionSet) ([]byte, 
 		return []byte(b.String()), fmt.Errorf("formatting exported action wiring for %s: %w", set.Model, err)
 	}
 	return formatted, nil
-}
-
-func safePackageName(name string) string {
-	var b strings.Builder
-	for _, r := range name {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
-			b.WriteRune(r)
-		}
-	}
-	if b.Len() == 0 {
-		return "actions"
-	}
-	return b.String()
 }
 
 func (e *exporter) writeSQLMigrations(tables []*schema.Table, views []*schema.View) error {
@@ -2333,6 +2332,7 @@ func (c *Context) Auth() *AuthInfo { if c.auth == nil { return &AuthInfo{} }; re
 func (c *Context) SetAuth(info *AuthInfo) { c.auth = info }
 func (c *Context) IsAuthenticated() bool { return c.auth != nil && c.auth.UserID != "" }
 func (c *Context) IsAdmin() bool { return c.Auth().Role == "admin" }
+func (c *Context) HasAnyRole(roles ...string) bool { current := c.Auth().Role; for _, role := range roles { if role == current { return true } }; return false }
 func (c *Context) JSON(status int, body any) Response { return Response{Status: status, StatusCode: status, Body: body} }
 func (c *Context) Error(err error) Response { return c.JSON(500, map[string]string{"error": err.Error()}) }
 func (c *Context) BadRequest(msg string) Response { return c.JSON(400, map[string]string{"error": msg}) }

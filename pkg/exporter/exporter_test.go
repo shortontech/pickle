@@ -60,6 +60,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "func ActiveDriverName")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "requires manual implementation after export")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_ban.go"), "DB.Save(user).Error")
+	assertFileContains(t, filepath.Join(out, "app", "models", "user_ban_gate_gen.go"), `HasAnyRole("admin")`)
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "func (m *User) Ban")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "CanBan(ctx, m)")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "models.DB.Model(&models.User{})")
@@ -95,25 +96,17 @@ func (a BanAction) Ban(ctx *pickle.Context, user *models.User) error {
 	return models.QueryUser().Update(user)
 }
 `
-	gate := `package user
+	policy := `package policies
 
-import "github.com/google/uuid"
+type GrantBan_2026_03_24_100000 struct { Policy }
 
-func CanBan(ctx *Context, user *models.User) *uuid.UUID {
-	if ctx.IsAdmin() {
-		id := uuid.New()
-		return &id
-	}
-	return nil
-}
+func (m *GrantBan_2026_03_24_100000) Up() { m.AlterRole("admin").Can("Ban") }
+func (m *GrantBan_2026_03_24_100000) Down() { m.AlterRole("admin").RevokeCan("Ban") }
 `
-	// The gate intentionally uses the package-local Context alias; add the model import
-	// separately so export exercises both support aliases and import rewriting.
-	gate = strings.Replace(gate, `import "github.com/google/uuid"`, "import (\n\t\"github.com/google/uuid\"\n\tmodels \"github.com/shortontech/pickle/testdata/basic-crud/app/models\"\n)", 1)
 	if err := os.WriteFile(filepath.Join(dir, "ban.go"), []byte(action), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "ban_gate.go"), []byte(gate), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(projectDir, "database", "policies", "2026_03_24_100000_grant_ban.go"), []byte(policy), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

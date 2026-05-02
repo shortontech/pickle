@@ -60,9 +60,13 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "func ActiveDriverName")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "requires manual implementation after export")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_ban.go"), "DB.Save(user).Error")
+	assertFileContains(t, filepath.Join(out, "app", "models", "user_promote.go"), "type PromoteResult struct")
+	assertFileContains(t, filepath.Join(out, "app", "models", "user_standalone_gate.go"), "func CanView")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_ban_gate_gen.go"), `HasAnyRole("admin")`)
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "func (m *User) Ban")
+	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "func (m *User) Promote")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "CanBan(ctx, m)")
+	assertFileContains(t, filepath.Join(out, "app", "services", "action_call.go"), "models.BanAction")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "models.DB.Model(&models.User{})")
 	assertNoGoFileContains(t, out, "QueryUser")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "basic-crud/internal/httpx")
@@ -96,17 +100,62 @@ func (a BanAction) Ban(ctx *pickle.Context, user *models.User) error {
 	return models.QueryUser().Update(user)
 }
 `
+	promote := `package user
+
+import (
+	models "github.com/shortontech/pickle/testdata/basic-crud/app/models"
+	pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
+)
+
+type PromoteAction struct { Level string }
+type PromoteResult struct { Level string }
+
+func (a PromoteAction) Promote(ctx *pickle.Context, user *models.User) (*PromoteResult, error) {
+	return &PromoteResult{Level: a.Level}, nil
+}
+`
+	standaloneGate := `package user
+
+import "github.com/google/uuid"
+
+func CanView(ctx *Context, user *User) *uuid.UUID {
+	if ctx.IsAuthenticated() {
+		id := uuid.New()
+		return &id
+	}
+	return nil
+}
+`
 	policy := `package policies
 
 type GrantBan_2026_03_24_100000 struct { Policy }
 
-func (m *GrantBan_2026_03_24_100000) Up() { m.AlterRole("admin").Can("Ban") }
-func (m *GrantBan_2026_03_24_100000) Down() { m.AlterRole("admin").RevokeCan("Ban") }
+func (m *GrantBan_2026_03_24_100000) Up() { m.AlterRole("admin").Can("Ban", "Promote") }
+func (m *GrantBan_2026_03_24_100000) Down() { m.AlterRole("admin").RevokeCan("Ban", "Promote") }
+`
+	callSite := `package services
+
+import (
+	models "github.com/shortontech/pickle/testdata/basic-crud/app/models"
+	useractions "github.com/shortontech/pickle/testdata/basic-crud/database/actions/user"
+)
+
+func NewBanAction() useractions.BanAction { return useractions.BanAction{Reason: "test"} }
+func UseBanAction() models.User { return models.User{} }
 `
 	if err := os.WriteFile(filepath.Join(dir, "ban.go"), []byte(action), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "promote.go"), []byte(promote), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "standalone_gate.go"), []byte(standaloneGate), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(projectDir, "database", "policies", "2026_03_24_100000_grant_ban.go"), []byte(policy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "app", "services", "action_call.go"), []byte(callSite), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

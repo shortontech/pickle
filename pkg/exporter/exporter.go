@@ -318,6 +318,20 @@ func (e *exporter) rewriteGoFile(path string, data []byte) ([]byte, error) {
 		return nil, err
 	}
 
+	modelAlias := "models"
+	var actionImportAliases []string
+	for _, imp := range f.Imports {
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		if p == e.sourceModule+"/app/models" {
+			if imp.Name != nil {
+				modelAlias = imp.Name.Name
+			}
+			break
+		}
+	}
 	for _, imp := range f.Imports {
 		p, err := strconv.Unquote(imp.Path.Value)
 		if err != nil {
@@ -329,7 +343,12 @@ func (e *exporter) rewriteGoFile(path string, data []byte) ([]byte, error) {
 			imp.Name = ast.NewIdent("httpx")
 		case strings.HasPrefix(p, e.sourceModule+"/database/actions/"):
 			imp.Path.Value = strconv.Quote(e.modulePath + "/app/models")
-			imp.Name = ast.NewIdent("models")
+			if imp.Name != nil {
+				actionImportAliases = append(actionImportAliases, imp.Name.Name)
+			} else {
+				actionImportAliases = append(actionImportAliases, filepath.Base(p))
+			}
+			imp.Name = ast.NewIdent(modelAlias)
 		case e.isServiceHTTPImport(p):
 			imp.Path.Value = strconv.Quote(e.modulePath + "/internal/httpx")
 			imp.Name = ast.NewIdent("httpx")
@@ -351,8 +370,14 @@ func (e *exporter) rewriteGoFile(path string, data []byte) ([]byte, error) {
 		if id, ok := sel.X.(*ast.Ident); ok && id.Name == "pickle" {
 			id.Name = "httpx"
 		}
+		for _, alias := range actionImportAliases {
+			if id, ok := sel.X.(*ast.Ident); ok && id.Name == alias {
+				id.Name = modelAlias
+			}
+		}
 		return true
 	})
+	dedupeImports(f)
 
 	if err := e.rewriteQueryStatements(path, fset, f); err != nil {
 		return nil, err
@@ -366,6 +391,31 @@ func (e *exporter) rewriteGoFile(path string, data []byte) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+func dedupeImports(f *ast.File) {
+	seen := map[string]bool{}
+	for _, decl := range f.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.IMPORT {
+			continue
+		}
+		var specs []ast.Spec
+		for _, spec := range gen.Specs {
+			imp := spec.(*ast.ImportSpec)
+			name := ""
+			if imp.Name != nil {
+				name = imp.Name.Name
+			}
+			key := name + "\x00" + imp.Path.Value
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			specs = append(specs, spec)
+		}
+		gen.Specs = specs
+	}
 }
 
 func (e *exporter) isServiceHTTPImport(path string) bool {

@@ -13,6 +13,7 @@ import (
 
 func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
+	writeTestAction(t, projectDir)
 	out := filepath.Join(t.TempDir(), "exported")
 	res, err := Export(Options{
 		ProjectDir:   projectDir,
@@ -31,6 +32,9 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	}
 	if !hasFinding(res.Findings, "generated_policies") {
 		t.Fatalf("expected generated_policies finding, got %+v", res.Findings)
+	}
+	if !hasFinding(res.Findings, "actions_audit") {
+		t.Fatalf("expected actions_audit finding, got %+v", res.Findings)
 	}
 	assertFileContains(t, filepath.Join(out, "go.mod"), "gorm.io/gorm")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user.go"), "type User struct")
@@ -55,6 +59,9 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "func DefaultAuthMiddleware")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "func ActiveDriverName")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "requires manual implementation after export")
+	assertFileContains(t, filepath.Join(out, "app", "models", "user_ban.go"), "DB.Save(user).Error")
+	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "func (m *User) Ban")
+	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "CanBan(ctx, m)")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "models.DB.Model(&models.User{})")
 	assertNoGoFileContains(t, out, "QueryUser")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "basic-crud/internal/httpx")
@@ -66,6 +73,49 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertNoGoFileContains(t, out, "PICKLE_")
 	assertFileContains(t, filepath.Join(out, "go.sum"), "gorm.io/gorm")
 	runExported(t, out, "go", "test", "./...")
+}
+
+func writeTestAction(t *testing.T, projectDir string) {
+	t.Helper()
+	dir := filepath.Join(projectDir, "database", "actions", "user")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	action := `package user
+
+import (
+	models "github.com/shortontech/pickle/testdata/basic-crud/app/models"
+	pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
+)
+
+type BanAction struct { Reason string }
+
+func (a BanAction) Ban(ctx *pickle.Context, user *models.User) error {
+	user.Name = a.Reason
+	return models.QueryUser().Update(user)
+}
+`
+	gate := `package user
+
+import "github.com/google/uuid"
+
+func CanBan(ctx *Context, user *models.User) *uuid.UUID {
+	if ctx.IsAdmin() {
+		id := uuid.New()
+		return &id
+	}
+	return nil
+}
+`
+	// The gate intentionally uses the package-local Context alias; add the model import
+	// separately so export exercises both support aliases and import rewriting.
+	gate = strings.Replace(gate, `import "github.com/google/uuid"`, "import (\n\t\"github.com/google/uuid\"\n\tmodels \"github.com/shortontech/pickle/testdata/basic-crud/app/models\"\n)", 1)
+	if err := os.WriteFile(filepath.Join(dir, "ban.go"), []byte(action), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ban_gate.go"), []byte(gate), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestExportLedgerCompiles(t *testing.T) {

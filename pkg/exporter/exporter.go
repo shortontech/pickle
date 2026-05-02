@@ -132,6 +132,9 @@ func Export(opts Options) (*Result, error) {
 	if err := ex.writeModels(tables, views); err != nil {
 		return nil, err
 	}
+	if err := ex.writeActions(); err != nil {
+		return nil, err
+	}
 	if err := ex.writeSQLMigrations(tables, views); err != nil {
 		return nil, err
 	}
@@ -278,6 +281,7 @@ func shouldSkipDir(rel string) bool {
 		"app/commands":      true,
 		"app/http/auth":     true,
 		"database/policies": true,
+		"database/actions":  true,
 	}
 	if skip[filepath.ToSlash(rel)] {
 		return true
@@ -323,6 +327,9 @@ func (e *exporter) rewriteGoFile(path string, data []byte) ([]byte, error) {
 		case p == e.sourceModule+"/app/http":
 			imp.Path.Value = strconv.Quote(e.modulePath + "/internal/httpx")
 			imp.Name = ast.NewIdent("httpx")
+		case strings.HasPrefix(p, e.sourceModule+"/database/actions/"):
+			imp.Path.Value = strconv.Quote(e.modulePath + "/app/models")
+			imp.Name = ast.NewIdent("models")
 		case e.isServiceHTTPImport(p):
 			imp.Path.Value = strconv.Quote(e.modulePath + "/internal/httpx")
 			imp.Name = ast.NewIdent("httpx")
@@ -466,6 +473,18 @@ func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, 
 		for i, result := range s.Results {
 			call, ok := result.(*ast.CallExpr)
 			if !ok {
+				continue
+			}
+			chain, chainOK, err := parseQueryChain(call)
+			if err != nil {
+				return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+			}
+			if chainOK {
+				expr, err := e.gormExpr(chain)
+				if err != nil {
+					return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+				}
+				s.Results[i] = expr
 				continue
 			}
 			terminal, ok, err := parseQueryVarTerminal(call, queryVars)
@@ -940,6 +959,223 @@ func (e *exporter) writeModels(tables []*schema.Table, views []*schema.View) err
 		}
 	}
 	return nil
+}
+
+func (e *exporter) writeActions() error {
+	actionsDir := filepath.Join(e.project.Dir, "database", "actions")
+	sets, err := generator.ScanActions(actionsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("scanning actions: %w", err)
+	}
+	if len(sets) == 0 {
+		return nil
+	}
+	var models []string
+	for model := range sets {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	for _, model := range models {
+		set := sets[model]
+		if err := e.writeActionSet(set); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *exporter) writeActionSet(set *generator.ActionSet) error {
+	if err := generator.ValidateActions(set); err != nil {
+		e.result.Findings = append(e.result.Findings, Finding{File: filepath.Join("database", "actions", set.Model), Rule: "action_export_unsupported_signature", Message: err.Error()})
+	}
+	seen := map[string]bool{}
+	for _, action := range set.Actions {
+		if err := e.copyActionSource(action.SourceFile, set.Model, seen); err != nil {
+			return err
+		}
+	}
+	for _, gate := range set.Gates {
+		if gate.IsGenerated {
+			e.result.Findings = append(e.result.Findings, Finding{File: gate.SourceFile, Rule: "gate_export_policy_dependency", Message: "generated RBAC gate requires manual review after export"})
+			continue
+		}
+		if err := e.copyActionSource(gate.SourceFile, set.Model, seen); err != nil {
+			return err
+		}
+	}
+	if len(seen) > 0 {
+		if err := e.writeActionSupport(set.Model); err != nil {
+			return err
+		}
+	}
+	if len(set.Actions) > 0 {
+		data, err := e.generateActionModelWiring(set)
+		if err != nil {
+			return err
+		}
+		if err := e.writeFile(filepath.Join("app", "models", modelFileName(set.Model)+"_actions.go"), data); err != nil {
+			return err
+		}
+		e.result.Findings = append(e.result.Findings, Finding{File: filepath.Join("database", "actions", set.Model), Rule: "actions_audit", Message: "actions are exported as plain methods; audit behavior needs manual review"})
+	}
+	return nil
+}
+
+func (e *exporter) copyActionSource(sourceFile, model string, seen map[string]bool) error {
+	if seen[sourceFile] {
+		return nil
+	}
+	seen[sourceFile] = true
+	data, err := os.ReadFile(filepath.Join(e.project.Dir, sourceFile))
+	if err != nil {
+		return err
+	}
+	rewritten, err := e.rewriteGoFile(filepath.Join(e.project.Dir, sourceFile), data)
+	if err != nil {
+		return err
+	}
+	rewritten, err = e.rewriteActionSourceToModels(filepath.Join(e.project.Dir, sourceFile), rewritten)
+	if err != nil {
+		return err
+	}
+	return e.writeFile(filepath.Join("app", "models", modelFileName(model)+"_"+filepath.Base(sourceFile)), rewritten)
+}
+
+func (e *exporter) writeActionSupport(model string) error {
+	src := fmt.Sprintf(`package models
+
+import (
+	"errors"
+
+	"%s/internal/httpx"
+)
+
+type Context = httpx.Context
+
+var ErrUnauthorized = errors.New("unauthorized")
+`, e.modulePath)
+	formatted, err := format.Source([]byte(src))
+	if err != nil {
+		return err
+	}
+	return e.writeFile(filepath.Join("app", "models", "actions_support.go"), formatted)
+}
+
+func (e *exporter) rewriteActionSourceToModels(path string, data []byte) ([]byte, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, data, parser.ParseComments)
+	if err != nil {
+		return nil, err
+	}
+	f.Name.Name = "models"
+	var modelAliases []string
+	for _, imp := range f.Imports {
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		if p == e.modulePath+"/app/models" {
+			if imp.Name != nil {
+				modelAliases = append(modelAliases, imp.Name.Name)
+			} else {
+				modelAliases = append(modelAliases, "models")
+			}
+		}
+	}
+	if len(modelAliases) > 0 {
+		removeImportsByPath(f, e.modulePath+"/app/models")
+	}
+	var buf bytes.Buffer
+	if err := format.Node(&buf, fset, f); err != nil {
+		return nil, err
+	}
+	out := buf.String()
+	for _, alias := range modelAliases {
+		out = strings.ReplaceAll(out, alias+".", "")
+	}
+	formatted, err := format.Source([]byte(out))
+	if err != nil {
+		return []byte(out), err
+	}
+	return formatted, nil
+}
+
+func removeImportsByPath(f *ast.File, path string) {
+	var decls []ast.Decl
+	for _, decl := range f.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.IMPORT {
+			decls = append(decls, decl)
+			continue
+		}
+		var specs []ast.Spec
+		for _, spec := range gen.Specs {
+			imp := spec.(*ast.ImportSpec)
+			p, _ := strconv.Unquote(imp.Path.Value)
+			if p != path {
+				specs = append(specs, spec)
+			}
+		}
+		gen.Specs = specs
+		if len(gen.Specs) > 0 {
+			decls = append(decls, gen)
+		}
+	}
+	f.Decls = decls
+}
+
+func (e *exporter) generateActionModelWiring(set *generator.ActionSet) ([]byte, error) {
+	structName := tableToStruct(set.Model)
+	var b strings.Builder
+	b.WriteString("package models\n\n")
+	b.WriteString("import (\n")
+	b.WriteString(fmt.Sprintf("\t\"%s/internal/httpx\"\n", e.modulePath))
+	b.WriteString(")\n\n")
+	for _, action := range set.Actions {
+		resultType := action.ResultType
+		b.WriteString(fmt.Sprintf("func (m *%s) %s(ctx *httpx.Context, action %s) ", structName, action.Name, action.StructName))
+		if action.HasResult {
+			b.WriteString(fmt.Sprintf("(%s, error) {\n", resultType))
+		} else {
+			b.WriteString("error {\n")
+		}
+		b.WriteString(fmt.Sprintf("\troleID := Can%s(ctx, m)\n", action.Name))
+		b.WriteString("\tif roleID == nil {\n")
+		if action.HasResult {
+			b.WriteString("\t\treturn nil, ErrUnauthorized\n")
+		} else {
+			b.WriteString("\t\treturn ErrUnauthorized\n")
+		}
+		b.WriteString("\t}\n")
+		b.WriteString("\t_ = roleID\n")
+		if action.HasResult {
+			b.WriteString(fmt.Sprintf("\treturn action.%s(ctx, m)\n", action.Name))
+		} else {
+			b.WriteString(fmt.Sprintf("\treturn action.%s(ctx, m)\n", action.Name))
+		}
+		b.WriteString("}\n\n")
+	}
+	formatted, err := format.Source([]byte(b.String()))
+	if err != nil {
+		return []byte(b.String()), fmt.Errorf("formatting exported action wiring for %s: %w", set.Model, err)
+	}
+	return formatted, nil
+}
+
+func safePackageName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "actions"
+	}
+	return b.String()
 }
 
 func (e *exporter) writeSQLMigrations(tables []*schema.Table, views []*schema.View) error {
@@ -1460,7 +1696,6 @@ func (e *exporter) addGeneratedSubsystemFindings() {
 		{"app/jobs", "generated_jobs", "scheduler runtime is exported with minimal standalone support in v1"},
 		{"app/commands", "generated_commands", "Pickle command runtime is not lowered in v1"},
 		{"database/policies", "generated_policies", "RBAC and GraphQL policy runners are not lowered in v1"},
-		{"database/actions", "generated_actions", "action gate and audit wiring is not lowered in v1"},
 	}
 	for _, c := range checks {
 		if _, err := os.Stat(filepath.Join(e.project.Dir, c.path)); err == nil {
@@ -2096,6 +2331,8 @@ func (c *Context) Param(name string) string { return c.params[name] }
 func (c *Context) BearerToken() string { h := c.request.Header.Get("Authorization"); parts := strings.Fields(h); if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") { return parts[1] }; return "" }
 func (c *Context) Auth() *AuthInfo { if c.auth == nil { return &AuthInfo{} }; return c.auth }
 func (c *Context) SetAuth(info *AuthInfo) { c.auth = info }
+func (c *Context) IsAuthenticated() bool { return c.auth != nil && c.auth.UserID != "" }
+func (c *Context) IsAdmin() bool { return c.Auth().Role == "admin" }
 func (c *Context) JSON(status int, body any) Response { return Response{Status: status, StatusCode: status, Body: body} }
 func (c *Context) Error(err error) Response { return c.JSON(500, map[string]string{"error": err.Error()}) }
 func (c *Context) BadRequest(msg string) Response { return c.JSON(400, map[string]string{"error": msg}) }

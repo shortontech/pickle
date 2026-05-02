@@ -313,6 +313,36 @@ func TestGenerateSQLMigrationsLowersCapturedOperations(t *testing.T) {
 	}
 }
 
+func TestGenerateSQLMigrationsLowersRawSQLWithFinding(t *testing.T) {
+	ex := &exporter{result: &Result{}, migrations: []generator.MigrationOps{
+		{
+			Name: "SeedUsers_2026_02_21_100000",
+			Up: []generator.MigrationOperation{
+				{Type: "raw_sql", SQL: "INSERT INTO users (id, name) VALUES (1, 'admin');"},
+			},
+			Down: []generator.MigrationOperation{
+				{Type: "raw_sql", SQL: "DELETE FROM users WHERE id = 1;"},
+			},
+		},
+	}}
+	migrations, err := ex.generateSQLMigrations(nil, nil)
+	if err != nil {
+		t.Fatalf("generateSQLMigrations: %v", err)
+	}
+	if len(migrations) != 1 {
+		t.Fatalf("got %d migrations, want 1", len(migrations))
+	}
+	if !strings.Contains(migrations[0].Up, "INSERT INTO users") {
+		t.Fatalf("up migration missing raw SQL:\n%s", migrations[0].Up)
+	}
+	if !strings.Contains(migrations[0].Down, "DELETE FROM users") {
+		t.Fatalf("down migration missing raw SQL:\n%s", migrations[0].Down)
+	}
+	if !hasFinding(ex.result.Findings, "raw_sql_migration") {
+		t.Fatalf("expected raw_sql_migration finding, got %+v", ex.result.Findings)
+	}
+}
+
 func TestRewriteMutableQueryVariable(t *testing.T) {
 	ex := &exporter{
 		sourceModule: "example.com/app",

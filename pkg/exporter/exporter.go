@@ -1211,6 +1211,9 @@ func (e *exporter) generateSQLMigrations(tables []*schema.Table, views []*schema
 			if err != nil {
 				return nil, fmt.Errorf("unsupported migration export for %s: %w", migration.Name, err)
 			}
+			if migrationHasRawSQL(migration) {
+				e.result.Findings = append(e.result.Findings, Finding{File: "database/migrations", Rule: "raw_sql_migration", Message: fmt.Sprintf("migration %s contains raw SQL; exported statements need driver-specific review", migration.Name)})
+			}
 			out = append(out, sqlMigration{Name: migrationExportNameFromStruct(migration.Name), Up: up, Down: down})
 		}
 		return out, nil
@@ -1256,6 +1259,15 @@ func (e *exporter) generateSQLMigrations(tables []*schema.Table, views []*schema
 		}
 	}
 	return out, nil
+}
+
+func migrationHasRawSQL(migration generator.MigrationOps) bool {
+	for _, op := range append(migration.Up, migration.Down...) {
+		if op.Type == "raw_sql" {
+			return true
+		}
+	}
+	return false
 }
 
 func sqlForMigrationOps(ops []generator.MigrationOperation) (string, error) {
@@ -1316,7 +1328,10 @@ func sqlForMigrationOp(op generator.MigrationOperation) (string, error) {
 	case "drop_view":
 		return dropViewSQL(op.Table), nil
 	case "raw_sql":
-		return "", fmt.Errorf("raw-sql migrations are not lowered yet")
+		if strings.TrimSpace(op.SQL) == "" {
+			return "", fmt.Errorf("raw_sql operation missing SQL")
+		}
+		return strings.TrimRight(strings.TrimSpace(op.SQL), ";"), nil
 	default:
 		return "", fmt.Errorf("%s migrations are not lowered yet", op.Type)
 	}

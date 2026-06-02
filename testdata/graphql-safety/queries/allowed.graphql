@@ -1,0 +1,13 @@
+query AllowedUsers {
+  users(page: { first: 25 }) {
+    edges {
+      node {
+        id
+        name
+      }
+    }
+    pageInfo {
+      hasNextPage
+    }
+  }
+}

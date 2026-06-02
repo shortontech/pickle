@@ -162,3 +162,50 @@ func TestGraphQLSchemaWithEnums(t *testing.T) {
 		t.Error("UpdatePostInput.status should use PostStatus enum type")
 	}
 }
+
+func TestGraphQLTypesRegistersFieldCosts(t *testing.T) {
+	tables := []*schema.Table{
+		{
+			Name: "users",
+			Columns: []*schema.Column{
+				{Name: "id", Type: schema.UUID, IsPrimaryKey: true},
+				{Name: "name", Type: schema.String},
+			},
+		},
+		{
+			Name: "posts",
+			Columns: []*schema.Column{
+				{Name: "id", Type: schema.UUID, IsPrimaryKey: true},
+				{Name: "user_id", Type: schema.UUID},
+				{Name: "title", Type: schema.String},
+			},
+		},
+	}
+	rels := []SchemaRelationship{{ParentTable: "users", ChildTable: "posts", Type: "has_many"}}
+
+	plans := legacyGraphQLModelPlans(tables)
+	plans[0].Relationships = map[string]DerivedRelationshipExposure{
+		"posts": {Name: "posts", Cost: 13, MaxPageSize: 55},
+	}
+	src, err := GenerateGraphQLTypesWithPlans(plans, nil, "graphql", rels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+
+	if !strings.Contains(s, "registerGraphQLFieldCosts") {
+		t.Error("types should register generated field costs")
+	}
+	if !strings.Contains(s, `"User.posts"`) {
+		t.Error("types should include relationship field cost metadata")
+	}
+	if !strings.Contains(s, "IsRelation: true") || !strings.Contains(s, "IsList: true") {
+		t.Error("has_many relationship cost should be relation list metadata")
+	}
+	if !strings.Contains(s, "BaseCost: 13") || !strings.Contains(s, "MaxLimit: 55") {
+		t.Error("custom relationship budget should affect generated metadata")
+	}
+	if !strings.Contains(s, `"User.id"`) {
+		t.Error("types should include scalar field cost metadata")
+	}
+}

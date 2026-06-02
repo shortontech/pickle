@@ -5,18 +5,21 @@ import (
 	"testing"
 )
 
-func TestHandlerGeneratorIncludesDepthLimiting(t *testing.T) {
+func TestHandlerGeneratorIncludesQueryBudgeting(t *testing.T) {
 	src, err := GenerateGraphQLHandler("graphql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(src)
 
-	if !strings.Contains(s, "queryDepth") {
-		t.Error("handler should include query depth check")
+	if !strings.Contains(s, "enforceQueryBudget") {
+		t.Error("handler should enforce query budget")
 	}
-	if !strings.Contains(s, "maxQueryDepth") {
-		t.Error("handler should reference maxQueryDepth")
+	if !strings.Contains(s, "defaultQueryBudget") {
+		t.Error("handler should use the default query budget")
+	}
+	if !strings.Contains(s, "ctx.queryStats = stats") {
+		t.Error("handler should store query stats before execution")
 	}
 }
 

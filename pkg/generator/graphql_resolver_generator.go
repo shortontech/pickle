@@ -12,8 +12,25 @@ import (
 // GenerateGraphQLResolvers generates resolver_gen.go with query dispatch,
 // per-type field resolvers, filter/sort application, and object resolution helpers.
 func GenerateGraphQLResolvers(tables []*schema.Table, relationships []SchemaRelationship, modelsImport, packageName string) ([]byte, error) {
+	return GenerateGraphQLResolversWithPlans(legacyGraphQLModelPlans(tables), relationships, modelsImport, packageName)
+}
+
+// GenerateGraphQLResolversWithPlans generates resolver_gen.go using exact
+// operation-level exposure plans.
+func GenerateGraphQLResolversWithPlans(plans []GraphQLModelPlan, relationships []SchemaRelationship, modelsImport, packageName string) ([]byte, error) {
+	var tables []*schema.Table
+	for _, plan := range plans {
+		if plan.Table != nil {
+			tables = append(tables, plan.Table)
+		}
+	}
+	exposedTables := tableSetFromPlans(plans)
+
 	relByParent := map[string][]SchemaRelationship{}
 	for _, rel := range relationships {
+		if !exposedTables[rel.ParentTable] || !exposedTables[rel.ChildTable] {
+			continue
+		}
 		relByParent[rel.ParentTable] = append(relByParent[rel.ParentTable], rel)
 	}
 
@@ -40,19 +57,35 @@ func GenerateGraphQLResolvers(tables []*schema.Table, relationships []SchemaRela
 	// Query dispatch
 	b.WriteString("func (r *RootResolver) resolveQuery(ctx *ResolveContext, field Field) (any, error) {\n")
 	b.WriteString("\tswitch field.Name {\n")
-	for _, tbl := range tables {
+	for _, plan := range plans {
+		tbl := plan.Table
+		if tbl == nil {
+			continue
+		}
 		plural := snakeToCamel(tbl.Name)
 		singular := snakeToCamel(strings.TrimSuffix(tbl.Name, "s"))
-		b.WriteString(fmt.Sprintf("\tcase \"%s\":\n\t\treturn r.query%s(ctx, field)\n", plural, tableToStructName(tbl.Name)+"List"))
-		b.WriteString(fmt.Sprintf("\tcase \"%s\":\n\t\treturn r.query%s(ctx, field)\n", singular, tableToStructName(tbl.Name)))
+		if operationAllowed(plan, "list") {
+			b.WriteString(fmt.Sprintf("\tcase \"%s\":\n\t\treturn r.query%s(ctx, field)\n", plural, tableToStructName(tbl.Name)+"List"))
+		}
+		if operationAllowed(plan, "show") {
+			b.WriteString(fmt.Sprintf("\tcase \"%s\":\n\t\treturn r.query%s(ctx, field)\n", singular, tableToStructName(tbl.Name)))
+		}
 	}
 	b.WriteString("\tdefault:\n\t\treturn nil, fmt.Errorf(\"unknown query field: %s\", field.Name)\n")
 	b.WriteString("\t}\n}\n\n")
 
 	// Per-table query resolvers
-	for _, tbl := range tables {
-		writeListResolver(&b, tbl)
-		writeSingleResolver(&b, tbl)
+	for _, plan := range plans {
+		tbl := plan.Table
+		if tbl == nil {
+			continue
+		}
+		if operationAllowed(plan, "list") {
+			writeListResolver(&b, tbl)
+		}
+		if operationAllowed(plan, "show") {
+			writeSingleResolver(&b, tbl)
+		}
 		writeFilterApplier(&b, tbl)
 		writeSortApplier(&b, tbl)
 		writeObjectResolver(&b, tbl, relByParent[tbl.Name])
@@ -78,7 +111,9 @@ func writeListResolver(b *bytes.Buffer, tbl *schema.Table) {
 	// Apply filters
 	b.WriteString(fmt.Sprintf("\tif filterArg, ok := field.Args[\"filter\"]; ok && filterArg != nil {\n"))
 	b.WriteString(fmt.Sprintf("\t\tif filterMap, ok := filterArg.(map[string]any); ok {\n"))
-	b.WriteString(fmt.Sprintf("\t\t\tapply%sFilter(q, filterMap)\n", structName))
+	b.WriteString(fmt.Sprintf("\t\t\tif err := apply%sFilter(q, filterMap); err != nil {\n", structName))
+	b.WriteString("\t\t\t\treturn nil, BadInput(err.Error())\n")
+	b.WriteString("\t\t\t}\n")
 	b.WriteString("\t\t}\n")
 	b.WriteString("\t}\n\n")
 
@@ -90,10 +125,11 @@ func writeListResolver(b *bytes.Buffer, tbl *schema.Table) {
 	b.WriteString("\t}\n\n")
 
 	// Pagination
-	b.WriteString("\tpage := extractPage(field.Args)\n")
+	b.WriteString("\tpage, err := extractPage(field.Args)\n")
+	b.WriteString("\tif err != nil {\n\t\treturn nil, BadInput(err.Error())\n\t}\n")
 	b.WriteString("\tq.Limit(page.First + 1)\n")
 	b.WriteString("\tif page.After != \"\" {\n")
-	b.WriteString("\t\tq.Offset(decodeCursor(page.After))\n")
+	b.WriteString("\t\tq.Offset(page.Offset)\n")
 	b.WriteString("\t}\n\n")
 
 	b.WriteString("\trecords, err := q.All()\n")
@@ -129,7 +165,7 @@ func writeFilterApplier(b *bytes.Buffer, tbl *schema.Table) {
 	structName := tableToStructName(tbl.Name)
 	queryType := structName + "Query"
 
-	b.WriteString(fmt.Sprintf("func apply%sFilter(q *models.%s, filter map[string]any) {\n", structName, queryType))
+	b.WriteString(fmt.Sprintf("func apply%sFilter(q *models.%s, filter map[string]any) error {\n", structName, queryType))
 
 	for _, col := range tbl.Columns {
 		if isExcludedFromGraphQL(col) {
@@ -173,6 +209,7 @@ func writeFilterApplier(b *bytes.Buffer, tbl *schema.Table) {
 		b.WriteString("\t}\n")
 	}
 
+	b.WriteString("\treturn nil\n")
 	b.WriteString("}\n\n")
 }
 
@@ -207,6 +244,9 @@ func writeFilterLikeOp(b *bytes.Buffer, goMethod string) {
 
 func writeFilterInOp(b *bytes.Buffer, goMethod string, col *schema.Column) {
 	b.WriteString("\t\t\tif v, ok := fm[\"in\"].([]any); ok {\n")
+	b.WriteString("\t\t\t\tif len(v) > maxGraphQLInputListSize {\n")
+	b.WriteString("\t\t\t\t\treturn fmt.Errorf(\"input list size %d exceeds maximum %d\", len(v), maxGraphQLInputListSize)\n")
+	b.WriteString("\t\t\t\t}\n")
 	switch col.Type {
 	case schema.UUID:
 		b.WriteString("\t\t\t\tuids := make([]uuid.UUID, 0, len(v))\n")

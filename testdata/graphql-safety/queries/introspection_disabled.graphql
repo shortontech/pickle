@@ -1,0 +1,7 @@
+query IntrospectionDisabled {
+  __schema {
+    queryType {
+      name
+    }
+  }
+}

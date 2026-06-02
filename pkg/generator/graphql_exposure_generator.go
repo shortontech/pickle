@@ -19,8 +19,9 @@ type DerivedGraphQLState struct {
 
 // DerivedExposure represents the computed GraphQL exposure set for a single model.
 type DerivedExposure struct {
-	Model      string
-	Operations []string // "list", "show", "create", "update", "delete"
+	Model         string
+	Operations    []string // "list", "show", "create", "update", "delete"
+	Relationships []DerivedRelationshipExposure
 }
 
 // DerivedAction represents a registered custom controller action.
@@ -28,12 +29,90 @@ type DerivedAction struct {
 	Name string
 }
 
+// DerivedRelationshipExposure is optional relationship budget metadata derived
+// from GraphQL exposure policies.
+type DerivedRelationshipExposure struct {
+	Name        string
+	Cost        int
+	MaxPageSize int
+}
+
 // ExposedModel pairs a model with its table definition and the GraphQL
 // operations that should be generated for it.
 type ExposedModel struct {
-	Model      string
-	Table      *schema.Table
-	Operations []string
+	Model         string
+	Table         *schema.Table
+	Operations    []string
+	Relationships []DerivedRelationshipExposure
+}
+
+// GraphQLModelPlan carries the exposed table plus the exact operations that
+// generation is allowed to emit for it.
+type GraphQLModelPlan struct {
+	Table         *schema.Table
+	Operations    map[string]bool
+	Relationships map[string]DerivedRelationshipExposure
+}
+
+func legacyGraphQLModelPlans(tables []*schema.Table) []GraphQLModelPlan {
+	var plans []GraphQLModelPlan
+	for _, tbl := range tables {
+		plans = append(plans, GraphQLModelPlan{
+			Table:         tbl,
+			Relationships: map[string]DerivedRelationshipExposure{},
+			Operations: map[string]bool{
+				"list":   true,
+				"show":   true,
+				"create": true,
+				"update": true,
+				"delete": true,
+			},
+		})
+	}
+	return plans
+}
+
+func exposedGraphQLModelPlans(models []*ExposedModel) []GraphQLModelPlan {
+	var plans []GraphQLModelPlan
+	for _, model := range models {
+		ops := map[string]bool{}
+		for _, op := range model.Operations {
+			ops[op] = true
+		}
+		rels := map[string]DerivedRelationshipExposure{}
+		for _, rel := range model.Relationships {
+			rels[rel.Name] = rel
+		}
+		plans = append(plans, GraphQLModelPlan{
+			Table:         model.Table,
+			Operations:    ops,
+			Relationships: rels,
+		})
+	}
+	return plans
+}
+
+func operationAllowed(plan GraphQLModelPlan, op string) bool {
+	return plan.Operations != nil && plan.Operations[op]
+}
+
+func planForTable(plans []GraphQLModelPlan, tableName string) (GraphQLModelPlan, bool) {
+	for _, plan := range plans {
+		if plan.Table != nil && plan.Table.Name == tableName {
+			return plan, true
+		}
+	}
+	return GraphQLModelPlan{}, false
+}
+
+func tableSetFromPlans(plans []GraphQLModelPlan) map[string]bool {
+	set := map[string]bool{}
+	for _, plan := range plans {
+		if plan.Table != nil {
+			set[plan.Table.Name] = true
+		}
+	}
+	return set
 }
 
 // FilterExposedModels returns only the tables that have been exposed via
@@ -55,23 +134,28 @@ func FilterExposedModels(tables []*schema.Table, state DerivedGraphQLState) []*E
 			continue
 		}
 		result = append(result, &ExposedModel{
-			Model:      exp.Model,
-			Table:      tbl,
-			Operations: exp.Operations,
+			Model:         exp.Model,
+			Table:         tbl,
+			Operations:    exp.Operations,
+			Relationships: exp.Relationships,
 		})
 	}
 	return result
 }
 
 var (
-	reExposeDir          = regexp.MustCompile(`(?m)\.Expose\("([^"]+)"`)
-	reAlterExposeDir     = regexp.MustCompile(`(?m)\.AlterExpose\("([^"]+)"`)
-	reUnexposeDir        = regexp.MustCompile(`(?m)\.Unexpose\("([^"]+)"\)`)
-	reControllerAction   = regexp.MustCompile(`(?m)\.ControllerAction\("([^"]+)"`)
-	reRemoveAction       = regexp.MustCompile(`(?m)\.RemoveAction\("([^"]+)"\)`)
-	reExposeOps          = regexp.MustCompile(`e\.(List|Show|Create|Update|Delete)\(\)`)
-	reRemoveOps          = regexp.MustCompile(`e\.(RemoveList|RemoveShow|RemoveCreate|RemoveUpdate|RemoveDelete)\(\)`)
-	reExposeAll          = regexp.MustCompile(`e\.All\(\)`)
+	reExposeDir        = regexp.MustCompile(`(?m)\.Expose\("([^"]+)"`)
+	reAlterExposeDir   = regexp.MustCompile(`(?m)\.AlterExpose\("([^"]+)"`)
+	reUnexposeDir      = regexp.MustCompile(`(?m)\.Unexpose\("([^"]+)"\)`)
+	reControllerAction = regexp.MustCompile(`(?m)\.ControllerAction\("([^"]+)"`)
+	reRemoveAction     = regexp.MustCompile(`(?m)\.RemoveAction\("([^"]+)"\)`)
+	reExposeOps        = regexp.MustCompile(`e\.(List|Show|Create|Update|Delete)\(\)`)
+	reRemoveOps        = regexp.MustCompile(`e\.(RemoveList|RemoveShow|RemoveCreate|RemoveUpdate|RemoveDelete)\(\)`)
+	reExposeAll        = regexp.MustCompile(`e\.All\(\)`)
+	reUpMethod         = regexp.MustCompile(`func\s*\([^)]*\)\s*Up\s*\(\)\s*\{`)
+	reRelationship     = regexp.MustCompile(`e\.Relationship\("([^"]+)"`)
+	reRelationshipCost = regexp.MustCompile(`r\.Cost\(([0-9]+)\)`)
+	reRelationshipMax  = regexp.MustCompile(`r\.MaxPageSize\(([0-9]+)\)`)
 )
 
 // DeriveGraphQLStateFromDir reads GraphQL policy files from disk using string
@@ -96,6 +180,7 @@ func DeriveGraphQLStateFromDir(dir string) DerivedGraphQLState {
 	sort.Strings(files)
 
 	exposures := map[string]map[string]bool{} // model -> ops
+	relationships := map[string]map[string]DerivedRelationshipExposure{}
 	actions := map[string]bool{}
 	var modelOrder []string
 
@@ -104,7 +189,10 @@ func DeriveGraphQLStateFromDir(dir string) DerivedGraphQLState {
 		if err != nil {
 			continue
 		}
-		src := string(data)
+		src := upMethodBody(string(data))
+		if src == "" {
+			continue
+		}
 
 		// Process Expose calls: extract model name and find operations in the closure
 		for _, match := range reExposeDir.FindAllStringSubmatchIndex(src, -1) {
@@ -126,6 +214,7 @@ func DeriveGraphQLStateFromDir(dir string) DerivedGraphQLState {
 					exposures[model][strings.ToLower(opMatch[1])] = true
 				}
 			}
+			collectRelationshipExposures(model, closure, relationships)
 		}
 
 		// Process AlterExpose calls
@@ -142,6 +231,7 @@ func DeriveGraphQLStateFromDir(dir string) DerivedGraphQLState {
 			for _, opMatch := range reExposeOps.FindAllStringSubmatch(closure, -1) {
 				exposures[model][strings.ToLower(opMatch[1])] = true
 			}
+			collectRelationshipExposures(model, closure, relationships)
 			// Remove ops
 			for _, opMatch := range reRemoveOps.FindAllStringSubmatch(closure, -1) {
 				op := strings.ToLower(strings.TrimPrefix(opMatch[1], "Remove"))
@@ -181,10 +271,14 @@ func DeriveGraphQLStateFromDir(dir string) DerivedGraphQLState {
 					opList = append(opList, o)
 				}
 			}
-			state.Exposures = append(state.Exposures, DerivedExposure{
-				Model:      model,
-				Operations: opList,
+			exp := DerivedExposure{Model: model, Operations: opList}
+			for _, rel := range relationships[model] {
+				exp.Relationships = append(exp.Relationships, rel)
+			}
+			sort.Slice(exp.Relationships, func(i, j int) bool {
+				return exp.Relationships[i].Name < exp.Relationships[j].Name
 			})
+			state.Exposures = append(state.Exposures, exp)
 		}
 	}
 	for name := range actions {
@@ -194,6 +288,45 @@ func DeriveGraphQLStateFromDir(dir string) DerivedGraphQLState {
 		return state.Actions[i].Name < state.Actions[j].Name
 	})
 	return state
+}
+
+func collectRelationshipExposures(model, closure string, relationships map[string]map[string]DerivedRelationshipExposure) {
+	for _, match := range reRelationship.FindAllStringSubmatchIndex(closure, -1) {
+		name := closure[match[2]:match[3]]
+		relClosureEnd := findClosureEnd(closure, match[1])
+		relClosure := closure[match[1]:relClosureEnd]
+		rel := DerivedRelationshipExposure{Name: name}
+		if cost := reRelationshipCost.FindStringSubmatch(relClosure); len(cost) == 2 {
+			rel.Cost = parsePositiveDecimal(cost[1])
+		}
+		if max := reRelationshipMax.FindStringSubmatch(relClosure); len(max) == 2 {
+			rel.MaxPageSize = parsePositiveDecimal(max[1])
+		}
+		if relationships[model] == nil {
+			relationships[model] = map[string]DerivedRelationshipExposure{}
+		}
+		relationships[model][name] = rel
+	}
+}
+
+func parsePositiveDecimal(s string) int {
+	n := 0
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			return 0
+		}
+		n = n*10 + int(ch-'0')
+	}
+	return n
+}
+
+func upMethodBody(src string) string {
+	match := reUpMethod.FindStringIndex(src)
+	if match == nil {
+		return ""
+	}
+	end := findClosureEnd(src, match[1]-1)
+	return src[match[1]:end]
 }
 
 // findClosureEnd finds the matching closing brace after a position in src.

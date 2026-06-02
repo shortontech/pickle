@@ -21,9 +21,10 @@ type AuthClaims struct {
 
 // ResolveContext carries auth, variables, and dataloaders for a single GraphQL request.
 type ResolveContext struct {
-	auth      *AuthClaims
-	variables map[string]any
-	loaders   any // *DataLoaderRegistry — defined in dataloader_gen.go
+	auth       *AuthClaims
+	variables  map[string]any
+	loaders    any // *DataLoaderRegistry — defined in dataloader_gen.go
+	queryStats *QueryStats
 }
 
 // IsAuthenticated returns true if the request has valid auth.
@@ -89,9 +90,40 @@ type Document struct {
 // Field represents a selected field with arguments and sub-selections.
 type Field struct {
 	Name       string
-	Alias      string         // empty if no alias
+	Alias      string // empty if no alias
 	Args       map[string]any
 	Selections []Field // nested selections
+}
+
+// QueryBudget defines pre-execution GraphQL request limits.
+type QueryBudget struct {
+	MaxDepth             int
+	MaxFields            int
+	MaxAliases           int
+	MaxInputNodes        int
+	MaxComplexity        int
+	MaxRelationshipDepth int
+}
+
+// QueryStats describes the measured shape of a GraphQL request.
+type QueryStats struct {
+	Depth             int
+	Fields            int
+	Aliases           int
+	InputNodes        int
+	Complexity        int
+	RelationshipDepth int
+}
+
+// FieldCost describes generated cost metadata for a GraphQL field.
+type FieldCost struct {
+	TypeName     string
+	FieldName    string
+	BaseCost     int
+	IsList       bool
+	IsRelation   bool
+	DefaultLimit int
+	MaxLimit     int
 }
 
 // ValidationError holds field-level validation errors for GraphQL responses.
@@ -121,6 +153,35 @@ type PageArgs struct {
 	Offset int
 }
 
+const defaultGraphQLPageSize = 25
+const maxGraphQLPageSize = 100
+const maxGraphQLInputListSize = 100
+const maxQueryDepth = 10
+const maxQueryFields = 200
+const maxQueryAliases = 25
+const maxQueryInputNodes = 500
+const maxQueryComplexity = 1000
+const maxGraphQLRelationshipDepth = 3
+
+var generatedFieldCosts = map[string]FieldCost{}
+
+func registerGraphQLFieldCosts(costs map[string]FieldCost) {
+	for k, v := range costs {
+		generatedFieldCosts[k] = v
+	}
+}
+
+func defaultQueryBudget() QueryBudget {
+	return QueryBudget{
+		MaxDepth:             maxQueryDepth,
+		MaxFields:            maxQueryFields,
+		MaxAliases:           maxQueryAliases,
+		MaxInputNodes:        maxQueryInputNodes,
+		MaxComplexity:        maxQueryComplexity,
+		MaxRelationshipDepth: maxGraphQLRelationshipDepth,
+	}
+}
+
 // parseDocument parses a GraphQL query string using gqlparser and converts
 // the resulting AST into Pickle's Document type.
 func parseDocument(schema *ast.Schema, src string) (*Document, error) {
@@ -130,6 +191,9 @@ func parseDocument(schema *ast.Schema, src string) (*Document, error) {
 	}
 	if len(queryDoc.Operations) == 0 {
 		return nil, fmt.Errorf("no operations found in query")
+	}
+	if len(queryDoc.Operations) > 1 {
+		return nil, fmt.Errorf("multiple operations are not supported")
 	}
 	op := queryDoc.Operations[0]
 	opType := strings.ToLower(string(op.Operation))
@@ -239,37 +303,61 @@ func execute(ctx *ResolveContext, root rootResolver, doc *Document) (map[string]
 	return data, errors
 }
 
-// extractPage parses pagination arguments from a GraphQL field's args.
-func extractPage(args map[string]any) PageArgs {
-	p := PageArgs{First: 25} // default page size
+// extractPage parses and validates pagination arguments from a GraphQL field's args.
+func extractPage(args map[string]any) (PageArgs, error) {
+	p := PageArgs{First: defaultGraphQLPageSize}
 	if args == nil {
-		return p
+		return p, nil
 	}
 	pageArg, ok := args["page"]
 	if !ok {
-		return p
+		return p, nil
 	}
 	page, ok := pageArg.(map[string]any)
 	if !ok {
-		return p
+		return p, fmt.Errorf("page must be an object")
+	}
+	hasFirst := page["first"] != nil
+	hasLast := page["last"] != nil
+	if hasFirst && hasLast {
+		return p, fmt.Errorf("page cannot specify both first and last")
 	}
 	if v, ok := page["first"].(string); ok {
-		if n := parseInt(v); n > 0 {
-			p.First = n
+		n, err := parsePositiveInt(v)
+		if err != nil {
+			return p, fmt.Errorf("page.first: %w", err)
 		}
+		if n > maxGraphQLPageSize {
+			return p, fmt.Errorf("page.first %d exceeds maximum %d", n, maxGraphQLPageSize)
+		}
+		p.First = n
 	}
 	if v, ok := page["after"].(string); ok {
+		offset, err := decodeCursor(v)
+		if err != nil {
+			return p, err
+		}
 		p.After = v
+		p.Offset = offset
 	}
 	if v, ok := page["last"].(string); ok {
-		if n := parseInt(v); n > 0 {
-			p.Last = n
+		n, err := parsePositiveInt(v)
+		if err != nil {
+			return p, fmt.Errorf("page.last: %w", err)
 		}
+		if n > maxGraphQLPageSize {
+			return p, fmt.Errorf("page.last %d exceeds maximum %d", n, maxGraphQLPageSize)
+		}
+		p.Last = n
+		p.First = n
 	}
 	if v, ok := page["before"].(string); ok {
+		if _, err := decodeCursor(v); err != nil {
+			return p, err
+		}
 		p.Before = v
 	}
-	return p
+	return p, nil
 }
 
 func parseInt(s string) int {
@@ -284,17 +372,132 @@ func parseInt(s string) int {
 	return n
 }
 
+func parsePositiveInt(s string) (int, error) {
+	n := parseInt(s)
+	if n <= 0 {
+		return 0, fmt.Errorf("must be positive")
+	}
+	return n, nil
+}
+
 // encodeCursor encodes an offset as a cursor string.
 func encodeCursor(offset int) string {
 	return fmt.Sprintf("cursor:%d", offset)
 }
 
 // decodeCursor decodes a cursor string to an offset.
-func decodeCursor(cursor string) int {
+func decodeCursor(cursor string) (int, error) {
 	if !strings.HasPrefix(cursor, "cursor:") {
-		return 0
+		return 0, fmt.Errorf("invalid cursor")
 	}
-	return parseInt(cursor[7:])
+	return parseInt(cursor[7:]), nil
+}
+
+func enforceQueryBudget(doc *Document, budget QueryBudget) (*QueryStats, error) {
+	stats := measureQueryStats(doc.Fields, 1, 0)
+	if stats.Depth > budget.MaxDepth {
+		return stats, fmt.Errorf("query depth %d exceeds maximum %d", stats.Depth, budget.MaxDepth)
+	}
+	if stats.Fields > budget.MaxFields {
+		return stats, fmt.Errorf("query field count %d exceeds maximum %d", stats.Fields, budget.MaxFields)
+	}
+	if stats.Aliases > budget.MaxAliases {
+		return stats, fmt.Errorf("query alias count %d exceeds maximum %d", stats.Aliases, budget.MaxAliases)
+	}
+	if stats.InputNodes > budget.MaxInputNodes {
+		return stats, fmt.Errorf("query input node count %d exceeds maximum %d", stats.InputNodes, budget.MaxInputNodes)
+	}
+	if stats.Complexity > budget.MaxComplexity {
+		return stats, fmt.Errorf("query complexity %d exceeds maximum %d", stats.Complexity, budget.MaxComplexity)
+	}
+	if stats.RelationshipDepth > budget.MaxRelationshipDepth {
+		return stats, fmt.Errorf("relationship depth %d exceeds maximum %d", stats.RelationshipDepth, budget.MaxRelationshipDepth)
+	}
+	return stats, nil
+}
+
+func measureQueryStats(fields []Field, depth, relationshipDepth int) *QueryStats {
+	stats := &QueryStats{Depth: 0}
+	for _, f := range fields {
+		cost := graphQLFieldCost(f)
+		relDepth := relationshipDepth
+		if cost.IsRelation {
+			relDepth++
+		}
+		stats.Fields++
+		if f.Alias != "" {
+			stats.Aliases++
+		}
+		stats.InputNodes += countInputNodes(f.Args)
+		stats.Complexity += fieldComplexity(f, cost)
+		if depth > stats.Depth {
+			stats.Depth = depth
+		}
+		if relDepth > stats.RelationshipDepth {
+			stats.RelationshipDepth = relDepth
+		}
+		child := measureQueryStats(f.Selections, depth+1, relDepth)
+		stats.Fields += child.Fields
+		stats.Aliases += child.Aliases
+		stats.InputNodes += child.InputNodes
+		stats.Complexity += child.Complexity
+		if child.Depth > stats.Depth {
+			stats.Depth = child.Depth
+		}
+		if child.RelationshipDepth > stats.RelationshipDepth {
+			stats.RelationshipDepth = child.RelationshipDepth
+		}
+	}
+	return stats
+}
+
+func graphQLFieldCost(field Field) FieldCost {
+	for _, cost := range generatedFieldCosts {
+		if cost.FieldName == field.Name {
+			return cost
+		}
+	}
+	return FieldCost{FieldName: field.Name, BaseCost: 1}
+}
+
+func fieldComplexity(field Field, cost FieldCost) int {
+	base := cost.BaseCost
+	if base <= 0 {
+		base = 1
+	}
+	if cost.IsList {
+		limit := defaultGraphQLPageSize
+		if pageArg, ok := field.Args["page"].(map[string]any); ok {
+			if v, ok := pageArg["first"].(string); ok {
+				if n := parseInt(v); n > 0 {
+					limit = n
+				}
+			}
+		}
+		return base * limit
+	}
+	return base
+}
+
+func countInputNodes(v any) int {
+	switch x := v.(type) {
+	case nil:
+		return 0
+	case map[string]any:
+		n := len(x)
+		for _, child := range x {
+			n += countInputNodes(child)
+		}
+		return n
+	case []any:
+		n := len(x)
+		for _, child := range x {
+			n += countInputNodes(child)
+		}
+		return n
+	default:
+		return 1
+	}
 }
 
 // selectionsFor finds nested selections by traversing a path of field names.
@@ -564,11 +767,6 @@ func PlaygroundHandler(endpoint string) http.Handler {
 	})
 }
 
-// --- Query Depth Limiting ---
-
-// maxQueryDepth is the default maximum query depth.
-const maxQueryDepth = 10
-
 // queryDepth calculates the depth of a parsed document's field selections.
 func queryDepth(fields []Field) int {
 	max := 0
@@ -596,4 +794,3 @@ func SetIntrospection(allow bool) {
 func isIntrospectionField(name string) bool {
 	return name == "__schema" || name == "__type" || name == "__typename"
 }
-

@@ -68,6 +68,12 @@ func TestDataloaderGeneratorHasMany(t *testing.T) {
 	if !strings.Contains(s, "WhereUserIDIn(ids...)") {
 		t.Error("batch function should call WhereUserIDIn")
 	}
+	if !strings.Contains(s, "q.Limit(maxGraphQLPageSize*len(ids) + 1)") {
+		t.Error("has_many loader should cap relationship query size")
+	}
+	if !strings.Contains(s, "relationship list exceeds maximum") {
+		t.Error("has_many loader should reject overlarge relationship lists")
+	}
 
 	// Visibility field on struct
 	if !strings.Contains(s, "visibility") || !strings.Contains(s, "VisibilityTier") {

@@ -24,6 +24,7 @@ func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []S
 	// Filter to only tables that should be exposed in GraphQL
 	var exposedTables []*schema.Table
 	var exposedModels []*ExposedModel
+	var modelPlans []GraphQLModelPlan
 
 	if exposureState != nil {
 		// Policy-gated mode: only expose tables named in policies
@@ -31,6 +32,7 @@ func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []S
 		for _, em := range exposedModels {
 			exposedTables = append(exposedTables, em.Table)
 		}
+		modelPlans = exposedGraphQLModelPlans(exposedModels)
 	} else {
 		// Legacy mode: all tables with a primary key
 		for _, tbl := range tables {
@@ -38,6 +40,7 @@ func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []S
 				exposedTables = append(exposedTables, tbl)
 			}
 		}
+		modelPlans = legacyGraphQLModelPlans(exposedTables)
 	}
 	tables = exposedTables
 
@@ -52,7 +55,7 @@ func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []S
 	// 2. Schema SDL
 	if !hasOverride(graphqlDir, "schema.go") {
 		fmt.Println("  generating graphql/schema_gen.go")
-		src, err := GenerateGraphQLSchema(tables, relationships, requests, graphqlPackageName)
+		src, err := GenerateGraphQLSchemaWithPlans(modelPlans, relationships, requests, graphqlPackageName)
 		if err != nil {
 			return fmt.Errorf("schema generation: %w", err)
 		}
@@ -64,7 +67,7 @@ func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []S
 	// 3. GQL types
 	if !hasOverride(graphqlDir, "types.go") {
 		fmt.Println("  generating graphql/types_gen.go")
-		src, err := GenerateGraphQLTypes(tables, requests, graphqlPackageName)
+		src, err := GenerateGraphQLTypesWithPlans(modelPlans, requests, graphqlPackageName, relationships)
 		if err != nil {
 			return fmt.Errorf("types generation: %w", err)
 		}
@@ -76,7 +79,7 @@ func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []S
 	// 4. Resolvers
 	if !hasOverride(graphqlDir, "resolver.go") {
 		fmt.Println("  generating graphql/resolver_gen.go")
-		src, err := GenerateGraphQLResolvers(tables, relationships, modelsImport, graphqlPackageName)
+		src, err := GenerateGraphQLResolversWithPlans(modelPlans, relationships, modelsImport, graphqlPackageName)
 		if err != nil {
 			return fmt.Errorf("resolver generation: %w", err)
 		}
@@ -88,7 +91,7 @@ func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []S
 	// 5. Mutations
 	if !hasOverride(graphqlDir, "mutation.go") {
 		fmt.Println("  generating graphql/mutation_gen.go")
-		src, err := GenerateGraphQLMutations(tables, modelsImport, graphqlPackageName, relationships)
+		src, err := GenerateGraphQLMutationsWithPlans(modelPlans, modelsImport, graphqlPackageName, relationships)
 		if err != nil {
 			return fmt.Errorf("mutation generation: %w", err)
 		}
@@ -126,6 +129,10 @@ func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []S
 	// When exposure state is present, only generate CRUD for the specific operations exposed.
 	var crudTables []*schema.Table
 	for _, tbl := range tables {
+		plan, ok := planForTable(modelPlans, tbl.Name)
+		if !ok || (!operationAllowed(plan, "create") && !operationAllowed(plan, "update") && !operationAllowed(plan, "delete")) {
+			continue
+		}
 		if !HasCRUDOverride(graphqlDir, tbl.Name) {
 			crudTables = append(crudTables, tbl)
 		}
@@ -137,6 +144,7 @@ func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []S
 			Relationships: relationships,
 			ModelsImport:  modelsImport,
 			PackageName:   graphqlPackageName,
+			Plans:         modelPlans,
 		})
 		if err != nil {
 			return fmt.Errorf("crud resolver generation: %w", err)

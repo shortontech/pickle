@@ -1,0 +1,19 @@
+query One {
+  users {
+    edges {
+      node {
+        id
+      }
+    }
+  }
+}
+
+query Two {
+  posts {
+    edges {
+      node {
+        id
+      }
+    }
+  }
+}

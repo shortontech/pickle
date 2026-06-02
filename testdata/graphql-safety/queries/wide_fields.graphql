@@ -1,0 +1,20 @@
+query WideFields {
+  users {
+    edges {
+      node {
+        id
+        name
+        email
+        posts {
+          id
+          title
+          body
+          comments {
+            id
+            body
+          }
+        }
+      }
+    }
+  }
+}

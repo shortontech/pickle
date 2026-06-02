@@ -14,13 +14,33 @@ import (
 // GenerateGraphQLMutations generates mutation_gen.go with mutation dispatch
 // and create/update/delete methods. Accepts relationships for nested mutation dispatch.
 func GenerateGraphQLMutations(tables []*schema.Table, modelsImport, packageName string, relationships ...[]SchemaRelationship) ([]byte, error) {
+	return GenerateGraphQLMutationsWithPlans(legacyGraphQLModelPlans(tables), modelsImport, packageName, relationships...)
+}
+
+// GenerateGraphQLMutationsWithPlans generates mutation dispatch using exact
+// operation-level exposure plans.
+func GenerateGraphQLMutationsWithPlans(plans []GraphQLModelPlan, modelsImport, packageName string, relationships ...[]SchemaRelationship) ([]byte, error) {
+	var tables []*schema.Table
+	for _, plan := range plans {
+		if plan.Table != nil {
+			tables = append(tables, plan.Table)
+		}
+	}
 	// Collect imports needed
 	needsTime := false
 	needsDecimal := false
 	needsJSON := false
-	for _, tbl := range tables {
+	needsModels := false
+	for _, plan := range plans {
+		tbl := plan.Table
+		if tbl == nil {
+			continue
+		}
 		if tbl.IsImmutable {
 			continue
+		}
+		if operationAllowed(plan, "create") || operationAllowed(plan, "update") || operationAllowed(plan, "delete") {
+			needsModels = true
 		}
 		for _, col := range tbl.Columns {
 			if isExcludedFromInput(col) {
@@ -48,8 +68,12 @@ func GenerateGraphQLMutations(tables []*schema.Table, modelsImport, packageName 
 	if needsTime {
 		b.WriteString("\t\"time\"\n")
 	}
-	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("\t\"%s\"\n", modelsImport))
+	if needsModels || needsDecimal {
+		b.WriteString("\n")
+	}
+	if needsModels {
+		b.WriteString(fmt.Sprintf("\t\"%s\"\n", modelsImport))
+	}
 	b.WriteString("\t\"github.com/google/uuid\"\n")
 	if needsDecimal {
 		b.WriteString("\t\"github.com/shopspring/decimal\"\n")
@@ -79,43 +103,68 @@ func GenerateGraphQLMutations(tables []*schema.Table, modelsImport, packageName 
 	// Mutation dispatch
 	b.WriteString("func (r *RootResolver) resolveMutation(ctx *ResolveContext, field Field) (any, error) {\n")
 	b.WriteString("\tswitch field.Name {\n")
-	for _, tbl := range tables {
+	for _, plan := range plans {
+		tbl := plan.Table
+		if tbl == nil {
+			continue
+		}
 		if tbl.IsImmutable {
 			continue
 		}
 		structName := tableToStructName(tbl.Name)
-		b.WriteString(fmt.Sprintf("\tcase \"create%s\":\n\t\treturn r.mutationCreate%s(ctx, field)\n", structName, structName))
-		if !tbl.IsAppendOnly {
+		if operationAllowed(plan, "create") {
+			b.WriteString(fmt.Sprintf("\tcase \"create%s\":\n\t\treturn r.mutationCreate%s(ctx, field)\n", structName, structName))
+		}
+		if operationAllowed(plan, "update") && !tbl.IsAppendOnly {
 			b.WriteString(fmt.Sprintf("\tcase \"update%s\":\n\t\treturn r.mutationUpdate%s(ctx, field)\n", structName, structName))
 		}
-		b.WriteString(fmt.Sprintf("\tcase \"delete%s\":\n\t\treturn r.mutationDelete%s(ctx, field)\n", structName, structName))
+		if operationAllowed(plan, "delete") {
+			b.WriteString(fmt.Sprintf("\tcase \"delete%s\":\n\t\treturn r.mutationDelete%s(ctx, field)\n", structName, structName))
+		}
 		// Nested create dispatch (spec 018)
-		if _, ok := childToParent[tbl.Name]; ok {
-			b.WriteString(fmt.Sprintf("\tcase \"createNested%s\":\n\t\treturn r.crudCreateNested%s(ctx, field)\n", structName, structName))
+		if operationAllowed(plan, "create") {
+			_, ok := childToParent[tbl.Name]
+			if ok {
+				b.WriteString(fmt.Sprintf("\tcase \"createNested%s\":\n\t\treturn r.crudCreateNested%s(ctx, field)\n", structName, structName))
+			}
 		}
 	}
 	b.WriteString("\tdefault:\n\t\treturn nil, fmt.Errorf(\"unknown mutation field: %s\", field.Name)\n")
 	b.WriteString("\t}\n}\n\n")
 
 	// Per-table mutation methods
-	for _, tbl := range tables {
+	for _, plan := range plans {
+		tbl := plan.Table
+		if tbl == nil {
+			continue
+		}
 		if tbl.IsImmutable {
 			continue
 		}
-		writeCreateMutation(&b, tbl)
-		if !tbl.IsAppendOnly {
+		if operationAllowed(plan, "create") {
+			writeCreateMutation(&b, tbl)
+		}
+		if operationAllowed(plan, "update") && !tbl.IsAppendOnly {
 			writeUpdateMutation(&b, tbl)
 		}
-		writeDeleteMutation(&b, tbl)
+		if operationAllowed(plan, "delete") {
+			writeDeleteMutation(&b, tbl)
+		}
 	}
 
 	// Input extractors
-	for _, tbl := range tables {
+	for _, plan := range plans {
+		tbl := plan.Table
+		if tbl == nil {
+			continue
+		}
 		if tbl.IsImmutable {
 			continue
 		}
-		writeInputExtractor(&b, tbl, "Create")
-		if !tbl.IsAppendOnly {
+		if operationAllowed(plan, "create") {
+			writeInputExtractor(&b, tbl, "Create")
+		}
+		if operationAllowed(plan, "update") && !tbl.IsAppendOnly {
 			writeInputExtractor(&b, tbl, "Update")
 		}
 	}

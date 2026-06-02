@@ -14,7 +14,6 @@ func GenerateGraphQLHandler(packageName string) ([]byte, error) {
 	b.WriteString(fmt.Sprintf("package %s\n\n", packageName))
 	b.WriteString(`import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 )
 
@@ -71,10 +70,12 @@ func Handler() http.Handler {
 		}
 
 		// Query depth limiting
-		if depth := queryDepth(doc.Fields); depth > maxQueryDepth {
-			writeError(w, fmt.Sprintf("query depth %d exceeds maximum %d", depth, maxQueryDepth), CodeBadUserInput)
+		stats, err := enforceQueryBudget(doc, defaultQueryBudget())
+		if err != nil {
+			writeError(w, err.Error(), CodeBadUserInput)
 			return
 		}
+		ctx.queryStats = stats
 
 		data, gqlErrs := execute(ctx, root, doc)
 

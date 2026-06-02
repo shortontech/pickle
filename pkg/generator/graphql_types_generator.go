@@ -10,7 +10,19 @@ import (
 
 // GenerateGraphQLTypes generates types_gen.go containing GQL response structs,
 // connection types, and input structs.
-func GenerateGraphQLTypes(tables []*schema.Table, requests []RequestDef, packageName string) ([]byte, error) {
+func GenerateGraphQLTypes(tables []*schema.Table, requests []RequestDef, packageName string, relationships ...[]SchemaRelationship) ([]byte, error) {
+	return GenerateGraphQLTypesWithPlans(legacyGraphQLModelPlans(tables), requests, packageName, relationships...)
+}
+
+// GenerateGraphQLTypesWithPlans generates GraphQL types and field cost metadata
+// using operation-level model plans.
+func GenerateGraphQLTypesWithPlans(plans []GraphQLModelPlan, requests []RequestDef, packageName string, relationships ...[]SchemaRelationship) ([]byte, error) {
+	var tables []*schema.Table
+	for _, plan := range plans {
+		if plan.Table != nil {
+			tables = append(tables, plan.Table)
+		}
+	}
 	reqValMap := BuildRequestValidationMap(requests)
 	colValMap := BuildColumnValidationMap(tables)
 	valMap := MergeValidationMaps(reqValMap, colValMap)
@@ -50,6 +62,12 @@ func GenerateGraphQLTypes(tables []*schema.Table, requests []RequestDef, package
 	b.WriteString("\tStartCursor     *string `json:\"startCursor\"`\n")
 	b.WriteString("\tEndCursor       *string `json:\"endCursor\"`\n")
 	b.WriteString("}\n\n")
+
+	var rels []SchemaRelationship
+	if len(relationships) > 0 {
+		rels = relationships[0]
+	}
+	writeGraphQLFieldCostRegistration(&b, plans, rels)
 
 	// Input types
 	for _, tbl := range tables {
@@ -113,4 +131,58 @@ func GenerateGraphQLTypes(tables []*schema.Table, requests []RequestDef, package
 	}
 
 	return format.Source(b.Bytes())
+}
+
+func writeGraphQLFieldCostRegistration(b *bytes.Buffer, plans []GraphQLModelPlan, relationships []SchemaRelationship) {
+	tableSet := map[string]bool{}
+	planByTable := map[string]GraphQLModelPlan{}
+	var tables []*schema.Table
+	for _, plan := range plans {
+		if plan.Table == nil {
+			continue
+		}
+		tables = append(tables, plan.Table)
+		tableSet[plan.Table.Name] = true
+		planByTable[plan.Table.Name] = plan
+	}
+
+	b.WriteString("func init() {\n")
+	b.WriteString("\tregisterGraphQLFieldCosts(map[string]FieldCost{\n")
+	for _, tbl := range tables {
+		structName := tableToStructName(tbl.Name)
+		for _, col := range tbl.Columns {
+			if isExcludedFromGraphQL(col) || graphqlGoSerType(col) == "" {
+				continue
+			}
+			fieldName := snakeToCamel(col.Name)
+			key := structName + "." + fieldName
+			b.WriteString(fmt.Sprintf("\t\t%q: {TypeName: %q, FieldName: %q, BaseCost: 1},\n", key, structName, fieldName))
+		}
+	}
+	for _, rel := range relationships {
+		if !tableSet[rel.ParentTable] || !tableSet[rel.ChildTable] {
+			continue
+		}
+		parent := tableToStructName(rel.ParentTable)
+		fieldName := snakeToCamel(rel.ChildTable)
+		key := parent + "." + fieldName
+		baseCost := 5
+		maxLimit := "maxGraphQLPageSize"
+		isList := "false"
+		if rel.Type == "has_many" {
+			baseCost = 10
+			isList = "true"
+		}
+		if override, ok := planByTable[rel.ParentTable].Relationships[fieldName]; ok {
+			if override.Cost > 0 {
+				baseCost = override.Cost
+			}
+			if override.MaxPageSize > 0 {
+				maxLimit = fmt.Sprintf("%d", override.MaxPageSize)
+			}
+		}
+		b.WriteString(fmt.Sprintf("\t\t%q: {TypeName: %q, FieldName: %q, BaseCost: %d, IsList: %s, IsRelation: true, DefaultLimit: defaultGraphQLPageSize, MaxLimit: %s},\n", key, parent, fieldName, baseCost, isList, maxLimit))
+	}
+	b.WriteString("\t})\n")
+	b.WriteString("}\n\n")
 }

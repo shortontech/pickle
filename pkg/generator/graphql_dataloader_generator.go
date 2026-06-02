@@ -31,6 +31,7 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 	}
 
 	b.WriteString("import (\n")
+	b.WriteString("\t\"fmt\"\n")
 	b.WriteString(fmt.Sprintf("\t\"%s\"\n", modelsImport))
 	b.WriteString("\t\"github.com/google/uuid\"\n")
 	b.WriteString(")\n\n")
@@ -91,6 +92,7 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 			// Batch function
 			b.WriteString(fmt.Sprintf("func (r *DataLoaderRegistry) %s(ids []uuid.UUID) []batchResult[[]*models.%s] {\n", batchFn, childStruct))
 			b.WriteString(fmt.Sprintf("\tq := models.Query%s().%s(ids...)\n", childStruct, whereFn))
+			b.WriteString("\tq.Limit(maxGraphQLPageSize*len(ids) + 1)\n")
 			if hasVis {
 				writeVisibilitySwitch(&b, "\t")
 			}
@@ -106,6 +108,10 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 				snakeToPascal(fkCol), snakeToPascal(fkCol)))
 			b.WriteString("\t}\n")
 			b.WriteString("\tfor i, id := range ids {\n")
+			b.WriteString("\t\tif len(grouped[id]) > maxGraphQLPageSize {\n")
+			b.WriteString(fmt.Sprintf("\t\t\tresults[i] = batchResult[[]*models.%s]{err: fmt.Errorf(\"relationship list exceeds maximum %%d\", maxGraphQLPageSize)}\n", childStruct))
+			b.WriteString("\t\t\tcontinue\n")
+			b.WriteString("\t\t}\n")
 			b.WriteString(fmt.Sprintf("\t\tresults[i] = batchResult[[]*models.%s]{val: grouped[id]}\n", childStruct))
 			b.WriteString("\t}\n\treturn results\n}\n\n")
 

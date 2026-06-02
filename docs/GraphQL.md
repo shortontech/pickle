@@ -309,10 +309,27 @@ The handler:
 
 1. Reads the JSON request body (`query`, `variables`, `operationName`)
 2. Parses the query against the embedded SDL using `gqlparser`
-3. Checks query depth (default max: 10)
+3. Enforces the query safety budget before resolver execution
 4. Extracts auth from the request (override `extractAuth` for your auth strategy)
 5. Dispatches to generated resolvers
 6. Returns a standard GraphQL JSON response (`data` + `errors`)
+
+### Query Safety Defaults
+
+Generated handlers reject abusive query shapes before any resolver or database work:
+
+| Limit | Default |
+|-------|---------|
+| Page size | 25 default, 100 maximum |
+| `in` filter values | 100 maximum |
+| Query depth | 10 maximum |
+| Selected fields | 200 maximum |
+| Aliases | 25 maximum |
+| Input nodes | 500 maximum |
+| Complexity | 1000 maximum |
+| Relationship depth | 3 maximum |
+
+Relationship fields also register generated cost metadata. Scalar fields cost `1`, object relationships cost more, and list relationships multiply by the requested page size. Oversized relationship lists fail instead of silently returning unbounded data.
 
 All errors follow GraphQL conventions with structured `extensions`:
 
@@ -365,38 +382,40 @@ One migration file. `go build`. Static binary.
 
 ## GraphQL Exposure Policies
 
-By default, no models are exposed via GraphQL. Exposure is opt-in: if your project has no `database/policies/` directory, no GraphQL schema is generated.
+By default, no models are exposed via GraphQL. Exposure is opt-in: if your project has no `database/policies/graphql/` directory, no GraphQL schema is generated.
 
 ### Enabling exposure
 
-Create policy files in `database/policies/` to control which models and fields are exposed:
+Create policy files in `database/policies/graphql/` to control which models and operations are exposed:
 
 ```go
-// database/policies/user_policy.go
-package policies
+// database/policies/graphql/2026_06_02_100001_public_api.go
+package graphql
 
-type UserPolicy struct {
-    Policy
+type PublicAPI_2026_06_02_100001 struct {
+    GraphQLPolicy
 }
 
-func (p *UserPolicy) Configure() {
-    // Expose the User model with all public fields
-    p.Expose("users")
-
-    // Modify exposure — hide specific fields or add constraints
-    p.AlterExpose("users", func(e *Exposure) {
-        e.Hide("internal_notes")
-        e.ReadOnly("email")
+func (p *PublicAPI_2026_06_02_100001) Up() {
+    p.Expose("users", func(e *ExposeBuilder) {
+        e.List()
+        e.Show()
+        e.Relationship("posts", func(r *RelationshipExposure) {
+            r.Cost(10)
+            r.MaxPageSize(50)
+        })
     })
 }
 ```
+
+The operation methods are exact. If a policy exposes `List` and `Show`, Pickle does not generate `create`, `update`, or `delete` SDL fields, dispatch cases, or CRUD resolver functions for that model.
 
 ### Policy methods
 
 | Method | Description |
 |--------|-------------|
-| `Expose(table)` | Expose a table as a GraphQL type with standard CRUD |
-| `AlterExpose(table, fn)` | Modify an existing exposure — hide fields, set read-only, add constraints |
+| `Expose(table, fn)` | Expose selected operations for a table |
+| `AlterExpose(table, fn)` | Add or remove selected operations from an existing exposure |
 | `Unexpose(table)` | Remove a previously exposed table from the GraphQL schema |
 | `ControllerAction(action)` | Wrap an existing controller action as a GraphQL mutation or query |
 
@@ -406,7 +425,10 @@ Reuse existing REST controller logic in GraphQL without duplication:
 
 ```go
 func (p *TransferPolicy) Configure() {
-    p.Expose("transfers")
+    p.Expose("transfers", func(e *ExposeBuilder) {
+        e.List()
+        e.Show()
+    })
     p.ControllerAction(controllers.TransferController{}.Approve)
 }
 ```
@@ -419,14 +441,20 @@ Add tables to your GraphQL API one at a time. Each `Expose()` call adds that tab
 
 ```go
 // Sprint 1 — expose users only
-p.Expose("users")
+p.Expose("users", func(e *ExposeBuilder) {
+    e.List()
+    e.Show()
+})
 
 // Sprint 2 — add posts
-p.Expose("posts")
+p.Expose("posts", func(e *ExposeBuilder) {
+    e.List()
+    e.Show()
+})
 
 // Sprint 3 — remove a field that shouldn't have been exposed
-p.AlterExpose("users", func(e *Exposure) {
-    e.Hide("phone_number")
+p.AlterExpose("users", func(e *ExposeBuilder) {
+    e.RemoveDelete()
 })
 ```
 

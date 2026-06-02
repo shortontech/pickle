@@ -1,0 +1,28 @@
+query RepeatedAliases {
+  a1: users { edges { node { id } } }
+  a2: users { edges { node { id } } }
+  a3: users { edges { node { id } } }
+  a4: users { edges { node { id } } }
+  a5: users { edges { node { id } } }
+  a6: users { edges { node { id } } }
+  a7: users { edges { node { id } } }
+  a8: users { edges { node { id } } }
+  a9: users { edges { node { id } } }
+  a10: users { edges { node { id } } }
+  a11: users { edges { node { id } } }
+  a12: users { edges { node { id } } }
+  a13: users { edges { node { id } } }
+  a14: users { edges { node { id } } }
+  a15: users { edges { node { id } } }
+  a16: users { edges { node { id } } }
+  a17: users { edges { node { id } } }
+  a18: users { edges { node { id } } }
+  a19: users { edges { node { id } } }
+  a20: users { edges { node { id } } }
+  a21: users { edges { node { id } } }
+  a22: users { edges { node { id } } }
+  a23: users { edges { node { id } } }
+  a24: users { edges { node { id } } }
+  a25: users { edges { node { id } } }
+  a26: users { edges { node { id } } }
+}

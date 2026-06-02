@@ -1,0 +1,5 @@
+mutation UnexposedCreate {
+  createUser(input: { name: "bad", email: "bad@example.com" }) {
+    id
+  }
+}

@@ -8,10 +8,11 @@ type GraphQLPolicy struct {
 
 // GraphQLOperation records a single GraphQL exposure change.
 type GraphQLOperation struct {
-	Type   string // "expose", "alter_expose", "unexpose", "controller_action", "remove_action"
-	Model  string
-	Ops    []ExposedOperation
-	Action *ControllerActionDef
+	Type          string // "expose", "alter_expose", "unexpose", "controller_action", "remove_action"
+	Model         string
+	Ops           []ExposedOperation
+	Relationships []RelationshipExposureDef
+	Action        *ControllerActionDef
 }
 
 // ExposedOperation describes a single CRUD operation exposed over GraphQL.
@@ -27,7 +28,20 @@ type ControllerActionDef struct {
 
 // ExposeBuilder provides a fluent API for defining which operations to expose.
 type ExposeBuilder struct {
-	ops []ExposedOperation
+	ops           []ExposedOperation
+	relationships []RelationshipExposureDef
+}
+
+// RelationshipExposureDef describes optional GraphQL budget controls for a relationship field.
+type RelationshipExposureDef struct {
+	Name             string
+	CostValue        int
+	MaxPageSizeValue int
+}
+
+// RelationshipExposure configures a relationship field exposed through GraphQL.
+type RelationshipExposure struct {
+	def RelationshipExposureDef
 }
 
 // Expose registers a model with the specified operations for GraphQL exposure.
@@ -38,9 +52,10 @@ func (p *GraphQLPolicy) Expose(model string, fn func(*ExposeBuilder)) {
 	b := &ExposeBuilder{}
 	fn(b)
 	p.Operations = append(p.Operations, GraphQLOperation{
-		Type:  "expose",
-		Model: model,
-		Ops:   b.ops,
+		Type:          "expose",
+		Model:         model,
+		Ops:           b.ops,
+		Relationships: b.relationships,
 	})
 }
 
@@ -52,9 +67,10 @@ func (p *GraphQLPolicy) AlterExpose(model string, fn func(*ExposeBuilder)) {
 	b := &ExposeBuilder{}
 	fn(b)
 	p.Operations = append(p.Operations, GraphQLOperation{
-		Type:  "alter_expose",
-		Model: model,
-		Ops:   b.ops,
+		Type:          "alter_expose",
+		Model:         model,
+		Ops:           b.ops,
+		Relationships: b.relationships,
 	})
 }
 
@@ -118,6 +134,25 @@ func (e *ExposeBuilder) All() {
 	e.Create()
 	e.Update()
 	e.Delete()
+}
+
+// Relationship configures an exposed relationship field's GraphQL budget metadata.
+func (e *ExposeBuilder) Relationship(name string, fn func(*RelationshipExposure)) {
+	r := &RelationshipExposure{def: RelationshipExposureDef{Name: name}}
+	if fn != nil {
+		fn(r)
+	}
+	e.relationships = append(e.relationships, r.def)
+}
+
+// Cost sets the base query complexity cost for the relationship.
+func (r *RelationshipExposure) Cost(cost int) {
+	r.def.CostValue = cost
+}
+
+// MaxPageSize sets the relationship's maximum page size.
+func (r *RelationshipExposure) MaxPageSize(size int) {
+	r.def.MaxPageSizeValue = size
 }
 
 // RemoveList marks the list operation for removal (alter only).

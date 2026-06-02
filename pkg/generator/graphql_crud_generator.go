@@ -15,12 +15,18 @@ type CRUDConfig struct {
 	Relationships []SchemaRelationship
 	ModelsImport  string
 	PackageName   string
+	Plans         []GraphQLModelPlan
 }
 
 // GenerateGraphQLCRUDResolvers generates crud_resolver_gen.go with ownership-scoped
 // CRUD resolvers, nested resource mutations, and constraint-based validation.
 // This implements spec 018: zero-controller GraphQL from migrations alone.
 func GenerateGraphQLCRUDResolvers(cfg CRUDConfig) ([]byte, error) {
+	plans := cfg.Plans
+	if len(plans) == 0 {
+		plans = legacyGraphQLModelPlans(cfg.Tables)
+	}
+
 	relByParent := map[string][]SchemaRelationship{}
 	childToParent := map[string]SchemaRelationship{}
 	for _, rel := range cfg.Relationships {
@@ -46,23 +52,39 @@ func GenerateGraphQLCRUDResolvers(cfg CRUDConfig) ([]byte, error) {
 	b.WriteString("var _ = fmt.Sprintf\n\n")
 
 	// Generate ownership-scoped create mutations
-	for _, tbl := range cfg.Tables {
+	for _, plan := range plans {
+		tbl := plan.Table
+		if tbl == nil {
+			continue
+		}
 		if tbl.IsImmutable {
 			continue
 		}
-		writeCRUDCreateMutation(&b, tbl, childToParent)
-		if !tbl.IsAppendOnly {
+		if operationAllowed(plan, "create") {
+			writeCRUDCreateMutation(&b, tbl, childToParent)
+		}
+		if operationAllowed(plan, "update") && !tbl.IsAppendOnly {
 			writeCRUDUpdateMutation(&b, tbl)
 		}
-		writeCRUDDeleteMutation(&b, tbl)
+		if operationAllowed(plan, "delete") {
+			writeCRUDDeleteMutation(&b, tbl)
+		}
 	}
 
 	// Generate nested resource mutations (parent-scoped)
-	for _, tbl := range cfg.Tables {
+	for _, plan := range plans {
+		tbl := plan.Table
+		if tbl == nil {
+			continue
+		}
 		if tbl.IsImmutable {
 			continue
 		}
-		if rel, ok := childToParent[tbl.Name]; ok {
+		if operationAllowed(plan, "create") {
+			rel, ok := childToParent[tbl.Name]
+			if !ok {
+				continue
+			}
 			writeNestedCreateMutation(&b, tbl, rel)
 		}
 	}

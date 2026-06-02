@@ -1,0 +1,13 @@
+query RelationshipFanout {
+  users(page: { first: 100 }) {
+    edges {
+      node {
+        posts {
+          comments {
+            body
+          }
+        }
+      }
+    }
+  }
+}

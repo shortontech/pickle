@@ -143,6 +143,9 @@ func Export(opts Options) (*Result, error) {
 	if err := ex.writeSQLMigrations(tables, views); err != nil {
 		return nil, err
 	}
+	if err := ex.writeCommandsSupport(); err != nil {
+		return nil, err
+	}
 	if err := ex.writeBindings(); err != nil {
 		return nil, err
 	}
@@ -179,6 +182,7 @@ type exporter struct {
 	dryRun              bool
 	models              map[string]bool
 	migrations          []generator.MigrationOps
+	sqlMigrations       []sqlMigration
 	hasEncryptedColumns bool
 	integrityModels     map[string]integrityModelInfo
 }
@@ -1430,6 +1434,7 @@ func (e *exporter) writeSQLMigrations(tables []*schema.Table, views []*schema.Vi
 	if err != nil {
 		return err
 	}
+	e.sqlMigrations = migrations
 	for _, migration := range migrations {
 		if err := e.writeFile(filepath.Join("database", "migrations", migration.Name+".up.sql"), []byte(migration.Up)); err != nil {
 			return err
@@ -1441,10 +1446,446 @@ func (e *exporter) writeSQLMigrations(tables []*schema.Table, views []*schema.Vi
 	return nil
 }
 
+func (e *exporter) writeCommandsSupport() error {
+	if !e.hasCommands() {
+		return nil
+	}
+	migrations, err := generateSQLMigrationSupport(e.sqlMigrations)
+	if err != nil {
+		return err
+	}
+	if err := e.writeFile(filepath.Join("database", "migrations", "support.go"), migrations); err != nil {
+		return err
+	}
+	commands, err := e.generateCommandsSupport()
+	if err != nil {
+		return err
+	}
+	return e.writeFile(filepath.Join("app", "commands", "support.go"), commands)
+}
+
+func (e *exporter) hasCommands() bool {
+	_, err := os.Stat(filepath.Join(e.project.Dir, "app", "commands"))
+	return err == nil
+}
+
 type sqlMigration struct {
 	Name string
 	Up   string
 	Down string
+}
+
+func generateSQLMigrationSupport(migrations []sqlMigration) ([]byte, error) {
+	var b strings.Builder
+	b.WriteString(`package migrations
+
+import (
+	"embed"
+	"fmt"
+	"sort"
+	"strings"
+
+	"gorm.io/gorm"
+)
+
+//go:embed *.sql
+var migrationFiles embed.FS
+
+type MigrationEntry struct {
+	ID string
+	UpFile string
+	DownFile string
+}
+
+type MigrationStatus struct {
+	ID string
+	Batch int
+	Applied bool
+}
+
+var Registry = []MigrationEntry{
+`)
+	for _, migration := range migrations {
+		fmt.Fprintf(&b, "\t{ID: %q, UpFile: %q, DownFile: %q},\n", migration.Name, migration.Name+".up.sql", migration.Name+".down.sql")
+	}
+	b.WriteString(`}
+
+type Runner struct {
+	DB *gorm.DB
+	Driver string
+}
+
+func NewRunner(db *gorm.DB, driver string) *Runner {
+	return &Runner{DB: db, Driver: driver}
+}
+
+func (r *Runner) ensureMigrationsTable() error {
+	sql := ` + "`" + `CREATE TABLE IF NOT EXISTS migrations (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		migration VARCHAR(255) NOT NULL,
+		batch INTEGER NOT NULL
+	)` + "`" + `
+	if r.Driver == "pgsql" || r.Driver == "postgres" {
+		sql = ` + "`" + `CREATE TABLE IF NOT EXISTS migrations (
+			id SERIAL PRIMARY KEY,
+			migration VARCHAR(255) NOT NULL,
+			batch INTEGER NOT NULL
+		)` + "`" + `
+	}
+	return r.DB.Exec(sql).Error
+}
+
+func (r *Runner) applied() (map[string]int, error) {
+	if err := r.ensureMigrationsTable(); err != nil {
+		return nil, err
+	}
+	rows, err := r.DB.Raw("SELECT migration, batch FROM migrations").Rows()
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var id string
+		var batch int
+		if err := rows.Scan(&id, &batch); err != nil {
+			return nil, err
+		}
+		out[id] = batch
+	}
+	return out, rows.Err()
+}
+
+func nextBatch(applied map[string]int) int {
+	maxBatch := 0
+	for _, batch := range applied {
+		if batch > maxBatch {
+			maxBatch = batch
+		}
+	}
+	return maxBatch + 1
+}
+
+func (r *Runner) Migrate(entries []MigrationEntry) error {
+	applied, err := r.applied()
+	if err != nil {
+		return err
+	}
+	batch := nextBatch(applied)
+	ran := 0
+	for _, entry := range entries {
+		if _, ok := applied[entry.ID]; ok {
+			continue
+		}
+		fmt.Printf("  migrating: %s\n", entry.ID)
+		if err := r.execMigrationFile(entry.UpFile); err != nil {
+			return fmt.Errorf("migrating %s: %w", entry.ID, err)
+		}
+		if err := r.DB.Exec("INSERT INTO migrations (migration, batch) VALUES (?, ?)", entry.ID, batch).Error; err != nil {
+			return fmt.Errorf("recording %s: %w", entry.ID, err)
+		}
+		fmt.Printf("  migrated:  %s\n", entry.ID)
+		ran++
+	}
+	if ran == 0 {
+		fmt.Println("  nothing to migrate")
+	}
+	return nil
+}
+
+func (r *Runner) Rollback(entries []MigrationEntry) error {
+	applied, err := r.applied()
+	if err != nil {
+		return err
+	}
+	maxBatch := 0
+	for _, batch := range applied {
+		if batch > maxBatch {
+			maxBatch = batch
+		}
+	}
+	if maxBatch == 0 {
+		fmt.Println("  nothing to roll back")
+		return nil
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		batch, ok := applied[entry.ID]
+		if !ok || batch != maxBatch {
+			continue
+		}
+		fmt.Printf("  rolling back: %s\n", entry.ID)
+		if err := r.execMigrationFile(entry.DownFile); err != nil {
+			return fmt.Errorf("rolling back %s: %w", entry.ID, err)
+		}
+		if err := r.DB.Exec("DELETE FROM migrations WHERE migration = ?", entry.ID).Error; err != nil {
+			return fmt.Errorf("removing %s: %w", entry.ID, err)
+		}
+		fmt.Printf("  rolled back: %s\n", entry.ID)
+	}
+	return nil
+}
+
+func (r *Runner) Fresh(entries []MigrationEntry) error {
+	for i := len(entries) - 1; i >= 0; i-- {
+		_ = r.execMigrationFile(entries[i].DownFile)
+	}
+	if err := r.DB.Exec("DROP TABLE IF EXISTS migrations").Error; err != nil {
+		return err
+	}
+	return r.Migrate(entries)
+}
+
+func (r *Runner) Status(entries []MigrationEntry) ([]MigrationStatus, error) {
+	applied, err := r.applied()
+	if err != nil {
+		return nil, err
+	}
+	statuses := make([]MigrationStatus, 0, len(entries))
+	for _, entry := range entries {
+		status := MigrationStatus{ID: entry.ID}
+		if batch, ok := applied[entry.ID]; ok {
+			status.Applied = true
+			status.Batch = batch
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
+}
+
+func PrintStatus(statuses []MigrationStatus) {
+	sort.Slice(statuses, func(i, j int) bool { return statuses[i].ID < statuses[j].ID })
+	for _, status := range statuses {
+		state := "pending"
+		if status.Applied {
+			state = fmt.Sprintf("applied (batch %d)", status.Batch)
+		}
+		fmt.Printf("%-50s %s\n", status.ID, state)
+	}
+}
+
+func (r *Runner) execMigrationFile(name string) error {
+	data, err := migrationFiles.ReadFile(name)
+	if err != nil {
+		return err
+	}
+	sql := normalizeSQLForDriver(string(data), r.Driver)
+	for _, statement := range splitSQLStatements(sql) {
+		if err := r.DB.Exec(statement).Error; err != nil {
+			return fmt.Errorf("executing %q: %w", statement, err)
+		}
+	}
+	return nil
+}
+
+func normalizeSQLForDriver(sql, driver string) string {
+	if driver != "sqlite" && driver != "sqlite3" {
+		return sql
+	}
+	replacements := map[string]string{
+		" UUID": " TEXT",
+		" JSONB": " TEXT",
+		" BYTEA": " BLOB",
+		" TIMESTAMPTZ": " DATETIME",
+		" DEFAULT NOW()": " DEFAULT CURRENT_TIMESTAMP",
+		" DEFAULT gen_random_uuid()": "",
+		" CASCADE": "",
+	}
+	for from, to := range replacements {
+		sql = strings.ReplaceAll(sql, from, to)
+	}
+	return sql
+}
+
+func splitSQLStatements(sql string) []string {
+	var statements []string
+	for _, part := range strings.Split(sql, ";") {
+		stmt := strings.TrimSpace(part)
+		if stmt != "" {
+			statements = append(statements, stmt)
+		}
+	}
+	return statements
+}
+`)
+	return format.Source([]byte(b.String()))
+}
+
+func (e *exporter) generateCommandsSupport() ([]byte, error) {
+	hasGraphQL := e.hasGraphQLPackage()
+	hasSchedule := e.hasSchedule()
+	var b strings.Builder
+	b.WriteString("package commands\n\n")
+	b.WriteString("import (\n")
+	if hasSchedule {
+		b.WriteString("\t\"context\"\n")
+	}
+	b.WriteString("\t\"fmt\"\n")
+	b.WriteString("\t\"log\"\n")
+	b.WriteString("\t\"net/http\"\n")
+	if hasSchedule {
+		b.WriteString("\t\"os\"\n")
+		b.WriteString("\t\"os/signal\"\n")
+	}
+	b.WriteString("\t\"time\"\n\n")
+	if hasGraphQL {
+		b.WriteString(fmt.Sprintf("\t\"%s/app/graphql\"\n", e.modulePath))
+	}
+	b.WriteString(fmt.Sprintf("\t\"%s/app/http/auth\"\n", e.modulePath))
+	b.WriteString(fmt.Sprintf("\t\"%s/app/models\"\n", e.modulePath))
+	b.WriteString(fmt.Sprintf("\t\"%s/config\"\n", e.modulePath))
+	b.WriteString(fmt.Sprintf("\t\"%s/database/migrations\"\n", e.modulePath))
+	b.WriteString(fmt.Sprintf("\t\"%s/routes\"\n", e.modulePath))
+	if hasSchedule {
+		b.WriteString(fmt.Sprintf("\t\"%s/schedule\"\n", e.modulePath))
+	}
+	b.WriteString(")\n\n")
+	b.WriteString(`type Command interface {
+	Name() string
+	Description() string
+	Run(args []string) error
+}
+
+type App struct {
+	commands map[string]Command
+	initFn func()
+	serveFn func()
+}
+
+func BuildApp(initFn func(), serveFn func(), cmds ...Command) *App {
+	app := &App{commands: map[string]Command{}, initFn: initFn, serveFn: serveFn}
+	for _, cmd := range cmds {
+		app.commands[cmd.Name()] = cmd
+	}
+	return app
+}
+
+func (a *App) Run(args []string) {
+	a.initFn()
+	if len(args) > 0 {
+		cmd, ok := a.commands[args[0]]
+		if !ok {
+			a.PrintCommands()
+			log.Fatalf("unknown command: %s", args[0])
+		}
+		if err := cmd.Run(args[1:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	a.serveFn()
+}
+
+func (a *App) PrintCommands() {
+	fmt.Println("Available commands:")
+	for name, cmd := range a.commands {
+		fmt.Printf("  %-25s %s\n", name, cmd.Description())
+	}
+}
+
+type migrateCommand struct{}
+
+func (c migrateCommand) Name() string { return "migrate" }
+func (c migrateCommand) Description() string { return "Run pending migrations" }
+func (c migrateCommand) Run(args []string) error {
+	runner := migrations.NewRunner(models.DB, config.Database.Connection().Driver)
+	return runner.Migrate(migrations.Registry)
+}
+
+type migrateRollbackCommand struct{}
+
+func (c migrateRollbackCommand) Name() string { return "migrate:rollback" }
+func (c migrateRollbackCommand) Description() string { return "Roll back the last migration batch" }
+func (c migrateRollbackCommand) Run(args []string) error {
+	runner := migrations.NewRunner(models.DB, config.Database.Connection().Driver)
+	return runner.Rollback(migrations.Registry)
+}
+
+type migrateFreshCommand struct{}
+
+func (c migrateFreshCommand) Name() string { return "migrate:fresh" }
+func (c migrateFreshCommand) Description() string { return "Drop all tables and re-run all migrations" }
+func (c migrateFreshCommand) Run(args []string) error {
+	runner := migrations.NewRunner(models.DB, config.Database.Connection().Driver)
+	return runner.Fresh(migrations.Registry)
+}
+
+type migrateStatusCommand struct{}
+
+func (c migrateStatusCommand) Name() string { return "migrate:status" }
+func (c migrateStatusCommand) Description() string { return "Show migration status" }
+func (c migrateStatusCommand) Run(args []string) error {
+	runner := migrations.NewRunner(models.DB, config.Database.Connection().Driver)
+	statuses, err := runner.Status(migrations.Registry)
+	if err != nil {
+		return err
+	}
+	migrations.PrintStatus(statuses)
+	return nil
+}
+
+func BuiltinCommands() []Command {
+	return []Command{
+		migrateCommand{},
+		migrateRollbackCommand{},
+		migrateFreshCommand{},
+		migrateStatusCommand{},
+	}
+}
+
+func UserCommands() []Command {
+	return []Command{}
+}
+
+func Commands() []Command {
+	return append(BuiltinCommands(), UserCommands()...)
+}
+
+func NewApp() *App {
+	return BuildApp(
+		func() {
+			config.Init()
+			db := config.Database.OpenGORM()
+			models.SetDB(db)
+			sqlDB, err := db.DB()
+			if err != nil {
+				log.Fatalf("commands: failed to unwrap database handle: %v", err)
+			}
+			auth.Init(config.Env, sqlDB)
+		},
+		func() {
+`)
+	if hasSchedule {
+		b.WriteString("\t\t\tctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)\n")
+		b.WriteString("\t\t\tdefer stop()\n")
+		b.WriteString("\t\t\tgo schedule.Schedule.Start(ctx)\n")
+	}
+	b.WriteString(`			mux := http.NewServeMux()
+			mux.Handle("/", routes.API)
+`)
+	if hasGraphQL {
+		b.WriteString("\t\t\tmux.Handle(\"/graphql\", graphql.Handler())\n")
+		b.WriteString("\t\t\tmux.Handle(\"/graphql/playground\", graphql.PlaygroundHandler(\"/graphql\"))\n")
+	}
+	b.WriteString(`			addr := ":" + config.App.Port
+			log.Printf("listening on %s", addr)
+			server := &http.Server{
+				Addr: addr,
+				Handler: mux,
+				ReadHeaderTimeout: 10 * time.Second,
+				ReadTimeout: 30 * time.Second,
+				WriteTimeout: 60 * time.Second,
+				IdleTimeout: 120 * time.Second,
+			}
+			if err := server.ListenAndServe(); err != nil {
+				log.Fatal(err)
+			}
+		},
+		Commands()...,
+	)
+}
+`)
+	return format.Source([]byte(b.String()))
 }
 
 func (e *exporter) generateSQLMigrations(tables []*schema.Table, views []*schema.View) ([]sqlMigration, error) {
@@ -1879,6 +2320,9 @@ func (e *exporter) writeServerMain() error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	if e.hasCommands() {
+		return e.writeFile(filepath.Join("cmd", "server", "main.go"), []byte(fmt.Sprintf(commandsServerMainSource, e.modulePath)))
+	}
 	hasSchedule := e.hasSchedule()
 	if len(e.project.Services) > 0 {
 		data, err := e.generateMultiServiceServerMain(scan != nil && scan.HasDatabaseConfig, hasSchedule)
@@ -2033,7 +2477,6 @@ func (e *exporter) addGeneratedSubsystemFindings() {
 		msg  string
 	}{
 		{"app/http/auth", "generated_auth", "auth runtime is exported with standalone JWT support; sessions, OAuth, and JWT allowlist/revocation need manual review"},
-		{"app/commands", "generated_commands", "Pickle command runtime is not lowered in v1"},
 		{"database/policies", "rbac_policy_export", "RBAC role grants are reflected in exported gates where statically derivable; policy runners and changelog state are not exported"},
 		{"database/policies/graphql", "generated_graphql_policies", "generated GraphQL schema preserves derived exposure state; policy runner/changelog migration commands are not exported in v1"},
 	}
@@ -2071,6 +2514,9 @@ func (e *exporter) writeReport(orm string) error {
 	}
 	if e.hasSchedule() {
 		b.WriteString("- Cron job scheduler support with exported server startup wiring\n")
+	}
+	if e.hasCommands() {
+		b.WriteString("- Standalone command dispatch with embedded SQL migration commands\n")
 	}
 	b.WriteString("\n")
 	if len(e.result.Findings) == 0 {
@@ -2119,7 +2565,7 @@ func findingCategory(rule string) string {
 	switch rule {
 	case "generated_auth", "rbac_policy_export":
 		return "partial"
-	case "generated_graphql", "generated_graphql_policies", "generated_commands", "generated_policies", "generated_actions":
+	case "generated_graphql", "generated_graphql_policies", "generated_policies", "generated_actions":
 		return "omitted"
 	case "encrypted_columns", "integrity_tables":
 		return "manual"
@@ -3316,6 +3762,19 @@ func main() {
 	if err := http.ListenAndServe(addr, routes.API); err != nil {
 		log.Fatal(err)
 	}
+}
+`
+
+const commandsServerMainSource = `package main
+
+import (
+	"os"
+
+	"%s/app/commands"
+)
+
+func main() {
+	commands.NewApp().Run(os.Args[1:])
 }
 `
 

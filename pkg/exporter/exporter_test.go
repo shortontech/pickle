@@ -57,7 +57,9 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "type ConnectionConfig struct")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func OpenGORM(conn ConnectionConfig) *gorm.DB")
 	assertFileContains(t, filepath.Join(out, "config", "app.go"), "func app() AppConfig")
-	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "models.SetDB(config.Database.OpenGORM())")
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "commands.NewApp().Run(os.Args[1:])")
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "func BuiltinCommands() []Command")
+	assertFileContains(t, filepath.Join(out, "database", "migrations", "support.go"), "func (r *Runner) Migrate(entries []MigrationEntry) error")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "crypto/hmac")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "ErrInvalidToken")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "jwt.NewDriver(config.Env)")
@@ -425,7 +427,8 @@ func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func Handler() http.Handler")
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), "func QueryUser() *UserQuery")
-	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `mux.Handle("/graphql", graphql.Handler())`)
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "commands.NewApp().Run(os.Args[1:])")
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), `mux.Handle("/graphql", graphql.Handler())`)
 	assertFileContains(t, filepath.Join(out, "app", "http", "requests", "bindings.go"), "package requests")
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "pickle.")
@@ -566,6 +569,57 @@ func TestExportedScheduleRegistry(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(out, "schedule", "exported_schedule_test.go"), []byte(scheduleTest), 0o644); err != nil {
 		t.Fatal(err)
 	}
+
+	migrationsTest := `package migrations
+
+import (
+	"testing"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+func TestExportedSQLMigrationRunner(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := NewRunner(db, "sqlite")
+	if err := runner.Migrate(Registry); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	statuses, err := runner.Status(Registry)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if len(statuses) != len(Registry) {
+		t.Fatalf("statuses = %d, want %d", len(statuses), len(Registry))
+	}
+	for _, status := range statuses {
+		if !status.Applied {
+			t.Fatalf("migration %s should be applied", status.ID)
+		}
+	}
+	if err := runner.Rollback(Registry); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	statuses, err = runner.Status(Registry)
+	if err != nil {
+		t.Fatalf("status after rollback: %v", err)
+	}
+	for _, status := range statuses {
+		if status.Applied {
+			t.Fatalf("migration %s should be rolled back", status.ID)
+		}
+	}
+	if err := runner.Fresh(Registry); err != nil {
+		t.Fatalf("fresh: %v", err)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "database", "migrations", "exported_migrations_test.go"), []byte(migrationsTest), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestExportCronCompilesWithSchedulerSupport(t *testing.T) {
@@ -583,14 +637,17 @@ func TestExportCronCompilesWithSchedulerSupport(t *testing.T) {
 	if hasFinding(res.Findings, "generated_jobs") {
 		t.Fatalf("did not expect generated_jobs finding, got %+v", res.Findings)
 	}
-	if !hasFinding(res.Findings, "generated_commands") {
-		t.Fatalf("expected generated_commands finding, got %+v", res.Findings)
+	if hasFinding(res.Findings, "generated_commands") {
+		t.Fatalf("did not expect generated_commands finding, got %+v", res.Findings)
 	}
 
 	assertFileContains(t, filepath.Join(out, "app", "jobs", "support.go"), "type Scheduler struct")
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "func NewApp() *App")
 	assertFileContains(t, filepath.Join(out, "schedule", "jobs.go"), "jobs.Cron")
-	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "go schedule.Schedule.Start(ctx)")
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "go schedule.Schedule.Start(ctx)")
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "commands.NewApp().Run(os.Args[1:])")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Cron job scheduler support with exported server startup wiring")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone command dispatch with embedded SQL migration commands")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Partial Support")
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	writeExportedCronBehaviorTests(t, out)

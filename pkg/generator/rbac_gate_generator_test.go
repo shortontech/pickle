@@ -12,6 +12,7 @@ func TestGenerateRBACGate_Basic(t *testing.T) {
 		[]string{"admin"},
 		"2026_03_01_create_roles",
 		"pickle",
+		"github.com/example/myapp/app/http",
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -45,6 +46,7 @@ func TestGenerateRBACGate_NoManagesRoles(t *testing.T) {
 		nil,
 		"2026_03_01_create_roles",
 		"models",
+		"github.com/example/myapp/app/http",
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -69,6 +71,7 @@ func TestGenerateRBACGate_NoAllowedRoles(t *testing.T) {
 		[]string{"superadmin"},
 		"2026_03_01_create_roles",
 		"pickle",
+		"github.com/example/myapp/app/http",
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -87,7 +90,7 @@ func TestGenerateRBACGate_NoAllowedRoles(t *testing.T) {
 }
 
 func TestGenerateRBACGate_PackageName(t *testing.T) {
-	out, err := GenerateRBACGate("view", []string{"viewer"}, nil, "policy1", "mypkg")
+	out, err := GenerateRBACGate("view", []string{"viewer"}, nil, "policy1", "mypkg", "github.com/example/myapp/app/http")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -97,7 +100,7 @@ func TestGenerateRBACGate_PackageName(t *testing.T) {
 }
 
 func TestGenerateRBACGate_GeneratedHeader(t *testing.T) {
-	out, err := GenerateRBACGate("view", []string{"viewer"}, nil, "policy1", "pickle")
+	out, err := GenerateRBACGate("view", []string{"viewer"}, nil, "policy1", "pickle", "github.com/example/myapp/app/http")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

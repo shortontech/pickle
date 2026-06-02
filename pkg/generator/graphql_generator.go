@@ -128,6 +128,7 @@ func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []S
 	// Generate CRUD resolvers for tables that don't have user-written resolver overrides.
 	// When exposure state is present, only generate CRUD for the specific operations exposed.
 	var crudTables []*schema.Table
+	crudTableSet := map[string]bool{}
 	for _, tbl := range tables {
 		plan, ok := planForTable(modelPlans, tbl.Name)
 		if !ok || (!operationAllowed(plan, "create") && !operationAllowed(plan, "update") && !operationAllowed(plan, "delete")) {
@@ -135,16 +136,28 @@ func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []S
 		}
 		if !HasCRUDOverride(graphqlDir, tbl.Name) {
 			crudTables = append(crudTables, tbl)
+			crudTableSet[tbl.Name] = true
+		}
+	}
+	if !hasOverride(graphqlDir, "crud_resolver.go") && len(crudTables) == 0 {
+		if err := os.Remove(filepath.Join(graphqlDir, "crud_resolver_gen.go")); err != nil && !os.IsNotExist(err) {
+			return err
 		}
 	}
 	if len(crudTables) > 0 && !hasOverride(graphqlDir, "crud_resolver.go") {
+		var crudPlans []GraphQLModelPlan
+		for _, plan := range modelPlans {
+			if plan.Table != nil && crudTableSet[plan.Table.Name] {
+				crudPlans = append(crudPlans, plan)
+			}
+		}
 		fmt.Println("  generating graphql/crud_resolver_gen.go")
 		src, err := GenerateGraphQLCRUDResolvers(CRUDConfig{
 			Tables:        crudTables,
 			Relationships: relationships,
 			ModelsImport:  modelsImport,
 			PackageName:   graphqlPackageName,
-			Plans:         modelPlans,
+			Plans:         crudPlans,
 		})
 		if err != nil {
 			return fmt.Errorf("crud resolver generation: %w", err)

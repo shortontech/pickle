@@ -78,7 +78,7 @@ func WriteAuditMigrations(migrationsDir, migrationsPkg string) error {
 
 // WriteAuditModels writes audit model files into the project's
 // app/models/audit/ directory. Includes QueryBuilder and Context types.
-func WriteAuditModels(modelsDir string) error {
+func WriteAuditModels(modelsDir, httpImport string) error {
 	auditDir := filepath.Join(modelsDir, "audit")
 	if err := os.MkdirAll(auditDir, 0o755); err != nil {
 		return err
@@ -101,12 +101,72 @@ func WriteAuditModels(modelsDir string) error {
 		}
 
 		src := strings.ReplaceAll(m.Embed, packagePlaceholder, auditPkg)
+		src = normalizeAuditModelSource(src, httpImport)
+		if formatted, err := format.Source([]byte(src)); err == nil {
+			src = string(formatted)
+		}
 		if err := os.WriteFile(filepath.Join(auditDir, genFilename), []byte(src), 0o644); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+func normalizeAuditModelSource(src, httpImport string) string {
+	replacements := map[string]string{
+		`q.Where("id", "=", id)`:                         `q.where("id", id)`,
+		`q.Where("name", "=", name)`:                     `q.where("name", name)`,
+		`q.Where("model_type_id", "=", modelTypeID)`:     `q.where("model_type_id", modelTypeID)`,
+		`q.Where("user_id", "=", userID)`:                `q.where("user_id", userID)`,
+		`q.Where("action_type_id", "=", actionTypeID)`:   `q.where("action_type_id", actionTypeID)`,
+		`q.Where("resource_id", "=", resourceID)`:        `q.where("resource_id", resourceID)`,
+		`q.Where("created_at", op, t)`:                   `q.whereOp("created_at", op, t)`,
+		`func Performed(ctx *Context,`:                   `func Performed(ctx *pickle.Context,`,
+		"ipAddr := ctx.IP()\n\treqID := ctx.RequestID()": "ipAddr := auditContextIP(ctx)\n\treqID := auditContextRequestID(ctx)",
+	}
+	for old, current := range replacements {
+		src = strings.ReplaceAll(src, old, current)
+	}
+	if strings.Contains(src, "func Performed(ctx *pickle.Context,") {
+		src = strings.ReplaceAll(src,
+			"import (\n\t\"database/sql\"\n\t\"github.com/google/uuid\"\n)",
+			fmt.Sprintf("import (\n\t\"database/sql\"\n\t\"net\"\n\n\tpickle %q\n\t\"github.com/google/uuid\"\n)", httpImport),
+		)
+		src = strings.Replace(src, "\n\treturn err\n}\n", `
+	return err
+}
+
+func auditContextIP(ctx *pickle.Context) string {
+	if ctx == nil || ctx.Request() == nil {
+		return ""
+	}
+	req := ctx.Request()
+	if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
+		return xff
+	}
+	if xri := req.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+	host, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		return req.RemoteAddr
+	}
+	return host
+}
+
+func auditContextRequestID(ctx *pickle.Context) string {
+	if ctx == nil || ctx.Request() == nil {
+		return ""
+	}
+	if id := ctx.Request().Header.Get("X-Request-ID"); id != "" {
+		return id
+	}
+	return ctx.Request().Header.Get("X-Request-Id")
+}
+`, 1)
+	}
+	return src
 }
 
 // IDRegistry tracks permanently assigned integer IDs for model_types and

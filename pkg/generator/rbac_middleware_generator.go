@@ -13,13 +13,14 @@ package middleware
 import (
 	"database/sql"
 
+	models "{{ .ModelsImport }}"
 	pickle "{{ .HTTPImport }}"
 )
 
 // loadRolesFromDB queries role_user JOIN roles for the given user ID and
 // returns the user's role memberships. Wired to pickle.RoleLoaderFunc at init.
 func loadRolesFromDB(userID string) ([]pickle.RoleInfo, error) {
-	rows, err := pickle.DB.Query(` + "`" + `
+	rows, err := models.DB.Query(` + "`" + `
 		SELECT r.slug, r.manages
 		FROM role_user ru
 		JOIN roles r ON r.id = ru.role_id
@@ -51,11 +52,13 @@ func init() {
 // GenerateLoadRolesMiddleware produces the load_roles_gen.go file for the
 // project's middleware package. It wires pickle.RoleLoaderFunc to a concrete
 // implementation that queries the role_user and roles tables.
-func GenerateLoadRolesMiddleware(httpImport string) ([]byte, error) {
+func GenerateLoadRolesMiddleware(httpImport, modelsImport string) ([]byte, error) {
 	data := struct {
-		HTTPImport string
+		HTTPImport   string
+		ModelsImport string
 	}{
-		HTTPImport: httpImport,
+		HTTPImport:   httpImport,
+		ModelsImport: modelsImport,
 	}
 
 	var buf bytes.Buffer

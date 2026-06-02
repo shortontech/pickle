@@ -193,7 +193,9 @@ func writeFilterApplier(b *bytes.Buffer, tbl *schema.Table) {
 			writeFilterInOp(b, goMethod, col)
 		case "String":
 			writeFilterOp(b, "eq", goMethod, col, "string")
-			writeFilterLikeOp(b, goMethod)
+			if !col.IsEncrypted && !col.IsSealed {
+				writeFilterLikeOp(b, goMethod)
+			}
 			writeFilterInOp(b, goMethod, col)
 		case "Int":
 			writeFilterOp(b, "eq", goMethod, col, "string")

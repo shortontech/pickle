@@ -123,12 +123,20 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 	// toScopeBuilder and applyScopeBuilder
 	b.WriteString(fmt.Sprintf("// ToScopeBuilder creates a %s from this query's current state.\n", scopeBuilderType))
 	b.WriteString(fmt.Sprintf("func (q *%s) ToScopeBuilder() *%s {\n", queryType, scopeBuilderType))
-	b.WriteString(fmt.Sprintf("\treturn &%s{ScopeBuilder: NewScopeBuilder[%s](q.QueryBuilder)}\n", scopeBuilderType, structName))
+	if table.IsImmutable {
+		b.WriteString(fmt.Sprintf("\treturn &%s{ScopeBuilder: NewImmutableScopeBuilder[%s](q.ImmutableQueryBuilder)}\n", scopeBuilderType, structName))
+	} else {
+		b.WriteString(fmt.Sprintf("\treturn &%s{ScopeBuilder: NewScopeBuilder[%s](q.QueryBuilder)}\n", scopeBuilderType, structName))
+	}
 	b.WriteString("}\n\n")
 
 	b.WriteString(fmt.Sprintf("// ApplyScope applies a scope builder's filters back onto this query.\n"))
 	b.WriteString(fmt.Sprintf("func (q *%s) ApplyScope(sb *%s) *%s {\n", queryType, scopeBuilderType, queryType))
-	b.WriteString(fmt.Sprintf("\tApplyScopeBuilder[%s](q.QueryBuilder, sb.ScopeBuilder)\n", structName))
+	if table.IsImmutable {
+		b.WriteString(fmt.Sprintf("\tApplyImmutableScopeBuilder[%s](q.ImmutableQueryBuilder, sb.ScopeBuilder)\n", structName))
+	} else {
+		b.WriteString(fmt.Sprintf("\tApplyScopeBuilder[%s](q.QueryBuilder, sb.ScopeBuilder)\n", structName))
+	}
 	b.WriteString("\treturn q\n")
 	b.WriteString("}\n\n")
 

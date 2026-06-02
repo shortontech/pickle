@@ -147,7 +147,7 @@ func TestAuditMigrationActionTypesUniqueIndex(t *testing.T) {
 
 func TestWriteAuditModels(t *testing.T) {
 	dir := t.TempDir()
-	if err := WriteAuditModels(dir); err != nil {
+	if err := WriteAuditModels(dir, "github.com/example/myapp/app/http"); err != nil {
 		t.Fatalf("WriteAuditModels: %v", err)
 	}
 
@@ -188,7 +188,7 @@ func TestWriteAuditModelsOverride(t *testing.T) {
 	// Create user override for user_action
 	os.WriteFile(filepath.Join(auditDir, "user_action.go"), []byte("package audit\n// custom"), 0o644)
 
-	if err := WriteAuditModels(dir); err != nil {
+	if err := WriteAuditModels(dir, "github.com/example/myapp/app/http"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -257,7 +257,7 @@ func TestIDRegistry_RemovedActionKeepsID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reg.EnsureActionType("User", "Ban")    // ID 1
+	reg.EnsureActionType("User", "Ban")     // ID 1
 	reg.EnsureActionType("User", "Suspend") // ID 2
 
 	if err := SaveIDRegistry(path, reg); err != nil {
@@ -283,9 +283,9 @@ func TestGenerateAuditSeed(t *testing.T) {
 		NextActionTypeID: 4,
 		ModelTypes:       map[string]int{"User": 1, "Post": 2},
 		ActionTypes: map[string]ActionReg{
-			"User.Ban":      {ID: 1, ModelTypeID: 1, Model: "User", Action: "Ban"},
-			"User.Suspend":  {ID: 2, ModelTypeID: 1, Model: "User", Action: "Suspend"},
-			"Post.Publish":  {ID: 3, ModelTypeID: 2, Model: "Post", Action: "Publish"},
+			"User.Ban":     {ID: 1, ModelTypeID: 1, Model: "User", Action: "Ban"},
+			"User.Suspend": {ID: 2, ModelTypeID: 1, Model: "User", Action: "Suspend"},
+			"Post.Publish": {ID: 3, ModelTypeID: 2, Model: "Post", Action: "Publish"},
 		},
 	}
 

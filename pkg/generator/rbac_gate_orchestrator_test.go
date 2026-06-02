@@ -278,7 +278,7 @@ func (a *MuteAction) Mute(ctx interface{}, model interface{}) error { return nil
 func CanBan(ctx interface{}, model interface{}) bool { return true }
 `)
 
-	gates, err := GenerateRBACGates(actionsDir, policiesDir)
+	gates, err := GenerateRBACGates(actionsDir, policiesDir, "github.com/example/myapp/app/http")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -327,7 +327,7 @@ func (m *CreateRoles_2026_03_01_100000) Up() {
 func (m *CreateRoles_2026_03_01_100000) Down() {}
 `)
 
-	gates, err := GenerateRBACGates(actionsDir, policiesDir)
+	gates, err := GenerateRBACGates(actionsDir, policiesDir, "github.com/example/myapp/app/http")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -376,7 +376,7 @@ func (m *CreateRoles_2026_03_01_100000) Down() {}
 func CanAssign(ctx interface{}, model interface{}) bool { return true }
 `)
 
-	gates, err := GenerateRBACGates(actionsDir, policiesDir)
+	gates, err := GenerateRBACGates(actionsDir, policiesDir, "github.com/example/myapp/app/http")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

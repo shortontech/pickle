@@ -6,7 +6,7 @@ import (
 )
 
 func TestGenerateLoadRolesMiddleware(t *testing.T) {
-	src, err := GenerateLoadRolesMiddleware("github.com/example/myapp/app/http")
+	src, err := GenerateLoadRolesMiddleware("github.com/example/myapp/app/http", "github.com/example/myapp/app/models")
 	if err != nil {
 		t.Fatalf("GenerateLoadRolesMiddleware: %v", err)
 	}

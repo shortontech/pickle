@@ -86,6 +86,37 @@ func (q *ImmutableQueryBuilder[T]) setVisibility(v visibilityMode) {
 	q.visibility = v
 }
 
+// NewImmutableScopeBuilder creates a ScopeBuilder from an ImmutableQueryBuilder's current state.
+func NewImmutableScopeBuilder[T any](q *ImmutableQueryBuilder[T]) *ScopeBuilder[T] {
+	return &ScopeBuilder[T]{
+		conditions:   append([]condition{}, q.conditions...),
+		orderBy:      append([]string{}, q.orderBy...),
+		limit:        q.limit,
+		offset:       q.offset,
+		selectedCols: append([]string{}, q.selectedCols...),
+		visibility:   q.visibility,
+	}
+}
+
+// ApplyImmutableScopeBuilder merges a ScopeBuilder's state back into an ImmutableQueryBuilder.
+func ApplyImmutableScopeBuilder[T any](q *ImmutableQueryBuilder[T], sb *ScopeBuilder[T]) *ImmutableQueryBuilder[T] {
+	q.conditions = append(q.conditions, sb.conditions...)
+	q.orderBy = append(q.orderBy, sb.orderBy...)
+	if sb.limit > 0 {
+		q.limit = sb.limit
+	}
+	if sb.offset > 0 {
+		q.offset = sb.offset
+	}
+	if len(sb.selectedCols) > 0 {
+		q.selectedCols = sb.selectedCols
+	}
+	if sb.visibility != visibilityNone {
+		q.visibility = sb.visibility
+	}
+	return q
+}
+
 func (q *ImmutableQueryBuilder[T]) EagerLoad(relation string) *ImmutableQueryBuilder[T] {
 	q.eagerLoads = append(q.eagerLoads, relation)
 	return q

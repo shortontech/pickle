@@ -737,8 +737,9 @@ func Generate(project *Project, picklePkgDir string) error {
 			genFile := filepath.Join(middlewareDir, "load_roles_gen.go")
 			if _, err := os.Stat(userFile); os.IsNotExist(err) {
 				httpImport := project.ModulePath + "/app/http"
+				modelsImport := project.ModulePath + "/app/models"
 				fmt.Println("  generating middleware/load_roles_gen.go")
-				src, err := GenerateLoadRolesMiddleware(httpImport)
+				src, err := GenerateLoadRolesMiddleware(httpImport, modelsImport)
 				if err != nil {
 					return fmt.Errorf("generating LoadRoles middleware: %w", err)
 				}
@@ -765,7 +766,8 @@ func Generate(project *Project, picklePkgDir string) error {
 			return fmt.Errorf("writing audit migrations: %w", err)
 		}
 		fmt.Println("  generating models/audit/ (ModelType, ActionType, UserAction)")
-		if err := WriteAuditModels(modelsDir); err != nil {
+		httpImport := project.ModulePath + "/app/http"
+		if err := WriteAuditModels(modelsDir, httpImport); err != nil {
 			return fmt.Errorf("writing audit models: %w", err)
 		}
 	}
@@ -942,7 +944,8 @@ func Generate(project *Project, picklePkgDir string) error {
 
 	// 5d. Generate RBAC-enriched gates from policy Can() declarations
 	if hasRolePolicies {
-		gateFiles, err := GenerateRBACGates(actionsDir, policiesDir)
+		httpImport := project.ModulePath + "/app/http"
+		gateFiles, err := GenerateRBACGates(actionsDir, policiesDir, httpImport)
 		if err != nil {
 			return fmt.Errorf("generating RBAC gates: %w", err)
 		}

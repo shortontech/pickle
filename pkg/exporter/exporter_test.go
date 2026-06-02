@@ -30,11 +30,11 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	if hasFinding(res.Findings, "generated_auth") {
 		t.Fatalf("did not expect generated_auth finding, got %+v", res.Findings)
 	}
-	if !hasFinding(res.Findings, "rbac_policy_export") {
-		t.Fatalf("expected rbac_policy_export finding, got %+v", res.Findings)
+	if hasFinding(res.Findings, "rbac_policy_export") {
+		t.Fatalf("did not expect rbac_policy_export finding, got %+v", res.Findings)
 	}
-	if !hasFinding(res.Findings, "generated_graphql_policies") {
-		t.Fatalf("expected generated_graphql_policies finding, got %+v", res.Findings)
+	if hasFinding(res.Findings, "generated_graphql_policies") {
+		t.Fatalf("did not expect generated_graphql_policies finding, got %+v", res.Findings)
 	}
 	if !hasFinding(res.Findings, "actions_audit") {
 		t.Fatalf("expected actions_audit finding, got %+v", res.Findings)
@@ -48,11 +48,9 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.up.sql"), "CREATE INDEX")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260228100000_create_user_post_stats_view.up.sql"), "CREATE VIEW")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Exported")
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Partial Support")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone JWT, OAuth client-credentials, and session auth drivers")
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "rbac_policy_export")
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "generated_graphql_policies")
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Omitted")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone RBAC and GraphQL policy state support with changelog tables")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Manual Review")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func Env(key, fallback string) string")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "type ConnectionConfig struct")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func OpenGORM(conn ConnectionConfig) *gorm.DB")
@@ -86,6 +84,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertNoGoFileContains(t, out, "PICKLE_")
 	assertFileContains(t, filepath.Join(out, "go.sum"), "gorm.io/gorm")
 	writeExportedAuthBehaviorTest(t, out)
+	writeExportedPolicyBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
 
@@ -187,6 +186,77 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "http", "auth", "exported_auth_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedPolicyBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package policies_test
+
+import (
+	"testing"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"basic-crud/database/policies"
+)
+
+func TestExportedPolicyStateSupport(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := policies.Migrate(db, "sqlite"); err != nil {
+		t.Fatalf("policy migrate: %v", err)
+	}
+
+	var roles int64
+	if err := db.Table("roles").Count(&roles).Error; err != nil {
+		t.Fatal(err)
+	}
+	if roles != 3 {
+		t.Fatalf("roles = %d, want 3", roles)
+	}
+	var adminCreates int64
+	if err := db.Table("role_actions").Where("role_slug = ? AND action = ?", "admin", "users.create").Count(&adminCreates).Error; err != nil {
+		t.Fatal(err)
+	}
+	if adminCreates != 1 {
+		t.Fatalf("admin users.create grants = %d, want 1", adminCreates)
+	}
+	var userList int64
+	if err := db.Table("graphql_exposures").Where("model = ? AND operation = ?", "users", "list").Count(&userList).Error; err != nil {
+		t.Fatal(err)
+	}
+	if userList != 1 {
+		t.Fatalf("graphql users.list exposures = %d, want 1", userList)
+	}
+	statuses, err := policies.Status(db, "sqlite")
+	if err != nil {
+		t.Fatalf("policy status: %v", err)
+	}
+	if len(statuses) == 0 {
+		t.Fatal("expected policy statuses")
+	}
+	for _, status := range statuses {
+		if !status.Applied {
+			t.Fatalf("policy status %#v should be applied", status)
+		}
+	}
+	if err := policies.Rollback(db, "sqlite"); err != nil {
+		t.Fatalf("policy rollback: %v", err)
+	}
+	if err := db.Table("roles").Count(&roles).Error; err != nil {
+		t.Fatal(err)
+	}
+	if roles != 0 {
+		t.Fatalf("roles after rollback = %d, want 0", roles)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "database", "policies", "exported_policy_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

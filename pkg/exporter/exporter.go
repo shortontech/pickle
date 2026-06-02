@@ -143,6 +143,9 @@ func Export(opts Options) (*Result, error) {
 	if err := ex.writeSQLMigrations(tables, views); err != nil {
 		return nil, err
 	}
+	if err := ex.writePolicySupport(); err != nil {
+		return nil, err
+	}
 	if err := ex.writeCommandsSupport(); err != nil {
 		return nil, err
 	}
@@ -164,7 +167,6 @@ func Export(opts Options) (*Result, error) {
 	if err := ex.tidyModule(); err != nil {
 		return nil, err
 	}
-	ex.addGeneratedSubsystemFindings()
 	ex.addSchemaFindings(tables)
 	if err := ex.writeReport(opts.ORM); err != nil {
 		return nil, err
@@ -1469,6 +1471,313 @@ func (e *exporter) hasCommands() bool {
 	return err == nil
 }
 
+func (e *exporter) writePolicySupport() error {
+	if !e.hasPolicySupport() {
+		return nil
+	}
+	data, err := e.generatePolicySupport()
+	if err != nil {
+		return err
+	}
+	return e.writeFile(filepath.Join("database", "policies", "support.go"), data)
+}
+
+func (e *exporter) hasPolicySupport() bool {
+	return e.hasRolePolicies() || e.hasGraphQLPolicies()
+}
+
+func (e *exporter) hasRolePolicies() bool {
+	dir := filepath.Join(e.project.Dir, "database", "policies")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_gen.go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func (e *exporter) hasGraphQLPolicies() bool {
+	dir := filepath.Join(e.project.Dir, "database", "policies", "graphql")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_gen.go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func (e *exporter) generatePolicySupport() ([]byte, error) {
+	var roles []generator.DerivedRole
+	var rolePolicyIDs []string
+	var graphQLPolicyIDs []string
+	if e.hasRolePolicies() {
+		policies, err := generator.ParsePolicyOps(filepath.Join(e.project.Dir, "database", "policies"))
+		if err != nil {
+			return nil, err
+		}
+		roles = generator.StaticDeriveRoles(policies)
+		for _, policy := range policies {
+			rolePolicyIDs = append(rolePolicyIDs, policy.PolicyID)
+		}
+	}
+	var graphQLState generator.DerivedGraphQLState
+	if e.hasGraphQLPolicies() {
+		graphQLState = generator.DeriveGraphQLStateFromDir(filepath.Join(e.project.Dir, "database", "policies", "graphql"))
+		entries, err := generator.ScanGraphQLPolicyFiles(filepath.Join(e.project.Dir, "database", "policies", "graphql"))
+		if err == nil {
+			for _, entry := range entries {
+				graphQLPolicyIDs = append(graphQLPolicyIDs, entry.ID)
+			}
+		}
+	}
+	sort.Strings(rolePolicyIDs)
+	sort.Strings(graphQLPolicyIDs)
+
+	var b strings.Builder
+	b.WriteString(`package policies
+
+import (
+	"fmt"
+	"sort"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+type PolicyStatus struct {
+	ID string
+	Batch int
+	State string
+	Applied bool
+}
+
+type roleSeed struct {
+	Slug string
+	Name string
+	Manages bool
+	Default bool
+	BirthPolicy string
+	Actions []string
+}
+
+type graphQLExposureSeed struct {
+	Model string
+	Operation string
+}
+
+type graphQLActionSeed struct {
+	Name string
+}
+
+var roleSeeds = []roleSeed{
+`)
+	for _, role := range roles {
+		name := role.DisplayName
+		if name == "" {
+			name = role.Slug
+		}
+		fmt.Fprintf(&b, "\t{Slug: %q, Name: %q, Manages: %t, Default: %t, BirthPolicy: %q, Actions: []string{%s}},\n", role.Slug, name, role.IsManages, role.IsDefault, role.BirthTimestamp, quotedStringList(role.Actions))
+	}
+	b.WriteString(`}
+
+var graphQLExposureSeeds = []graphQLExposureSeed{
+`)
+	for _, exposure := range graphQLState.Exposures {
+		for _, op := range exposure.Operations {
+			fmt.Fprintf(&b, "\t{Model: %q, Operation: %q},\n", exposure.Model, op)
+		}
+	}
+	b.WriteString(`}
+
+var graphQLActionSeeds = []graphQLActionSeed{
+`)
+	for _, action := range graphQLState.Actions {
+		fmt.Fprintf(&b, "\t{Name: %q},\n", action.Name)
+	}
+	b.WriteString(`}
+
+var rolePolicyIDs = []string{
+`)
+	for _, id := range rolePolicyIDs {
+		fmt.Fprintf(&b, "\t%q,\n", id)
+	}
+	b.WriteString(`}
+
+var graphQLPolicyIDs = []string{
+`)
+	for _, id := range graphQLPolicyIDs {
+		fmt.Fprintf(&b, "\t%q,\n", id)
+	}
+	b.WriteString(`}
+
+func Migrate(db *gorm.DB, driver string) error {
+	if len(roleSeeds) > 0 {
+		if err := ensureRBACSchema(db); err != nil { return err }
+		if err := seedRoles(db); err != nil { return err }
+		if err := markPoliciesApplied(db, "rbac_changelog", rolePolicyIDs); err != nil { return err }
+	}
+	if len(graphQLExposureSeeds) > 0 || len(graphQLActionSeeds) > 0 {
+		if err := ensureGraphQLPolicySchema(db); err != nil { return err }
+		if err := seedGraphQLPolicies(db); err != nil { return err }
+		if err := markPoliciesApplied(db, "graphql_changelog", graphQLPolicyIDs); err != nil { return err }
+	}
+	return nil
+}
+
+func Rollback(db *gorm.DB, driver string) error {
+	if len(graphQLExposureSeeds) > 0 || len(graphQLActionSeeds) > 0 {
+		if err := db.Exec("DELETE FROM graphql_actions").Error; err != nil { return err }
+		if err := db.Exec("DELETE FROM graphql_exposures").Error; err != nil { return err }
+		if err := db.Exec("DELETE FROM graphql_changelog").Error; err != nil { return err }
+	}
+	if len(roleSeeds) > 0 {
+		if err := db.Exec("DELETE FROM role_actions").Error; err != nil { return err }
+		if err := db.Exec("DELETE FROM role_user").Error; err != nil { return err }
+		if err := db.Exec("DELETE FROM roles").Error; err != nil { return err }
+		if err := db.Exec("DELETE FROM rbac_changelog").Error; err != nil { return err }
+	}
+	return nil
+}
+
+func Fresh(db *gorm.DB, driver string) error {
+	_ = db.Exec("DROP TABLE IF EXISTS graphql_actions").Error
+	_ = db.Exec("DROP TABLE IF EXISTS graphql_exposures").Error
+	_ = db.Exec("DROP TABLE IF EXISTS graphql_changelog").Error
+	_ = db.Exec("DROP TABLE IF EXISTS role_actions").Error
+	_ = db.Exec("DROP TABLE IF EXISTS role_user").Error
+	_ = db.Exec("DROP TABLE IF EXISTS roles").Error
+	_ = db.Exec("DROP TABLE IF EXISTS rbac_changelog").Error
+	return Migrate(db, driver)
+}
+
+func Status(db *gorm.DB, driver string) ([]PolicyStatus, error) {
+	var statuses []PolicyStatus
+	if len(roleSeeds) > 0 {
+		if err := ensureRBACSchema(db); err != nil { return nil, err }
+		applied, err := appliedPolicyRows(db, "rbac_changelog")
+		if err != nil { return nil, err }
+		for _, id := range rolePolicyIDs {
+			status := PolicyStatus{ID: id, State: "pending"}
+			if batch, ok := applied[id]; ok {
+				status.Applied = true
+				status.Batch = batch
+				status.State = "applied"
+			}
+			statuses = append(statuses, status)
+		}
+	}
+	if len(graphQLExposureSeeds) > 0 || len(graphQLActionSeeds) > 0 {
+		if err := ensureGraphQLPolicySchema(db); err != nil { return nil, err }
+		applied, err := appliedPolicyRows(db, "graphql_changelog")
+		if err != nil { return nil, err }
+		for _, id := range graphQLPolicyIDs {
+			status := PolicyStatus{ID: "graphql:" + id, State: "pending"}
+			if batch, ok := applied[id]; ok {
+				status.Applied = true
+				status.Batch = batch
+				status.State = "applied"
+			}
+			statuses = append(statuses, status)
+		}
+	}
+	return statuses, nil
+}
+
+func PrintStatus(statuses []PolicyStatus) {
+	sort.Slice(statuses, func(i, j int) bool { return statuses[i].ID < statuses[j].ID })
+	for _, status := range statuses {
+		state := "pending"
+		if status.Applied { state = fmt.Sprintf("applied (batch %d)", status.Batch) }
+		fmt.Printf("%-50s %s\n", status.ID, state)
+	}
+}
+
+func ensureRBACSchema(db *gorm.DB) error {
+	stmts := []string{
+		` + "`" + `CREATE TABLE IF NOT EXISTS roles (id TEXT PRIMARY KEY, slug VARCHAR(50) NOT NULL UNIQUE, name VARCHAR(100) NOT NULL, manages BOOLEAN NOT NULL DEFAULT false, is_default BOOLEAN NOT NULL DEFAULT false, birth_policy VARCHAR(100) NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
+		` + "`" + `CREATE TABLE IF NOT EXISTS role_actions (id TEXT PRIMARY KEY, role_slug VARCHAR(50) NOT NULL, action VARCHAR(100) NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, UNIQUE(role_slug, action))` + "`" + `,
+		` + "`" + `CREATE TABLE IF NOT EXISTS role_user (user_id TEXT NOT NULL, role_id TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, PRIMARY KEY(user_id, role_id))` + "`" + `,
+		` + "`" + `CREATE TABLE IF NOT EXISTS rbac_changelog (id VARCHAR(255) PRIMARY KEY, batch INTEGER NOT NULL, state VARCHAR(20) NOT NULL, error TEXT, started_at DATETIME, completed_at DATETIME)` + "`" + `,
+	}
+	for _, stmt := range stmts {
+		if err := db.Exec(stmt).Error; err != nil { return err }
+	}
+	return nil
+}
+
+func ensureGraphQLPolicySchema(db *gorm.DB) error {
+	stmts := []string{
+		` + "`" + `CREATE TABLE IF NOT EXISTS graphql_changelog (id VARCHAR(255) PRIMARY KEY, batch INTEGER NOT NULL, state VARCHAR(20) NOT NULL, error TEXT, started_at DATETIME, completed_at DATETIME)` + "`" + `,
+		` + "`" + `CREATE TABLE IF NOT EXISTS graphql_exposures (id TEXT PRIMARY KEY, model VARCHAR(100) NOT NULL, operation VARCHAR(20) NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, UNIQUE(model, operation))` + "`" + `,
+		` + "`" + `CREATE TABLE IF NOT EXISTS graphql_actions (id TEXT PRIMARY KEY, name VARCHAR(100) NOT NULL UNIQUE, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
+	}
+	for _, stmt := range stmts {
+		if err := db.Exec(stmt).Error; err != nil { return err }
+	}
+	return nil
+}
+
+func seedRoles(db *gorm.DB) error {
+	now := time.Now().UTC()
+	for _, role := range roleSeeds {
+		if err := db.Exec("INSERT INTO roles (id, slug, name, manages, is_default, birth_policy, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET name = excluded.name, manages = excluded.manages, is_default = excluded.is_default, birth_policy = excluded.birth_policy, updated_at = excluded.updated_at", uuid.New().String(), role.Slug, role.Name, role.Manages, role.Default, role.BirthPolicy, now, now).Error; err != nil { return err }
+		if err := db.Exec("DELETE FROM role_actions WHERE role_slug = ?", role.Slug).Error; err != nil { return err }
+		for _, action := range role.Actions {
+			if err := db.Exec("INSERT INTO role_actions (id, role_slug, action, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", uuid.New().String(), role.Slug, action, now, now).Error; err != nil { return err }
+		}
+	}
+	return nil
+}
+
+func seedGraphQLPolicies(db *gorm.DB) error {
+	now := time.Now().UTC()
+	if err := db.Exec("DELETE FROM graphql_exposures").Error; err != nil { return err }
+	for _, exposure := range graphQLExposureSeeds {
+		if err := db.Exec("INSERT INTO graphql_exposures (id, model, operation, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", uuid.New().String(), exposure.Model, exposure.Operation, now, now).Error; err != nil { return err }
+	}
+	if err := db.Exec("DELETE FROM graphql_actions").Error; err != nil { return err }
+	for _, action := range graphQLActionSeeds {
+		if err := db.Exec("INSERT INTO graphql_actions (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)", uuid.New().String(), action.Name, now, now).Error; err != nil { return err }
+	}
+	return nil
+}
+
+func markPoliciesApplied(db *gorm.DB, table string, ids []string) error {
+	now := time.Now().UTC()
+	for _, id := range ids {
+		if err := db.Exec("INSERT INTO " + table + " (id, batch, state, started_at, completed_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET state = excluded.state, completed_at = excluded.completed_at", id, 1, "applied", now, now).Error; err != nil { return err }
+	}
+	return nil
+}
+
+func appliedPolicyRows(db *gorm.DB, table string) (map[string]int, error) {
+	rows, err := db.Raw("SELECT id, batch FROM " + table + " WHERE state = 'applied'").Rows()
+	if err != nil { return nil, err }
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var id string
+		var batch int
+		if err := rows.Scan(&id, &batch); err != nil { return nil, err }
+		out[id] = batch
+	}
+	return out, rows.Err()
+}
+`)
+	return format.Source([]byte(b.String()))
+}
+
 type sqlMigration struct {
 	Name string
 	Up   string
@@ -1714,6 +2023,7 @@ func splitSQLStatements(sql string) []string {
 func (e *exporter) generateCommandsSupport() ([]byte, error) {
 	hasGraphQL := e.hasGraphQLPackage()
 	hasSchedule := e.hasSchedule()
+	hasPolicies := e.hasPolicySupport()
 	var b strings.Builder
 	b.WriteString("package commands\n\n")
 	b.WriteString("import (\n")
@@ -1735,6 +2045,9 @@ func (e *exporter) generateCommandsSupport() ([]byte, error) {
 	b.WriteString(fmt.Sprintf("\t\"%s/app/models\"\n", e.modulePath))
 	b.WriteString(fmt.Sprintf("\t\"%s/config\"\n", e.modulePath))
 	b.WriteString(fmt.Sprintf("\t\"%s/database/migrations\"\n", e.modulePath))
+	if hasPolicies {
+		b.WriteString(fmt.Sprintf("\t\"%s/database/policies\"\n", e.modulePath))
+	}
 	b.WriteString(fmt.Sprintf("\t\"%s/routes\"\n", e.modulePath))
 	if hasSchedule {
 		b.WriteString(fmt.Sprintf("\t\"%s/schedule\"\n", e.modulePath))
@@ -1789,7 +2102,16 @@ func (c migrateCommand) Name() string { return "migrate" }
 func (c migrateCommand) Description() string { return "Run pending migrations" }
 func (c migrateCommand) Run(args []string) error {
 	runner := migrations.NewRunner(models.DB, config.Database.Connection().Driver)
-	return runner.Migrate(migrations.Registry)
+	if err := runner.Migrate(migrations.Registry); err != nil {
+		return err
+	}
+`)
+	if hasPolicies {
+		b.WriteString("\treturn policies.Migrate(models.DB, config.Database.Connection().Driver)\n")
+	} else {
+		b.WriteString("\treturn nil\n")
+	}
+	b.WriteString(`
 }
 
 type migrateRollbackCommand struct{}
@@ -1798,6 +2120,11 @@ func (c migrateRollbackCommand) Name() string { return "migrate:rollback" }
 func (c migrateRollbackCommand) Description() string { return "Roll back the last migration batch" }
 func (c migrateRollbackCommand) Run(args []string) error {
 	runner := migrations.NewRunner(models.DB, config.Database.Connection().Driver)
+`)
+	if hasPolicies {
+		b.WriteString("\tif err := policies.Rollback(models.DB, config.Database.Connection().Driver); err != nil {\n\t\treturn err\n\t}\n")
+	}
+	b.WriteString(`
 	return runner.Rollback(migrations.Registry)
 }
 
@@ -1807,7 +2134,20 @@ func (c migrateFreshCommand) Name() string { return "migrate:fresh" }
 func (c migrateFreshCommand) Description() string { return "Drop all tables and re-run all migrations" }
 func (c migrateFreshCommand) Run(args []string) error {
 	runner := migrations.NewRunner(models.DB, config.Database.Connection().Driver)
-	return runner.Fresh(migrations.Registry)
+`)
+	if hasPolicies {
+		b.WriteString("\tif err := policies.Fresh(models.DB, config.Database.Connection().Driver); err != nil {\n\t\treturn err\n\t}\n")
+	}
+	b.WriteString(`	if err := runner.Fresh(migrations.Registry); err != nil {
+		return err
+	}
+`)
+	if hasPolicies {
+		b.WriteString("\treturn policies.Migrate(models.DB, config.Database.Connection().Driver)\n")
+	} else {
+		b.WriteString("\treturn nil\n")
+	}
+	b.WriteString(`
 }
 
 type migrateStatusCommand struct{}
@@ -1821,6 +2161,16 @@ func (c migrateStatusCommand) Run(args []string) error {
 		return err
 	}
 	migrations.PrintStatus(statuses)
+`)
+	if hasPolicies {
+		b.WriteString(`	policyStatuses, err := policies.Status(models.DB, config.Database.Connection().Driver)
+	if err != nil {
+		return err
+	}
+	policies.PrintStatus(policyStatuses)
+`)
+	}
+	b.WriteString(`
 	return nil
 }
 
@@ -2476,22 +2826,6 @@ func safeImportAlias(name string) string {
 	return b.String()
 }
 
-func (e *exporter) addGeneratedSubsystemFindings() {
-	checks := []struct {
-		path string
-		rule string
-		msg  string
-	}{
-		{"database/policies", "rbac_policy_export", "RBAC role grants are reflected in exported gates where statically derivable; policy runners and changelog state are not exported"},
-		{"database/policies/graphql", "generated_graphql_policies", "generated GraphQL schema preserves derived exposure state; policy runner/changelog migration commands are not exported in v1"},
-	}
-	for _, c := range checks {
-		if _, err := os.Stat(filepath.Join(e.project.Dir, c.path)); err == nil {
-			e.result.Findings = append(e.result.Findings, Finding{File: c.path, Rule: c.rule, Message: c.msg})
-		}
-	}
-}
-
 func (e *exporter) addSchemaFindings(tables []*schema.Table) {
 }
 
@@ -2524,6 +2858,9 @@ func (e *exporter) writeReport(orm string) error {
 		b.WriteString("- Standalone command dispatch with embedded SQL migration commands\n")
 	}
 	b.WriteString("- Standalone JWT, OAuth client-credentials, and session auth drivers\n")
+	if e.hasPolicySupport() {
+		b.WriteString("- Standalone RBAC and GraphQL policy state support with changelog tables\n")
+	}
 	b.WriteString("\n")
 	if len(e.result.Findings) == 0 {
 		b.WriteString("## Manual Review\n\n")

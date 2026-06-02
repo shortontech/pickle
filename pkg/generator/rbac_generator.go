@@ -124,12 +124,31 @@ func WriteRBACModels(modelsDir string) error {
 		}
 
 		src := strings.ReplaceAll(m.Embed, packagePlaceholder, authPkg)
+		src = normalizeRBACModelQuerySource(src)
 		if err := os.WriteFile(filepath.Join(authDir, genFilename), []byte(src), 0o644); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+func normalizeRBACModelQuerySource(src string) string {
+	replacements := map[string]string{
+		`q.Where("id", "=", id)`:                `q.where("id", id)`,
+		`q.Where("slug", "=", slug)`:            `q.where("slug", slug)`,
+		`q.Where("name", "=", name)`:            `q.where("name", name)`,
+		`q.Where("manages", "=", manages)`:      `q.where("manages", manages)`,
+		`q.Where("is_default", "=", isDefault)`: `q.where("is_default", isDefault)`,
+		`q.Where("birth_policy", "=", policy)`:  `q.where("birth_policy", policy)`,
+		`q.Where("user_id", "=", userID)`:       `q.where("user_id", userID)`,
+		`q.Where("role_id", "=", roleID)`:       `q.where("role_id", roleID)`,
+		`q.EagerLoad("roles", "role_id", "id")`: `q.EagerLoad("roles")`,
+	}
+	for old, current := range replacements {
+		src = strings.ReplaceAll(src, old, current)
+	}
+	return src
 }
 
 // WriteGraphQLMigrations writes GraphQL migration files into the project's

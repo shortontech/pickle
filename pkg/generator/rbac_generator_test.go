@@ -305,3 +305,40 @@ func TestRBACModelRoleUserQueryScopes(t *testing.T) {
 		}
 	}
 }
+
+func TestRBACModelQueriesUseCurrentQueryBuilderAPI(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteRBACModels(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"role_query_gen.go", "role_user_query_gen.go"} {
+		data, err := os.ReadFile(filepath.Join(dir, "auth", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		content := string(data)
+		if strings.Contains(content, "q.Where(") {
+			t.Errorf("%s uses stale exported Where API", name)
+		}
+		if strings.Contains(content, `q.EagerLoad("roles", "role_id", "id")`) {
+			t.Errorf("%s uses stale EagerLoad signature", name)
+		}
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "auth", "role_query_gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `q.where("slug", slug)`) {
+		t.Error("role query should use internal equality helper")
+	}
+
+	data, err = os.ReadFile(filepath.Join(dir, "auth", "role_user_query_gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `q.EagerLoad("roles")`) {
+		t.Error("role_user query should use current EagerLoad signature")
+	}
+}

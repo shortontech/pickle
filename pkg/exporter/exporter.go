@@ -1879,34 +1879,47 @@ func (e *exporter) writeServerMain() error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	hasSchedule := e.hasSchedule()
 	if len(e.project.Services) > 0 {
-		data, err := e.generateMultiServiceServerMain(scan != nil && scan.HasDatabaseConfig)
+		data, err := e.generateMultiServiceServerMain(scan != nil && scan.HasDatabaseConfig, hasSchedule)
 		if err != nil {
 			return err
 		}
 		return e.writeFile(filepath.Join("cmd", "server", "main.go"), data)
 	}
 	if e.hasGraphQLPackage() {
-		data, err := e.generateServerMain(scan != nil && scan.HasDatabaseConfig, true)
+		data, err := e.generateServerMain(scan != nil && scan.HasDatabaseConfig, true, hasSchedule)
 		if err != nil {
 			return err
 		}
 		return e.writeFile(filepath.Join("cmd", "server", "main.go"), data)
 	}
-	source := serverMainSource
-	if scan != nil && scan.HasDatabaseConfig {
-		source = serverMainWithDatabaseSource
-		return e.writeFile(filepath.Join("cmd", "server", "main.go"), []byte(fmt.Sprintf(source, e.modulePath, e.modulePath, e.modulePath)))
+	data, err := e.generateServerMain(scan != nil && scan.HasDatabaseConfig, false, hasSchedule)
+	if err != nil {
+		return err
 	}
-	return e.writeFile(filepath.Join("cmd", "server", "main.go"), []byte(fmt.Sprintf(source, e.modulePath, e.modulePath)))
+	return e.writeFile(filepath.Join("cmd", "server", "main.go"), data)
 }
 
-func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL bool) ([]byte, error) {
+func (e *exporter) hasSchedule() bool {
+	_, err := os.Stat(filepath.Join(e.project.Dir, "schedule", "jobs.go"))
+	return err == nil
+}
+
+func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL, hasSchedule bool) ([]byte, error) {
 	var b strings.Builder
 	b.WriteString("package main\n\n")
 	b.WriteString("import (\n")
+	if hasSchedule {
+		b.WriteString("\t\"context\"\n")
+	}
 	b.WriteString("\t\"log\"\n")
-	b.WriteString("\t\"net/http\"\n\n")
+	b.WriteString("\t\"net/http\"\n")
+	if hasSchedule {
+		b.WriteString("\t\"os\"\n")
+		b.WriteString("\t\"os/signal\"\n")
+	}
+	b.WriteString("\n")
 	if hasGraphQL {
 		b.WriteString(fmt.Sprintf("\t\"%s/app/graphql\"\n", e.modulePath))
 	}
@@ -1915,11 +1928,19 @@ func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL bool) ([]byt
 	}
 	b.WriteString(fmt.Sprintf("\t\"%s/config\"\n", e.modulePath))
 	b.WriteString(fmt.Sprintf("\t\"%s/routes\"\n", e.modulePath))
+	if hasSchedule {
+		b.WriteString(fmt.Sprintf("\t\"%s/schedule\"\n", e.modulePath))
+	}
 	b.WriteString(")\n\n")
 	b.WriteString("func main() {\n")
 	b.WriteString("\tconfig.Init()\n")
 	if hasDatabaseConfig {
 		b.WriteString("\tmodels.SetDB(config.Database.OpenGORM())\n")
+	}
+	if hasSchedule {
+		b.WriteString("\tctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)\n")
+		b.WriteString("\tdefer stop()\n")
+		b.WriteString("\tgo schedule.Schedule.Start(ctx)\n")
 	}
 	b.WriteString("\tmux := http.NewServeMux()\n")
 	b.WriteString("\tmux.Handle(\"/\", routes.API)\n")
@@ -1936,16 +1957,27 @@ func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL bool) ([]byt
 	return format.Source([]byte(b.String()))
 }
 
-func (e *exporter) generateMultiServiceServerMain(hasDatabaseConfig bool) ([]byte, error) {
+func (e *exporter) generateMultiServiceServerMain(hasDatabaseConfig, hasSchedule bool) ([]byte, error) {
 	var b strings.Builder
 	b.WriteString("package main\n\n")
 	b.WriteString("import (\n")
+	if hasSchedule {
+		b.WriteString("\t\"context\"\n")
+	}
 	b.WriteString("\t\"log\"\n")
-	b.WriteString("\t\"net/http\"\n\n")
+	b.WriteString("\t\"net/http\"\n")
+	if hasSchedule {
+		b.WriteString("\t\"os\"\n")
+		b.WriteString("\t\"os/signal\"\n")
+	}
+	b.WriteString("\n")
 	if hasDatabaseConfig {
 		b.WriteString(fmt.Sprintf("\t\"%s/app/models\"\n", e.modulePath))
 	}
 	b.WriteString(fmt.Sprintf("\t\"%s/config\"\n", e.modulePath))
+	if hasSchedule {
+		b.WriteString(fmt.Sprintf("\t\"%s/schedule\"\n", e.modulePath))
+	}
 	for _, svc := range e.project.Services {
 		rel, err := filepath.Rel(e.project.Dir, filepath.Join(svc.Dir, "routes"))
 		if err != nil {
@@ -1958,6 +1990,11 @@ func (e *exporter) generateMultiServiceServerMain(hasDatabaseConfig bool) ([]byt
 	b.WriteString("\tconfig.Init()\n")
 	if hasDatabaseConfig {
 		b.WriteString("\tmodels.SetDB(config.Database.OpenGORM())\n")
+	}
+	if hasSchedule {
+		b.WriteString("\tctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)\n")
+		b.WriteString("\tdefer stop()\n")
+		b.WriteString("\tgo schedule.Schedule.Start(ctx)\n")
 	}
 	b.WriteString("\tmux := http.NewServeMux()\n")
 	for i, svc := range e.project.Services {
@@ -1996,7 +2033,6 @@ func (e *exporter) addGeneratedSubsystemFindings() {
 		msg  string
 	}{
 		{"app/http/auth", "generated_auth", "auth runtime is exported with standalone JWT support; sessions, OAuth, and JWT allowlist/revocation need manual review"},
-		{"app/jobs", "generated_jobs", "scheduler runtime is exported with minimal standalone support in v1"},
 		{"app/commands", "generated_commands", "Pickle command runtime is not lowered in v1"},
 		{"database/policies", "rbac_policy_export", "RBAC role grants are reflected in exported gates where statically derivable; policy runners and changelog state are not exported"},
 		{"database/policies/graphql", "generated_graphql_policies", "generated GraphQL schema preserves derived exposure state; policy runner/changelog migration commands are not exported in v1"},
@@ -2032,6 +2068,9 @@ func (e *exporter) writeReport(orm string) error {
 	}
 	if len(e.integrityModels) > 0 {
 		b.WriteString("- Immutable and append-only integrity tables with hash-chain write and verification helpers\n")
+	}
+	if e.hasSchedule() {
+		b.WriteString("- Cron job scheduler support with exported server startup wiring\n")
 	}
 	b.WriteString("\n")
 	if len(e.result.Findings) == 0 {
@@ -2078,7 +2117,7 @@ func (e *exporter) writeFindingSection(b *strings.Builder, title, category strin
 
 func findingCategory(rule string) string {
 	switch rule {
-	case "generated_auth", "generated_jobs", "rbac_policy_export":
+	case "generated_auth", "rbac_policy_export":
 		return "partial"
 	case "generated_graphql", "generated_graphql_policies", "generated_commands", "generated_policies", "generated_actions":
 		return "omitted"

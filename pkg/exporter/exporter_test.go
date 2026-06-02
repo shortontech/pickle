@@ -478,7 +478,97 @@ func TestExportMonorepoCompiles(t *testing.T) {
 	runExported(t, out, "go", "test", "./...")
 }
 
-func TestExportCronCompilesWithFinding(t *testing.T) {
+func writeExportedCronBehaviorTests(t *testing.T, out string) {
+	t.Helper()
+	jobsTest := `package jobs
+
+import (
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+type exportedFlakyJob struct {
+	attempts int32
+	failures int32
+}
+
+func (j *exportedFlakyJob) Handle() error {
+	attempt := atomic.AddInt32(&j.attempts, 1)
+	if attempt <= j.failures {
+		return errExportedFlaky
+	}
+	return nil
+}
+
+var errExportedFlaky = &exportedCronError{}
+
+type exportedCronError struct{}
+
+func (*exportedCronError) Error() string { return "flaky" }
+
+func TestExportedSchedulerOptionsAndRetries(t *testing.T) {
+	job := &exportedFlakyJob{failures: 2}
+	scheduler := Cron(func(s *Scheduler) {
+		s.Job("*/5 * * * *", job).
+			MaxRetries(2).
+			RetryDelay(time.Millisecond).
+			Timeout(time.Second).
+			AllowOverlap()
+	})
+	if len(scheduler.Entries()) != 1 {
+		t.Fatalf("expected one scheduled job, got %d", len(scheduler.Entries()))
+	}
+	entry := scheduler.Entries()[0]
+	if entry.maxRetries != 2 {
+		t.Fatalf("maxRetries = %d, want 2", entry.maxRetries)
+	}
+	if entry.retryDelay != time.Millisecond {
+		t.Fatalf("retryDelay = %s, want 1ms", entry.retryDelay)
+	}
+	if entry.timeout != time.Second {
+		t.Fatalf("timeout = %s, want 1s", entry.timeout)
+	}
+	if !entry.allowOverlap {
+		t.Fatal("AllowOverlap should enable overlapping runs")
+	}
+	runJob(entry)
+	if got := atomic.LoadInt32(&job.attempts); got != 3 {
+		t.Fatalf("attempts = %d, want 3", got)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "jobs", "exported_scheduler_test.go"), []byte(jobsTest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	scheduleTest := `package schedule_test
+
+import (
+	"testing"
+
+	"cron-test/schedule"
+)
+
+func TestExportedScheduleRegistry(t *testing.T) {
+	entries := schedule.Schedule.Entries()
+	if len(entries) != 3 {
+		t.Fatalf("expected three scheduled jobs, got %d", len(entries))
+	}
+	want := []string{"0 * * * *", "0 0 * * *", "*/5 * * * *"}
+	for i, expected := range want {
+		if entries[i].Schedule != expected {
+			t.Fatalf("entry %d schedule = %q, want %q", i, entries[i].Schedule, expected)
+		}
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "schedule", "exported_schedule_test.go"), []byte(scheduleTest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExportCronCompilesWithSchedulerSupport(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "cron-test"))
 	out := filepath.Join(t.TempDir(), "exported")
 	res, err := Export(Options{
@@ -490,8 +580,8 @@ func TestExportCronCompilesWithFinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Export failed: %v", err)
 	}
-	if !hasFinding(res.Findings, "generated_jobs") {
-		t.Fatalf("expected generated_jobs finding, got %+v", res.Findings)
+	if hasFinding(res.Findings, "generated_jobs") {
+		t.Fatalf("did not expect generated_jobs finding, got %+v", res.Findings)
 	}
 	if !hasFinding(res.Findings, "generated_commands") {
 		t.Fatalf("expected generated_commands finding, got %+v", res.Findings)
@@ -499,9 +589,11 @@ func TestExportCronCompilesWithFinding(t *testing.T) {
 
 	assertFileContains(t, filepath.Join(out, "app", "jobs", "support.go"), "type Scheduler struct")
 	assertFileContains(t, filepath.Join(out, "schedule", "jobs.go"), "jobs.Cron")
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "go schedule.Schedule.Start(ctx)")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Cron job scheduler support with exported server startup wiring")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Partial Support")
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "generated_jobs")
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
+	writeExportedCronBehaviorTests(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
 

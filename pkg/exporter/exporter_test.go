@@ -164,6 +164,89 @@ func UseBanAction() models.User { return models.User{} }
 	}
 }
 
+func writeExportedEncryptionBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package models_test
+
+import (
+	"encoding/base64"
+	"os"
+	"testing"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"encryption-test/app/models"
+)
+
+func TestExportedEncryptedColumnsRoundTrip(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	t.Setenv("APP_ENCRYPTION_KEY", key)
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	if err := db.AutoMigrate(&models.User{}); err != nil {
+		t.Fatal(err)
+	}
+
+	user := &models.User{
+		ID:         uuid.New(),
+		Name:       "Ada",
+		Email:      "ada@example.com",
+		ApiKey:     "api-secret",
+		PrivateKey: "private-secret",
+	}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if user.EmailEncrypted == "" || user.EmailEncrypted == user.Email {
+		t.Fatalf("expected email ciphertext, got %q", user.EmailEncrypted)
+	}
+	if user.PrivateKeyEncrypted == "" || user.PrivateKeyEncrypted == user.PrivateKey {
+		t.Fatalf("expected sealed private key ciphertext, got %q", user.PrivateKeyEncrypted)
+	}
+
+	var raw struct {
+		EmailEnc   string
+		PrivateEnc string
+	}
+	if err := db.Raw("SELECT email_encrypted, private_key_encrypted FROM users WHERE id = ?", user.ID).Scan(&raw).Error; err != nil {
+		t.Fatalf("raw select: %v", err)
+	}
+	if raw.EmailEnc == "ada@example.com" || raw.PrivateEnc == "private-secret" {
+		t.Fatalf("plaintext leaked into ciphertext columns: %#v", raw)
+	}
+
+	var found models.User
+	if err := db.First(&found, "email_encrypted = ?", user.EmailEncrypted).Error; err != nil {
+		t.Fatalf("find by encrypted email: %v", err)
+	}
+	if found.Email != "ada@example.com" || found.ApiKey != "api-secret" || found.PrivateKey != "private-secret" {
+		t.Fatalf("decrypted fields mismatch: %#v", found)
+	}
+
+	other := &models.User{ID: uuid.New(), Name: "Grace", Email: "ada@example.com", ApiKey: "api-secret", PrivateKey: "private-secret"}
+	if err := db.Create(other).Error; err != nil {
+		t.Fatalf("second create: %v", err)
+	}
+	if other.EmailEncrypted != user.EmailEncrypted {
+		t.Fatalf("encrypted email should be deterministic for equality search")
+	}
+	if other.PrivateKeyEncrypted == user.PrivateKeyEncrypted {
+		t.Fatalf("sealed private key should be non-deterministic")
+	}
+
+	os.Unsetenv("APP_ENCRYPTION_KEY")
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_encryption_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExportLedgerCompiles(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "ledger"))
 	out := filepath.Join(t.TempDir(), "exported")
@@ -187,7 +270,7 @@ func TestExportLedgerCompiles(t *testing.T) {
 	runExported(t, out, "go", "test", "./...")
 }
 
-func TestExportEncryptionCompilesWithFinding(t *testing.T) {
+func TestExportEncryptionLowersGORMHooks(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "encryption-test"))
 	out := filepath.Join(t.TempDir(), "exported")
 	res, err := Export(Options{
@@ -199,15 +282,19 @@ func TestExportEncryptionCompilesWithFinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Export failed: %v", err)
 	}
-	if !hasFinding(res.Findings, "encrypted_columns") {
-		t.Fatalf("expected encrypted_columns finding, got %+v", res.Findings)
+	if hasFinding(res.Findings, "encrypted_columns") {
+		t.Fatalf("did not expect encrypted_columns finding, got %+v", res.Findings)
 	}
 
 	assertFileContains(t, filepath.Join(out, "app", "models", "user.go"), "func (m *User) Public() UserPublic")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user.go"), "func PublicUsers(records []User) []UserPublic")
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Manual Review")
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "encrypted_columns")
+	assertFileContains(t, filepath.Join(out, "app", "models", "user.go"), `Email                 string    `+"`"+`json:"email" gorm:"-"`+"`")
+	assertFileContains(t, filepath.Join(out, "app", "models", "user.go"), "EmailEncrypted        string")
+	assertFileContains(t, filepath.Join(out, "app", "models", "user.go"), "func (m *User) BeforeSave(tx *gorm.DB) error")
+	assertFileContains(t, filepath.Join(out, "app", "models", "encryption_support.go"), "func encryptDeterministic")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Encrypted and sealed columns with GORM encrypt/decrypt hooks")
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
+	writeExportedEncryptionBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
 

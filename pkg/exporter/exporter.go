@@ -116,6 +116,7 @@ func Export(opts Options) (*Result, error) {
 	views := analysis.Views
 	ex.migrations = analysis.Migrations
 	ex.models = modelSet(tables)
+	ex.hasEncryptedColumns = tablesHaveEncryptedColumns(tables)
 	for _, view := range views {
 		ex.models[tableToStruct(view.Name)] = true
 	}
@@ -169,14 +170,15 @@ func Export(opts Options) (*Result, error) {
 }
 
 type exporter struct {
-	project      *generator.Project
-	outDir       string
-	modulePath   string
-	sourceModule string
-	result       *Result
-	dryRun       bool
-	models       map[string]bool
-	migrations   []generator.MigrationOps
+	project             *generator.Project
+	outDir              string
+	modulePath          string
+	sourceModule        string
+	result              *Result
+	dryRun              bool
+	models              map[string]bool
+	migrations          []generator.MigrationOps
+	hasEncryptedColumns bool
 }
 
 func configureMultiServiceProject(project *generator.Project, cfg *squeeze.Config) {
@@ -993,7 +995,11 @@ func (e *exporter) writeModels(tables []*schema.Table, views []*schema.View) err
 	if err := e.writeFile("app/models/db.go", []byte("package models\n\nimport \"gorm.io/gorm\"\n\nvar DB *gorm.DB\n\nfunc SetDB(db *gorm.DB) { DB = db }\n")); err != nil {
 		return err
 	}
+	hasEncrypted := false
 	for _, table := range tables {
+		if tableHasEncryptedColumns(table) {
+			hasEncrypted = true
+		}
 		data, err := generateModelFile(table)
 		if err != nil {
 			return err
@@ -1008,6 +1014,15 @@ func (e *exporter) writeModels(tables []*schema.Table, views []*schema.View) err
 			return err
 		}
 		if err := e.writeFile(filepath.Join("app", "models", modelFileName(view.Name)+".go"), data); err != nil {
+			return err
+		}
+	}
+	if hasEncrypted {
+		data, err := format.Source([]byte(exportedEncryptionSupportSource))
+		if err != nil {
+			return fmt.Errorf("formatting exported encryption support: %w", err)
+		}
+		if err := e.writeFile(filepath.Join("app", "models", "encryption_support.go"), data); err != nil {
 			return err
 		}
 	}
@@ -1960,14 +1975,6 @@ func (e *exporter) addSchemaFindings(tables []*schema.Table) {
 			break
 		}
 	}
-	for _, table := range tables {
-		for _, col := range table.Columns {
-			if col.IsEncrypted || col.IsSealed {
-				e.result.Findings = append(e.result.Findings, Finding{File: "database/migrations", Rule: "encrypted_columns", Message: "encrypted/sealed column runtime behavior is not lowered in v1"})
-				return
-			}
-		}
-	}
 }
 
 func (e *exporter) writeReport(orm string) error {
@@ -1985,6 +1992,9 @@ func (e *exporter) writeReport(orm string) error {
 	b.WriteString("- HTTP routing, request binding, auth, config, and server support\n")
 	if e.hasGraphQLPackage() {
 		b.WriteString("- Generated GraphQL package with standalone GORM query support and /graphql server mount\n")
+	}
+	if e.hasEncryptedColumns {
+		b.WriteString("- Encrypted and sealed columns with GORM encrypt/decrypt hooks\n")
 	}
 	b.WriteString("\n")
 	if len(e.result.Findings) == 0 {
@@ -2105,6 +2115,28 @@ func generateModelFile(table *schema.Table) ([]byte, error) {
 		if imp != "" {
 			imports[imp] = true
 		}
+		if col.IsEncrypted || col.IsSealed {
+			imports["fmt"] = true
+			imports["gorm.io/gorm"] = true
+			plainName := snakeToPascal(col.Name)
+			encryptedName := snakeToPascal(col.Name + "_encrypted")
+			v2Name := snakeToPascal(col.Name + "_encrypted_v2")
+			mi.Fields = append(mi.Fields,
+				modelField{Name: plainName, Type: goType, JSON: jsonTag(col), GORM: "-"},
+				modelField{Name: encryptedName, Type: encryptedStorageType(col), JSON: "-", GORM: gormTag(encryptedStorageColumn(col, col.Name+"_encrypted", col.IsNullable))},
+				modelField{Name: v2Name, Type: "*string", JSON: "-", GORM: gormTag(encryptedStorageColumn(col, col.Name+"_encrypted_v2", true))},
+			)
+			mi.EncryptedFields = append(mi.EncryptedFields, encryptedModelField{
+				Field:         plainName,
+				Encrypted:     encryptedName,
+				EncryptedV2:   v2Name,
+				Column:        col.Name + "_encrypted",
+				ColumnV2:      col.Name + "_encrypted_v2",
+				Deterministic: col.IsEncrypted,
+				Nullable:      col.IsNullable,
+			})
+			continue
+		}
 		mi.Fields = append(mi.Fields, modelField{Name: snakeToPascal(col.Name), Type: goType, JSON: jsonTag(col), GORM: gormTag(col)})
 	}
 	mi.PublicFields = publicFields(mi.Fields)
@@ -2150,10 +2182,11 @@ type modelTemplateData struct {
 }
 
 type modelInfo struct {
-	Name         string
-	Table        string
-	Fields       []modelField
-	PublicFields []modelField
+	Name            string
+	Table           string
+	Fields          []modelField
+	PublicFields    []modelField
+	EncryptedFields []encryptedModelField
 }
 
 type modelField struct {
@@ -2161,6 +2194,16 @@ type modelField struct {
 	Type string
 	JSON string
 	GORM string
+}
+
+type encryptedModelField struct {
+	Field         string
+	Encrypted     string
+	EncryptedV2   string
+	Column        string
+	ColumnV2      string
+	Deterministic bool
+	Nullable      bool
 }
 
 var modelTemplate = template.Must(template.New("models").Parse(`package models
@@ -2205,6 +2248,28 @@ func Public{{ .Name }}s(records []{{ .Name }}) []{{ .Name }}Public {
 	return out
 }
 {{ end }}
+{{ if .EncryptedFields }}
+func (m *{{ .Name }}) BeforeSave(tx *gorm.DB) error { return encryptModelFields(m) }
+func (m *{{ .Name }}) AfterFind(tx *gorm.DB) error { return decryptModelFields(m) }
+
+func (m *{{ .Name }}) encryptedFields() []exportedEncryptedField {
+	return []exportedEncryptedField{
+{{- range .EncryptedFields }}
+		{
+			Column: {{ printf "%q" .Column }},
+			ColumnV2: {{ printf "%q" .ColumnV2 }},
+			Deterministic: {{ .Deterministic }},
+			Marshal: func() ([]byte, error) { return []byte(fmt.Sprint(m.{{ .Field }})), nil },
+			Unmarshal: func(b []byte) error { m.{{ .Field }} = string(b); return nil },
+			Ciphertext: func() string { return {{ if .Nullable }}derefString(m.{{ .Encrypted }}){{ else }}m.{{ .Encrypted }}{{ end }} },
+			CiphertextV2: func() *string { return m.{{ .EncryptedV2 }} },
+			SetCiphertext: func(v string) { {{ if .Nullable }}m.{{ .Encrypted }} = &v{{ else }}m.{{ .Encrypted }} = v{{ end }} },
+			SetCiphertextV2: func(v *string) { m.{{ .EncryptedV2 }} = v },
+		},
+{{- end }}
+	}
+}
+{{ end }}
 {{ end }}
 `))
 
@@ -2246,6 +2311,28 @@ func Public{{ .Name }}s(records []{{ .Name }}) []{{ .Name }}Public {
 	return out
 }
 {{ end }}
+{{ if .EncryptedFields }}
+func (m *{{ .Name }}) BeforeSave(tx *gorm.DB) error { return encryptModelFields(m) }
+func (m *{{ .Name }}) AfterFind(tx *gorm.DB) error { return decryptModelFields(m) }
+
+func (m *{{ .Name }}) encryptedFields() []exportedEncryptedField {
+	return []exportedEncryptedField{
+{{- range .EncryptedFields }}
+		{
+			Column: {{ printf "%q" .Column }},
+			ColumnV2: {{ printf "%q" .ColumnV2 }},
+			Deterministic: {{ .Deterministic }},
+			Marshal: func() ([]byte, error) { return []byte(fmt.Sprint(m.{{ .Field }})), nil },
+			Unmarshal: func(b []byte) error { m.{{ .Field }} = string(b); return nil },
+			Ciphertext: func() string { return {{ if .Nullable }}derefString(m.{{ .Encrypted }}){{ else }}m.{{ .Encrypted }}{{ end }} },
+			CiphertextV2: func() *string { return m.{{ .EncryptedV2 }} },
+			SetCiphertext: func(v string) { {{ if .Nullable }}m.{{ .Encrypted }} = &v{{ else }}m.{{ .Encrypted }} = v{{ end }} },
+			SetCiphertextV2: func(v *string) { m.{{ .EncryptedV2 }} = v },
+		},
+{{- end }}
+	}
+}
+{{ end }}
 {{ end }}
 `))
 
@@ -2282,6 +2369,47 @@ func gormGoType(col *schema.Column) (string, string) {
 		base = "*" + base
 	}
 	return base, imp
+}
+
+func encryptedStorageType(col *schema.Column) string {
+	if col.IsNullable {
+		return "*string"
+	}
+	return "string"
+}
+
+func encryptedStorageColumn(src *schema.Column, name string, nullable bool) *schema.Column {
+	col := *src
+	col.Name = name
+	col.Type = schema.Text
+	col.IsEncrypted = false
+	col.IsSealed = false
+	col.IsNullable = nullable
+	col.IsPrimaryKey = false
+	col.IsUnique = false
+	col.ForeignKeyTable = ""
+	col.ForeignKeyColumn = ""
+	col.HasDefault = false
+	col.DefaultValue = nil
+	return &col
+}
+
+func tableHasEncryptedColumns(table *schema.Table) bool {
+	for _, col := range table.Columns {
+		if col.IsEncrypted || col.IsSealed {
+			return true
+		}
+	}
+	return false
+}
+
+func tablesHaveEncryptedColumns(tables []*schema.Table) bool {
+	for _, table := range tables {
+		if tableHasEncryptedColumns(table) {
+			return true
+		}
+	}
+	return false
 }
 
 func gormTag(col *schema.Column) string {
@@ -2982,5 +3110,196 @@ func main() {
 	if err := http.ListenAndServe(addr, routes.API); err != nil {
 		log.Fatal(err)
 	}
+}
+`
+
+const exportedEncryptionSupportSource = `package models
+
+import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+)
+
+type exportedEncryptedModel interface {
+	encryptedFields() []exportedEncryptedField
+}
+
+type exportedEncryptedField struct {
+	Column        string
+	ColumnV2      string
+	Deterministic bool
+	Marshal       func() ([]byte, error)
+	Unmarshal     func([]byte) error
+	Ciphertext     func() string
+	CiphertextV2   func() *string
+	SetCiphertext  func(string)
+	SetCiphertextV2 func(*string)
+}
+
+func encryptModelFields(model exportedEncryptedModel) error {
+	key, err := exportedEncryptionKey()
+	if err != nil {
+		return err
+	}
+	for _, field := range model.encryptedFields() {
+		plain, err := field.Marshal()
+		if err != nil {
+			return err
+		}
+		var ciphertext string
+		if field.Deterministic {
+			ciphertext, err = encryptDeterministic(key, plain)
+		} else {
+			ciphertext, err = encryptRandom(key, plain)
+		}
+		if err != nil {
+			return fmt.Errorf("encrypting %s: %w", field.Column, err)
+		}
+		field.SetCiphertext(ciphertext)
+		field.SetCiphertextV2(nil)
+	}
+	return nil
+}
+
+func decryptModelFields(model exportedEncryptedModel) error {
+	key, err := exportedEncryptionKey()
+	if err != nil {
+		return err
+	}
+	for _, field := range model.encryptedFields() {
+		ciphertext := field.Ciphertext()
+		if v2 := field.CiphertextV2(); v2 != nil && *v2 != "" {
+			ciphertext = *v2
+		}
+		if ciphertext == "" {
+			continue
+		}
+		var plain []byte
+		if field.Deterministic {
+			plain, err = decryptDeterministic(key, ciphertext)
+		} else {
+			plain, err = decryptRandom(key, ciphertext)
+		}
+		if err != nil {
+			return fmt.Errorf("decrypting %s: %w", field.Column, err)
+		}
+		if err := field.Unmarshal(plain); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func exportedEncryptionKey() ([]byte, error) {
+	raw := os.Getenv("APP_ENCRYPTION_KEY")
+	if raw == "" {
+		raw = os.Getenv("ENCRYPTION_KEY")
+	}
+	if raw == "" {
+		return nil, errors.New("APP_ENCRYPTION_KEY is required for encrypted columns")
+	}
+	if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil && len(decoded) == 32 {
+		return decoded, nil
+	}
+	key := []byte(raw)
+	if len(key) != 32 {
+		return nil, fmt.Errorf("APP_ENCRYPTION_KEY must be 32 bytes or base64-encoded 32 bytes, got %d bytes", len(key))
+	}
+	return key, nil
+}
+
+func encryptDeterministic(key, plaintext []byte) (string, error) {
+	if len(key) != 32 {
+		return "", errors.New("deterministic encryption key must be 32 bytes")
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write(plaintext)
+	iv := mac.Sum(nil)[:aes.BlockSize]
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	stream := cipher.NewCTR(block, iv)
+	ciphertext := make([]byte, len(plaintext))
+	stream.XORKeyStream(ciphertext, plaintext)
+	out := make([]byte, aes.BlockSize+len(ciphertext))
+	copy(out[:aes.BlockSize], iv)
+	copy(out[aes.BlockSize:], ciphertext)
+	return base64.StdEncoding.EncodeToString(out), nil
+}
+
+func decryptDeterministic(key []byte, encoded string) ([]byte, error) {
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) < aes.BlockSize {
+		return nil, errors.New("ciphertext too short")
+	}
+	iv := data[:aes.BlockSize]
+	ciphertext := data[aes.BlockSize:]
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	stream := cipher.NewCTR(block, iv)
+	plaintext := make([]byte, len(ciphertext))
+	stream.XORKeyStream(plaintext, ciphertext)
+	return plaintext, nil
+}
+
+func encryptRandom(key, plaintext []byte) (string, error) {
+	if len(key) != 32 {
+		return "", errors.New("random encryption key must be 32 bytes")
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(gcm.Seal(nonce, nonce, plaintext, nil)), nil
+}
+
+func decryptRandom(key []byte, encoded string) ([]byte, error) {
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) < gcm.NonceSize() {
+		return nil, errors.New("ciphertext too short")
+	}
+	nonce := data[:gcm.NonceSize()]
+	ciphertext := data[gcm.NonceSize():]
+	return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 `

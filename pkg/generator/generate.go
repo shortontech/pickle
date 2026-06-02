@@ -666,8 +666,19 @@ func Generate(project *Project, picklePkgDir string) error {
 	// 2b. Write policy types and runner into database/policies/ and database/policies/graphql/
 	policiesDir := filepath.Join(project.Dir, "database", "policies")
 	graphqlPoliciesDir := filepath.Join(policiesDir, "graphql")
+	var rolePolicyEntries []PolicyFileEntry
+	hasRolePolicies := false
 
 	if _, err := os.Stat(policiesDir); err == nil {
+		policyEntries, err := ScanPolicyFiles(policiesDir)
+		if err != nil {
+			return fmt.Errorf("scanning policy files: %w", err)
+		}
+		rolePolicyEntries = policyEntries
+		hasRolePolicies = len(rolePolicyEntries) > 0
+	}
+
+	if hasRolePolicies {
 		fmt.Println("  generating policies/types_gen.go")
 		if err := writeFile(filepath.Join(policiesDir, "types_gen.go"), GenerateCoreSchema("policies")); err != nil {
 			return err
@@ -679,11 +690,7 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 
 		fmt.Println("  generating policies/registry_gen.go")
-		policyEntries, err := ScanPolicyFiles(policiesDir)
-		if err != nil {
-			return fmt.Errorf("scanning policy files: %w", err)
-		}
-		policySrc, err := GeneratePolicyRegistry("policies", policyEntries)
+		policySrc, err := GeneratePolicyRegistry("policies", rolePolicyEntries)
 		if err != nil {
 			return fmt.Errorf("generating policy registry: %w", err)
 		}
@@ -718,7 +725,7 @@ func Generate(project *Project, picklePkgDir string) error {
 	}
 
 	// 2c. Write RBAC migration files into database/migrations/rbac/
-	if _, err := os.Stat(policiesDir); err == nil {
+	if hasRolePolicies {
 		if err := WriteRBACMigrations(migrationsDir, "migrations"); err != nil {
 			return fmt.Errorf("writing RBAC migrations: %w", err)
 		}
@@ -743,7 +750,7 @@ func Generate(project *Project, picklePkgDir string) error {
 	}
 
 	// 2c-ii. Write RBAC model files into app/models/auth/
-	if _, err := os.Stat(policiesDir); err == nil {
+	if hasRolePolicies {
 		fmt.Println("  generating models/auth/ (Role, RoleUser)")
 		if err := WriteRBACModels(modelsDir); err != nil {
 			return fmt.Errorf("writing RBAC models: %w", err)
@@ -772,7 +779,7 @@ func Generate(project *Project, picklePkgDir string) error {
 
 	// 2e. Generate per-role column annotation methods from policies.
 	// Only non-Manages roles get XxxSees() methods.
-	if _, err := os.Stat(policiesDir); err == nil {
+	if hasRolePolicies {
 		if _, err := os.Stat(migrationsDir); err == nil {
 			annotations, err := NonManagesRoleAnnotations(policiesDir)
 			if err != nil {
@@ -934,7 +941,7 @@ func Generate(project *Project, picklePkgDir string) error {
 	}
 
 	// 5d. Generate RBAC-enriched gates from policy Can() declarations
-	if _, err := os.Stat(policiesDir); err == nil {
+	if hasRolePolicies {
 		gateFiles, err := GenerateRBACGates(actionsDir, policiesDir)
 		if err != nil {
 			return fmt.Errorf("generating RBAC gates: %w", err)

@@ -2309,10 +2309,16 @@ func (e *exporter) writeConfigSupport() error {
 }
 
 func (e *exporter) writeAuthSupport() error {
-	if err := e.writeFile(filepath.Join("app", "http", "auth", "auth.go"), []byte(fmt.Sprintf(authSupportSource, e.modulePath, e.modulePath, e.modulePath))); err != nil {
+	if err := e.writeFile(filepath.Join("app", "http", "auth", "auth.go"), []byte(fmt.Sprintf(authSupportSource, e.modulePath, e.modulePath, e.modulePath, e.modulePath, e.modulePath))); err != nil {
 		return err
 	}
-	return e.writeFile(filepath.Join("app", "http", "auth", "jwt", "jwt.go"), []byte(fmt.Sprintf(jwtSupportSource, e.modulePath)))
+	if err := e.writeFile(filepath.Join("app", "http", "auth", "jwt", "jwt.go"), []byte(fmt.Sprintf(jwtSupportSource, e.modulePath))); err != nil {
+		return err
+	}
+	if err := e.writeFile(filepath.Join("app", "http", "auth", "oauth", "oauth.go"), []byte(fmt.Sprintf(oauthSupportSource, e.modulePath))); err != nil {
+		return err
+	}
+	return e.writeFile(filepath.Join("app", "http", "auth", "session", "session.go"), []byte(fmt.Sprintf(sessionSupportSource, e.modulePath)))
 }
 
 func (e *exporter) writeServerMain() error {
@@ -2476,7 +2482,6 @@ func (e *exporter) addGeneratedSubsystemFindings() {
 		rule string
 		msg  string
 	}{
-		{"app/http/auth", "generated_auth", "auth runtime is exported with standalone JWT support; sessions, OAuth, and JWT allowlist/revocation need manual review"},
 		{"database/policies", "rbac_policy_export", "RBAC role grants are reflected in exported gates where statically derivable; policy runners and changelog state are not exported"},
 		{"database/policies/graphql", "generated_graphql_policies", "generated GraphQL schema preserves derived exposure state; policy runner/changelog migration commands are not exported in v1"},
 	}
@@ -2518,6 +2523,7 @@ func (e *exporter) writeReport(orm string) error {
 	if e.hasCommands() {
 		b.WriteString("- Standalone command dispatch with embedded SQL migration commands\n")
 	}
+	b.WriteString("- Standalone JWT, OAuth client-credentials, and session auth drivers\n")
 	b.WriteString("\n")
 	if len(e.result.Findings) == 0 {
 		b.WriteString("## Manual Review\n\n")
@@ -2563,7 +2569,7 @@ func (e *exporter) writeFindingSection(b *strings.Builder, title, category strin
 
 func findingCategory(rule string) string {
 	switch rule {
-	case "generated_auth", "rbac_policy_export":
+	case "rbac_policy_export":
 		return "partial"
 	case "generated_graphql", "generated_graphql_policies", "generated_policies", "generated_actions":
 		return "omitted"
@@ -3376,13 +3382,14 @@ import (
 )
 
 type Controller struct{}
-type Response struct { Status int; StatusCode int; Body any; Headers map[string]string }
+type Response struct { Status int; StatusCode int; Body any; Headers map[string]string; Cookies []*http.Cookie }
 type AuthInfo struct { UserID string; Role string }
 type Context struct { request *http.Request; auth *AuthInfo; params map[string]string }
 
 func NewContext(r *http.Request) *Context { return &Context{request: r, params: map[string]string{}} }
 func (c *Context) Request() *http.Request { return c.request }
 func (c *Context) Param(name string) string { return c.params[name] }
+func (c *Context) Cookie(name string) (*http.Cookie, error) { return c.request.Cookie(name) }
 func (c *Context) BearerToken() string { h := c.request.Header.Get("Authorization"); parts := strings.Fields(h); if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") { return parts[1] }; return "" }
 func (c *Context) Auth() *AuthInfo { if c.auth == nil { return &AuthInfo{} }; return c.auth }
 func (c *Context) SetAuth(info *AuthInfo) { c.auth = info }
@@ -3393,10 +3400,13 @@ func (c *Context) JSON(status int, body any) Response { return Response{Status: 
 func (c *Context) Error(err error) Response { return c.JSON(500, map[string]string{"error": err.Error()}) }
 func (c *Context) BadRequest(msg string) Response { return c.JSON(400, map[string]string{"error": msg}) }
 func (c *Context) Unauthorized(msg string) Response { return c.JSON(401, map[string]string{"error": msg}) }
+func (c *Context) Forbidden(msg string) Response { return c.JSON(403, map[string]string{"error": msg}) }
 func (c *Context) NotFound(msg string) Response { return c.JSON(404, map[string]string{"error": msg}) }
 func (c *Context) NoContent() Response { return Response{Status: 204, StatusCode: 204} }
 
-func (r Response) Write(w http.ResponseWriter) { for k, v := range r.Headers { w.Header().Set(k, v) }; status := r.Status; if status == 0 { status = r.StatusCode }; if status == 0 { status = 200 }; w.WriteHeader(status); if r.Body != nil { _ = json.NewEncoder(w).Encode(r.Body) } }
+func (r Response) WithCookie(cookie *http.Cookie) Response { r.Cookies = append(r.Cookies, cookie); return r }
+
+func (r Response) Write(w http.ResponseWriter) { for k, v := range r.Headers { w.Header().Set(k, v) }; for _, cookie := range r.Cookies { http.SetCookie(w, cookie) }; status := r.Status; if status == 0 { status = r.StatusCode }; if status == 0 { status = 200 }; w.WriteHeader(status); if r.Body != nil { _ = json.NewEncoder(w).Encode(r.Body) } }
 
 type HandlerFunc func(*Context) Response
 type MiddlewareFunc func(*Context, func() Response) Response
@@ -3458,6 +3468,8 @@ import (
 	"net/http"
 
 	"%s/app/http/auth/jwt"
+	"%s/app/http/auth/oauth"
+	"%s/app/http/auth/session"
 	"%s/config"
 	"%s/internal/httpx"
 )
@@ -3466,42 +3478,37 @@ type AuthDriver interface {
 	Authenticate(r *http.Request) (*httpx.AuthInfo, error)
 }
 
-type unsupportedDriver struct{ name string }
-
-func (d unsupportedDriver) Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
-	return nil, fmt.Errorf("auth: %%s driver requires manual implementation after export", d.name)
-}
-
 var (
-	jwtDriver = jwt.NewDriver(config.Env)
-	registry = map[string]AuthDriver{
-		"jwt": jwtDriver,
-		"oauth": unsupportedDriver{name: "oauth"},
-		"session": unsupportedDriver{name: "session"},
-	}
+	registry = map[string]AuthDriver{}
 	envFunc = config.Env
 )
 
 func Init(env func(string, string) string, db *sql.DB) {
 	if env != nil {
 		envFunc = env
-		jwtDriver = jwt.NewDriver(env)
-		registry["jwt"] = jwtDriver
 	}
-	_ = db
+	driver := "sqlite"
+	if config.Database.Connections != nil {
+		driver = config.Database.Connection().Driver
+	} else if envFunc != nil {
+		driver = envFunc("DB_CONNECTION", "sqlite")
+	}
+	registry["jwt"] = jwt.NewDriver(envFunc, db, driver)
+	registry["oauth"] = oauth.NewDriver(envFunc, db, driver)
+	registry["session"] = session.NewDriver(envFunc, db, driver)
 }
 
 func Driver(name string) AuthDriver {
 	d, ok := registry[name]
 	if !ok {
-		return unsupportedDriver{name: name}
+		panic(fmt.Sprintf("auth: unknown driver %%q", name))
 	}
 	return d
-	}
+}
 
 func ActiveDriver() AuthDriver {
 	return Driver(activeDriverName())
-	}
+}
 
 func activeDriverName() string {
 	if envFunc != nil {
@@ -3510,7 +3517,7 @@ func activeDriverName() string {
 		}
 	}
 	return "jwt"
-	}
+}
 
 func ActiveDriverName() string {
 	return activeDriverName()
@@ -3538,6 +3545,7 @@ func Env() string {
 const jwtSupportSource = `package jwt
 
 import (
+	"database/sql"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -3568,13 +3576,15 @@ type Claims struct {
 }
 
 type Driver struct {
+	db        *sql.DB
+	driver    string
 	secret    string
 	issuer    string
 	expiry    int
 	algorithm string
 }
 
-func NewDriver(env func(string, string) string) *Driver {
+func NewDriver(env func(string, string) string, db *sql.DB, driver string) *Driver {
 	expiry := 3600
 	if v := env("JWT_EXPIRY", ""); v != "" {
 		n := 0
@@ -3582,6 +3592,8 @@ func NewDriver(env func(string, string) string) *Driver {
 		if n > 0 { expiry = n }
 	}
 	return &Driver{
+		db:        db,
+		driver:    driver,
 		secret:    env("JWT_SECRET", ""),
 		issuer:    env("JWT_ISSUER", ""),
 		expiry:    expiry,
@@ -3591,6 +3603,7 @@ func NewDriver(env func(string, string) string) *Driver {
 
 func (d *Driver) SignToken(claims Claims) (string, error) {
 	if d.secret == "" { return "", errors.New("jwt: secret not configured") }
+	if d.db == nil { return "", errors.New("jwt: database not configured") }
 	if claims.Subject == "" { return "", errors.New("jwt: missing subject") }
 	now := time.Now().Unix()
 	if claims.IssuedAt == 0 { claims.IssuedAt = now }
@@ -3605,6 +3618,7 @@ func (d *Driver) SignToken(claims Claims) (string, error) {
 	signingInput := header + "." + base64URLEncode(payload)
 	sig, err := hmacSign([]byte(signingInput), []byte(d.secret), alg)
 	if err != nil { return "", err }
+	if err := d.registerToken(claims); err != nil { return "", err }
 	return signingInput + "." + base64URLEncode(sig), nil
 }
 
@@ -3630,6 +3644,7 @@ func (d *Driver) ValidateToken(token string) (Claims, error) {
 	if claims.ExpiresAt > 0 && time.Now().Unix() > claims.ExpiresAt { return Claims{}, ErrInvalidToken }
 	if d.issuer != "" && claims.Issuer != d.issuer { return Claims{}, ErrInvalidToken }
 	if claims.Subject == "" { return Claims{}, ErrInvalidToken }
+	if err := d.checkAllowlist(claims); err != nil { return Claims{}, ErrInvalidToken }
 	return claims, nil
 }
 
@@ -3641,6 +3656,22 @@ func (d *Driver) Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
 	claims, err := d.ValidateToken(parts[1])
 	if err != nil { return nil, err }
 	return &httpx.AuthInfo{UserID: claims.Subject, Role: claims.Role}, nil
+}
+
+func (d *Driver) registerToken(claims Claims) error {
+	expiresAt := time.Unix(claims.ExpiresAt, 0)
+	query := "INSERT INTO jwt_tokens (jti, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)"
+	_, err := d.db.Exec(query, claims.JTI, claims.Subject, expiresAt, time.Now().UTC())
+	return err
+}
+
+func (d *Driver) checkAllowlist(claims Claims) error {
+	if d.db == nil { return errors.New("jwt: database not configured") }
+	var expiresAt time.Time
+	err := d.db.QueryRow("SELECT expires_at FROM jwt_tokens WHERE jti = ? AND user_id = ?", claims.JTI, claims.Subject).Scan(&expiresAt)
+	if err != nil { return err }
+	if time.Now().After(expiresAt) { return errors.New("jwt: token expired") }
+	return nil
 }
 
 func hmacSign(data, secret []byte, alg string) ([]byte, error) {
@@ -3665,6 +3696,237 @@ func hmacVerify(data, sig, secret []byte, alg string) bool {
 func base64URLEncode(data []byte) string { return base64.RawURLEncoding.EncodeToString(data) }
 
 func base64URLDecode(s string) ([]byte, error) { return base64.RawURLEncoding.DecodeString(s) }
+`
+
+const oauthSupportSource = `package oauth
+
+import (
+	"crypto/rand"
+	"crypto/subtle"
+	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"%s/internal/httpx"
+)
+
+type Driver struct {
+	db           *sql.DB
+	driver       string
+	clientID     string
+	clientSecret string
+	expiry       int
+}
+
+func NewDriver(env func(string, string) string, db *sql.DB, driver string) *Driver {
+	expiry := 3600
+	if v := env("OAUTH_TOKEN_EXPIRY", ""); v != "" {
+		n := 0
+		for _, c := range v { if c >= '0' && c <= '9' { n = n*10 + int(c-'0') } }
+		if n > 0 { expiry = n }
+	}
+	return &Driver{db: db, driver: driver, clientID: env("OAUTH_CLIENT_ID", ""), clientSecret: env("OAUTH_CLIENT_SECRET", ""), expiry: expiry}
+}
+
+func (d *Driver) Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
+	h := r.Header.Get("Authorization")
+	if !strings.HasPrefix(h, "Bearer ") { return nil, errors.New("missing bearer token") }
+	return d.ValidateToken(h[7:])
+}
+
+func (d *Driver) ValidateToken(token string) (*httpx.AuthInfo, error) {
+	if d.db == nil { return nil, errors.New("oauth: database not configured") }
+	var clientID string
+	var expiresAt time.Time
+	err := d.db.QueryRow("SELECT client_id, expires_at FROM oauth_tokens WHERE token = ?", token).Scan(&clientID, &expiresAt)
+	if err == sql.ErrNoRows { return nil, errors.New("oauth: invalid token") }
+	if err != nil { return nil, errors.New("oauth: database error") }
+	if time.Now().After(expiresAt) { return nil, errors.New("oauth: token expired") }
+	return &httpx.AuthInfo{UserID: clientID, Role: "client"}, nil
+}
+
+func (d *Driver) TokenEndpoint(ctx *httpx.Context) httpx.Response {
+	r := ctx.Request()
+	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
+		return ctx.JSON(400, map[string]string{"error": "invalid_request", "error_description": "Content-Type must be application/x-www-form-urlencoded"})
+	}
+	if err := r.ParseForm(); err != nil {
+		return ctx.JSON(400, map[string]string{"error": "invalid_request", "error_description": "malformed form body"})
+	}
+	if r.FormValue("grant_type") != "client_credentials" {
+		return ctx.JSON(400, map[string]string{"error": "unsupported_grant_type", "error_description": "only client_credentials grant type is supported"})
+	}
+	clientID, clientSecret, ok := parseBasicAuth(r.Header.Get("Authorization"))
+	if !ok {
+		return ctx.JSON(401, map[string]string{"error": "invalid_client", "error_description": "missing or malformed Authorization header"})
+	}
+	idMatch := subtle.ConstantTimeCompare([]byte(clientID), []byte(d.clientID))
+	secretMatch := subtle.ConstantTimeCompare([]byte(clientSecret), []byte(d.clientSecret))
+	if idMatch&secretMatch != 1 {
+		return ctx.JSON(401, map[string]string{"error": "invalid_client", "error_description": "invalid client credentials"})
+	}
+	token, err := generateToken()
+	if err != nil { return ctx.Error(err) }
+	expiresAt := time.Now().Add(time.Duration(d.expiry) * time.Second)
+	if _, err := d.db.Exec("INSERT INTO oauth_tokens (token, client_id, expires_at, created_at) VALUES (?, ?, ?, ?)", token, clientID, expiresAt, time.Now().UTC()); err != nil {
+		return ctx.Error(fmt.Errorf("oauth: failed to store token: %%w", err))
+	}
+	return ctx.JSON(200, map[string]any{"access_token": token, "token_type": "bearer", "expires_in": d.expiry})
+}
+
+func parseBasicAuth(header string) (string, string, bool) {
+	if !strings.HasPrefix(header, "Basic ") { return "", "", false }
+	decoded, err := base64.StdEncoding.DecodeString(header[6:])
+	if err != nil { return "", "", false }
+	parts := strings.SplitN(string(decoded), ":", 2)
+	if len(parts) != 2 { return "", "", false }
+	return parts[0], parts[1], true
+}
+
+func generateToken() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil { return "", err }
+	return hex.EncodeToString(buf), nil
+}
+`
+
+const sessionSupportSource = `package session
+
+import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"net/http"
+	"strings"
+	"time"
+
+	"%s/internal/httpx"
+
+	"github.com/google/uuid"
+)
+
+var csrfConfig struct {
+	secret []byte
+	cookieName string
+}
+var sessionCookieName = "session_id"
+var activeDriver *Driver
+
+type Driver struct {
+	db *sql.DB
+	driver string
+	cookieName string
+	ttl int
+}
+
+func NewDriver(env func(string, string) string, db *sql.DB, driver string) *Driver {
+	ttl := 86400
+	if v := env("SESSION_TTL", ""); v != "" {
+		n := 0
+		for _, c := range v { if c >= '0' && c <= '9' { n = n*10 + int(c-'0') } }
+		if n > 0 { ttl = n }
+	}
+	cookieName := env("SESSION_COOKIE", "session_id")
+	sessionCookieName = cookieName
+	csrfConfig.cookieName = env("CSRF_COOKIE", "csrf_token")
+	if secret := env("SESSION_SECRET", ""); secret != "" { csrfConfig.secret = []byte(secret) }
+	d := &Driver{db: db, driver: driver, cookieName: cookieName, ttl: ttl}
+	activeDriver = d
+	return d
+}
+
+func (d *Driver) Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
+	cookie, err := r.Cookie(d.cookieName)
+	if err != nil { return nil, errors.New("session: missing session cookie") }
+	if d.db == nil { return nil, errors.New("session: database not configured") }
+	var userID, role string
+	var expiresAt time.Time
+	err = d.db.QueryRow("SELECT user_id, role, expires_at FROM sessions WHERE id = ?", cookie.Value).Scan(&userID, &role, &expiresAt)
+	if err == sql.ErrNoRows { return nil, errors.New("session: invalid or expired session") }
+	if err != nil { return nil, errors.New("session: database error") }
+	if time.Now().After(expiresAt) { return nil, errors.New("session: invalid or expired session") }
+	return &httpx.AuthInfo{UserID: userID, Role: role}, nil
+}
+
+func (d *Driver) TTL() int { return d.ttl }
+func (d *Driver) CookieName() string { return d.cookieName }
+
+func driver() *Driver {
+	if activeDriver == nil { panic("session: driver not initialized") }
+	return activeDriver
+}
+
+func Create(ctx *httpx.Context, userID, role string) (httpx.Response, error) {
+	d := driver()
+	sessionID := uuid.New().String()
+	expiresAt := time.Now().UTC().Add(time.Duration(d.ttl) * time.Second)
+	if _, err := d.db.Exec("INSERT INTO sessions (id, user_id, role, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", sessionID, userID, role, expiresAt, time.Now().UTC(), time.Now().UTC()); err != nil {
+		return httpx.Response{}, err
+	}
+	resp := ctx.JSON(200, map[string]string{"status": "ok"})
+	resp = resp.WithCookie(&http.Cookie{Name: d.cookieName, Value: sessionID, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode, Expires: expiresAt})
+	if len(csrfConfig.secret) > 0 {
+		resp = resp.WithCookie(newCSRFCookie(sessionID))
+	}
+	return resp, nil
+}
+
+func CSRF(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
+	if len(csrfConfig.secret) == 0 { panic("session: CSRF middleware requires SESSION_SECRET to be set") }
+	if strings.HasPrefix(ctx.Request().Header.Get("Authorization"), "Bearer ") { return next() }
+	sessionID := sessionIDFromRequest(ctx.Request())
+	method := ctx.Request().Method
+	if method == "GET" || method == "HEAD" || method == "OPTIONS" {
+		resp := next()
+		if _, err := ctx.Cookie(csrfConfig.cookieName); err != nil { resp = resp.WithCookie(newCSRFCookie(sessionID)) }
+		return resp
+	}
+	token := ctx.Request().Header.Get("X-CSRF-TOKEN")
+	if token == "" { return ctx.Forbidden("CSRF token missing") }
+	if !validateCSRFToken(token, sessionID, csrfConfig.secret) { return ctx.Forbidden("CSRF token invalid") }
+	return next()
+}
+
+func sessionIDFromRequest(r *http.Request) string {
+	c, err := r.Cookie(sessionCookieName)
+	if err != nil { return "" }
+	return c.Value
+}
+
+func newCSRFCookie(sessionID string) *http.Cookie {
+	return &http.Cookie{Name: csrfConfig.cookieName, Value: generateCSRFToken(sessionID, csrfConfig.secret), Path: "/", HttpOnly: false, Secure: true, SameSite: http.SameSiteStrictMode}
+}
+
+func generateCSRFToken(sessionID string, secret []byte) string {
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil { panic("csrf: failed to generate random nonce: " + err.Error()) }
+	return hex.EncodeToString(nonce) + "." + hex.EncodeToString(computeHMAC(nonce, []byte(sessionID), secret))
+}
+
+func validateCSRFToken(token, sessionID string, secret []byte) bool {
+	parts := strings.SplitN(token, ".", 2)
+	if len(parts) != 2 { return false }
+	nonce, err := hex.DecodeString(parts[0])
+	if err != nil { return false }
+	sig, err := hex.DecodeString(parts[1])
+	if err != nil { return false }
+	return hmac.Equal(sig, computeHMAC(nonce, []byte(sessionID), secret))
+}
+
+func computeHMAC(nonce, sessionID, secret []byte) []byte {
+	mac := hmac.New(sha256.New, secret)
+	mac.Write(nonce)
+	mac.Write(sessionID)
+	return mac.Sum(nil)
+}
 `
 
 const jobsSupportSource = `package jobs

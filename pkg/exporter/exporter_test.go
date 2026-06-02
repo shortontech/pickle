@@ -27,8 +27,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	if res.FilesWritten == 0 {
 		t.Fatal("expected exported files")
 	}
-	if !hasFinding(res.Findings, "generated_auth") {
-		t.Fatalf("expected generated_auth finding, got %+v", res.Findings)
+	if hasFinding(res.Findings, "generated_auth") {
+		t.Fatalf("did not expect generated_auth finding, got %+v", res.Findings)
 	}
 	if !hasFinding(res.Findings, "rbac_policy_export") {
 		t.Fatalf("expected rbac_policy_export finding, got %+v", res.Findings)
@@ -49,7 +49,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260228100000_create_user_post_stats_view.up.sql"), "CREATE VIEW")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Exported")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Partial Support")
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "generated_auth")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone JWT, OAuth client-credentials, and session auth drivers")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "rbac_policy_export")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "generated_graphql_policies")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Omitted")
@@ -62,10 +62,12 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "support.go"), "func (r *Runner) Migrate(entries []MigrationEntry) error")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "crypto/hmac")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "ErrInvalidToken")
-	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "jwt.NewDriver(config.Env)")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "oauth.NewDriver")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "session.NewDriver")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "func DefaultAuthMiddleware")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "func ActiveDriverName")
-	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "requires manual implementation after export")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "func (d *Driver) TokenEndpoint")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func CSRF")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_ban.go"), "DB.Save(user).Error")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_promote.go"), "type PromoteResult struct")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_standalone_gate.go"), "func CanView")
@@ -83,7 +85,110 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertNoGoFileContains(t, out, "pickle.")
 	assertNoGoFileContains(t, out, "PICKLE_")
 	assertFileContains(t, filepath.Join(out, "go.sum"), "gorm.io/gorm")
+	writeExportedAuthBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
+}
+
+func writeExportedAuthBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package auth_test
+
+import (
+	"database/sql"
+	"net/http"
+	"testing"
+	"time"
+
+	_ "github.com/mattn/go-sqlite3"
+
+	"basic-crud/app/http/auth"
+	"basic-crud/app/http/auth/jwt"
+	"basic-crud/app/http/auth/oauth"
+	"basic-crud/app/http/auth/session"
+)
+
+func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, stmt := range []string{
+		` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL)` + "`" + `,
+		` + "`" + `CREATE TABLE oauth_tokens (token TEXT PRIMARY KEY, client_id TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL)` + "`" + `,
+		` + "`" + `CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, role TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	env := func(key, fallback string) string {
+		values := map[string]string{
+			"DB_CONNECTION": "sqlite",
+			"JWT_SECRET": "0123456789abcdef0123456789abcdef",
+			"OAUTH_CLIENT_ID": "client-1",
+			"OAUTH_CLIENT_SECRET": "secret-1",
+			"SESSION_SECRET": "session-secret",
+		}
+		if value, ok := values[key]; ok {
+			return value
+		}
+		return fallback
+	}
+	auth.Init(env, db)
+
+	jwtDriver := auth.Driver("jwt").(*jwt.Driver)
+	token, err := jwtDriver.SignToken(jwt.Claims{Subject: "user-1", Role: "admin"})
+	if err != nil {
+		t.Fatalf("sign jwt: %v", err)
+	}
+	req, _ := http.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	info, err := jwtDriver.Authenticate(req)
+	if err != nil {
+		t.Fatalf("authenticate jwt: %v", err)
+	}
+	if info.UserID != "user-1" || info.Role != "admin" {
+		t.Fatalf("jwt auth info = %#v", info)
+	}
+	if _, err := db.Exec("DELETE FROM jwt_tokens"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jwtDriver.Authenticate(req); err == nil {
+		t.Fatal("revoked jwt should fail allowlist validation")
+	}
+
+	oauthDriver := auth.Driver("oauth").(*oauth.Driver)
+	if _, err := db.Exec("INSERT INTO oauth_tokens (token, client_id, expires_at, created_at) VALUES (?, ?, ?, ?)", "opaque", "client-1", time.Now().Add(time.Hour), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	oauthInfo, err := oauthDriver.ValidateToken("opaque")
+	if err != nil {
+		t.Fatalf("validate oauth token: %v", err)
+	}
+	if oauthInfo.UserID != "client-1" || oauthInfo.Role != "client" {
+		t.Fatalf("oauth auth info = %#v", oauthInfo)
+	}
+
+	sessionDriver := auth.Driver("session").(*session.Driver)
+	if _, err := db.Exec("INSERT INTO sessions (id, user_id, role, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", "sess-1", "user-2", "viewer", time.Now().Add(time.Hour), time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	sessionReq, _ := http.NewRequest("GET", "/", nil)
+	sessionReq.AddCookie(&http.Cookie{Name: sessionDriver.CookieName(), Value: "sess-1"})
+	sessionInfo, err := sessionDriver.Authenticate(sessionReq)
+	if err != nil {
+		t.Fatalf("authenticate session: %v", err)
+	}
+	if sessionInfo.UserID != "user-2" || sessionInfo.Role != "viewer" {
+		t.Fatalf("session auth info = %#v", sessionInfo)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "http", "auth", "exported_auth_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeTestAction(t *testing.T, projectDir string) {
@@ -648,7 +753,7 @@ func TestExportCronCompilesWithSchedulerSupport(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "commands.NewApp().Run(os.Args[1:])")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Cron job scheduler support with exported server startup wiring")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone command dispatch with embedded SQL migration commands")
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Partial Support")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "No unsupported export findings.")
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	writeExportedCronBehaviorTests(t, out)
 	runExported(t, out, "go", "test", "./...")

@@ -247,6 +247,112 @@ func TestExportedEncryptedColumnsRoundTrip(t *testing.T) {
 	}
 }
 
+func writeExportedIntegrityBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package models_test
+
+import (
+	"testing"
+
+	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"ledger/app/models"
+)
+
+func TestExportedIntegrityTablesPreserveBehavior(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	if err := db.AutoMigrate(&models.Account{}, &models.Transaction{}); err != nil {
+		t.Fatal(err)
+	}
+
+	ownerID := uuid.New()
+	account := &models.Account{
+		OwnerID:  ownerID,
+		Name:     "Checking",
+		Currency: "USD",
+		Type:     "checking",
+		Active:   true,
+	}
+	if err := models.CreateAccount(account); err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if len(account.RowHash) != 32 || len(account.PrevHash) != 32 {
+		t.Fatalf("account hashes were not populated: row=%d prev=%d", len(account.RowHash), len(account.PrevHash))
+	}
+	originalVersion := account.VersionID
+	originalHash := append([]byte(nil), account.RowHash...)
+
+	account.Name = "Updated Checking"
+	if err := models.UpdateAccount(account); err != nil {
+		t.Fatalf("update account: %v", err)
+	}
+	if account.VersionID == originalVersion {
+		t.Fatal("immutable update should create a fresh version_id")
+	}
+	if !bytesEqual(account.PrevHash, originalHash) {
+		t.Fatalf("updated account prev_hash should link to original row_hash")
+	}
+	var accountRows int64
+	if err := db.Model(&models.Account{}).Where("id = ?", account.ID).Count(&accountRows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if accountRows != 2 {
+		t.Fatalf("immutable update should insert a new version, got %d rows", accountRows)
+	}
+	if err := models.VerifyAccountChain(); err != nil {
+		t.Fatalf("verify account chain: %v", err)
+	}
+
+	tx1 := &models.Transaction{AccountID: account.ID, Type: "credit", Amount: decimal.NewFromInt(100), Currency: "USD"}
+	tx2 := &models.Transaction{AccountID: account.ID, Type: "debit", Amount: decimal.NewFromInt(25), Currency: "USD"}
+	if err := models.CreateTransaction(tx1); err != nil {
+		t.Fatalf("create tx1: %v", err)
+	}
+	if err := models.CreateTransaction(tx2); err != nil {
+		t.Fatalf("create tx2: %v", err)
+	}
+	if len(tx1.RowHash) != 32 || len(tx2.RowHash) != 32 {
+		t.Fatal("transaction hashes were not populated")
+	}
+	if !bytesEqual(tx2.PrevHash, tx1.RowHash) {
+		t.Fatal("append-only transaction chain did not link to previous row")
+	}
+	if err := models.VerifyTransactionChain(); err != nil {
+		t.Fatalf("verify transaction chain: %v", err)
+	}
+
+	if err := db.Model(&models.Transaction{}).Where("id = ?", tx1.ID).Update("amount", decimal.NewFromInt(999)).Error; err != nil {
+		t.Fatalf("tamper transaction: %v", err)
+	}
+	if err := models.VerifyTransactionChain(); err == nil {
+		t.Fatal("VerifyTransactionChain should detect tampering")
+	}
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_integrity_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExportLedgerCompiles(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "ledger"))
 	out := filepath.Join(t.TempDir(), "exported")
@@ -263,10 +369,13 @@ func TestExportLedgerCompiles(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "transaction.go"), "decimal.Decimal")
 	assertFileContains(t, filepath.Join(out, "app", "models", "account.go"), "RowHash")
 	assertFileContains(t, filepath.Join(out, "app", "models", "account.go"), "[]byte")
+	assertFileContains(t, filepath.Join(out, "app", "models", "integrity_support.go"), "func CreateAccount(record *Account) error")
+	assertFileContains(t, filepath.Join(out, "app", "models", "integrity_support.go"), "func VerifyTransactionChain() error")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "account_controller.go"), "models.DB.Model(&models.Account{})")
 	assertPathMissing(t, filepath.Join(out, "integrity_test.go"))
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "QueryAccount")
+	writeExportedIntegrityBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
 
@@ -541,6 +650,22 @@ func Index(role string) ([]models.User, error) {
 	} {
 		if !strings.Contains(compact, want) {
 			t.Fatalf("rewritten source missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestPascalToSnakePreservesCommonInitialisms(t *testing.T) {
+	cases := map[string]string{
+		"ID":        "id",
+		"OwnerID":   "owner_id",
+		"UserID":    "user_id",
+		"AccountID": "account_id",
+		"URLValue":  "url_value",
+		"APIKey":    "api_key",
+	}
+	for input, want := range cases {
+		if got := pascalToSnake(input); got != want {
+			t.Fatalf("pascalToSnake(%q) = %q, want %q", input, got, want)
 		}
 	}
 }

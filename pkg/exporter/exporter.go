@@ -117,6 +117,7 @@ func Export(opts Options) (*Result, error) {
 	ex.migrations = analysis.Migrations
 	ex.models = modelSet(tables)
 	ex.hasEncryptedColumns = tablesHaveEncryptedColumns(tables)
+	ex.integrityModels = integrityModelSet(tables)
 	for _, view := range views {
 		ex.models[tableToStruct(view.Name)] = true
 	}
@@ -179,6 +180,14 @@ type exporter struct {
 	models              map[string]bool
 	migrations          []generator.MigrationOps
 	hasEncryptedColumns bool
+	integrityModels     map[string]integrityModelInfo
+}
+
+type integrityModelInfo struct {
+	Table       *schema.Table
+	Immutable   bool
+	AppendOnly  bool
+	SoftDeletes bool
 }
 
 func configureMultiServiceProject(project *generator.Project, cfg *squeeze.Config) {
@@ -818,11 +827,11 @@ func (e *exporter) gormExpr(q queryChain) (ast.Expr, error) {
 	}
 	switch {
 	case q.Terminal == "First":
-		return parseExpr(fmt.Sprintf("func() (*models.%s, error) { var record models.%s; err := %s.First(&record).Error; return &record, err }()", q.Model, q.Model, q.gormChain()))
+		return parseExpr(fmt.Sprintf("func() (*models.%s, error) { var record models.%s; err := %s.First(&record).Error; return &record, err }()", q.Model, q.Model, e.gormChain(q)))
 	case q.Terminal == "All":
-		return parseExpr(fmt.Sprintf("func() ([]models.%s, error) { var records []models.%s; err := %s.Find(&records).Error; return records, err }()", q.Model, q.Model, q.gormChain()))
+		return parseExpr(fmt.Sprintf("func() ([]models.%s, error) { var records []models.%s; err := %s.Find(&records).Error; return records, err }()", q.Model, q.Model, e.gormChain(q)))
 	case q.Terminal == "Count":
-		return parseExpr(fmt.Sprintf("func() (int64, error) { var count int64; err := %s.Count(&count).Error; return count, err }()", q.gormChain()))
+		return parseExpr(fmt.Sprintf("func() (int64, error) { var count int64; err := %s.Count(&count).Error; return count, err }()", e.gormChain(q)))
 	case strings.HasPrefix(q.Terminal, "Sum") || strings.HasPrefix(q.Terminal, "Avg"):
 		fn := "SUM"
 		field := strings.TrimPrefix(q.Terminal, "Sum")
@@ -834,11 +843,14 @@ func (e *exporter) gormExpr(q queryChain) (ast.Expr, error) {
 			return nil, fmt.Errorf("unsupported aggregate query method %s", q.Terminal)
 		}
 		column := pascalToSnake(field)
-		return parseExpr(fmt.Sprintf("func() (*float64, error) { var value *float64; err := %s.Select(%q).Scan(&value).Error; return value, err }()", q.gormChain(), fn+"("+column+")"))
+		return parseExpr(fmt.Sprintf("func() (*float64, error) { var value *float64; err := %s.Select(%q).Scan(&value).Error; return value, err }()", e.gormChain(q), fn+"("+column+")"))
 	case q.Terminal == "Create":
 		arg, err := exprString(q.Arg)
 		if err != nil {
 			return nil, err
+		}
+		if _, ok := e.integrityModels[q.Model]; ok {
+			return parseExpr(fmt.Sprintf("models.Create%s(%s)", q.Model, arg))
 		}
 		return parseExpr(fmt.Sprintf("models.DB.Create(%s).Error", arg))
 	case q.Terminal == "Update":
@@ -846,11 +858,17 @@ func (e *exporter) gormExpr(q queryChain) (ast.Expr, error) {
 		if err != nil {
 			return nil, err
 		}
+		if _, ok := e.integrityModels[q.Model]; ok {
+			return parseExpr(fmt.Sprintf("models.Update%s(%s)", q.Model, arg))
+		}
 		return parseExpr(fmt.Sprintf("models.DB.Save(%s).Error", arg))
 	case q.Terminal == "Delete":
 		arg, err := exprString(q.Arg)
 		if err != nil {
 			return nil, err
+		}
+		if _, ok := e.integrityModels[q.Model]; ok {
+			return parseExpr(fmt.Sprintf("models.Delete%s(%s)", q.Model, arg))
 		}
 		return parseExpr(fmt.Sprintf("models.DB.Delete(%s).Error", arg))
 	default:
@@ -862,7 +880,7 @@ func (e *exporter) gormBuilderExpr(q queryChain) (ast.Expr, error) {
 	if !e.models[q.Model] {
 		return nil, fmt.Errorf("unknown exported model %s", q.Model)
 	}
-	return parseExpr(q.gormChain())
+	return parseExpr(e.gormChain(q))
 }
 
 func (e *exporter) gormVarTerminalExpr(q queryVarTerminal) (ast.Expr, error) {
@@ -904,8 +922,12 @@ func gormVarWhereExpr(varName, col, op string, arg ast.Expr) (ast.Expr, error) {
 	return parseExpr(fmt.Sprintf("%s.Where(%q, %s)", varName, col+" "+op+" ?", argStr))
 }
 
-func (q queryChain) gormChain() string {
+func (e *exporter) gormChain(q queryChain) string {
 	chain := fmt.Sprintf("models.DB.Model(&models.%s{})", q.Model)
+	if info, ok := e.integrityModels[q.Model]; ok && info.Immutable && !q.hasVersionFilter() {
+		table := info.Table.Name
+		chain += fmt.Sprintf(".Where(%q)", "version_id = (SELECT MAX(version_id) FROM "+table+" latest WHERE latest.id = "+table+".id)")
+	}
 	for _, f := range q.Filters {
 		col := f.Column
 		if col == "__owner__" {
@@ -926,6 +948,15 @@ func (q queryChain) gormChain() string {
 		chain += ".Offset(" + arg + ")"
 	}
 	return chain
+}
+
+func (q queryChain) hasVersionFilter() bool {
+	for _, f := range q.Filters {
+		if f.Column == "version_id" {
+			return true
+		}
+	}
+	return false
 }
 
 func (q queryChain) ownerColumn() string {
@@ -1023,6 +1054,15 @@ func (e *exporter) writeModels(tables []*schema.Table, views []*schema.View) err
 			return fmt.Errorf("formatting exported encryption support: %w", err)
 		}
 		if err := e.writeFile(filepath.Join("app", "models", "encryption_support.go"), data); err != nil {
+			return err
+		}
+	}
+	if len(e.integrityModels) > 0 {
+		data, err := generateIntegritySupport(tables)
+		if err != nil {
+			return err
+		}
+		if err := e.writeFile(filepath.Join("app", "models", "integrity_support.go"), data); err != nil {
 			return err
 		}
 	}
@@ -1969,12 +2009,6 @@ func (e *exporter) addGeneratedSubsystemFindings() {
 }
 
 func (e *exporter) addSchemaFindings(tables []*schema.Table) {
-	for _, table := range tables {
-		if table.IsImmutable || table.IsAppendOnly {
-			e.result.Findings = append(e.result.Findings, Finding{File: "database/migrations", Rule: "integrity_tables", Message: "immutable/append-only hash-chain runtime behavior is not lowered in v1"})
-			break
-		}
-	}
 }
 
 func (e *exporter) writeReport(orm string) error {
@@ -1995,6 +2029,9 @@ func (e *exporter) writeReport(orm string) error {
 	}
 	if e.hasEncryptedColumns {
 		b.WriteString("- Encrypted and sealed columns with GORM encrypt/decrypt hooks\n")
+	}
+	if len(e.integrityModels) > 0 {
+		b.WriteString("- Immutable and append-only integrity tables with hash-chain write and verification helpers\n")
 	}
 	b.WriteString("\n")
 	if len(e.result.Findings) == 0 {
@@ -2174,6 +2211,117 @@ func generateViewModelFile(view *schema.View) ([]byte, error) {
 		return nil, err
 	}
 	return format.Source(buf.Bytes())
+}
+
+func generateIntegritySupport(tables []*schema.Table) ([]byte, error) {
+	var b strings.Builder
+	b.WriteString(`package models
+
+import (
+	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"reflect"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+var genesisHash = make([]byte, 32)
+var uuidV7Mu sync.Mutex
+var uuidV7LastMillis uint64
+var uuidV7Sequence uint16
+
+type StaleVersionError struct {
+	Table string
+	EntityID string
+	ExpectedVersion string
+	ActualVersion string
+}
+
+func (e *StaleVersionError) Error() string {
+	return fmt.Sprintf("stale version on %s (id=%s): expected version %s but found %s", e.Table, e.EntityID, e.ExpectedVersion, e.ActualVersion)
+}
+
+type ChainError struct {
+	Table string
+	Position int
+	Expected []byte
+	Actual []byte
+}
+
+func (e *ChainError) Error() string {
+	return fmt.Sprintf("chain integrity error on %s at position %d: expected %x but found %x", e.Table, e.Position, e.Expected, e.Actual)
+}
+
+`)
+	for _, table := range tables {
+		if !table.IsImmutable && !table.IsAppendOnly {
+			continue
+		}
+		model := tableToStruct(table.Name)
+		columns := integrityColumnList(table)
+		verifyOrder := "id ASC"
+		latestOrder := "id DESC"
+		if table.IsImmutable {
+			verifyOrder = "version_id ASC"
+			latestOrder = "version_id DESC"
+		}
+		fmt.Fprintf(&b, "var %sIntegrityColumns = []string{%s}\n\n", model, quotedStringList(columns))
+		fmt.Fprintf(&b, "func Create%s(record *%s) error {\n", model, model)
+		fmt.Fprintf(&b, "\treturn createIntegrityRecord(DB, %q, record, %t, %q, %sIntegrityColumns)\n", table.Name, table.IsImmutable, latestOrder, model)
+		b.WriteString("}\n\n")
+		fmt.Fprintf(&b, "func Update%s(record *%s) error {\n", model, model)
+		if table.IsImmutable {
+			fmt.Fprintf(&b, "\treturn updateImmutableRecord(DB, %q, record, %q, %sIntegrityColumns)\n", table.Name, latestOrder, model)
+		} else {
+			b.WriteString("\treturn errors.New(\"append-only records cannot be updated\")\n")
+		}
+		b.WriteString("}\n\n")
+		fmt.Fprintf(&b, "func Delete%s(record *%s) error {\n", model, model)
+		if table.IsImmutable && tableHasColumn(table, "deleted_at") {
+			fmt.Fprintf(&b, "\tnow := time.Now().UTC()\n\trecord.DeletedAt = &now\n\treturn Update%s(record)\n", model)
+		} else {
+			b.WriteString("\treturn errors.New(\"integrity records cannot be deleted\")\n")
+		}
+		b.WriteString("}\n\n")
+		fmt.Fprintf(&b, "func Verify%sRow(record *%s) error {\n", model, model)
+		fmt.Fprintf(&b, "\treturn verifyIntegrityRow(%q, record, %sIntegrityColumns)\n", table.Name, model)
+		b.WriteString("}\n\n")
+		fmt.Fprintf(&b, "func Verify%sChain() error {\n", model)
+		fmt.Fprintf(&b, "\tvar records []%s\n", model)
+		fmt.Fprintf(&b, "\tif err := DB.Order(%q).Find(&records).Error; err != nil { return err }\n", verifyOrder)
+		fmt.Fprintf(&b, "\treturn verifyIntegrityRecords(%q, records, %sIntegrityColumns)\n", table.Name, model)
+		b.WriteString("}\n\n")
+	}
+	b.WriteString(integritySupportGenericSource)
+	return format.Source([]byte(b.String()))
+}
+
+func integrityColumnList(table *schema.Table) []string {
+	var out []string
+	for _, col := range table.Columns {
+		if col.Name == "row_hash" || col.Name == "prev_hash" {
+			continue
+		}
+		out = append(out, col.Name)
+	}
+	return out
+}
+
+func quotedStringList(values []string) string {
+	var parts []string
+	for _, value := range values {
+		parts = append(parts, fmt.Sprintf("%q", value))
+	}
+	return strings.Join(parts, ", ")
 }
 
 type modelTemplateData struct {
@@ -2406,6 +2554,31 @@ func tableHasEncryptedColumns(table *schema.Table) bool {
 func tablesHaveEncryptedColumns(tables []*schema.Table) bool {
 	for _, table := range tables {
 		if tableHasEncryptedColumns(table) {
+			return true
+		}
+	}
+	return false
+}
+
+func integrityModelSet(tables []*schema.Table) map[string]integrityModelInfo {
+	out := map[string]integrityModelInfo{}
+	for _, table := range tables {
+		if !table.IsImmutable && !table.IsAppendOnly {
+			continue
+		}
+		out[tableToStruct(table.Name)] = integrityModelInfo{
+			Table:       table,
+			Immutable:   table.IsImmutable,
+			AppendOnly:  table.IsAppendOnly,
+			SoftDeletes: tableHasColumn(table, "deleted_at"),
+		}
+	}
+	return out
+}
+
+func tableHasColumn(table *schema.Table, name string) bool {
+	for _, col := range table.Columns {
+		if col.Name == name {
 			return true
 		}
 	}
@@ -2680,9 +2853,10 @@ func pascalToSnake(s string) string {
 		return "id"
 	}
 	var b strings.Builder
-	for i, r := range s {
+	runes := []rune(s)
+	for i, r := range runes {
 		if r >= 'A' && r <= 'Z' {
-			if i > 0 {
+			if i > 0 && shouldInsertSnakeBoundary(runes, i) {
 				b.WriteByte('_')
 			}
 			b.WriteRune(r + ('a' - 'A'))
@@ -2691,6 +2865,21 @@ func pascalToSnake(s string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+func shouldInsertSnakeBoundary(runes []rune, i int) bool {
+	prev := runes[i-1]
+	if prev >= 'a' && prev <= 'z' {
+		return true
+	}
+	if prev >= '0' && prev <= '9' {
+		return true
+	}
+	if prev >= 'A' && prev <= 'Z' && i+1 < len(runes) {
+		next := runes[i+1]
+		return next >= 'a' && next <= 'z'
+	}
+	return false
 }
 
 const httpxSource = `package httpx
@@ -3301,5 +3490,278 @@ func derefString(value *string) string {
 		return ""
 	}
 	return *value
+}
+`
+
+const integritySupportGenericSource = `
+func createIntegrityRecord(db *gorm.DB, table string, record any, immutable bool, order string, columns []string) error {
+	if db == nil {
+		return errors.New("models.DB is not configured")
+	}
+	if err := ensureUUIDField(record, "ID"); err != nil {
+		return err
+	}
+	if immutable {
+		if err := setUUIDField(record, "VersionID", newUUIDV7()); err != nil {
+			return err
+		}
+	}
+	prev, err := latestIntegrityHash(db, table, order)
+	if err != nil {
+		return err
+	}
+	if err := setBytesField(record, "PrevHash", prev); err != nil {
+		return err
+	}
+	rowHash := computeIntegrityHash(prev, record, columns)
+	if err := setBytesField(record, "RowHash", rowHash); err != nil {
+		return err
+	}
+	return db.Create(record).Error
+}
+
+func updateImmutableRecord(db *gorm.DB, table string, record any, order string, columns []string) error {
+	if db == nil {
+		return errors.New("models.DB is not configured")
+	}
+	id, err := getUUIDField(record, "ID")
+	if err != nil {
+		return err
+	}
+	versionID, err := getUUIDField(record, "VersionID")
+	if err != nil {
+		return err
+	}
+	var latest struct {
+		VersionID uuid.UUID ` + "`" + `gorm:"column:version_id"` + "`" + `
+		RowHash []byte ` + "`" + `gorm:"column:row_hash"` + "`" + `
+	}
+	if err := db.Table(table).Select("version_id, row_hash").Where("id = ?", id).Order("version_id DESC").Limit(1).Scan(&latest).Error; err != nil {
+		return err
+	}
+	if latest.VersionID == uuid.Nil {
+		return fmt.Errorf("no current version found for %s id=%s", table, id)
+	}
+	if latest.VersionID != versionID {
+		return &StaleVersionError{Table: table, EntityID: id.String(), ExpectedVersion: latest.VersionID.String(), ActualVersion: versionID.String()}
+	}
+	if err := setBytesField(record, "PrevHash", latest.RowHash); err != nil {
+		return err
+	}
+	if err := setUUIDField(record, "VersionID", newUUIDV7()); err != nil {
+		return err
+	}
+	rowHash := computeIntegrityHash(latest.RowHash, record, columns)
+	if err := setBytesField(record, "RowHash", rowHash); err != nil {
+		return err
+	}
+	return db.Create(record).Error
+}
+
+func latestIntegrityHash(db *gorm.DB, table, order string) ([]byte, error) {
+	var row struct { RowHash []byte ` + "`" + `gorm:"column:row_hash"` + "`" + ` }
+	if err := db.Table(table).Select("row_hash").Order(order).Limit(1).Scan(&row).Error; err != nil {
+		return nil, err
+	}
+	if len(row.RowHash) == 0 {
+		return append([]byte(nil), genesisHash...), nil
+	}
+	return append([]byte(nil), row.RowHash...), nil
+}
+
+func verifyIntegrityRow(table string, record any, columns []string) error {
+	prev, err := getBytesField(record, "PrevHash")
+	if err != nil {
+		return err
+	}
+	rowHash, err := getBytesField(record, "RowHash")
+	if err != nil {
+		return err
+	}
+	expected := computeIntegrityHash(prev, record, columns)
+	if !bytes.Equal(expected, rowHash) {
+		return &ChainError{Table: table, Position: -1, Expected: expected, Actual: rowHash}
+	}
+	return nil
+}
+
+func verifyIntegrityRecords[T any](table string, records []T, columns []string) error {
+	prev := append([]byte(nil), genesisHash...)
+	for i := range records {
+		record := &records[i]
+		prevHash, err := getBytesField(record, "PrevHash")
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(prevHash, prev) {
+			return &ChainError{Table: table, Position: i, Expected: prev, Actual: prevHash}
+		}
+		rowHash, err := getBytesField(record, "RowHash")
+		if err != nil {
+			return err
+		}
+		expected := computeIntegrityHash(prev, record, columns)
+		if !bytes.Equal(expected, rowHash) {
+			return &ChainError{Table: table, Position: i, Expected: expected, Actual: rowHash}
+		}
+		prev = append([]byte(nil), rowHash...)
+	}
+	return nil
+}
+
+func computeIntegrityHash(prevHash []byte, record any, columns []string) []byte {
+	h := sha256.New()
+	h.Write(prevHash)
+	h.Write(canonicalIntegrityBytes(record, columns))
+	return h.Sum(nil)
+}
+
+func canonicalIntegrityBytes(record any, columns []string) []byte {
+	rv := reflect.ValueOf(record)
+	if rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+	}
+	rt := rv.Type()
+	fieldByColumn := map[string]reflect.Value{}
+	for i := 0; i < rt.NumField(); i++ {
+		column := gormColumnName(rt.Field(i))
+		if column == "" || column == "row_hash" || column == "prev_hash" {
+			continue
+		}
+		fieldByColumn[column] = rv.Field(i)
+	}
+	var out []byte
+	for _, column := range columns {
+		out = append(out, []byte(column)...)
+		out = append(out, 0)
+		field, ok := fieldByColumn[column]
+		if !ok || (field.Kind() == reflect.Ptr && field.IsNil()) {
+			out = append(out, []byte("null")...)
+			out = append(out, 0)
+			continue
+		}
+		if field.Kind() == reflect.Ptr {
+			field = field.Elem()
+		}
+		data, err := json.Marshal(field.Interface())
+		if err != nil {
+			data = []byte(fmt.Sprint(field.Interface()))
+		}
+		out = append(out, data...)
+		out = append(out, 0)
+	}
+	return out
+}
+
+func gormColumnName(field reflect.StructField) string {
+	tag := field.Tag.Get("gorm")
+	if tag == "-" {
+		return ""
+	}
+	for _, part := range strings.Split(tag, ";") {
+		if strings.HasPrefix(part, "column:") {
+			return strings.TrimPrefix(part, "column:")
+		}
+	}
+	return ""
+}
+
+func ensureUUIDField(record any, name string) error {
+	current, err := getUUIDField(record, name)
+	if err != nil {
+		return err
+	}
+	if current != uuid.Nil {
+		return nil
+	}
+	return setUUIDField(record, name, newUUIDV7())
+}
+
+func getUUIDField(record any, name string) (uuid.UUID, error) {
+	field, err := structField(record, name)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if value, ok := field.Interface().(uuid.UUID); ok {
+		return value, nil
+	}
+	return uuid.Nil, fmt.Errorf("%s is not a uuid.UUID", name)
+}
+
+func setUUIDField(record any, name string, value uuid.UUID) error {
+	field, err := structField(record, name)
+	if err != nil {
+		return err
+	}
+	if !field.CanSet() {
+		return fmt.Errorf("%s cannot be set", name)
+	}
+	field.Set(reflect.ValueOf(value))
+	return nil
+}
+
+func getBytesField(record any, name string) ([]byte, error) {
+	field, err := structField(record, name)
+	if err != nil {
+		return nil, err
+	}
+	if value, ok := field.Interface().([]byte); ok {
+		return value, nil
+	}
+	return nil, fmt.Errorf("%s is not []byte", name)
+}
+
+func setBytesField(record any, name string, value []byte) error {
+	field, err := structField(record, name)
+	if err != nil {
+		return err
+	}
+	if !field.CanSet() {
+		return fmt.Errorf("%s cannot be set", name)
+	}
+	field.Set(reflect.ValueOf(append([]byte(nil), value...)))
+	return nil
+}
+
+func structField(record any, name string) (reflect.Value, error) {
+	rv := reflect.ValueOf(record)
+	if rv.Kind() != reflect.Ptr || rv.IsNil() {
+		return reflect.Value{}, errors.New("record must be a non-nil pointer")
+	}
+	rv = rv.Elem()
+	if rv.Kind() != reflect.Struct {
+		return reflect.Value{}, errors.New("record must point to a struct")
+	}
+	field := rv.FieldByName(name)
+	if !field.IsValid() {
+		return reflect.Value{}, fmt.Errorf("field %s not found", name)
+	}
+	return field, nil
+}
+
+func newUUIDV7() uuid.UUID {
+	var id uuid.UUID
+	uuidV7Mu.Lock()
+	defer uuidV7Mu.Unlock()
+	ms := uint64(time.Now().UnixMilli())
+	if ms == uuidV7LastMillis {
+		uuidV7Sequence++
+	} else {
+		uuidV7LastMillis = ms
+		uuidV7Sequence = 0
+	}
+	id[0] = byte(ms >> 40)
+	id[1] = byte(ms >> 32)
+	id[2] = byte(ms >> 24)
+	id[3] = byte(ms >> 16)
+	id[4] = byte(ms >> 8)
+	id[5] = byte(ms)
+	if _, err := io.ReadFull(rand.Reader, id[6:]); err != nil {
+		return uuid.New()
+	}
+	id[6] = 0x70 | byte(uuidV7Sequence>>8)&0x0f
+	id[7] = byte(uuidV7Sequence)
+	id[8] = (id[8] & 0x3f) | 0x80
+	return id
 }
 `

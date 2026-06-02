@@ -192,7 +192,8 @@ func inputToModelConversion(col *schema.Column, inputExpr string, asPointer bool
 		return fmt.Sprintf("func() *json.RawMessage { r := json.RawMessage(%s); return &r }()", inputExpr)
 	default:
 		if asPointer {
-			return fmt.Sprintf("func() *%s { v := %s; return &v }()", columnGoType(col), inputExpr)
+			goType := strings.TrimPrefix(columnGoType(col), "*")
+			return fmt.Sprintf("func() *%s { v := %s; return &v }()", goType, inputExpr)
 		}
 		return inputExpr
 	}

@@ -233,7 +233,11 @@ func writeFilterOp(b *bytes.Buffer, op, goMethod string, col *schema.Column, goT
 		b.WriteString("\t\t\t}\n")
 	default:
 		b.WriteString(fmt.Sprintf("\t\t\tif v, ok := fm[\"%s\"].(string); ok {\n", op))
-		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s(v)\n", goMethod))
+		if col.IsNullable {
+			b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s(&v)\n", goMethod))
+		} else {
+			b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s(v)\n", goMethod))
+		}
 		b.WriteString("\t\t\t}\n")
 	}
 }
@@ -269,10 +273,18 @@ func writeFilterInOp(b *bytes.Buffer, goMethod string, col *schema.Column) {
 		b.WriteString("\t\t\t\t}\n")
 		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%sIn(ints)\n", goMethod))
 	default:
-		b.WriteString("\t\t\t\tstrs := make([]string, 0, len(v))\n")
+		if col.IsNullable {
+			b.WriteString("\t\t\t\tstrs := make([]*string, 0, len(v))\n")
+		} else {
+			b.WriteString("\t\t\t\tstrs := make([]string, 0, len(v))\n")
+		}
 		b.WriteString("\t\t\t\tfor _, item := range v {\n")
 		b.WriteString("\t\t\t\t\tif s, ok := item.(string); ok {\n")
-		b.WriteString("\t\t\t\t\t\tstrs = append(strs, s)\n")
+		if col.IsNullable {
+			b.WriteString("\t\t\t\t\t\tstrs = append(strs, &s)\n")
+		} else {
+			b.WriteString("\t\t\t\t\t\tstrs = append(strs, s)\n")
+		}
 		b.WriteString("\t\t\t\t\t}\n")
 		b.WriteString("\t\t\t\t}\n")
 		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%sIn(strs)\n", goMethod))

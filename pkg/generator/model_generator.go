@@ -211,6 +211,9 @@ func GenerateModel(table *schema.Table, packageName string) ([]byte, error) {
 	for _, col := range table.Columns {
 		if col.IsOwnerColumn {
 			ownerField = snakeToPascal(col.Name)
+			if ownerField == "OwnerID" {
+				ownerField = ""
+			}
 			break
 		}
 	}

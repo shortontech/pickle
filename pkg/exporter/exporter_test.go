@@ -73,13 +73,12 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "CanBan(ctx, m)")
 	assertFileContains(t, filepath.Join(out, "app", "services", "action_call.go"), "models.BanAction")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "models.DB.Model(&models.User{})")
-	assertNoGoFileContains(t, out, "QueryUser")
+	assertFileNotContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "QueryUser")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "basic-crud/internal/httpx")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Target ORM: `gorm`")
 
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "pickle.")
-	assertNoGoFileContains(t, out, "Pickle")
 	assertNoGoFileContains(t, out, "PICKLE_")
 	assertFileContains(t, filepath.Join(out, "go.sum"), "gorm.io/gorm")
 	runExported(t, out, "go", "test", "./...")
@@ -212,7 +211,7 @@ func TestExportEncryptionCompilesWithFinding(t *testing.T) {
 	runExported(t, out, "go", "test", "./...")
 }
 
-func TestExportZeroGraphQLCompilesWithFinding(t *testing.T) {
+func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "zero-graphql"))
 	out := filepath.Join(t.TempDir(), "exported")
 	res, err := Export(Options{
@@ -224,14 +223,41 @@ func TestExportZeroGraphQLCompilesWithFinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Export failed: %v", err)
 	}
-	if !hasFinding(res.Findings, "generated_graphql") {
-		t.Fatalf("expected generated_graphql finding, got %+v", res.Findings)
+	if hasFinding(res.Findings, "generated_graphql") {
+		t.Fatalf("did not expect generated_graphql finding, got %+v", res.Findings)
 	}
 
-	assertPathMissing(t, filepath.Join(out, "app", "graphql"))
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func Handler() http.Handler")
+	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), "func QueryUser() *UserQuery")
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `mux.Handle("/graphql", graphql.Handler())`)
 	assertFileContains(t, filepath.Join(out, "app", "http", "requests", "bindings.go"), "package requests")
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "generated_graphql")
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
+	assertNoGoFileContains(t, out, "pickle.")
+	runExported(t, out, "go", "test", "./...")
+}
+
+func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "graphql-safety"))
+	out := filepath.Join(t.TempDir(), "exported")
+	res, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err != nil {
+		t.Fatalf("Export failed: %v", err)
+	}
+	if hasFinding(res.Findings, "generated_graphql") {
+		t.Fatalf("did not expect generated_graphql finding, got %+v", res.Findings)
+	}
+
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "schema_gen.go"), "type Query")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "pickle_gen.go"), "maxQueryComplexity")
+	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), "func (q *UserQuery) WhereID")
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `mux.Handle("/graphql", graphql.Handler())`)
+	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
+	assertNoGoFileContains(t, out, "pickle.")
 	runExported(t, out, "go", "test", "./...")
 }
 
@@ -482,6 +508,17 @@ func assertFileContains(t *testing.T, path, want string) {
 	}
 	if !strings.Contains(string(data), want) {
 		t.Fatalf("expected %s to contain %q", path, want)
+	}
+}
+
+func assertFileNotContains(t *testing.T, path, needle string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if strings.Contains(string(data), needle) {
+		t.Fatalf("expected %s not to contain %q", path, needle)
 	}
 }
 

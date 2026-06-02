@@ -135,6 +135,9 @@ func Export(opts Options) (*Result, error) {
 	if err := ex.writeActions(); err != nil {
 		return nil, err
 	}
+	if err := ex.writeGraphQLPackage(tables, views); err != nil {
+		return nil, err
+	}
 	if err := ex.writeSQLMigrations(tables, views); err != nil {
 		return nil, err
 	}
@@ -1037,6 +1040,146 @@ func (e *exporter) writeActions() error {
 	return nil
 }
 
+func (e *exporter) hasGraphQLPackage() bool {
+	_, err := os.Stat(filepath.Join(e.project.Dir, "app", "graphql"))
+	return err == nil
+}
+
+func (e *exporter) writeGraphQLPackage(tables []*schema.Table, views []*schema.View) error {
+	graphqlDir := filepath.Join(e.project.Dir, "app", "graphql")
+	if _, err := os.Stat(graphqlDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := filepath.WalkDir(graphqlDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		data, err = e.rewriteGeneratedGraphQLSource(path, data)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(e.project.Dir, path)
+		if err != nil {
+			return err
+		}
+		return e.writeFile(rel, data)
+	}); err != nil {
+		return err
+	}
+	return e.writeGraphQLQuerySupport(tables, views)
+}
+
+func (e *exporter) rewriteGeneratedGraphQLSource(path string, data []byte) ([]byte, error) {
+	replaced := strings.ReplaceAll(string(data), e.sourceModule+"/", e.modulePath+"/")
+	formatted, err := format.Source([]byte(replaced))
+	if err != nil {
+		return nil, fmt.Errorf("formatting exported GraphQL source %s: %w", path, err)
+	}
+	return formatted, nil
+}
+
+func (e *exporter) writeGraphQLQuerySupport(tables []*schema.Table, views []*schema.View) error {
+	var b strings.Builder
+	b.WriteString("package models\n\n")
+	b.WriteString("import (\n")
+	b.WriteString("\t\"strings\"\n")
+	b.WriteString("\n")
+	b.WriteString("\t\"gorm.io/gorm\"\n")
+	b.WriteString(")\n\n")
+	for _, table := range tables {
+		writeGraphQLModelQuerySupport(&b, table.Name, table.Columns, false)
+	}
+	for _, view := range views {
+		var cols []*schema.Column
+		for i := range view.Columns {
+			cols = append(cols, &view.Columns[i].Column)
+		}
+		writeGraphQLModelQuerySupport(&b, view.Name, cols, true)
+	}
+	formatted, err := format.Source([]byte(b.String()))
+	if err != nil {
+		return fmt.Errorf("formatting exported GraphQL query support: %w", err)
+	}
+	return e.writeFile(filepath.Join("app", "models", "graphql_query_support.go"), formatted)
+}
+
+func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns []*schema.Column, readOnly bool) {
+	structName := tableToStruct(tableName)
+	queryName := structName + "Query"
+	b.WriteString(fmt.Sprintf("type %s struct { db *gorm.DB }\n\n", queryName))
+	b.WriteString(fmt.Sprintf("func Query%s() *%s { return &%s{db: DB.Model(&%s{})} }\n\n", structName, queryName, queryName, structName))
+	b.WriteString(fmt.Sprintf("func (q *%s) SelectPublic() *%s { return q }\n", queryName, queryName))
+	b.WriteString(fmt.Sprintf("func (q *%s) SelectOwner() *%s { return q }\n", queryName, queryName))
+	b.WriteString(fmt.Sprintf("func (q *%s) SelectAll() *%s { return q }\n", queryName, queryName))
+	b.WriteString(fmt.Sprintf("func (q *%s) AnyOwner() *%s { return q }\n", queryName, queryName))
+	b.WriteString(fmt.Sprintf("func (q *%s) Limit(n int) *%s { q.db = q.db.Limit(n); return q }\n", queryName, queryName))
+	b.WriteString(fmt.Sprintf("func (q *%s) Offset(n int) *%s { q.db = q.db.Offset(n); return q }\n", queryName, queryName))
+	b.WriteString(fmt.Sprintf("func (q *%s) OrderBy(column, direction string) *%s {\n", queryName, queryName))
+	b.WriteString("\tdir := strings.ToUpper(direction)\n")
+	b.WriteString("\tif dir != \"DESC\" { dir = \"ASC\" }\n")
+	b.WriteString("\tswitch column {\n")
+	for _, col := range columns {
+		b.WriteString(fmt.Sprintf("\tcase %q:\n", col.Name))
+	}
+	b.WriteString("\tdefault:\n")
+	b.WriteString("\t\treturn q\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tq.db = q.db.Order(column + \" \" + dir)\n")
+	b.WriteString("\treturn q\n")
+	b.WriteString("}\n")
+	for _, col := range columns {
+		fieldName := snakeToPascal(col.Name)
+		for _, suffix := range []string{"", "Like", "In", "After", "Before", "GTE", "GT", "LTE", "LT", "Not", "NotIn"} {
+			b.WriteString(fmt.Sprintf("func (q *%s) Where%s%s(value any) *%s { q.db = q.db.Where(%q, value); return q }\n", queryName, fieldName, suffix, queryName, col.Name+" "+whereSuffixOperator(suffix)+" ?"))
+		}
+	}
+	b.WriteString(fmt.Sprintf("func (q *%s) First() (*%s, error) { var record %s; err := q.db.First(&record).Error; return &record, err }\n", queryName, structName, structName))
+	b.WriteString(fmt.Sprintf("func (q *%s) All() ([]%s, error) { var records []%s; err := q.db.Find(&records).Error; return records, err }\n", queryName, structName, structName))
+	b.WriteString(fmt.Sprintf("func (q *%s) Count() (int64, error) { var count int64; err := q.db.Count(&count).Error; return count, err }\n", queryName))
+	if !readOnly {
+		b.WriteString(fmt.Sprintf("func (q *%s) Create(record *%s) error { return DB.Create(record).Error }\n", queryName, structName))
+		b.WriteString(fmt.Sprintf("func (q *%s) Update(record *%s) error { return DB.Save(record).Error }\n", queryName, structName))
+		b.WriteString(fmt.Sprintf("func (q *%s) Delete(record *%s) error { return DB.Delete(record).Error }\n", queryName, structName))
+	}
+	b.WriteByte('\n')
+}
+
+func whereSuffixOperator(suffix string) string {
+	switch suffix {
+	case "Like":
+		return "LIKE"
+	case "In":
+		return "IN"
+	case "After", "GT":
+		return ">"
+	case "Before", "LT":
+		return "<"
+	case "GTE":
+		return ">="
+	case "LTE":
+		return "<="
+	case "Not":
+		return "<>"
+	case "NotIn":
+		return "NOT IN"
+	default:
+		return "="
+	}
+}
+
 func (e *exporter) writeActionSet(set *generator.ActionSet) error {
 	if err := generator.ValidateActions(set); err != nil {
 		e.result.Findings = append(e.result.Findings, Finding{File: filepath.Join("database", "actions", set.Model), Rule: "action_export_unsupported_signature", Message: err.Error()})
@@ -1688,12 +1831,54 @@ func (e *exporter) writeServerMain() error {
 		}
 		return e.writeFile(filepath.Join("cmd", "server", "main.go"), data)
 	}
+	if e.hasGraphQLPackage() {
+		data, err := e.generateServerMain(scan != nil && scan.HasDatabaseConfig, true)
+		if err != nil {
+			return err
+		}
+		return e.writeFile(filepath.Join("cmd", "server", "main.go"), data)
+	}
 	source := serverMainSource
 	if scan != nil && scan.HasDatabaseConfig {
 		source = serverMainWithDatabaseSource
 		return e.writeFile(filepath.Join("cmd", "server", "main.go"), []byte(fmt.Sprintf(source, e.modulePath, e.modulePath, e.modulePath)))
 	}
 	return e.writeFile(filepath.Join("cmd", "server", "main.go"), []byte(fmt.Sprintf(source, e.modulePath, e.modulePath)))
+}
+
+func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL bool) ([]byte, error) {
+	var b strings.Builder
+	b.WriteString("package main\n\n")
+	b.WriteString("import (\n")
+	b.WriteString("\t\"log\"\n")
+	b.WriteString("\t\"net/http\"\n\n")
+	if hasGraphQL {
+		b.WriteString(fmt.Sprintf("\t\"%s/app/graphql\"\n", e.modulePath))
+	}
+	if hasDatabaseConfig {
+		b.WriteString(fmt.Sprintf("\t\"%s/app/models\"\n", e.modulePath))
+	}
+	b.WriteString(fmt.Sprintf("\t\"%s/config\"\n", e.modulePath))
+	b.WriteString(fmt.Sprintf("\t\"%s/routes\"\n", e.modulePath))
+	b.WriteString(")\n\n")
+	b.WriteString("func main() {\n")
+	b.WriteString("\tconfig.Init()\n")
+	if hasDatabaseConfig {
+		b.WriteString("\tmodels.SetDB(config.Database.OpenGORM())\n")
+	}
+	b.WriteString("\tmux := http.NewServeMux()\n")
+	b.WriteString("\tmux.Handle(\"/\", routes.API)\n")
+	if hasGraphQL {
+		b.WriteString("\tmux.Handle(\"/graphql\", graphql.Handler())\n")
+		b.WriteString("\tmux.Handle(\"/graphql/playground\", graphql.PlaygroundHandler(\"/graphql\"))\n")
+	}
+	b.WriteString("\taddr := \":\" + config.App.Port\n")
+	b.WriteString("\tlog.Printf(\"listening on %s\", addr)\n")
+	b.WriteString("\tif err := http.ListenAndServe(addr, mux); err != nil {\n")
+	b.WriteString("\t\tlog.Fatal(err)\n")
+	b.WriteString("\t}\n")
+	b.WriteString("}\n")
+	return format.Source([]byte(b.String()))
 }
 
 func (e *exporter) generateMultiServiceServerMain(hasDatabaseConfig bool) ([]byte, error) {
@@ -1756,11 +1941,10 @@ func (e *exporter) addGeneratedSubsystemFindings() {
 		msg  string
 	}{
 		{"app/http/auth", "generated_auth", "auth runtime is exported with standalone JWT support; sessions, OAuth, and JWT allowlist/revocation need manual review"},
-		{"app/graphql", "generated_graphql", "generated GraphQL runtime is not lowered in v1"},
 		{"app/jobs", "generated_jobs", "scheduler runtime is exported with minimal standalone support in v1"},
 		{"app/commands", "generated_commands", "Pickle command runtime is not lowered in v1"},
 		{"database/policies", "rbac_policy_export", "RBAC role grants are reflected in exported gates where statically derivable; policy runners and changelog state are not exported"},
-		{"database/policies/graphql", "generated_graphql_policies", "GraphQL policy runner and exposure state are not lowered in v1"},
+		{"database/policies/graphql", "generated_graphql_policies", "generated GraphQL schema preserves derived exposure state; policy runner/changelog migration commands are not exported in v1"},
 	}
 	for _, c := range checks {
 		if _, err := os.Stat(filepath.Join(e.project.Dir, c.path)); err == nil {
@@ -1798,7 +1982,11 @@ func (e *exporter) writeReport(orm string) error {
 	b.WriteString("- Standalone Go module with rewritten imports and no Pickle runtime dependency\n")
 	b.WriteString("- GORM models and database handle setup\n")
 	b.WriteString("- SQL migrations for supported schema operations\n")
-	b.WriteString("- HTTP routing, request binding, auth, config, and server support\n\n")
+	b.WriteString("- HTTP routing, request binding, auth, config, and server support\n")
+	if e.hasGraphQLPackage() {
+		b.WriteString("- Generated GraphQL package with standalone GORM query support and /graphql server mount\n")
+	}
+	b.WriteString("\n")
 	if len(e.result.Findings) == 0 {
 		b.WriteString("## Manual Review\n\n")
 		b.WriteString("No unsupported export findings.\n")

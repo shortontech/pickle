@@ -84,6 +84,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertNoGoFileContains(t, out, "PICKLE_")
 	assertFileContains(t, filepath.Join(out, "go.sum"), "gorm.io/gorm")
 	writeExportedAuthBehaviorTest(t, out)
+	writeExportedMigrationBehaviorTest(t, out)
 	writeExportedPolicyBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
@@ -190,6 +191,46 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	}
 }
 
+func writeExportedMigrationBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package migrations_test
+
+import (
+	"testing"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"basic-crud/database/migrations"
+)
+
+func TestExportedMigrationsApplyToSQLite(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migrations.NewRunner(db, "sqlite").Migrate(migrations.Registry); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	statuses, err := migrations.NewRunner(db, "sqlite").Status(migrations.Registry)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if len(statuses) != len(migrations.Registry) {
+		t.Fatalf("statuses = %d, want %d", len(statuses), len(migrations.Registry))
+	}
+	for _, status := range statuses {
+		if !status.Applied {
+			t.Fatalf("migration status %#v should be applied", status)
+		}
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "database", "migrations", "exported_migration_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeExportedPolicyBehaviorTest(t *testing.T, out string) {
 	t.Helper()
 	testSrc := `package policies_test
@@ -258,6 +299,23 @@ func TestExportedPolicyStateSupport(t *testing.T) {
 `
 	if err := os.WriteFile(filepath.Join(out, "database", "policies", "exported_policy_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCreateTableSQLUsesTableLevelCompositePrimaryKeyOnly(t *testing.T) {
+	table := &schema.Table{Name: "transfers"}
+	table.Immutable()
+	table.String("status", 50).NotNull()
+
+	sql := createTableSQL(table)
+	if strings.Contains(sql, `"id" TEXT PRIMARY KEY`) {
+		t.Fatalf("composite key column should not include inline primary key:\n%s", sql)
+	}
+	if strings.Contains(sql, `"version_id" TEXT PRIMARY KEY`) {
+		t.Fatalf("composite key column should not include inline primary key:\n%s", sql)
+	}
+	if !strings.Contains(sql, `PRIMARY KEY ("id", "version_id")`) {
+		t.Fatalf("missing table-level composite primary key:\n%s", sql)
 	}
 }
 

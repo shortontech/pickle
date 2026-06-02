@@ -2343,7 +2343,7 @@ func sqlForMigrationOp(op generator.MigrationOperation) (string, error) {
 		}
 		var statements []string
 		for _, col := range op.Columns {
-			statements = append(statements, "ALTER TABLE "+quoteIdent(op.Table)+" ADD COLUMN "+columnSQL(col))
+			statements = append(statements, "ALTER TABLE "+quoteIdent(op.Table)+" ADD COLUMN "+columnSQL(col, false))
 		}
 		return strings.Join(statements, ";\n"), nil
 	case "drop_column":
@@ -2425,10 +2425,13 @@ func createTableSQL(table *schema.Table) string {
 	var cols []string
 	var pk []string
 	for _, col := range table.Columns {
-		cols = append(cols, "\t"+columnSQL(col))
 		if col.IsPrimaryKey {
 			pk = append(pk, quoteIdent(col.Name))
 		}
+	}
+	compositePrimaryKey := len(pk) > 1
+	for _, col := range table.Columns {
+		cols = append(cols, "\t"+columnSQL(col, compositePrimaryKey))
 	}
 	if len(pk) > 1 {
 		cols = append(cols, "\tPRIMARY KEY ("+strings.Join(pk, ", ")+")")
@@ -2516,12 +2519,12 @@ func dropViewSQL(name string) string {
 	return "DROP VIEW IF EXISTS " + quoteIdent(name)
 }
 
-func columnSQL(col *schema.Column) string {
+func columnSQL(col *schema.Column, compositePrimaryKey bool) string {
 	var b strings.Builder
 	b.WriteString(quoteIdent(col.Name))
 	b.WriteByte(' ')
 	b.WriteString(sqlType(col))
-	if col.IsPrimaryKey {
+	if col.IsPrimaryKey && !compositePrimaryKey {
 		b.WriteString(" PRIMARY KEY")
 	}
 	if !col.IsNullable && !col.IsPrimaryKey {

@@ -2649,8 +2649,8 @@ func AuditFailed(ctx *httpx.Context, action, model string, resourceID any, err e
 		OnAuditFailed(ctx, action, model, resourceID, err.Error())
 		return
 	}
-	log.Printf("audit.failed user_id=%%s roles=%%v action=%%s model=%%s resource_id=%%v error=%%v ip=%%s request_id=%%s",
-		auditUserID(ctx), auditRoles(ctx), action, model, resourceID, err, auditContextIP(ctx), auditContextRequestID(ctx))
+	log.Printf("audit.failed user_id=%%s roles=%%v action=%%s model=%%s resource_id=%%v error=action failed ip=%%s request_id=%%s",
+		auditUserID(ctx), auditRoles(ctx), action, model, resourceID, auditContextIP(ctx), auditContextRequestID(ctx))
 }
 
 func auditUserID(ctx *httpx.Context) string {
@@ -4769,13 +4769,16 @@ func (e *exporter) writeFindingSection(b *strings.Builder, title, category strin
 
 func findingCategory(rule string) string {
 	switch rule {
-	case "action_export_unsupported_signature":
+	case "action_export_unsupported_signature", "action_export_unsupported_query",
+		"gate_export_unsupported_signature", "gate_export_policy_dependency",
+		"gate_export_dynamic_role", "gate_export_callsite":
 		return "unsupported"
 	case "rbac_policy_export":
 		return "partial"
-	case "generated_graphql", "generated_graphql_policies", "generated_policies", "generated_actions":
+	case "generated_graphql", "generated_graphql_policies", "generated_policies", "generated_actions",
+		"action_export_import_cycle":
 		return "omitted"
-	case "encrypted_columns", "integrity_tables", "raw_sql_migration":
+	case "encrypted_columns", "integrity_tables", "raw_sql_migration", "actions_audit":
 		return "manual"
 	default:
 		return "manual"

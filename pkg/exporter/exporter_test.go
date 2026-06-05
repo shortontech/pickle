@@ -1012,7 +1012,9 @@ func writeExportedActionAuditBehaviorTest(t *testing.T, out string) {
 	testSrc := `package models_test
 
 import (
+	"bytes"
 	"errors"
+	"log"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -1148,6 +1150,19 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	}
 	if auditRows != 1 {
 		t.Fatalf("audit rows after failed action = %d, want 1", auditRows)
+	}
+
+	models.OnAuditFailed = nil
+	var logs bytes.Buffer
+	previousLogOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousLogOutput)
+	models.AuditFailed(ctx, "Fail", "User", user.ID, errors.New("database password is swordfish"))
+	if strings.Contains(logs.String(), "swordfish") {
+		t.Fatalf("default audit failed log leaked detail: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "audit.failed") || !strings.Contains(logs.String(), "action failed") {
+		t.Fatalf("default audit failed log missing sanitized marker: %s", logs.String())
 	}
 }
 `
@@ -4458,6 +4473,29 @@ func TestExportReportListsUnsupportedBoundariesOnlyWhenUnsupported(t *testing.T)
 	assertFileContains(t, reportPath, "`database/actions/users` `action_export_unsupported_signature` - unsupported action signature")
 	assertFileNotContains(t, reportPath, "No unsupported export findings.")
 	assertFileNotContains(t, reportPath, "## Manual Review")
+}
+
+func TestFindingCategoryClassifiesUnlowerableBoundariesAsUnsupported(t *testing.T) {
+	for _, rule := range []string{
+		"action_export_unsupported_signature",
+		"action_export_unsupported_query",
+		"gate_export_unsupported_signature",
+		"gate_export_policy_dependency",
+		"gate_export_dynamic_role",
+		"gate_export_callsite",
+	} {
+		if got := findingCategory(rule); got != "unsupported" {
+			t.Fatalf("findingCategory(%q) = %q, want unsupported", rule, got)
+		}
+	}
+	for _, rule := range []string{
+		"actions_audit",
+		"raw_sql_migration",
+	} {
+		if got := findingCategory(rule); got != "manual" {
+			t.Fatalf("findingCategory(%q) = %q, want manual", rule, got)
+		}
+	}
 }
 
 func TestRewriteMutableQueryVariable(t *testing.T) {

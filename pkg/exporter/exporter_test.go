@@ -2616,37 +2616,8 @@ func TestExportedServerBinaryRejectsUnknownCommandBeforeStartup(t *testing.T) {
 func TestExportedServerBinaryServesHTTP(t *testing.T) {
 	port := freeBinaryPort(t)
 	dbPath := filepath.Join(t.TempDir(), "server.sqlite")
-	cmd := exec.Command("go", "run", ".")
-	cmd.Env = append(os.Environ(),
-		"APP_PORT="+port,
-		"DB_CONNECTION=sqlite",
-		"DB_DATABASE="+dbPath,
-		"JWT_SECRET=0123456789abcdef0123456789abcdef",
-		"APP_ENCRYPTION_KEY=12345678901234567890123456789012",
-	)
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start exported server binary: %v", err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	doneConsumed := false
-	defer func() {
-		if doneConsumed {
-			return
-		}
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("exported server binary did not exit after kill; output=%s", output.String())
-		}
-	}()
+	server := startExportedBinaryServer(t, port, dbPath)
+	defer server.cleanup(t)
 
 	url := "http://127.0.0.1:" + port + "/pickle/health"
 	var resp *http.Response
@@ -2654,9 +2625,9 @@ func TestExportedServerBinaryServesHTTP(t *testing.T) {
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
-		case waitErr := <-done:
-			doneConsumed = true
-			t.Fatalf("exported server binary exited before serving: %v\n%s", waitErr, output.String())
+		case waitErr := <-server.done:
+			server.doneConsumed = true
+			t.Fatalf("exported server binary exited before serving: %v\n%s", waitErr, server.output.String())
 		default:
 		}
 		resp, err = http.Get(url)
@@ -2666,7 +2637,7 @@ func TestExportedServerBinaryServesHTTP(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if err != nil {
-		t.Fatalf("exported server binary did not serve %s: %v\n%s", url, err, output.String())
+		t.Fatalf("exported server binary did not serve %s: %v\n%s", url, err, server.output.String())
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
@@ -2674,7 +2645,7 @@ func TestExportedServerBinaryServesHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("server status = %d body=%s output=%s", resp.StatusCode, body, output.String())
+		t.Fatalf("server status = %d body=%s output=%s", resp.StatusCode, body, server.output.String())
 	}
 	if got := resp.Header.Get("Content-Type"); got != "application/json" {
 		t.Fatalf("server Content-Type = %q, want application/json", got)
@@ -2691,9 +2662,110 @@ func TestExportedServerBinaryServesHTTP(t *testing.T) {
 	}
 }
 
+func TestExportedServerBinaryServesMigratedRoutes(t *testing.T) {
+	port := freeBinaryPort(t)
+	dbPath := filepath.Join(t.TempDir(), "server-routes.sqlite")
+	migrate := exec.Command("go", "run", ".", "migrate")
+	migrate.Env = exportedBinaryEnv(port, dbPath)
+	if output, err := migrate.CombinedOutput(); err != nil {
+		t.Fatalf("go run . migrate failed: %v\n%s", err, output)
+	}
+
+	server := startExportedBinaryServer(t, port, dbPath)
+	defer server.cleanup(t)
+
+	body := ` + "`" + `{"name":"Ada","email":"ada@example.com","password":"correct horse"}` + "`" + `
+	url := "http://127.0.0.1:" + port + "/api/users"
+	var resp *http.Response
+	var err error
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case waitErr := <-server.done:
+			server.doneConsumed = true
+			t.Fatalf("exported server binary exited before route request: %v\n%s", waitErr, server.output.String())
+		default:
+		}
+		resp, err = http.Post(url, "application/json", strings.NewReader(body))
+		if err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("exported server binary did not serve %s: %v\n%s", url, err, server.output.String())
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create user status = %d body=%s output=%s", resp.StatusCode, respBody, server.output.String())
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("create user Content-Type = %q, want application/json", got)
+	}
+	if !strings.Contains(string(respBody), "Ada") {
+		t.Fatalf("create user response = %s, want Ada", respBody)
+	}
+}
+
 func countBinaryRows(t *testing.T, db *sql.DB, table string) int {
 	t.Helper()
 	return countBinaryWhere(t, db, table, "1 = 1")
+}
+
+type exportedBinaryServer struct {
+	cmd          *exec.Cmd
+	output       *bytes.Buffer
+	done         chan error
+	doneConsumed bool
+}
+
+func startExportedBinaryServer(t *testing.T, port, dbPath string) *exportedBinaryServer {
+	t.Helper()
+	cmd := exec.Command("go", "run", ".")
+	cmd.Env = exportedBinaryEnv(port, dbPath)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start exported server binary: %v", err)
+	}
+	server := &exportedBinaryServer{
+		cmd:    cmd,
+		output: &output,
+		done:   make(chan error, 1),
+	}
+	go func() { server.done <- cmd.Wait() }()
+	return server
+}
+
+func (s *exportedBinaryServer) cleanup(t *testing.T) {
+	t.Helper()
+	if s == nil || s.doneConsumed {
+		return
+	}
+	if s.cmd != nil && s.cmd.Process != nil {
+		_ = syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL)
+	}
+	select {
+	case <-s.done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("exported server binary did not exit after kill; output=%s", s.output.String())
+	}
+}
+
+func exportedBinaryEnv(port, dbPath string) []string {
+	return append(os.Environ(),
+		"APP_PORT="+port,
+		"DB_CONNECTION=sqlite",
+		"DB_DATABASE="+dbPath,
+		"JWT_SECRET=0123456789abcdef0123456789abcdef",
+		"APP_ENCRYPTION_KEY=12345678901234567890123456789012",
+	)
 }
 
 func freeBinaryPort(t *testing.T) string {

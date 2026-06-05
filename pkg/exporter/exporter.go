@@ -7550,6 +7550,7 @@ import (
 )
 
 var errNoRoleDatabase = errors.New("pickle export: models.DB is not configured for RBAC role loading")
+var errRoleDatabase = errors.New("rbac: role database error")
 
 type roleRow struct {
 	Slug    string
@@ -7565,7 +7566,7 @@ func LoadRoles(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
 	}
 	var rows []roleRow
 	if err := models.DB.Raw("SELECT r.slug, r.manages FROM roles r JOIN role_user ru ON ru.role_id = r.id WHERE ru.user_id = ?", ctx.Auth().UserID).Scan(&rows).Error; err != nil {
-		return ctx.Error(err)
+		return ctx.Error(errRoleDatabase)
 	}
 	roles := make([]httpx.RoleInfo, len(rows))
 	for i, row := range rows {

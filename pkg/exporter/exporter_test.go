@@ -116,6 +116,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "action_audit_support.go"), "func runAuditedAction")
 	assertFileContains(t, filepath.Join(out, "app", "http", "middleware", "rbac_support.go"), "func LoadRoles")
 	assertFileContains(t, filepath.Join(out, "app", "http", "middleware", "rbac_support.go"), "func RequireRole")
+	assertFileContains(t, filepath.Join(out, "app", "http", "middleware", "rbac_support.go"), "errRoleDatabase")
+	assertFileNotContains(t, filepath.Join(out, "app", "http", "middleware", "rbac_support.go"), "return ctx.Error(err)")
 	assertFileContains(t, filepath.Join(out, "app", "services", "action_call.go"), "models.BanAction")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "models.DB.Model(&models.User{})")
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "QueryUser")
@@ -2623,6 +2625,7 @@ func writeExportedRBACMiddlewareBehaviorTest(t *testing.T, out string) {
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -2747,6 +2750,41 @@ func TestExportedLoadRolesRequiresAuth(t *testing.T) {
 	})
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestExportedLoadRolesDatabaseErrorsAreSanitized(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := httpx.NewContext(newRequest())
+	ctx.SetAuth(&httpx.AuthInfo{UserID: "user-1"})
+	resp := middleware.LoadRoles(ctx, func() httpx.Response {
+		t.Fatal("LoadRoles should not call next after database failure")
+		return httpx.Response{}
+	})
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	body, ok := resp.Body.(map[string]string)
+	if !ok {
+		t.Fatalf("body type = %T", resp.Body)
+	}
+	if body["error"] != "internal server error" {
+		t.Fatalf("body = %#v, want sanitized internal error", body)
+	}
+	if strings.Contains(body["error"], "sql") || strings.Contains(body["error"], "closed") {
+		t.Fatalf("RBAC database error leaked detail: %#v", body)
 	}
 }
 

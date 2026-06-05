@@ -3065,7 +3065,11 @@ func writeExportedGraphQLErrorBehaviorTest(t *testing.T, out string) {
 	t.Helper()
 	testSrc := `package graphql
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
 
 func TestExportedGraphQLErrorsPreservePath(t *testing.T) {
 	errs := convertGraphQLErrors([]map[string]any{
@@ -3115,6 +3119,20 @@ func TestExportedGraphQLExecutionRecoversPanics(t *testing.T) {
 	extensions, ok := errs[0]["extensions"].(map[string]any)
 	if !ok || extensions["code"] != CodeInternalServerError {
 		t.Fatalf("panic extensions = %#v", errs[0]["extensions"])
+	}
+}
+
+func TestExportedGraphQLInternalErrorsAreSanitized(t *testing.T) {
+	err := toGraphQLError(InternalError("secret database detail"), []string{"createUser"})
+	if err["message"] != "internal server error" {
+		t.Fatalf("internal error message = %#v", err)
+	}
+	extensions, ok := err["extensions"].(map[string]any)
+	if !ok || extensions["code"] != CodeInternalServerError {
+		t.Fatalf("internal error extensions = %#v", err["extensions"])
+	}
+	if strings.Contains(fmt.Sprint(err), "secret database detail") {
+		t.Fatalf("internal error leaked detail: %#v", err)
 	}
 }
 

@@ -772,7 +772,10 @@ func BadInput(msg string) *GraphQLError {
 
 // InternalError returns a GraphQL error for unexpected server errors.
 func InternalError(msg string) *GraphQLError {
-	return &GraphQLError{Message: msg, Code: CodeInternalServerError}
+	return &GraphQLError{
+		Message: "internal server error",
+		Code:    CodeInternalServerError,
+	}
 }
 
 // toGraphQLError converts any error to a structured GraphQL error map.
@@ -785,6 +788,9 @@ func toGraphQLError(err error, path []string) map[string]any {
 	}
 
 	if ge, ok := err.(*GraphQLError); ok {
+		if ge.Code == CodeInternalServerError {
+			gqlErr["message"] = "internal server error"
+		}
 		ext := map[string]any{"code": ge.Code}
 		if ge.Field != "" {
 			ext["field"] = ge.Field

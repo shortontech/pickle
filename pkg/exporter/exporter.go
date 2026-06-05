@@ -2107,7 +2107,6 @@ const maxGraphQLRequestBodyBytes = 1 << 20
 func Handler() http.Handler {
 	srv := handler.New(pickleExecutableSchema{})
 	srv.AddTransport(transport.Options{})
-	srv.AddTransport(transport.GET{})
 	srv.AddTransport(transport.POST{})
 	srv.SetQueryCache(lru.New[*ast.QueryDocument](1000))
 	srv.SetParserTokenLimit(maxQueryInputNodes * 20)
@@ -2120,6 +2119,10 @@ func Handler() http.Handler {
 			}
 			w.Header().Set("Content-Type", "text/plain")
 			w.Write([]byte(SchemaSDL))
+			return
+		}
+		if r.Method != http.MethodPost && r.Method != http.MethodOptions {
+			writeGraphQLHTTPStatusError(w, http.StatusMethodNotAllowed, "GraphQL endpoint accepts POST requests", CodeBadUserInput)
 			return
 		}
 		if r.Method == http.MethodPost {

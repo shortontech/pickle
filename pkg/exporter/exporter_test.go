@@ -2615,6 +2615,8 @@ func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func Handler() http.Handler")
 	assertFileContains(t, filepath.Join(out, "go.mod"), "github.com/99designs/gqlgen")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "handler.New(pickleExecutableSchema{})")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "srv.AddTransport(transport.POST{})")
+	assertFileNotContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "srv.AddTransport(transport.GET{})")
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), "func QueryUser() *UserQuery")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphql", "schema_gen.go"), "EMAIL_ASC")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphql", "schema_gen.go"), "EMAIL_DESC")
@@ -2756,6 +2758,9 @@ func TestExportedGraphQLGETDoesNotExecuteMutations(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	graphql.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET mutation status = %d, want %d, body=%s", rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
+	}
 
 	var count int64
 	if err := db.Model(&models.User{}).Where("name = ?", "GET Bad").Count(&count).Error; err != nil {
@@ -2774,6 +2779,19 @@ func TestExportedGraphQLGETDoesNotExecuteMutations(t *testing.T) {
 	}
 	if len(resp.Errors) == 0 {
 		t.Fatalf("GET mutation should return a GraphQL error, got status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/graphql?query="+url.QueryEscape(` + "`" + `{ users { edges { node { id } } } }` + "`" + `), nil)
+	rec = httptest.NewRecorder()
+	graphql.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET query status = %d, want %d, body=%s", rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode GET query response: %v\nstatus=%d body=%s", err, rec.Code, rec.Body.String())
+	}
+	if len(resp.Errors) == 0 {
+		t.Fatalf("GET query should return a GraphQL error, got status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 `
@@ -2801,6 +2819,8 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "schema_gen.go"), "type Query")
 	assertFileContains(t, filepath.Join(out, "go.mod"), "github.com/99designs/gqlgen")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "handler.New(pickleExecutableSchema{})")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "srv.AddTransport(transport.POST{})")
+	assertFileNotContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "srv.AddTransport(transport.GET{})")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "err.Path = graphQLErrorPath(path)")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLRequestBodyBytes = 1 << 20")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "http.MaxBytesReader(w, r.Body, maxGraphQLRequestBodyBytes)")

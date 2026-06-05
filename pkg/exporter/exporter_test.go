@@ -2484,6 +2484,36 @@ func TestExportedGraphQLErrorsPreservePath(t *testing.T) {
 		t.Fatalf("nested path = %q, want users[0].email", errs[1].Path.String())
 	}
 }
+
+func TestExportedGraphQLExecutionRecoversPanics(t *testing.T) {
+	data, errs := executeSafely(&ResolveContext{}, panicRoot{}, &Document{
+		Operation: "query",
+		Fields: []Field{{Name: "boom"}},
+	})
+	if data != nil {
+		t.Fatalf("data = %#v, want nil after panic", data)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("len(errs) = %d, want 1", len(errs))
+	}
+	if errs[0]["message"] != "internal server error" {
+		t.Fatalf("panic message leaked or changed: %#v", errs[0])
+	}
+	extensions, ok := errs[0]["extensions"].(map[string]any)
+	if !ok || extensions["code"] != CodeInternalServerError {
+		t.Fatalf("panic extensions = %#v", errs[0]["extensions"])
+	}
+}
+
+type panicRoot struct{}
+
+func (panicRoot) resolveQuery(ctx *ResolveContext, field Field) (any, error) {
+	panic("secret panic detail")
+}
+
+func (panicRoot) resolveMutation(ctx *ResolveContext, field Field) (any, error) {
+	panic("secret panic detail")
+}
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphql", "exported_error_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)

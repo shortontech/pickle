@@ -1907,7 +1907,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
+	"runtime/debug"
 	"strings"
 
 	gqlgen "github.com/99designs/gqlgen/graphql"
@@ -2033,7 +2036,7 @@ func execGQLGenOperation(ctx context.Context) *gqlgen.Response {
 	}
 	resolveCtx.queryStats = stats
 
-	data, gqlErrs := execute(resolveCtx, &RootResolver{}, doc)
+	data, gqlErrs := executeSafely(resolveCtx, &RootResolver{}, doc)
 	raw, err := json.Marshal(data)
 	if err != nil {
 		return gqlgenErrorResponse(err.Error(), CodeInternalServerError)
@@ -2109,6 +2112,23 @@ func valueToGoWithVariables(v *ast.Value, variables map[string]any) any {
 	default:
 		return valueToGo(v)
 	}
+}
+
+func executeSafely(ctx *ResolveContext, root rootResolver, doc *Document) (data map[string]any, gqlErrs []map[string]any) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err, ok := recovered.(error)
+			if !ok {
+				err = fmt.Errorf("%%v", recovered)
+			}
+			log.Printf("graphql panic: %%v\n%%s", err, debug.Stack())
+			data = nil
+			gqlErrs = []map[string]any{
+				toGraphQLError(InternalError("internal server error"), nil),
+			}
+		}
+	}()
+	return execute(ctx, root, doc)
 }
 
 func extractAuthFromHeaders(headers http.Header) (*AuthClaims, error) {

@@ -4459,8 +4459,17 @@ func TestExportedGQLGenTargetCreateUserRequiresInternalFields(t *testing.T) {
 
 func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 	handler := graphqlapi.Handler()
-	req := httptest.NewRequest(http.MethodGet, "/graphql?query={posts{totalCount}}", nil)
 	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, nil)
+	if rec.Code != http.StatusBadRequest || !responseHasErrorCode(t, rec.Body.Bytes(), "BAD_USER_INPUT") {
+		t.Fatalf("nil request response status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "panic") || strings.Contains(rec.Body.String(), "nil pointer") {
+		t.Fatalf("nil request response leaked panic detail: %s", rec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/graphql?query={posts{totalCount}}", nil)
+	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET status = %d body=%s", rec.Code, rec.Body.String())

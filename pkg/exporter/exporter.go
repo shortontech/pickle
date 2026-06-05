@@ -2852,6 +2852,10 @@ func Handler() http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if r == nil {
+			writeGraphQLAPIHTTPStatusError(w, http.StatusBadRequest, "invalid GraphQL request", "BAD_USER_INPUT")
+			return
+		}
 		if r.Method != http.MethodPost && r.Method != http.MethodOptions {
 			writeGraphQLAPIHTTPStatusError(w, http.StatusMethodNotAllowed, "GraphQL endpoint accepts POST requests", "BAD_USER_INPUT")
 			return

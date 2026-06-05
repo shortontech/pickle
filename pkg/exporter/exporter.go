@@ -1802,10 +1802,11 @@ func rewriteExportedGraphQLCoreSource(src string) (string, error) {
 	Role   string
 }`,
 			new: `type AuthClaims struct {
-	UserID  string
-	Role    string
-	Roles   []string
-	Manages bool
+	UserID     string
+	Role       string
+	Roles      []string
+	Manages    bool
+	RBACLoaded bool
 }`,
 		},
 		{
@@ -1825,7 +1826,7 @@ func rewriteExportedGraphQLCoreSource(src string) (string, error) {
 			return true
 		}
 	}
-	return c.auth.Role == role
+	return !c.auth.RBACLoaded && c.auth.Role == role
 }`,
 		},
 		{
@@ -1840,7 +1841,7 @@ func rewriteExportedGraphQLCoreSource(src string) (string, error) {
 	if c.auth == nil {
 		return false
 	}
-	return c.auth.UserID == ownerID || c.auth.Role == "admin" || c.auth.Manages
+	return c.auth.UserID == ownerID || c.auth.Manages || (!c.auth.RBACLoaded && c.auth.Role == "admin")
 }`,
 		},
 		{
@@ -1858,7 +1859,7 @@ func rewriteExportedGraphQLCoreSource(src string) (string, error) {
 	if c.auth == nil {
 		return VisibilityPublic
 	}
-	if c.auth.Role == "admin" || c.auth.Manages {
+	if c.auth.Manages || (!c.auth.RBACLoaded && c.auth.Role == "admin") {
 		return VisibilityAll
 	}
 	return VisibilityOwner
@@ -2400,6 +2401,7 @@ func loadGraphQLRBACClaims(claims *AuthClaims) error {
 		}
 		return err
 	}
+	claims.RBACLoaded = true
 	if len(roles) == 0 {
 		return nil
 	}

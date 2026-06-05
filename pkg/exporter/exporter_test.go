@@ -3391,6 +3391,68 @@ func TestExportedGraphQLRBACMissingTablesDoNotBreakPlainAuth(t *testing.T) {
 	if claims == nil || claims.UserID != userID || claims.Role != "editor" {
 		t.Fatalf("claims = %+v, want plain token claims", claims)
 	}
+	if claims.RBACLoaded {
+		t.Fatalf("RBACLoaded = true with missing RBAC tables: %+v", claims)
+	}
+	ctx := &ResolveContext{auth: claims}
+	if !ctx.HasRole("editor") {
+		t.Fatal("missing RBAC tables should preserve token role fallback")
+	}
+}
+
+func TestExportedGraphQLRBACEmptyTablesOverrideTokenRoleFallback(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	for _, stmt := range []string{
+		` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, revoked_at DATETIME, created_at DATETIME NOT NULL)` + "`" + `,
+		` + "`" + `CREATE TABLE roles (id TEXT PRIMARY KEY, slug TEXT NOT NULL, manages BOOLEAN NOT NULL)` + "`" + `,
+		` + "`" + `CREATE TABLE role_user (user_id TEXT NOT NULL, role_id TEXT NOT NULL)` + "`" + `,
+	} {
+		if err := db.Exec(stmt).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth.Init(func(key, fallback string) string {
+		switch key {
+		case "AUTH_DRIVER":
+			return "jwt"
+		case "DB_CONNECTION":
+			return "sqlite"
+		case "JWT_SECRET":
+			return "0123456789abcdef0123456789abcdef"
+		default:
+			return fallback
+		}
+	}, sqlDB)
+	userID := uuid.New().String()
+	token, err := auth.Driver("jwt").(*jwt.Driver).SignToken(jwt.Claims{Subject: userID, Role: "admin", ExpiresAt: time.Now().Add(time.Hour).Unix()})
+	if err != nil {
+		t.Fatalf("sign jwt: %v", err)
+	}
+	claims, err := extractAuthFromHeaders(http.Header{"Authorization": []string{"Bearer " + token}})
+	if err != nil {
+		t.Fatalf("extract auth: %v", err)
+	}
+	if claims == nil || !claims.RBACLoaded {
+		t.Fatalf("claims = %+v, want RBAC-loaded claims", claims)
+	}
+	ctx := &ResolveContext{auth: claims}
+	if ctx.HasRole("admin") {
+		t.Fatal("empty DB roles should override token admin role")
+	}
+	if ctx.CanSeeOwnerFields(uuid.New().String()) {
+		t.Fatal("empty DB roles should override token admin owner visibility")
+	}
+	if got := ctx.Visibility(); got != VisibilityOwner {
+		t.Fatalf("Visibility() = %v, want VisibilityOwner after empty DB roles", got)
+	}
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphql", "exported_rbac_test.go"), []byte(testSrc), 0o644); err != nil {

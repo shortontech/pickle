@@ -2617,6 +2617,7 @@ func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "handler.New(pickleExecutableSchema{})")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "srv.AddTransport(transport.POST{})")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "srv.AddTransport(transport.GET{})")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), `w.Header().Set("X-Content-Type-Options", "nosniff")`)
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), "func QueryUser() *UserQuery")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphql", "schema_gen.go"), "EMAIL_ASC")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphql", "schema_gen.go"), "EMAIL_DESC")
@@ -2821,6 +2822,7 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "handler.New(pickleExecutableSchema{})")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "srv.AddTransport(transport.POST{})")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "srv.AddTransport(transport.GET{})")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), `w.Header().Set("X-Content-Type-Options", "nosniff")`)
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "err.Path = graphQLErrorPath(path)")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLRequestBodyBytes = 1 << 20")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "http.MaxBytesReader(w, r.Body, maxGraphQLRequestBodyBytes)")
@@ -2987,6 +2989,9 @@ query Two { posts { edges { node { id } } } }` + "`" + `, nil, true},
 			handler.ServeHTTP(rec, req)
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
 			}
 			var resp struct {
 				Data   any              ` + "`" + `json:"data"` + "`" + `

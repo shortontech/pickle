@@ -2112,6 +2112,7 @@ func Handler() http.Handler {
 	srv.SetParserTokenLimit(maxQueryInputNodes * 20)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if r.Method == http.MethodGet && r.URL.Query().Get("sdl") != "" {
 			if !allowIntrospection {
 				http.NotFound(w, r)

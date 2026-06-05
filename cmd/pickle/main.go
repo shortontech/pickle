@@ -71,7 +71,7 @@ func main() {
 	case "--help", "-h", "help":
 		usage()
 	case "--version", "-v", "version":
-		fmt.Println("pickle v0.1.0")
+		fmt.Println("pickle v0.2.0")
 	default:
 		fmt.Fprintf(os.Stderr, "pickle: unknown command %q\n", os.Args[1])
 		usage()

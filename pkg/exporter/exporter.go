@@ -3909,6 +3909,7 @@ func NewApp() *App {
 				ReadTimeout: 30 * time.Second,
 				WriteTimeout: 60 * time.Second,
 				IdleTimeout: 120 * time.Second,
+				MaxHeaderBytes: 1 << 20,
 			}
 			if err := server.ListenAndServe(); err != nil {
 				log.Fatal(err)
@@ -4539,6 +4540,7 @@ func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL, hasSchedule
 	b.WriteString("\t\tReadTimeout:       30 * time.Second,\n")
 	b.WriteString("\t\tWriteTimeout:      60 * time.Second,\n")
 	b.WriteString("\t\tIdleTimeout:       120 * time.Second,\n")
+	b.WriteString("\t\tMaxHeaderBytes:    1 << 20,\n")
 	b.WriteString("\t}\n")
 	b.WriteString("\tif err := server.ListenAndServe(); err != nil {\n")
 	b.WriteString("\t\tlog.Fatal(err)\n")
@@ -4607,6 +4609,7 @@ func (e *exporter) generateMultiServiceServerMain(hasDatabaseConfig, hasSchedule
 	b.WriteString("\t\tReadTimeout:       30 * time.Second,\n")
 	b.WriteString("\t\tWriteTimeout:      60 * time.Second,\n")
 	b.WriteString("\t\tIdleTimeout:       120 * time.Second,\n")
+	b.WriteString("\t\tMaxHeaderBytes:    1 << 20,\n")
 	b.WriteString("\t}\n")
 	b.WriteString("\tif err := server.ListenAndServe(); err != nil {\n")
 	b.WriteString("\t\tlog.Fatal(err)\n")
@@ -5745,7 +5748,7 @@ func (r *Router) RegisterRoutes(mux *http.ServeMux) {
 func (r *Router) ListenAndServe(addr string) error {
 	mux := http.NewServeMux()
 	r.RegisterRoutes(mux)
-	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second}
+	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 1 << 20}
 	return server.ListenAndServe()
 }
 func joinPath(prefix, path string) string { if path == "/" { path = "" }; out := "/" + strings.Trim(strings.TrimRight(prefix, "/") + "/" + strings.Trim(path, "/"), "/"); if out == "/" { return "/" }; return out }
@@ -6711,7 +6714,7 @@ func main() {
 	log.Printf("listening on %%s", addr)
 	mux := http.NewServeMux()
 	routes.API.RegisterRoutes(mux)
-	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second}
+	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 1 << 20}
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
@@ -6751,7 +6754,7 @@ func main() {
 	log.Printf("listening on %%s", addr)
 	mux := http.NewServeMux()
 	routes.API.RegisterRoutes(mux)
-	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second}
+	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 1 << 20}
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}

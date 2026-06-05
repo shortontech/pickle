@@ -7353,6 +7353,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -7368,6 +7369,7 @@ var csrfConfig struct {
 }
 var sessionCookieName = "session_id"
 var activeDriver *Driver
+var csrfNonceReader io.Reader = rand.Reader
 
 const maxSessionCookieNameBytes = 64
 const maxSessionTTLSeconds = 365 * 24 * 60 * 60
@@ -7655,7 +7657,7 @@ func newCSRFCookie(sessionID string) *http.Cookie {
 
 func generateCSRFToken(sessionID string, secret []byte) string {
 	nonce := make([]byte, 32)
-	if _, err := rand.Read(nonce); err != nil { panic("csrf: failed to generate random nonce: " + err.Error()) }
+	if _, err := io.ReadFull(csrfNonceReader, nonce); err != nil { panic("csrf: failed to generate random nonce") }
 	return hex.EncodeToString(nonce) + "." + hex.EncodeToString(computeHMAC(nonce, []byte(sessionID), secret))
 }
 

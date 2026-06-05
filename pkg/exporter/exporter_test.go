@@ -105,6 +105,9 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "failed to store token")
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "return ctx.Error(err)")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func CSRF")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "io.ReadFull(csrfNonceReader, nonce)")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), `panic("csrf: failed to generate random nonce")`)
+	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), `panic("csrf: failed to generate random nonce: " + err.Error())`)
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), `errors.New("jwt: database error")`)
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "jwt: revoke token: %w")
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "jwt: revoke all for user: %w")
@@ -1315,6 +1318,30 @@ func TestExportedCSRFRequiresConfiguredSecretWithoutPanic(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("missing secret status = %d, want %d", resp.StatusCode, http.StatusForbidden)
 	}
+}
+
+func TestExportedCSRFNonceFailuresAreSanitized(t *testing.T) {
+	previous := csrfNonceReader
+	csrfNonceReader = strings.NewReader("")
+	defer func() { csrfNonceReader = previous }()
+
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			t.Fatal("expected CSRF nonce panic")
+		}
+		message, ok := recovered.(string)
+		if !ok {
+			t.Fatalf("panic type = %T, want string", recovered)
+		}
+		if message != "csrf: failed to generate random nonce" {
+			t.Fatalf("panic message = %q, want sanitized nonce failure", message)
+		}
+		if strings.Contains(message, "EOF") || strings.Contains(message, "reader") {
+			t.Fatalf("nonce panic leaked reader detail: %q", message)
+		}
+	}()
+	_ = generateCSRFToken("11111111-1111-4111-8111-111111111111", []byte("session-secret"))
 }
 
 func TestExportedSessionPayloadErrorsAreSanitized(t *testing.T) {

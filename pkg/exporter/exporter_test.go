@@ -2419,6 +2419,28 @@ query Two { posts { edges { node { id } } } }` + "`" + `, nil, true},
 			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
 		}
 	})
+
+	t.Run("sdl_endpoint_follows_introspection_gate", func(t *testing.T) {
+		graphql.SetIntrospection(false)
+		req := httptest.NewRequest(http.MethodGet, "/graphql?sdl=1", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("disabled SDL status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+		}
+
+		graphql.SetIntrospection(true)
+		defer graphql.SetIntrospection(false)
+		req = httptest.NewRequest(http.MethodGet, "/graphql?sdl=1", nil)
+		rec = httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("enabled SDL status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "type Query") {
+			t.Fatalf("enabled SDL body did not include schema: %s", rec.Body.String())
+		}
+	})
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphql", "exported_safety_test.go"), []byte(testSrc), 0o644); err != nil {

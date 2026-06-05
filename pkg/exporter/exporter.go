@@ -1935,6 +1935,10 @@ func Handler() http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Query().Get("sdl") != "" {
+			if !allowIntrospection {
+				http.NotFound(w, r)
+				return
+			}
 			w.Header().Set("Content-Type", "text/plain")
 			w.Write([]byte(SchemaSDL))
 			return

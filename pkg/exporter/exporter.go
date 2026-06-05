@@ -5911,6 +5911,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -5987,6 +5988,85 @@ func Create(ctx *httpx.Context, userID, role string) (httpx.Response, error) {
 		resp = resp.WithCookie(newCSRFCookie(sessionID))
 	}
 	return resp, nil
+}
+
+func Destroy(ctx *httpx.Context) (httpx.Response, error) {
+	d := driver()
+	sessionID, err := ctx.Cookie(d.cookieName)
+	if err != nil {
+		return httpx.Response{}, errors.New("session: no session cookie")
+	}
+	if _, err := d.db.Exec(bindPlaceholders(d.driver, "DELETE FROM sessions WHERE id = ?"), sessionID); err != nil {
+		return httpx.Response{}, fmt.Errorf("session: destroy: %%w", err)
+	}
+	expired := time.Unix(0, 0)
+	resp := ctx.NoContent().
+		WithCookie(&http.Cookie{Name: d.cookieName, Value: "", Path: "/", Expires: expired, MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode}).
+		WithCookie(&http.Cookie{Name: csrfConfig.cookieName, Value: "", Path: "/", Expires: expired, MaxAge: -1, Secure: true, SameSite: http.SameSiteStrictMode})
+	return resp, nil
+}
+
+func Get(ctx *httpx.Context, key string) (string, error) {
+	d := driver()
+	sessionID, err := ctx.Cookie(d.cookieName)
+	if err != nil {
+		return "", errors.New("session: no session cookie")
+	}
+	var payloadRaw sql.NullString
+	err = d.db.QueryRow(bindPlaceholders(d.driver, "SELECT payload FROM sessions WHERE id = ?"), sessionID).Scan(&payloadRaw)
+	if err != nil {
+		return "", fmt.Errorf("session: get: %%w", err)
+	}
+	if !payloadRaw.Valid || payloadRaw.String == "" {
+		return "", nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(payloadRaw.String), &payload); err != nil {
+		return "", fmt.Errorf("session: get: invalid payload JSON: %%w", err)
+	}
+	val, ok := payload[key]
+	if !ok {
+		return "", nil
+	}
+	if s, ok := val.(string); ok {
+		return s, nil
+	}
+	data, err := json.Marshal(val)
+	if err != nil {
+		return "", fmt.Errorf("session: get: %%w", err)
+	}
+	return string(data), nil
+}
+
+func Put(ctx *httpx.Context, key string, value any) error {
+	d := driver()
+	if key == "" {
+		return errors.New("session: key must not be empty")
+	}
+	sessionID, err := ctx.Cookie(d.cookieName)
+	if err != nil {
+		return errors.New("session: no session cookie")
+	}
+	var payloadRaw sql.NullString
+	err = d.db.QueryRow(bindPlaceholders(d.driver, "SELECT payload FROM sessions WHERE id = ?"), sessionID).Scan(&payloadRaw)
+	if err != nil {
+		return fmt.Errorf("session: put: %%w", err)
+	}
+	payload := map[string]any{}
+	if payloadRaw.Valid && payloadRaw.String != "" {
+		if err := json.Unmarshal([]byte(payloadRaw.String), &payload); err != nil {
+			return fmt.Errorf("session: put: invalid payload JSON: %%w", err)
+		}
+	}
+	payload[key] = value
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("session: put: %%w", err)
+	}
+	if _, err := d.db.Exec(bindPlaceholders(d.driver, "UPDATE sessions SET payload = ?, updated_at = ? WHERE id = ?"), string(data), time.Now().UTC(), sessionID); err != nil {
+		return fmt.Errorf("session: put: %%w", err)
+	}
+	return nil
 }
 
 func CSRF(ctx *httpx.Context, next func() httpx.Response) httpx.Response {

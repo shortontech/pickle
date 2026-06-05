@@ -205,7 +205,7 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	for _, stmt := range []string{
 		` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, revoked_at DATETIME, created_at DATETIME NOT NULL)` + "`" + `,
 		` + "`" + `CREATE TABLE oauth_tokens (token TEXT PRIMARY KEY, client_id TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL)` + "`" + `,
-		` + "`" + `CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, role TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
+		` + "`" + `CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, role TEXT NOT NULL, payload TEXT, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatal(err)
@@ -302,6 +302,45 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	if sessionInfo.UserID != "user-2" || sessionInfo.Role != "viewer" {
 		t.Fatalf("session auth info = %#v", sessionInfo)
 	}
+	sessionCtx := httpx.NewContext(sessionReq)
+	if err := session.Put(sessionCtx, "onboarding_step", "3"); err != nil {
+		t.Fatalf("session put string: %v", err)
+	}
+	step, err := session.Get(sessionCtx, "onboarding_step")
+	if err != nil {
+		t.Fatalf("session get string: %v", err)
+	}
+	if step != "3" {
+		t.Fatalf("session onboarding_step = %q, want 3", step)
+	}
+	if err := session.Put(sessionCtx, "settings", map[string]any{"dark": true}); err != nil {
+		t.Fatalf("session put object: %v", err)
+	}
+	settings, err := session.Get(sessionCtx, "settings")
+	if err != nil {
+		t.Fatalf("session get object: %v", err)
+	}
+	if settings != ` + "`" + `{"dark":true}` + "`" + ` {
+		t.Fatalf("session settings = %q", settings)
+	}
+	destroyResp, err := session.Destroy(sessionCtx)
+	if err != nil {
+		t.Fatalf("session destroy: %v", err)
+	}
+	if destroyResp.StatusCode != 204 {
+		t.Fatalf("destroy status = %d, want 204", destroyResp.StatusCode)
+	}
+	if len(destroyResp.Cookies) != 2 {
+		t.Fatalf("destroy cookies = %d, want session and csrf", len(destroyResp.Cookies))
+	}
+	for _, cookie := range destroyResp.Cookies {
+		if cookie.MaxAge != -1 {
+			t.Fatalf("destroy cookie %#v should expire browser cookie", cookie)
+		}
+	}
+	if _, err := sessionDriver.Authenticate(sessionReq); err == nil {
+		t.Fatal("destroyed session should fail authentication")
+	}
 
 	badEnv := func(key, fallback string) string {
 		if key == "AUTH_DRIVER" {
@@ -388,7 +427,7 @@ func TestExportedSessionCSRFBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(` + "`" + `CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, role TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `); err != nil {
+	if _, err := db.Exec(` + "`" + `CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, role TEXT NOT NULL, payload TEXT, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `); err != nil {
 		t.Fatal(err)
 	}
 	env := func(key, fallback string) string {
@@ -464,7 +503,7 @@ func TestExportedSessionCreateSetsSessionAndCSRFCookies(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(` + "`" + `CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, role TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `); err != nil {
+	if _, err := db.Exec(` + "`" + `CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, role TEXT NOT NULL, payload TEXT, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `); err != nil {
 		t.Fatal(err)
 	}
 	NewDriver(func(key, fallback string) string {

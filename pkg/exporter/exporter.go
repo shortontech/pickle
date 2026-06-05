@@ -168,6 +168,12 @@ func Export(opts Options) (*Result, error) {
 	if err := ex.tidyModule(); err != nil {
 		return nil, err
 	}
+	if err := ex.generateGQLGenTarget(); err != nil {
+		return nil, err
+	}
+	if err := ex.tidyModule(); err != nil {
+		return nil, err
+	}
 	ex.addSchemaFindings(tables)
 	if err := ex.writeReport(opts.ORM); err != nil {
 		return nil, err
@@ -268,6 +274,24 @@ func (e *exporter) tidyModule() error {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("running go mod tidy in exported app: %w\n%s", err, out)
+	}
+	return nil
+}
+
+func (e *exporter) generateGQLGenTarget() error {
+	if e.dryRun || !e.hasGraphQLPackage() {
+		return nil
+	}
+	download := exec.Command("go", "mod", "download", "github.com/99designs/gqlgen")
+	download.Dir = e.outDir
+	if out, err := download.CombinedOutput(); err != nil {
+		return fmt.Errorf("downloading gqlgen in exported app: %w\n%s", err, out)
+	}
+	cmd := exec.Command("go", "run", "-mod=mod", "github.com/99designs/gqlgen", "generate", "--config", "gqlgen.yml")
+	cmd.Dir = e.outDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("generating gqlgen target in exported app: %w\n%s", err, out)
 	}
 	return nil
 }

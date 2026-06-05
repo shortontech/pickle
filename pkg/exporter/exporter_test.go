@@ -152,6 +152,9 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "QueryUser")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "basic-crud/internal/httpx")
 	assertFileContains(t, filepath.Join(out, "internal", "httpx", "httpx.go"), "func writeRouterNotFound")
+	assertFileNotContains(t, filepath.Join(out, "internal", "httpx", "httpx.go"), "pickle:")
+	assertFileNotContains(t, filepath.Join(out, "internal", "httpx", "httpx.go"), "pickle export:")
+	assertFileNotContains(t, filepath.Join(out, "app", "http", "middleware", "rbac_support.go"), "pickle export:")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Target ORM: `gorm`")
 
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
@@ -3012,9 +3015,27 @@ func TestExportedRegisterRoutesDuplicatePanics(t *testing.T) {
 	defer func() {
 		if recovered := recover(); recovered == nil {
 			t.Fatal("duplicate route registration should panic")
+		} else if message := fmt.Sprint(recovered); strings.Contains(message, "pickle") {
+			t.Fatalf("duplicate route panic leaked framework name: %q", message)
 		}
 	}()
 	router.RegisterRoutes(http.NewServeMux())
+}
+
+func TestExportedFrameworkMisusePanicsDoNotMentionPickle(t *testing.T) {
+	assertPanicDoesNotMentionPickle(t, "missing param", func() {
+		httpx.NewContext(httptest.NewRequest(http.MethodGet, "/", nil)).Param("id")
+	})
+	assertPanicDoesNotMentionPickle(t, "invalid auth", func() {
+		httpx.NewContext(httptest.NewRequest(http.MethodGet, "/", nil)).SetAuth("admin")
+	})
+	assertPanicDoesNotMentionPickle(t, "invalid middleware", func() {
+		httpx.Routes(func(r *httpx.Router) {
+			r.Get("/bad", func(ctx *httpx.Context) httpx.Response {
+				return ctx.NoContent()
+			}, "not middleware")
+		})
+	})
 }
 
 func TestExportedOnErrorReceivesRecoveredPanic(t *testing.T) {
@@ -3326,6 +3347,21 @@ type resourceListQuery struct {
 func (q *resourceListQuery) FetchResources(ownerID string) (any, error) {
 	q.ownerID = ownerID
 	return q.value, q.err
+}
+
+func assertPanicDoesNotMentionPickle(t *testing.T, name string, fn func()) {
+	t.Helper()
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			t.Fatalf("%s should panic", name)
+		}
+		message := fmt.Sprint(recovered)
+		if strings.Contains(message, "pickle") {
+			t.Fatalf("%s panic leaked framework name: %q", name, message)
+		}
+	}()
+	fn()
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "internal", "httpx", "exported_router_test.go"), []byte(testSrc), 0o644); err != nil {
@@ -5813,6 +5849,8 @@ func TestExportMonorepoCompiles(t *testing.T) {
 
 	assertFileContains(t, filepath.Join(out, "services", "api", "http", "controllers", "order_controller.go"), "monorepo/internal/httpx")
 	assertFileContains(t, filepath.Join(out, "services", "api", "http", "requests", "bindings.go"), "BindCreateOrderRequest")
+	assertFileNotContains(t, filepath.Join(out, "internal", "httpx", "httpx.go"), "pickle:")
+	assertFileNotContains(t, filepath.Join(out, "internal", "httpx", "httpx.go"), "pickle export:")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "apiRoutes")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "workerRoutes")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "apiRoutes.API.RegisterRoutes(mux)")

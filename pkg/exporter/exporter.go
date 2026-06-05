@@ -7375,7 +7375,7 @@ type Context struct { request *http.Request; response http.ResponseWriter; auth 
 func NewContext(r *http.Request) *Context { return &Context{request: r, params: map[string]string{}} }
 func (c *Context) Request() *http.Request { if c == nil { return nil }; return c.request }
 func (c *Context) ResponseWriter() http.ResponseWriter { if c == nil { return nil }; return c.response }
-func (c *Context) Param(name string) string { if c == nil { return "" }; value, ok := c.params[name]; if !ok { panic("pickle: ctx.Param(\"" + name + "\") - no such route parameter") }; return value }
+func (c *Context) Param(name string) string { if c == nil { return "" }; value, ok := c.params[name]; if !ok { panic("route parameter is missing: " + name) }; return value }
 func (c *Context) SetParam(name, value string) { if c == nil { return }; if c.params == nil { c.params = map[string]string{} }; c.params[name] = value }
 func (c *Context) ParamUUID(name string) (uuid.UUID, error) { value, err := uuid.Parse(c.Param(name)); if err != nil { return uuid.Nil, fmt.Errorf("invalid uuid parameter") }; return value, nil }
 func (c *Context) Cookie(name string) (string, error) { if c == nil || c.request == nil { return "", http.ErrNoCookie }; cookie, err := c.request.Cookie(name); if err != nil { return "", err }; return cookie.Value, nil }
@@ -7383,7 +7383,7 @@ func (c *Context) Query(name string) string { if c == nil || c.request == nil ||
 func (c *Context) BearerToken() string { if c == nil || c.request == nil { return "" }; h := c.request.Header.Get("Authorization"); parts := strings.Fields(h); if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") { return parts[1] }; return "" }
 func (c *Context) ClientIP() string { if c == nil || c.request == nil { return "" }; return clientIP(c.request) }
 func (c *Context) Auth() *AuthInfo { if c == nil || c.auth == nil { return &AuthInfo{} }; return c.auth }
-func (c *Context) SetAuth(claims any) { if c == nil { return }; switch v := claims.(type) { case nil: c.auth = nil; case *AuthInfo: c.auth = v; default: panic(fmt.Sprintf("pickle: SetAuth() requires *AuthInfo, got %T", claims)) } }
+func (c *Context) SetAuth(claims any) { if c == nil { return }; switch v := claims.(type) { case nil: c.auth = nil; case *AuthInfo: c.auth = v; default: panic(fmt.Sprintf("SetAuth requires *AuthInfo, got %T", claims)) } }
 func (c *Context) IsAuthenticated() bool { return c != nil && c.auth != nil && c.auth.UserID != "" }
 func (c *Context) SetRoles(roles []RoleInfo) { if c == nil { return }; c.rolesLoaded = true; c.roles = make([]string, len(roles)); c.isAdmin = false; for i, role := range roles { c.roles[i] = role.Slug; if role.Manages { c.isAdmin = true } } }
 func (c *Context) Role() string { if c == nil { return "" }; if len(c.roles) > 0 { return c.roles[0] }; if !c.rolesLoaded && c.auth != nil { return c.auth.Role }; return "" }
@@ -7447,7 +7447,7 @@ func (r *Router) Patch(path string, handler HandlerFunc, middleware ...any) { r.
 func (r *Router) Delete(path string, handler HandlerFunc, middleware ...any) { r.add("DELETE", path, handler, middleware...) }
 func (r *Router) add(method, path string, handler HandlerFunc, middleware ...any) { if r == nil { return }; r.routes = append(r.routes, Route{Method: method, Path: joinPath(r.prefix, path), Handler: handler, Middleware: append(append([]MiddlewareFunc{}, r.middleware...), resolveMiddleware(middleware)...)} ) }
 func (r *Router) Resource(prefix string, c ResourceController, middleware ...any) { r.Get(prefix, c.Index, middleware...); r.Get(prefix + "/:id", c.Show, middleware...); r.Post(prefix, c.Store, middleware...); r.Put(prefix + "/:id", c.Update, middleware...); r.Delete(prefix + "/:id", c.Destroy, middleware...) }
-func resolveMiddleware(middleware []any) []MiddlewareFunc { resolved := make([]MiddlewareFunc, 0, len(middleware)); for _, mw := range middleware { switch v := mw.(type) { case MiddlewareFunc: resolved = append(resolved, v); case func(*Context, func() Response) Response: resolved = append(resolved, MiddlewareFunc(v)); case MiddlewareProvider: resolved = append(resolved, v.Middleware()); default: panic("pickle export: invalid middleware type") } }; return resolved }
+func resolveMiddleware(middleware []any) []MiddlewareFunc { resolved := make([]MiddlewareFunc, 0, len(middleware)); for _, mw := range middleware { switch v := mw.(type) { case MiddlewareFunc: resolved = append(resolved, v); case func(*Context, func() Response) Response: resolved = append(resolved, MiddlewareFunc(v)); case MiddlewareProvider: resolved = append(resolved, v.Middleware()); default: panic("invalid middleware type") } }; return resolved }
 func (r *Router) AllRoutes() []Route { if r == nil { return nil }; routes := make([]Route, len(r.routes)); copy(routes, r.routes); return routes }
 func writeRecoveredError(w http.ResponseWriter) { Response{StatusCode: http.StatusInternalServerError, Body: map[string]string{"error": "internal server error"}}.Write(w) }
 func writeRouterBadRequest(w http.ResponseWriter) { Response{StatusCode: http.StatusBadRequest, Body: map[string]string{"error": "bad request"}}.Write(w) }
@@ -7510,7 +7510,7 @@ func (r *Router) RegisterRoutes(mux *http.ServeMux) {
 	for _, route := range r.AllRoutes() {
 		goPath := paramPattern.ReplaceAllString(route.Path, "{$1}")
 		pattern := route.Method + " " + goPath
-		if registered[pattern] { panic("pickle: duplicate route registered: " + pattern) }
+		if registered[pattern] { panic("duplicate route registered: " + pattern) }
 		registered[pattern] = true
 		mux.HandleFunc(pattern, r.ServeHTTP)
 		if !strings.HasSuffix(goPath, "}") {
@@ -7644,7 +7644,7 @@ import (
 	"%s/internal/httpx"
 )
 
-var errNoRoleDatabase = errors.New("pickle export: models.DB is not configured for RBAC role loading")
+var errNoRoleDatabase = errors.New("rbac: models.DB is not configured for role loading")
 var errRoleDatabase = errors.New("rbac: role database error")
 
 type roleRow struct {

@@ -2363,11 +2363,11 @@ func writeGraphQLAPIAssignInputField(b *strings.Builder, col *schema.Column, exp
 	switch col.Type {
 	case schema.UUID:
 		fmt.Fprintf(b, "\t{\n\t\tvalue, err := uuid.Parse(%s)\n", expr)
-		b.WriteString("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
+		b.WriteString("\t\tif err != nil {\n\t\t\treturn nil, graphQLAPIBadInput(\"invalid GraphQL ID input\")\n\t\t}\n")
 		fmt.Fprintf(b, "\t\trecord.%s = value\n\t}\n", field)
 	case schema.Timestamp, schema.Date, schema.Time:
 		fmt.Fprintf(b, "\t{\n\t\tvalue, err := time.Parse(time.RFC3339, %s)\n", expr)
-		b.WriteString("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
+		b.WriteString("\t\tif err != nil {\n\t\t\treturn nil, graphQLAPIBadInput(\"invalid GraphQL timestamp input\")\n\t\t}\n")
 		if col.IsNullable {
 			fmt.Fprintf(b, "\t\trecord.%s = &value\n", field)
 		} else {

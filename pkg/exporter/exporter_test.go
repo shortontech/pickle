@@ -3447,6 +3447,7 @@ func TestExportZeroGraphQLLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), "func gqlgenPageWindow")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), `graphQLAPIBadInput("page.first and page.last cannot both be set")`)
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), `graphQLAPIBadInput("post: invalid id")`)
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), `graphQLAPIBadInput("invalid GraphQL ID input")`)
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "TotalCount: totalCount")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "TotalCount: len(edges)")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "not implemented: Users")
@@ -3593,6 +3594,14 @@ func TestExportedGQLGenTargetCRUDResolvers(t *testing.T) {
 		t.Fatal("direct create post without auth should fail")
 	}
 	ctx = WithGraphQLAPIAuthClaims(ctx, &GraphQLAPIAuthClaims{UserID: userID.String(), Role: "admin"})
+	badID := "not-a-uuid"
+	if _, err := mutations.CreatePost(ctx, model.CreatePostInput{
+		UserID: badID,
+		Title:  "Bad ID",
+		Body:   "GraphQL body",
+	}); !isBadInput(err) {
+		t.Fatalf("invalid create id input error = %v, want BAD_USER_INPUT", err)
+	}
 	post, err := mutations.CreatePost(ctx, model.CreatePostInput{
 		UserID: userID.String(),
 		Title:  "Hello",
@@ -3673,7 +3682,6 @@ func TestExportedGQLGenTargetCRUDResolvers(t *testing.T) {
 	if _, err := queries.Posts(ctx, &model.PostFilter{ID: &model.IDFilter{In: tooManyIDs}}, nil, nil); err == nil {
 		t.Fatal("oversized id filter should fail")
 	}
-	badID := "not-a-uuid"
 	if _, err := queries.Posts(ctx, &model.PostFilter{ID: &model.IDFilter{Eq: &badID}}, nil, nil); !isBadInput(err) {
 		t.Fatalf("invalid id filter error = %v, want BAD_USER_INPUT", err)
 	}
@@ -3710,6 +3718,9 @@ func TestExportedGQLGenTargetCRUDResolvers(t *testing.T) {
 	}
 	if _, err := mutations.DeletePost(ctx, badID); !isBadInput(err) {
 		t.Fatalf("invalid delete id error = %v, want BAD_USER_INPUT", err)
+	}
+	if _, err := mutations.UpdatePost(ctx, post.ID.String(), model.UpdatePostInput{UserID: &badID}); !isBadInput(err) {
+		t.Fatalf("invalid update id input error = %v, want BAD_USER_INPUT", err)
 	}
 
 	updated, err := mutations.UpdatePost(ctx, post.ID.String(), model.UpdatePostInput{Title: stringPtr("Updated")})

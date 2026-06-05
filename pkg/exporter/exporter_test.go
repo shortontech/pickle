@@ -5156,7 +5156,8 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "if auth := GraphQLAPIAuthFromContext(ctx); auth != nil && !graphQLAPIAuthCanManage(auth)")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "q := models.QueryPost().WhereUserID(obj.ID)")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "q.WhereUserID(ownerID)")
-	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "q.Limit(maxGraphQLAPIPageSize + 1)")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "relationshipLimit := min(50, maxGraphQLAPIPageSize)")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "q.Limit(relationshipLimit + 1)")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "GraphQL relationship exceeds maximum page size")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *postResolver) Comments")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), "func graphQLAPIAuthCanManage")
@@ -5302,6 +5303,7 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 		t.Fatalf("auto migrate: %v", err)
 	}
 	createdAt := time.Now().UTC().Add(-time.Hour)
+	const policyRelationshipPageSize = 50
 	user := &models.User{
 		ID:           uuid.New(),
 		Name:         "Ada",
@@ -5314,7 +5316,7 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 	var firstPost *models.Post
-	for i := 0; i < maxGraphQLAPIPageSize+5; i++ {
+	for i := 0; i < policyRelationshipPageSize+5; i++ {
 		post := &models.Post{
 			ID:        uuid.New(),
 			UserID:    user.ID,
@@ -5382,8 +5384,8 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("owner top-level posts: %v", err)
 	}
-	if len(ownerTopPosts.Edges) != defaultGraphQLAPIPageSize || ownerTopPosts.TotalCount != maxGraphQLAPIPageSize+5 {
-		t.Fatalf("owner top-level posts edges/total = %d/%d, want %d/%d", len(ownerTopPosts.Edges), ownerTopPosts.TotalCount, defaultGraphQLAPIPageSize, maxGraphQLAPIPageSize+5)
+	if len(ownerTopPosts.Edges) != defaultGraphQLAPIPageSize || ownerTopPosts.TotalCount != policyRelationshipPageSize+5 {
+		t.Fatalf("owner top-level posts edges/total = %d/%d, want %d/%d", len(ownerTopPosts.Edges), ownerTopPosts.TotalCount, defaultGraphQLAPIPageSize, policyRelationshipPageSize+5)
 	}
 
 	ownerPost, err := queries.Post(matchingOwnerCtx, firstPost.ID.String())
@@ -5426,7 +5428,7 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 		t.Fatalf("delete overflowing posts: %v", err)
 	}
 	var firstAllowedPost *models.Post
-	for i := 0; i < maxGraphQLAPIPageSize; i++ {
+	for i := 0; i < policyRelationshipPageSize; i++ {
 		post := &models.Post{
 			ID:        uuid.New(),
 			UserID:    user.ID,
@@ -5446,8 +5448,8 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bounded user posts: %v", err)
 	}
-	if len(posts) != maxGraphQLAPIPageSize {
-		t.Fatalf("bounded relationship posts = %d, want %d", len(posts), maxGraphQLAPIPageSize)
+	if len(posts) != policyRelationshipPageSize {
+		t.Fatalf("bounded relationship posts = %d, want %d", len(posts), policyRelationshipPageSize)
 	}
 	if posts[0].UserID != user.ID || posts[0].ID != firstAllowedPost.ID {
 		t.Fatalf("relationship first post = %+v, want user %s post %s", posts[0], user.ID, firstAllowedPost.ID)

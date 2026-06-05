@@ -3110,6 +3110,10 @@ func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "gqlgen.yml"), "package: resolver")
 	assertFileContains(t, filepath.Join(out, "tools", "gqlgen.go"), "//go:build tools")
 	assertFileContains(t, filepath.Join(out, "tools", "gqlgen.go"), `_ "github.com/99designs/gqlgen"`)
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "func Handler() http.Handler")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "generated.NewExecutableSchema")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "Auth:        graphQLAPIAuthDirective")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "extension.FixedComplexityLimit")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "generated", "generated.go"), "type ResolverRoot interface")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *Resolver) Query() generated.QueryResolver")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "not implemented: Users")
@@ -3148,6 +3152,7 @@ func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 	writeExportedZeroGraphQLEncryptedFilterTest(t, out)
 	writeExportedZeroGraphQLHTTPMethodSafetyTest(t, out)
 	writeExportedZeroGraphQLAPITargetBehaviorTest(t, out)
+	writeExportedZeroGraphQLAPIHTTPBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
 
@@ -3438,6 +3443,160 @@ func intPtr(value int) *int { return &value }
 	}
 }
 
+func writeExportedZeroGraphQLAPIHTTPBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package graphqlapi_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"zero-graphql/app/graphqlapi"
+	"zero-graphql/app/http/auth"
+	"zero-graphql/app/http/auth/jwt"
+	"zero-graphql/app/models"
+)
+
+func TestExportedGQLGenTargetHandlerEnforcesAuthDirective(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	if err := db.AutoMigrate(&models.Post{}, &models.JwtToken{}); err != nil {
+		t.Fatalf("auto migrate: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth.Init(func(key, fallback string) string {
+		switch key {
+		case "AUTH_DRIVER":
+			return "jwt"
+		case "DB_CONNECTION":
+			return "sqlite"
+		case "JWT_SECRET":
+			return "0123456789abcdef0123456789abcdef"
+		default:
+			return fallback
+		}
+	}, sqlDB)
+
+	query := ` + "`" + `mutation CreatePost($input: CreatePostInput!) {
+  createPost(input: $input) { id title userId }
+}` + "`" + `
+	body := []byte(` + "`" + `{"query":` + "`" + ` + mustJSONQuote(query) + ` + "`" + `,"variables":{"input":{"userId":"` + "`" + ` + uuid.NewString() + ` + "`" + `","title":"Target","body":"via gqlgen","status":"draft"}}}` + "`" + `)
+	handler := graphqlapi.Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unauthenticated status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !responseHasErrorCode(t, rec.Body.Bytes(), "UNAUTHENTICATED") {
+		t.Fatalf("unauthenticated mutation should be denied, body=%s", rec.Body.String())
+	}
+	var count int64
+	if err := db.Model(&models.Post{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("unauthenticated mutation inserted %d posts", count)
+	}
+
+	token, err := auth.Driver("jwt").(*jwt.Driver).SignToken(jwt.Claims{
+		Subject:   uuid.NewString(),
+		Role:      "admin",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("sign jwt: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authenticated status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			CreatePost struct {
+				ID    string ` + "`" + `json:"id"` + "`" + `
+				Title string ` + "`" + `json:"title"` + "`" + `
+			} ` + "`" + `json:"createPost"` + "`" + `
+		} ` + "`" + `json:"data"` + "`" + `
+		Errors []map[string]any ` + "`" + `json:"errors"` + "`" + `
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode authenticated response: %v body=%s", err, rec.Body.String())
+	}
+	if len(resp.Errors) != 0 || resp.Data.CreatePost.ID == "" || resp.Data.CreatePost.Title != "Target" {
+		t.Fatalf("authenticated mutation response = %s", rec.Body.String())
+	}
+}
+
+func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
+	handler := graphqlapi.Handler()
+	req := httptest.NewRequest(http.MethodGet, "/graphql?query={posts{totalCount}}", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader([]byte(` + "`" + `{"query":123}` + "`" + `)))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !responseHasErrorCode(t, rec.Body.Bytes(), "BAD_USER_INPUT") {
+		t.Fatalf("bad query response status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func responseHasErrorCode(t *testing.T, body []byte, code string) bool {
+	t.Helper()
+	var resp struct {
+		Errors []struct {
+			Extensions map[string]any ` + "`" + `json:"extensions"` + "`" + `
+		} ` + "`" + `json:"errors"` + "`" + `
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode error response: %v body=%s", err, string(body))
+	}
+	for _, gqlErr := range resp.Errors {
+		if gqlErr.Extensions["code"] == code {
+			return true
+		}
+	}
+	return false
+}
+
+func mustJSONQuote(value string) string {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "exported_handler_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "graphql-safety"))
 	out := filepath.Join(t.TempDir(), "exported")
@@ -3465,6 +3624,10 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "gqlgen.yml"), "package: resolver")
 	assertFileContains(t, filepath.Join(out, "tools", "gqlgen.go"), "//go:build tools")
 	assertFileContains(t, filepath.Join(out, "tools", "gqlgen.go"), `_ "github.com/99designs/gqlgen"`)
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "func Handler() http.Handler")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "generated.NewExecutableSchema")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "Auth:        graphQLAPIAuthDirective")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "extension.FixedComplexityLimit")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "generated", "generated.go"), "type ResolverRoot interface")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *Resolver) Query() generated.QueryResolver")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), `panic(fmt.Errorf("not implemented`)

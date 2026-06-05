@@ -2220,8 +2220,17 @@ func prepareGraphQLPostBody(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func validateGraphQLRequestEnvelope(w http.ResponseWriter, raw map[string]any) bool {
-	query, ok := raw["query"].(string)
-	if ok && len(query) > maxGraphQLQueryBytes {
+	queryValue, ok := raw["query"]
+	query, isString := queryValue.(string)
+	if !ok || queryValue == nil || !isString {
+		writeGraphQLHTTPError(w, "GraphQL query must be a string", CodeBadUserInput)
+		return false
+	}
+	if strings.TrimSpace(query) == "" {
+		writeGraphQLHTTPError(w, "GraphQL query must not be empty", CodeBadUserInput)
+		return false
+	}
+	if len(query) > maxGraphQLQueryBytes {
 		writeGraphQLHTTPError(w, "GraphQL query is too large", CodeBadUserInput)
 		return false
 	}

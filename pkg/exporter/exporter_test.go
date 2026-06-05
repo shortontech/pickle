@@ -3109,6 +3109,7 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "err.Path = graphQLErrorPath(path)")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLRequestBodyBytes = 1 << 20")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLQueryBytes = 64 << 10")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "GraphQL query must be a string")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLOperationNameBytes = 256")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func validateGraphQLRequestEnvelope")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLVariables = 64")
@@ -3463,6 +3464,60 @@ fragment UserFields on User {
 		}
 		if strings.Contains(rec.Body.String(), strings.Repeat("x", 128)) {
 			t.Fatalf("query size error leaked oversized query: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("missing_query_rejected_before_parse", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{"variables": map[string]any{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL query must be a string") {
+			t.Fatalf("missing query error = %s", rec.Body.String())
+		}
+	})
+
+	t.Run("non_string_query_rejected_before_parse", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{"query": []any{"not", "a", "string"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL query must be a string") {
+			t.Fatalf("non-string query error = %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "not") {
+			t.Fatalf("query type error leaked request value: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("blank_query_rejected_before_parse", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{"query": " \n\t "})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL query must not be empty") {
+			t.Fatalf("blank query error = %s", rec.Body.String())
 		}
 	})
 

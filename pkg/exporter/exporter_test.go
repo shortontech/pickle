@@ -2983,7 +2983,7 @@ func exportedBinaryEnv(port, dbPath string) []string {
 
 func freeBinaryPort(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6917,6 +6917,183 @@ func TestNormalizeSQLForSQLite(t *testing.T) {
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "database", "migrations", "exported_migrations_test.go"), []byte(migrationsTest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	serverTest := `package main
+
+import (
+	"bytes"
+	"database/sql"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	_ "github.com/mattn/go-sqlite3"
+)
+
+type exportedCronBinaryServer struct {
+	cmd          *exec.Cmd
+	output       *bytes.Buffer
+	done         chan error
+	doneConsumed bool
+}
+
+func TestExportedCronServerBinaryStartsSchedulerAndServesRoutes(t *testing.T) {
+	port := freeExportedCronPort(t)
+	dbPath := filepath.Join(t.TempDir(), "cron-server.sqlite")
+	migrate := exec.Command("go", "run", ".", "migrate")
+	migrate.Env = exportedCronBinaryEnv(port, dbPath)
+	if output, err := migrate.CombinedOutput(); err != nil {
+		t.Fatalf("go run . migrate failed: %v\n%s", err, output)
+	}
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if got := countExportedCronRows(t, db, "migrations"); got == 0 {
+		t.Fatal("binary migrate did not record app migrations")
+	}
+
+	server := startExportedCronBinaryServer(t, port, dbPath)
+	defer server.cleanup(t)
+
+	resp, body := waitForExportedCronHTTP(t, server, "http://127.0.0.1:"+port+"/api/")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("server status = %d body=%s output=%s", resp.StatusCode, body, server.output.String())
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("server Content-Type = %q, want application/json", got)
+	}
+	if !strings.Contains(string(body), "Welcome to Pickle!") {
+		t.Fatalf("server body = %s, want welcome message", body)
+	}
+
+	miss, missBody := waitForExportedCronHTTP(t, server, "http://127.0.0.1:"+port+"/missing-password=swordfish")
+	if miss.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing route status = %d body=%s output=%s", miss.StatusCode, missBody, server.output.String())
+	}
+	if got := miss.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("missing route X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if strings.Contains(string(missBody), "swordfish") || strings.Contains(string(missBody), "missing-password") {
+		t.Fatalf("missing route leaked request detail: %s", missBody)
+	}
+
+	for _, leak := range []string{"CleanupJob", "SendDigestJob", "secret", "swordfish", "github.com/shortontech/pickle"} {
+		if strings.Contains(server.output.String(), leak) {
+			t.Fatalf("cron server output leaked %q: %s", leak, server.output.String())
+		}
+	}
+}
+
+func waitForExportedCronHTTP(t *testing.T, server *exportedCronBinaryServer, url string) (*http.Response, []byte) {
+	t.Helper()
+	var resp *http.Response
+	var err error
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case waitErr := <-server.done:
+			server.doneConsumed = true
+			t.Fatalf("exported cron server binary exited before serving: %v\n%s", waitErr, server.output.String())
+		default:
+		}
+		resp, err = http.Get(url)
+		if err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("exported cron server binary did not serve %s: %v\n%s", url, err, server.output.String())
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp, body
+}
+
+func startExportedCronBinaryServer(t *testing.T, port, dbPath string) *exportedCronBinaryServer {
+	t.Helper()
+	cmd := exec.Command("go", "run", ".")
+	cmd.Env = exportedCronBinaryEnv(port, dbPath)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start exported cron server binary: %v", err)
+	}
+	server := &exportedCronBinaryServer{
+		cmd:    cmd,
+		output: &output,
+		done:   make(chan error, 1),
+	}
+	go func() { server.done <- cmd.Wait() }()
+	return server
+}
+
+func (s *exportedCronBinaryServer) cleanup(t *testing.T) {
+	t.Helper()
+	if s == nil || s.doneConsumed {
+		return
+	}
+	if s.cmd != nil && s.cmd.Process != nil {
+		_ = syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL)
+	}
+	select {
+	case <-s.done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("exported cron server binary did not exit after kill; output=%s", s.output.String())
+	}
+}
+
+func exportedCronBinaryEnv(port, dbPath string) []string {
+	return append(os.Environ(),
+		"APP_PORT="+port,
+		"DB_CONNECTION=sqlite",
+		"DB_DATABASE="+dbPath,
+		"JWT_SECRET=0123456789abcdef0123456789abcdef",
+		"APP_ENCRYPTION_KEY=12345678901234567890123456789012",
+	)
+}
+
+func freeExportedCronPort(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+func countExportedCronRows(t *testing.T, db *sql.DB, table string) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	return count
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "cmd", "server", "exported_cron_server_test.go"), []byte(serverTest), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

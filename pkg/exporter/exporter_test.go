@@ -1185,6 +1185,28 @@ func TestExportedRequestBindingsRejectUnsafeBodies(t *testing.T) {
 		t.Fatalf("valid request = %#v", req)
 	}
 
+	charsetReq := requestWithBody(` + "`" + `{"name":"Ada","email":"ada@example.com","password":"correct horse"}` + "`" + `)
+	charsetReq.Header.Set("Content-Type", "application/json; charset=utf-8")
+	if _, bindErr := BindCreateUserRequest(charsetReq); bindErr != nil {
+		t.Fatalf("charset JSON bind error = %v", bindErr)
+	}
+
+	missingContentType := requestWithBody(` + "`" + `{"name":"Ada","email":"ada@example.com","password":"correct horse"}` + "`" + `)
+	missingContentType.Header.Del("Content-Type")
+	if _, bindErr := BindCreateUserRequest(missingContentType); bindErr == nil || bindErr.Status != http.StatusUnsupportedMediaType {
+		t.Fatalf("missing content type bind error = %#v, want 415", bindErr)
+	} else if strings.Contains(bindErr.Error(), "application/jsonevil") || !strings.Contains(bindErr.Error(), "application/json") {
+		t.Fatalf("missing content type error = %q, want sanitized json requirement", bindErr.Error())
+	}
+
+	spoofedContentType := requestWithBody(` + "`" + `{"name":"Ada","email":"ada@example.com","password":"correct horse"}` + "`" + `)
+	spoofedContentType.Header.Set("Content-Type", "application/jsonevil")
+	if _, bindErr := BindCreateUserRequest(spoofedContentType); bindErr == nil || bindErr.Status != http.StatusUnsupportedMediaType {
+		t.Fatalf("spoofed content type bind error = %#v, want 415", bindErr)
+	} else if strings.Contains(bindErr.Error(), "application/jsonevil") {
+		t.Fatalf("spoofed content type error leaked raw header: %q", bindErr.Error())
+	}
+
 	unknownField := requestWithBody(` + "`" + `{"name":"Ada","email":"ada@example.com","password":"correct horse","admin":true}` + "`" + `)
 	if _, bindErr := BindCreateUserRequest(unknownField); bindErr == nil || bindErr.Status != http.StatusBadRequest {
 		t.Fatalf("unknown-field bind error = %#v, want 400", bindErr)

@@ -4785,7 +4785,16 @@ func HTTPHandler() http.Handler {
 		b.WriteString("\tmux.Handle(\"/graphql\", graphqlapi.Handler())\n")
 		b.WriteString("\tmux.Handle(\"/graphql/playground\", graphqlapi.PlaygroundHandler(\"/graphql\"))\n")
 	}
-	b.WriteString(`	return mux
+	b.WriteString(`	mux.HandleFunc("/", exportedNotFound)
+	return mux
+}
+
+func exportedNotFound(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte(` + "`" + `{"error":"not found"}
+` + "`" + `))
 }
 
 func NewApp() *App {

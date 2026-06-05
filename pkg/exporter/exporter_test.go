@@ -73,6 +73,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "func BuiltinCommands() []Command")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "func HTTPHandler() http.Handler")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "routes.API.RegisterRoutes(mux)")
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), `mux.HandleFunc("/", exportedNotFound)`)
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "func exportedNotFound")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "ReadHeaderTimeout: 10 * time.Second")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "ReadTimeout:       30 * time.Second")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "WriteTimeout:      60 * time.Second")
@@ -2007,6 +2009,15 @@ func TestExportedCommandAppRunsMigrations(t *testing.T) {
 		commands.HTTPHandler().ServeHTTP(rec, req)
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("%s %s status = %d, want 404; body = %s", tc.method, tc.path, rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Type"); got != "application/json" {
+			t.Fatalf("%s %s Content-Type = %q, want application/json", tc.method, tc.path, got)
+		}
+		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Fatalf("%s %s X-Content-Type-Options = %q, want nosniff", tc.method, tc.path, got)
+		}
+		if strings.Contains(rec.Body.String(), "pickle") || !strings.Contains(rec.Body.String(), "not found") {
+			t.Fatalf("%s %s not found body = %s", tc.method, tc.path, rec.Body.String())
 		}
 	}
 }

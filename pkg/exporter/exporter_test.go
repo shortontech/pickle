@@ -3708,6 +3708,7 @@ func writeExportedCronBehaviorTests(t *testing.T, out string) {
 
 import (
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -3781,8 +3782,11 @@ func TestExportedSchedulerRecoversJobPanics(t *testing.T) {
 	if got := atomic.LoadInt32(&job.attempts); got != 1 {
 		t.Fatalf("attempts = %d, want 1", got)
 	}
-	if err.Error() != "job panic: secret job panic" {
-		t.Fatalf("panic error = %v", err)
+	if err.Error() != "job panic" {
+		t.Fatalf("panic error = %v, want sanitized job panic", err)
+	}
+	if strings.Contains(err.Error(), "secret job panic") {
+		t.Fatalf("panic error leaked secret detail: %v", err)
 	}
 	runJob(&JobEntry{Job: job, maxRetries: 1})
 	if got := atomic.LoadInt32(&job.attempts); got != 3 {

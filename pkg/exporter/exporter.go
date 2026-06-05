@@ -6650,6 +6650,7 @@ const jobsSupportSource = `package jobs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -6726,7 +6727,7 @@ func runJob(entry *JobEntry) {
 func safeHandleJob(job Job) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("job panic: %v", recovered)
+			err = errors.New("job panic")
 		}
 	}()
 	return job.Handle()

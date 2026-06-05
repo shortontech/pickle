@@ -1155,6 +1155,14 @@ import (
 )
 
 func TestExportedRequestBindingsRejectUnsafeBodies(t *testing.T) {
+	var nilErr *BindingError
+	if got := nilErr.Error(); got != "binding failed" {
+		t.Fatalf("nil BindingError.Error() = %q, want binding failed", got)
+	}
+	if got := (&BindingError{}).Error(); got != "binding failed" {
+		t.Fatalf("empty BindingError.Error() = %q, want binding failed", got)
+	}
+
 	validReq := requestWithBody(` + "`" + `{"name":"Ada","email":"ada@example.com","password":"correct horse"}` + "`" + `)
 	if req, bindErr := BindCreateUserRequest(validReq); bindErr != nil {
 		t.Fatalf("valid bind error = %v", bindErr)
@@ -2691,6 +2699,28 @@ func TestExportedRouterRunsMiddlewareInDeclaredOrder(t *testing.T) {
 	want := []string{"group", "route", "handler:42"}
 	if !reflect.DeepEqual(order, want) {
 		t.Fatalf("middleware order = %#v, want %#v", order, want)
+	}
+}
+
+func TestExportedResponseWriteHandlesNilInputs(t *testing.T) {
+	httpx.Response{StatusCode: http.StatusAccepted, Body: map[string]string{"ok": "true"}}.
+		WithCookie(nil).
+		Write(nil)
+
+	rec := httptest.NewRecorder()
+	resp := httpx.Response{StatusCode: http.StatusCreated, Body: map[string]string{"ok": "true"}}.
+		WithCookie(nil).
+		WithCookie(&http.Cookie{Name: "sid", Value: "abc", Path: "/", HttpOnly: true})
+	resp.Write(rec)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("response status = %d, want 201", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "panic") || strings.Contains(rec.Body.String(), "nil pointer") {
+		t.Fatalf("response leaked internal detail: %s", rec.Body.String())
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "sid" {
+		t.Fatalf("response cookies = %#v, want one sid cookie", cookies)
 	}
 }
 

@@ -4005,6 +4005,7 @@ func (r Response) Write(w http.ResponseWriter) { for k, v := range r.Headers { w
 
 type HandlerFunc func(*Context) Response
 type MiddlewareFunc func(*Context, func() Response) Response
+type MiddlewareProvider interface { Middleware() MiddlewareFunc }
 type route struct { method string; path string; handler HandlerFunc; middleware []MiddlewareFunc }
 type Router struct{ prefix string; middleware []MiddlewareFunc; routes []route }
 func Routes(fn func(*Router)) *Router { r := &Router{}; fn(r); return r }
@@ -4016,18 +4017,21 @@ func (r *Router) Group(path string, args ...any) {
 			child.middleware = append(child.middleware, v)
 		case func(*Context, func() Response) Response:
 			child.middleware = append(child.middleware, MiddlewareFunc(v))
+		case MiddlewareProvider:
+			child.middleware = append(child.middleware, v.Middleware())
 		case func(*Router):
 			v(child)
 		}
 	}
 	r.routes = append(r.routes, child.routes...)
 }
-func (r *Router) Get(path string, handler HandlerFunc, middleware ...MiddlewareFunc) { r.add("GET", path, handler, middleware...) }
-func (r *Router) Post(path string, handler HandlerFunc, middleware ...MiddlewareFunc) { r.add("POST", path, handler, middleware...) }
-func (r *Router) Put(path string, handler HandlerFunc, middleware ...MiddlewareFunc) { r.add("PUT", path, handler, middleware...) }
-func (r *Router) Patch(path string, handler HandlerFunc, middleware ...MiddlewareFunc) { r.add("PATCH", path, handler, middleware...) }
-func (r *Router) Delete(path string, handler HandlerFunc, middleware ...MiddlewareFunc) { r.add("DELETE", path, handler, middleware...) }
-func (r *Router) add(method, path string, handler HandlerFunc, middleware ...MiddlewareFunc) { r.routes = append(r.routes, route{method: method, path: joinPath(r.prefix, path), handler: handler, middleware: append(append([]MiddlewareFunc{}, r.middleware...), middleware...)}) }
+func (r *Router) Get(path string, handler HandlerFunc, middleware ...any) { r.add("GET", path, handler, middleware...) }
+func (r *Router) Post(path string, handler HandlerFunc, middleware ...any) { r.add("POST", path, handler, middleware...) }
+func (r *Router) Put(path string, handler HandlerFunc, middleware ...any) { r.add("PUT", path, handler, middleware...) }
+func (r *Router) Patch(path string, handler HandlerFunc, middleware ...any) { r.add("PATCH", path, handler, middleware...) }
+func (r *Router) Delete(path string, handler HandlerFunc, middleware ...any) { r.add("DELETE", path, handler, middleware...) }
+func (r *Router) add(method, path string, handler HandlerFunc, middleware ...any) { r.routes = append(r.routes, route{method: method, path: joinPath(r.prefix, path), handler: handler, middleware: append(append([]MiddlewareFunc{}, r.middleware...), resolveMiddleware(middleware)...)} ) }
+func resolveMiddleware(middleware []any) []MiddlewareFunc { resolved := make([]MiddlewareFunc, 0, len(middleware)); for _, mw := range middleware { switch v := mw.(type) { case MiddlewareFunc: resolved = append(resolved, v); case func(*Context, func() Response) Response: resolved = append(resolved, MiddlewareFunc(v)); case MiddlewareProvider: resolved = append(resolved, v.Middleware()); default: panic("pickle export: invalid middleware type") } }; return resolved }
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	defer func() { if recovered := recover(); recovered != nil { http.Error(w, "internal server error", http.StatusInternalServerError) } }()
 	rateLimitResp, rateLimitHeaders := checkRateLimit(req)
@@ -4068,7 +4072,8 @@ func (b *rateBucket) retryAfter(rps float64) int { b.mu.Lock(); defer b.mu.Unloc
 
 type rateLimiterStore struct { mu sync.Mutex; buckets map[string]*rateBucket; rps float64; burst int; enabled bool }
 func newRateLimiterStore(rps float64, burst int) *rateLimiterStore { if burst < 1 { burst = 1 }; return &rateLimiterStore{buckets: map[string]*rateBucket{}, rps: rps, burst: burst, enabled: rps > 0} }
-func (s *rateLimiterStore) allow(key string) (*rateBucket, bool) { s.mu.Lock(); bucket := s.buckets[key]; if bucket == nil { bucket = &rateBucket{tokens: float64(s.burst), lastFill: time.Now(), lastSeen: time.Now()}; s.buckets[key] = bucket }; s.mu.Unlock(); return bucket, bucket.allow(s.rps, s.burst) }
+func (s *rateLimiterStore) allow(key string) (*rateBucket, bool) { return s.allowWithParams(key, s.rps, s.burst) }
+func (s *rateLimiterStore) allowWithParams(key string, rps float64, burst int) (*rateBucket, bool) { if burst < 1 { burst = 1 }; s.mu.Lock(); bucket := s.buckets[key]; if bucket == nil { bucket = &rateBucket{tokens: float64(burst), lastFill: time.Now(), lastSeen: time.Now()}; s.buckets[key] = bucket }; s.mu.Unlock(); return bucket, bucket.allow(rps, burst) }
 func (s *rateLimiterStore) cleanup() { cutoff := time.Now().Add(-10 * time.Minute); s.mu.Lock(); defer s.mu.Unlock(); for key, bucket := range s.buckets { bucket.mu.Lock(); stale := bucket.lastSeen.Before(cutoff); bucket.mu.Unlock(); if stale { delete(s.buckets, key) } } }
 
 var globalLimiterOnce sync.Once
@@ -4102,6 +4107,31 @@ func RateLimit(rps, burst int) MiddlewareFunc {
 			return resp
 		}
 		return *rateLimitExceeded(bucket, store.rps, store.burst)
+	}
+}
+
+type RateTier struct { RPS float64; Burst int }
+type AuthRateLimitConfig struct { rps float64; burst int; keyFunc func(*Context) string; tiers map[string]RateTier; store *rateLimiterStore }
+func AuthRateLimit() *AuthRateLimitConfig { rps, _ := strconv.ParseFloat(env("AUTH_RATE_LIMIT_RPS", "30"), 64); burst, _ := strconv.Atoi(env("AUTH_RATE_LIMIT_BURST", "60")); c := &AuthRateLimitConfig{rps: rps, burst: burst, store: newRateLimiterStore(rps, burst)}; go cleanupRateLimiter(c.store); return c }
+func (c *AuthRateLimitConfig) RPS(rps float64) *AuthRateLimitConfig { c.rps = rps; c.store.rps = rps; c.store.enabled = rps > 0; return c }
+func (c *AuthRateLimitConfig) Burst(burst int) *AuthRateLimitConfig { if burst < 1 { burst = 1 }; c.burst = burst; c.store.burst = burst; return c }
+func (c *AuthRateLimitConfig) KeyFunc(fn func(*Context) string) *AuthRateLimitConfig { c.keyFunc = fn; return c }
+func (c *AuthRateLimitConfig) Tiers(tiers map[string]RateTier) *AuthRateLimitConfig { c.tiers = tiers; return c }
+func (c *AuthRateLimitConfig) Middleware() MiddlewareFunc {
+	return func(ctx *Context, next func() Response) Response {
+		key := ""
+		if ctx.auth != nil { key = ctx.auth.UserID }
+		if key == "" && c.keyFunc != nil { key = c.keyFunc(ctx) }
+		if key == "" { key = clientIP(ctx.Request()) }
+		rps, burst := c.rps, c.burst
+		if role := ctx.Role(); role != "" && c.tiers != nil { if tier, ok := c.tiers[role]; ok { rps = tier.RPS; burst = tier.Burst; key = role + ":" + key } }
+		bucket, ok := c.store.allowWithParams(key, rps, burst)
+		if ok {
+			resp := next()
+			for k, v := range rateLimitHeaders(rps, burst, bucketRemaining(bucket)) { if resp.Headers == nil { resp.Headers = map[string]string{} }; resp.Headers[k] = v }
+			return resp
+		}
+		return *rateLimitExceeded(bucket, rps, burst)
 	}
 }
 

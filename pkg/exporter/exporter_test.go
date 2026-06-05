@@ -479,6 +479,46 @@ func TestExportedRateLimitMiddlewareDeniesAfterBurst(t *testing.T) {
 		t.Fatal("expected Retry-After header on denied response")
 	}
 }
+
+func TestExportedAuthRateLimitProviderSupportsTiers(t *testing.T) {
+	t.Setenv("RATE_LIMIT", "false")
+	limiter := httpx.AuthRateLimit().RPS(100).Burst(10).Tiers(map[string]httpx.RateTier{
+		"free":  {RPS: 100, Burst: 1},
+		"admin": {RPS: 100, Burst: 2},
+	})
+	router := httpx.Routes(func(r *httpx.Router) {
+		r.Get("/identity", func(ctx *httpx.Context) httpx.Response {
+			return ctx.NoContent()
+		}, func(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
+			ctx.SetAuth(&httpx.AuthInfo{UserID: "user-1", Role: ctx.Request().Header.Get("X-Role")})
+			return next()
+		}, limiter)
+	})
+
+	first := httptest.NewRequest(http.MethodGet, "/identity", nil)
+	first.Header.Set("X-Role", "free")
+	firstRec := httptest.NewRecorder()
+	router.ServeHTTP(firstRec, first)
+	if firstRec.Code != http.StatusNoContent {
+		t.Fatalf("first free status = %d", firstRec.Code)
+	}
+
+	second := httptest.NewRequest(http.MethodGet, "/identity", nil)
+	second.Header.Set("X-Role", "free")
+	secondRec := httptest.NewRecorder()
+	router.ServeHTTP(secondRec, second)
+	if secondRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second free status = %d", secondRec.Code)
+	}
+
+	admin := httptest.NewRequest(http.MethodGet, "/identity", nil)
+	admin.Header.Set("X-Role", "admin")
+	adminRec := httptest.NewRecorder()
+	router.ServeHTTP(adminRec, admin)
+	if adminRec.Code != http.StatusNoContent {
+		t.Fatalf("admin tier should use a separate bucket, got %d", adminRec.Code)
+	}
+}
 `
 	if err := os.WriteFile(filepath.Join(out, "internal", "httpx", "exported_router_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)

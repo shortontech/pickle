@@ -5486,13 +5486,17 @@ func (d DatabaseConfig) TryOpenGORM(name ...string) (*gorm.DB, error) {
 var bindingsTemplate = template.Must(template.New("bindings").Parse(`package requests
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/go-playground/validator/v10"
 )
+
+const maxJSONRequestBodyBytes = 1 << 20
 
 var validate = validator.New()
 
@@ -5500,8 +5504,9 @@ type ValidationError struct { Field string ` + "`" + `json:"field"` + "`" + `; M
 type BindingError struct { Status int ` + "`" + `json:"-"` + "`" + `; Errors []ValidationError ` + "`" + `json:"errors"` + "`" + ` }
 func (e *BindingError) Error() string { parts := make([]string, len(e.Errors)); for i, ve := range e.Errors { parts[i] = ve.Field + ": " + ve.Message }; return strings.Join(parts, "; ") }
 func formatValidationErrors(err error) *BindingError { ve, ok := err.(validator.ValidationErrors); if !ok { return &BindingError{Status: 422, Errors: []ValidationError{{"{{"}}Field: "_body", Message: err.Error(){{"}}"}}} }; out := make([]ValidationError, len(ve)); for i, fe := range ve { out[i] = ValidationError{Field: fe.Field(), Message: fmt.Sprintf("failed %s validation", fe.Tag())} }; return &BindingError{Status: 422, Errors: out} }
+func bindJSONBody(r *http.Request, dest any) *BindingError { if r == nil || r.Body == nil { return &BindingError{Status: 400, Errors: []ValidationError{{"{{"}}Field: "_body", Message: "invalid request body"{{"}}"}}} }; if r.ContentLength > maxJSONRequestBodyBytes { return &BindingError{Status: http.StatusRequestEntityTooLarge, Errors: []ValidationError{{"{{"}}Field: "_body", Message: "request body too large"{{"}}"}}} }; body, err := io.ReadAll(io.LimitReader(r.Body, maxJSONRequestBodyBytes+1)); if err != nil { return &BindingError{Status: 400, Errors: []ValidationError{{"{{"}}Field: "_body", Message: "invalid request body"{{"}}"}}} }; if len(body) > maxJSONRequestBodyBytes { return &BindingError{Status: http.StatusRequestEntityTooLarge, Errors: []ValidationError{{"{{"}}Field: "_body", Message: "request body too large"{{"}}"}}} }; decoder := json.NewDecoder(bytes.NewReader(body)); decoder.DisallowUnknownFields(); if err := decoder.Decode(dest); err != nil { return &BindingError{Status: 400, Errors: []ValidationError{{"{{"}}Field: "_body", Message: "invalid request body"{{"}}"}}} }; if decoder.Decode(&struct{}{}) != io.EOF { return &BindingError{Status: 400, Errors: []ValidationError{{"{{"}}Field: "_body", Message: "invalid request body"{{"}}"}}} }; return nil }
 {{ range .Requests }}
-func Bind{{ .Name }}(r *http.Request) ({{ .Name }}, *BindingError) { var req {{ .Name }}; if err := json.NewDecoder(r.Body).Decode(&req); err != nil { return req, &BindingError{Status: 400, Errors: []ValidationError{{"{{"}}Field: "_body", Message: "invalid request body"{{"}}"}}} }; if err := validate.Struct(req); err != nil { return req, formatValidationErrors(err) }; return req, nil }
+func Bind{{ .Name }}(r *http.Request) ({{ .Name }}, *BindingError) { var req {{ .Name }}; if err := bindJSONBody(r, &req); err != nil { return req, err }; if err := validate.Struct(req); err != nil { return req, formatValidationErrors(err) }; return req, nil }
 {{ end }}
 `))
 

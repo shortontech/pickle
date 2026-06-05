@@ -110,6 +110,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	writeExportedActionAuditBehaviorTest(t, out)
 	writeExportedMigrationBehaviorTest(t, out)
 	writeExportedCommandAppBehaviorTest(t, out)
+	writeExportedRequestBindingBehaviorTest(t, out)
 	writeExportedPolicyBehaviorTest(t, out)
 	writeExportedRouterMiddlewareBehaviorTest(t, out)
 	writeExportedRBACMiddlewareBehaviorTest(t, out)
@@ -650,6 +651,62 @@ func TestBindPlaceholdersMatchesDriver(t *testing.T) {
 		if err := os.WriteFile(path, []byte(fmt.Sprintf(testSrc, pkg.Name)), 0o644); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func writeExportedRequestBindingBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package requests
+
+import (
+	"net/http"
+	"strings"
+	"testing"
+)
+
+func TestExportedRequestBindingsRejectUnsafeBodies(t *testing.T) {
+	validReq := requestWithBody(` + "`" + `{"name":"Ada","email":"ada@example.com","password":"correct horse"}` + "`" + `)
+	if req, bindErr := BindCreateUserRequest(validReq); bindErr != nil {
+		t.Fatalf("valid bind error = %v", bindErr)
+	} else if req.Name != "Ada" || req.Email != "ada@example.com" {
+		t.Fatalf("valid request = %#v", req)
+	}
+
+	unknownField := requestWithBody(` + "`" + `{"name":"Ada","email":"ada@example.com","password":"correct horse","admin":true}` + "`" + `)
+	if _, bindErr := BindCreateUserRequest(unknownField); bindErr == nil || bindErr.Status != http.StatusBadRequest {
+		t.Fatalf("unknown-field bind error = %#v, want 400", bindErr)
+	}
+
+	trailingJSON := requestWithBody(` + "`" + `{"name":"Ada","email":"ada@example.com","password":"correct horse"} {"name":"Grace"}` + "`" + `)
+	if _, bindErr := BindCreateUserRequest(trailingJSON); bindErr == nil || bindErr.Status != http.StatusBadRequest {
+		t.Fatalf("trailing JSON bind error = %#v, want 400", bindErr)
+	}
+
+	invalid := requestWithBody(` + "`" + `{"name":"Ada","email":"not-an-email","password":"short"}` + "`" + `)
+	if _, bindErr := BindCreateUserRequest(invalid); bindErr == nil || bindErr.Status != http.StatusUnprocessableEntity {
+		t.Fatalf("validation bind error = %#v, want 422", bindErr)
+	}
+
+	oversized := requestWithBody(strings.Repeat(" ", maxJSONRequestBodyBytes+1))
+	if _, bindErr := BindCreateUserRequest(oversized); bindErr == nil || bindErr.Status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized bind error = %#v, want 413", bindErr)
+	}
+
+	streaming := requestWithBody(strings.Repeat(" ", maxJSONRequestBodyBytes+1))
+	streaming.ContentLength = -1
+	if _, bindErr := BindCreateUserRequest(streaming); bindErr == nil || bindErr.Status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("streaming oversized bind error = %#v, want 413", bindErr)
+	}
+}
+
+func requestWithBody(body string) *http.Request {
+	req, _ := http.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "http", "requests", "exported_binding_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

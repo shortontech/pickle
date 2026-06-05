@@ -3675,6 +3675,8 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	writeExportedGraphQLErrorBehaviorTest(t, out)
 	writeExportedGraphQLRBACBehaviorTest(t, out)
 	writeExportedGraphQLModelVisibilityBehaviorTest(t, out)
+	writeExportedGraphQLAPITargetVisibilityBehaviorTest(t, out)
+	writeExportedGraphQLAPIHandlerRBACBehaviorTest(t, out)
 	runExported(t, out, "go", "run", "github.com/99designs/gqlgen", "generate", "--config", "gqlgen.yml")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "generated", "generated.go"), "type ResolverRoot interface")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *Resolver) Query() generated.QueryResolver")
@@ -5126,6 +5128,172 @@ func TestExportedGraphQLOrderByFailsClosed(t *testing.T) {
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_graphql_visibility_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedGraphQLAPITargetVisibilityBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package resolver
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"graphql-safety/app/models"
+)
+
+func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	if err := db.AutoMigrate(&models.User{}); err != nil {
+		t.Fatalf("auto migrate: %v", err)
+	}
+	createdAt := time.Now().UTC().Add(-time.Hour)
+	user := &models.User{
+		ID:           uuid.New(),
+		Name:         "Ada",
+		Email:        "ada@example.com",
+		PasswordHash: "hash",
+		CreatedAt:    createdAt,
+		UpdatedAt:    createdAt,
+	}
+	if err := models.QueryUser().Create(user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	queries := &queryResolver{Resolver: &Resolver{}}
+	publicUsers, err := queries.Users(context.Background(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("public users: %v", err)
+	}
+	if len(publicUsers.Edges) != 1 {
+		t.Fatalf("public users edges = %d", len(publicUsers.Edges))
+	}
+	publicUser := publicUsers.Edges[0].Node
+	if publicUser.Name != "Ada" || publicUser.Email != "" || !publicUser.CreatedAt.IsZero() {
+		t.Fatalf("public visibility user = %+v", publicUser)
+	}
+
+	ownerCtx := WithGraphQLAPIAuthClaims(context.Background(), &GraphQLAPIAuthClaims{UserID: uuid.NewString(), Role: "viewer"})
+	ownerUsers, err := queries.Users(ownerCtx, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("owner users: %v", err)
+	}
+	ownerUser := ownerUsers.Edges[0].Node
+	if ownerUser.Email != "ada@example.com" || !ownerUser.CreatedAt.IsZero() {
+		t.Fatalf("owner visibility user = %+v", ownerUser)
+	}
+
+	managerCtx := WithGraphQLAPIAuthClaims(context.Background(), &GraphQLAPIAuthClaims{UserID: uuid.NewString(), Role: "viewer", Roles: []string{"tenant_admin"}, Manages: true, RBACLoaded: true})
+	managerUsers, err := queries.Users(managerCtx, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("manager users: %v", err)
+	}
+	managerUser := managerUsers.Edges[0].Node
+	if managerUser.Email != "ada@example.com" || managerUser.CreatedAt.IsZero() {
+		t.Fatalf("manager visibility user = %+v", managerUser)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "resolver", "exported_visibility_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedGraphQLAPIHandlerRBACBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package graphqlapi
+
+import (
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"graphql-safety/app/http/auth"
+	"graphql-safety/app/http/auth/jwt"
+	"graphql-safety/app/models"
+)
+
+func TestExportedGQLGenTargetAuthLoadsDatabaseRoles(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	for _, stmt := range []string{
+		` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, revoked_at DATETIME, created_at DATETIME NOT NULL)` + "`" + `,
+		` + "`" + `CREATE TABLE roles (id TEXT PRIMARY KEY, slug TEXT NOT NULL, manages BOOLEAN NOT NULL)` + "`" + `,
+		` + "`" + `CREATE TABLE role_user (user_id TEXT NOT NULL, role_id TEXT NOT NULL)` + "`" + `,
+	} {
+		if err := db.Exec(stmt).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	userID := uuid.NewString()
+	if err := db.Exec("INSERT INTO roles (id, slug, manages) VALUES (?, ?, ?)", "role-manager", "tenant_admin", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("INSERT INTO role_user (user_id, role_id) VALUES (?, ?)", userID, "role-manager").Error; err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth.Init(func(key, fallback string) string {
+		switch key {
+		case "AUTH_DRIVER":
+			return "jwt"
+		case "DB_CONNECTION":
+			return "sqlite"
+		case "JWT_SECRET":
+			return "0123456789abcdef0123456789abcdef"
+		default:
+			return fallback
+		}
+	}, sqlDB)
+	token, err := auth.Driver("jwt").(*jwt.Driver).SignToken(jwt.Claims{
+		Subject:   userID,
+		Role:      "viewer",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("sign jwt: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, "/graphql", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	claims, err := extractGraphQLAPIAuth(req)
+	if err != nil {
+		t.Fatalf("extract auth: %v", err)
+	}
+	if claims == nil || claims.UserID != userID || !claims.Manages || !claims.RBACLoaded {
+		t.Fatalf("claims = %+v", claims)
+	}
+	if !graphQLAPIHasRole(claims, "tenant_admin") {
+		t.Fatalf("database role not recognized: %+v", claims)
+	}
+	if graphQLAPIHasRole(claims, "viewer") {
+		t.Fatalf("token fallback role should not grant after RBAC load: %+v", claims)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "exported_rbac_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

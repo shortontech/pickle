@@ -1917,6 +1917,7 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 	var support strings.Builder
 	support.WriteString("package resolver\n\n")
 	support.WriteString("import (\n")
+	support.WriteString("\t\"context\"\n")
 	support.WriteString("\t\"fmt\"\n")
 	support.WriteString("\t\"strings\"\n")
 	support.WriteString("\t\"time\"\n\n")
@@ -1938,7 +1939,7 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 }
 
 func (e *exporter) writeGraphQLAPIHandlerTarget() error {
-	src := fmt.Sprintf(exportedGraphQLAPIHandlerSource, e.modulePath, e.modulePath, e.modulePath)
+	src := fmt.Sprintf(exportedGraphQLAPIHandlerSource, e.modulePath, e.modulePath, e.modulePath, e.modulePath)
 	formatted, err := format.Source([]byte(src))
 	if err != nil {
 		return fmt.Errorf("formatting exported gqlgen API handler: %w", err)
@@ -1950,6 +1951,25 @@ func writeGraphQLAPIResolverSupport(b *strings.Builder) {
 	b.WriteString(`const defaultGraphQLAPIPageSize = 25
 const maxGraphQLAPIPageSize = 100
 const maxGraphQLAPIInputListSize = 100
+
+type graphQLAPIAuthContextKey struct{}
+
+type GraphQLAPIAuthClaims struct {
+	UserID     string
+	Role       string
+	Roles      []string
+	Manages    bool
+	RBACLoaded bool
+}
+
+func WithGraphQLAPIAuthClaims(ctx context.Context, claims *GraphQLAPIAuthClaims) context.Context {
+	return context.WithValue(ctx, graphQLAPIAuthContextKey{}, claims)
+}
+
+func GraphQLAPIAuthFromContext(ctx context.Context) *GraphQLAPIAuthClaims {
+	claims, _ := ctx.Value(graphQLAPIAuthContextKey{}).(*GraphQLAPIAuthClaims)
+	return claims
+}
 
 func gqlgenStringPtr(value string) *string {
 	return &value
@@ -2120,7 +2140,7 @@ func writeGraphQLAPIListResolver(b *strings.Builder, tbl *schema.Table) {
 	fmt.Fprintf(b, "func (r *queryResolver) %s(ctx context.Context, filter *model.%sFilter, sort *model.%sSort, page *model.PageInput) (*model.%sConnection, error) {\n", snakeToPascal(listField), structName, structName, structName)
 	fmt.Fprintf(b, "\tq := models.Query%s()\n", structName)
 	if exportedGraphQLTableHasVisibility(tbl) {
-		b.WriteString("\tq.SelectPublic()\n")
+		fmt.Fprintf(b, "\tgraphQLAPISelect%sVisibility(ctx, q)\n", structName)
 	}
 	b.WriteString("\tif filter != nil {\n")
 	fmt.Fprintf(b, "\t\tif err := apply%sFilter(q, filter); err != nil {\n\t\t\treturn nil, err\n\t\t}\n", structName)
@@ -2147,7 +2167,7 @@ func writeGraphQLAPISingleResolver(b *strings.Builder, tbl *schema.Table) {
 	writeGraphQLAPIPKParse(b, tbl, pk, "nil")
 	fmt.Fprintf(b, "\tq := models.Query%s().Where%s(parsedID)\n", structName, snakeToPascal(pk.Name))
 	if exportedGraphQLTableHasVisibility(tbl) {
-		b.WriteString("\tq.SelectPublic()\n")
+		fmt.Fprintf(b, "\tgraphQLAPISelect%sVisibility(ctx, q)\n", structName)
 	}
 	b.WriteString("\trecord, err := q.First()\n\tif err != nil {\n\t\treturn nil, nil\n\t}\n\treturn record, nil\n")
 	b.WriteString("}\n\n")
@@ -2328,6 +2348,14 @@ func graphQLTableHasColumn(tbl *schema.Table, name string) bool {
 
 func writeGraphQLAPIFilterApplier(b *strings.Builder, tbl *schema.Table) {
 	structName := tableToStruct(tbl.Name)
+	if exportedGraphQLTableHasVisibility(tbl) {
+		fmt.Fprintf(b, "func graphQLAPISelect%sVisibility(ctx context.Context, q *models.%sQuery) {\n", structName, structName)
+		b.WriteString("\tclaims := GraphQLAPIAuthFromContext(ctx)\n")
+		b.WriteString("\tif claims == nil {\n\t\tq.SelectPublic()\n\t\treturn\n\t}\n")
+		b.WriteString("\tif claims.Manages || (!claims.RBACLoaded && claims.Role == \"admin\") {\n\t\tq.SelectAll()\n\t\treturn\n\t}\n")
+		b.WriteString("\tq.SelectOwner()\n")
+		b.WriteString("}\n\n")
+	}
 	fmt.Fprintf(b, "func apply%sFilter(q *models.%sQuery, filter *model.%sFilter) error {\n", structName, structName, structName)
 	for _, col := range tbl.Columns {
 		if isExcludedFromExportedGraphQL(tbl, col) {
@@ -2792,6 +2820,7 @@ import (
 	"mime"
 	"net/http"
 	"runtime/debug"
+	"strings"
 
 	gqlgen "github.com/99designs/gqlgen/graphql"
 	"github.com/99designs/gqlgen/graphql/handler"
@@ -2804,6 +2833,7 @@ import (
 	"%s/app/graphqlapi/generated"
 	"%s/app/graphqlapi/resolver"
 	appauth "%s/app/http/auth"
+	appmodels "%s/app/models"
 )
 
 const maxGraphQLAPIRequestBodyBytes = 1 << 20
@@ -2811,11 +2841,9 @@ const maxGraphQLAPIQueryBytes = 64 << 10
 const maxGraphQLAPITokenMultiplier = 20
 const maxGraphQLAPIComplexity = 1000
 
-type graphqlAPIAuthContextKey struct{}
-
-type graphqlAPIAuthClaims struct {
-	UserID string
-	Role   string
+type graphQLAPIRoleRow struct {
+	Slug    string
+	Manages bool
 }
 
 func Handler() http.Handler {
@@ -2852,14 +2880,14 @@ func Handler() http.Handler {
 				writeGraphQLAPIHTTPError(w, "unauthenticated", "UNAUTHENTICATED")
 				return
 			}
-			r = r.WithContext(context.WithValue(r.Context(), graphqlAPIAuthContextKey{}, claims))
+			r = r.WithContext(resolver.WithGraphQLAPIAuthClaims(r.Context(), claims))
 		}
 		srv.ServeHTTP(graphQLAPIStatusWriter{ResponseWriter: w}, r)
 	})
 }
 
 func graphQLAPIAuthDirective(ctx context.Context, obj any, next gqlgen.Resolver) (any, error) {
-	if graphQLAPIAuthFromContext(ctx) == nil {
+	if resolver.GraphQLAPIAuthFromContext(ctx) == nil {
 		return nil, graphQLAPICodedError("unauthenticated", "UNAUTHENTICATED")
 	}
 	return next(ctx)
@@ -2870,31 +2898,26 @@ func graphQLAPIPublicDirective(ctx context.Context, obj any, next gqlgen.Resolve
 }
 
 func graphQLAPIOwnerOnlyDirective(ctx context.Context, obj any, next gqlgen.Resolver) (any, error) {
-	if graphQLAPIAuthFromContext(ctx) == nil {
+	if resolver.GraphQLAPIAuthFromContext(ctx) == nil {
 		return nil, graphQLAPICodedError("unauthenticated", "UNAUTHENTICATED")
 	}
 	return next(ctx)
 }
 
 func graphQLAPIRequireRoleDirective(ctx context.Context, obj any, next gqlgen.Resolver, roles []string) (any, error) {
-	auth := graphQLAPIAuthFromContext(ctx)
+	auth := resolver.GraphQLAPIAuthFromContext(ctx)
 	if auth == nil {
 		return nil, graphQLAPICodedError("unauthenticated", "UNAUTHENTICATED")
 	}
 	for _, role := range roles {
-		if auth.Role == role {
+		if graphQLAPIHasRole(auth, role) {
 			return next(ctx)
 		}
 	}
 	return nil, graphQLAPICodedError("forbidden", "FORBIDDEN")
 }
 
-func graphQLAPIAuthFromContext(ctx context.Context) *graphqlAPIAuthClaims {
-	claims, _ := ctx.Value(graphqlAPIAuthContextKey{}).(*graphqlAPIAuthClaims)
-	return claims
-}
-
-func extractGraphQLAPIAuth(r *http.Request) (*graphqlAPIAuthClaims, error) {
+func extractGraphQLAPIAuth(r *http.Request) (*resolver.GraphQLAPIAuthClaims, error) {
 	if r == nil || r.Header.Get("Authorization") == "" {
 		return nil, nil
 	}
@@ -2902,7 +2925,72 @@ func extractGraphQLAPIAuth(r *http.Request) (*graphqlAPIAuthClaims, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &graphqlAPIAuthClaims{UserID: info.UserID, Role: info.Role}, nil
+	claims := &resolver.GraphQLAPIAuthClaims{UserID: info.UserID, Role: info.Role}
+	if err := loadGraphQLAPIRBACClaims(claims); err != nil {
+		return nil, err
+	}
+	return claims, nil
+}
+
+func graphQLAPIHasRole(claims *resolver.GraphQLAPIAuthClaims, role string) bool {
+	if claims == nil {
+		return false
+	}
+	for _, assigned := range claims.Roles {
+		if assigned == role {
+			return true
+		}
+	}
+	return !claims.RBACLoaded && claims.Role == role
+}
+
+func loadGraphQLAPIRBACClaims(claims *resolver.GraphQLAPIAuthClaims) error {
+	if claims == nil || claims.UserID == "" || appmodels.DB == nil {
+		return nil
+	}
+	var roles []graphQLAPIRoleRow
+	err := appmodels.DB.Raw("SELECT r.slug, r.manages FROM roles r JOIN role_user ru ON ru.role_id = r.id WHERE ru.user_id = ?", claims.UserID).Scan(&roles).Error
+	if err != nil {
+		if isMissingGraphQLAPIRBACTableError(err) {
+			return nil
+		}
+		return err
+	}
+	claims.RBACLoaded = true
+	if len(roles) == 0 {
+		return nil
+	}
+	claims.Roles = claims.Roles[:0]
+	for _, role := range roles {
+		if role.Slug == "" {
+			continue
+		}
+		claims.Roles = append(claims.Roles, role.Slug)
+		if role.Manages {
+			claims.Manages = true
+		}
+	}
+	if claims.Role == "" && len(claims.Roles) > 0 {
+		claims.Role = claims.Roles[0]
+	}
+	return nil
+}
+
+func isMissingGraphQLAPIRBACTableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	for err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "no such table") ||
+			strings.Contains(msg, "does not exist") ||
+			strings.Contains(msg, "doesn't exist") ||
+			strings.Contains(msg, "unknown table") {
+			return true
+		}
+		err = errors.Unwrap(err)
+	}
+	return false
 }
 
 func graphQLAPIRecover(_ context.Context, _ any) error {

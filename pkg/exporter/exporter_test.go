@@ -590,6 +590,36 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_action_audit_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
+
+	sqlTestSrc := `package models
+
+import (
+	"strings"
+	"testing"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+func TestActionAuditUpsertsMatchDialect(t *testing.T) {
+	sqliteDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := actionAuditModelTypeUpsertSQL(sqliteDB); !strings.Contains(got, "ON CONFLICT(id)") || strings.Contains(got, "ON DUPLICATE KEY") {
+		t.Fatalf("sqlite model type upsert = %q", got)
+	}
+	if got := actionAuditModelTypeUpsertSQLForDialect("mysql"); !strings.Contains(got, "ON DUPLICATE KEY UPDATE") || strings.Contains(got, "excluded.") {
+		t.Fatalf("mysql model type upsert = %q", got)
+	}
+	if got := actionAuditActionTypeUpsertSQLForDialect("mysql"); !strings.Contains(got, "VALUES(model_type_id)") || strings.Contains(got, "excluded.") {
+		t.Fatalf("mysql action type upsert = %q", got)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_action_audit_sql_test.go"), []byte(sqlTestSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeExportedMigrationBehaviorTest(t *testing.T, out string) {
@@ -634,15 +664,14 @@ func TestExportedMigrationsApplyToSQLite(t *testing.T) {
 
 func writeExportedPolicyBehaviorTest(t *testing.T, out string) {
 	t.Helper()
-	testSrc := `package policies_test
+	testSrc := `package policies
 
 import (
+	"strings"
 	"testing"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-
-	"basic-crud/database/policies"
 )
 
 func TestExportedPolicyStateSupport(t *testing.T) {
@@ -650,7 +679,7 @@ func TestExportedPolicyStateSupport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := policies.Migrate(db, "sqlite"); err != nil {
+	if err := Migrate(db, "sqlite"); err != nil {
 		t.Fatalf("policy migrate: %v", err)
 	}
 
@@ -675,7 +704,7 @@ func TestExportedPolicyStateSupport(t *testing.T) {
 	if userList != 1 {
 		t.Fatalf("graphql users.list exposures = %d, want 1", userList)
 	}
-	statuses, err := policies.Status(db, "sqlite")
+	statuses, err := Status(db, "sqlite")
 	if err != nil {
 		t.Fatalf("policy status: %v", err)
 	}
@@ -687,7 +716,7 @@ func TestExportedPolicyStateSupport(t *testing.T) {
 			t.Fatalf("policy status %#v should be applied", status)
 		}
 	}
-	if err := policies.Rollback(db, "sqlite"); err != nil {
+	if err := Rollback(db, "sqlite"); err != nil {
 		t.Fatalf("policy rollback: %v", err)
 	}
 	if err := db.Table("roles").Count(&roles).Error; err != nil {
@@ -695,6 +724,22 @@ func TestExportedPolicyStateSupport(t *testing.T) {
 	}
 	if roles != 0 {
 		t.Fatalf("roles after rollback = %d, want 0", roles)
+	}
+}
+
+func TestExportedPolicyUpsertsMatchDialect(t *testing.T) {
+	sqliteDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := roleUpsertSQL(sqliteDB); !strings.Contains(got, "ON CONFLICT(slug)") || strings.Contains(got, "ON DUPLICATE KEY") {
+		t.Fatalf("sqlite role upsert = %q", got)
+	}
+	if got := roleUpsertSQLForDialect("mysql"); !strings.Contains(got, "ON DUPLICATE KEY UPDATE") || strings.Contains(got, "excluded.") {
+		t.Fatalf("mysql role upsert = %q", got)
+	}
+	if got := policyAppliedUpsertSQLForDialect("mysql", "rbac_changelog"); !strings.Contains(got, "ON DUPLICATE KEY UPDATE") || strings.Contains(got, "excluded.") {
+		t.Fatalf("mysql policy applied upsert = %q", got)
 	}
 }
 `

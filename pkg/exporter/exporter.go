@@ -1539,12 +1539,39 @@ func ensureActionAuditSchema(db *gorm.DB) error {
 		if err := db.Exec(stmt).Error; err != nil { return err }
 	}
 	for _, model := range actionAuditModelSeeds {
-		if err := db.Exec("INSERT INTO model_types (id, name) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name", model.ID, model.Name).Error; err != nil { return err }
+		if err := db.Exec(actionAuditModelTypeUpsertSQL(db), model.ID, model.Name).Error; err != nil { return err }
 	}
 	for _, action := range actionAuditActionSeeds {
-		if err := db.Exec("INSERT INTO action_types (id, model_type_id, name) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET model_type_id = excluded.model_type_id, name = excluded.name", action.ID, action.ModelTypeID, action.Action).Error; err != nil { return err }
+		if err := db.Exec(actionAuditActionTypeUpsertSQL(db), action.ID, action.ModelTypeID, action.Action).Error; err != nil { return err }
 	}
 	return nil
+}
+
+func actionAuditModelTypeUpsertSQL(db *gorm.DB) string {
+	return actionAuditModelTypeUpsertSQLForDialect(gormDialectName(db))
+}
+
+func actionAuditModelTypeUpsertSQLForDialect(dialect string) string {
+	if dialect == "mysql" {
+		return "INSERT INTO model_types (id, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)"
+	}
+	return "INSERT INTO model_types (id, name) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name"
+}
+
+func actionAuditActionTypeUpsertSQL(db *gorm.DB) string {
+	return actionAuditActionTypeUpsertSQLForDialect(gormDialectName(db))
+}
+
+func actionAuditActionTypeUpsertSQLForDialect(dialect string) string {
+	if dialect == "mysql" {
+		return "INSERT INTO action_types (id, model_type_id, name) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE model_type_id = VALUES(model_type_id), name = VALUES(name)"
+	}
+	return "INSERT INTO action_types (id, model_type_id, name) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET model_type_id = excluded.model_type_id, name = excluded.name"
+}
+
+func gormDialectName(db *gorm.DB) string {
+	if db == nil || db.Dialector == nil { return "" }
+	return db.Dialector.Name()
 }
 
 func actionTypeID(model, action string) (int, bool) {
@@ -1975,13 +2002,24 @@ func ensureGraphQLPolicySchema(db *gorm.DB) error {
 func seedRoles(db *gorm.DB) error {
 	now := time.Now().UTC()
 	for _, role := range roleSeeds {
-		if err := db.Exec("INSERT INTO roles (id, slug, name, manages, is_default, birth_policy, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET name = excluded.name, manages = excluded.manages, is_default = excluded.is_default, birth_policy = excluded.birth_policy, updated_at = excluded.updated_at", uuid.New().String(), role.Slug, role.Name, role.Manages, role.Default, role.BirthPolicy, now, now).Error; err != nil { return err }
+		if err := db.Exec(roleUpsertSQL(db), uuid.New().String(), role.Slug, role.Name, role.Manages, role.Default, role.BirthPolicy, now, now).Error; err != nil { return err }
 		if err := db.Exec("DELETE FROM role_actions WHERE role_slug = ?", role.Slug).Error; err != nil { return err }
 		for _, action := range role.Actions {
 			if err := db.Exec("INSERT INTO role_actions (id, role_slug, action, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", uuid.New().String(), role.Slug, action, now, now).Error; err != nil { return err }
 		}
 	}
 	return nil
+}
+
+func roleUpsertSQL(db *gorm.DB) string {
+	return roleUpsertSQLForDialect(gormDialectName(db))
+}
+
+func roleUpsertSQLForDialect(dialect string) string {
+	if dialect == "mysql" {
+		return "INSERT INTO roles (id, slug, name, manages, is_default, birth_policy, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), manages = VALUES(manages), is_default = VALUES(is_default), birth_policy = VALUES(birth_policy), updated_at = VALUES(updated_at)"
+	}
+	return "INSERT INTO roles (id, slug, name, manages, is_default, birth_policy, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET name = excluded.name, manages = excluded.manages, is_default = excluded.is_default, birth_policy = excluded.birth_policy, updated_at = excluded.updated_at"
 }
 
 func seedGraphQLPolicies(db *gorm.DB) error {
@@ -2000,9 +2038,25 @@ func seedGraphQLPolicies(db *gorm.DB) error {
 func markPoliciesApplied(db *gorm.DB, table string, ids []string) error {
 	now := time.Now().UTC()
 	for _, id := range ids {
-		if err := db.Exec("INSERT INTO " + table + " (id, batch, state, started_at, completed_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET state = excluded.state, completed_at = excluded.completed_at", id, 1, "applied", now, now).Error; err != nil { return err }
+		if err := db.Exec(policyAppliedUpsertSQL(db, table), id, 1, "applied", now, now).Error; err != nil { return err }
 	}
 	return nil
+}
+
+func policyAppliedUpsertSQL(db *gorm.DB, table string) string {
+	return policyAppliedUpsertSQLForDialect(gormDialectName(db), table)
+}
+
+func policyAppliedUpsertSQLForDialect(dialect string, table string) string {
+	if dialect == "mysql" {
+		return "INSERT INTO " + table + " (id, batch, state, started_at, completed_at) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE state = VALUES(state), completed_at = VALUES(completed_at)"
+	}
+	return "INSERT INTO " + table + " (id, batch, state, started_at, completed_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET state = excluded.state, completed_at = excluded.completed_at"
+}
+
+func gormDialectName(db *gorm.DB) string {
+	if db == nil || db.Dialector == nil { return "" }
+	return db.Dialector.Name()
 }
 
 func appliedPolicyRows(db *gorm.DB, table string) (map[string]int, error) {

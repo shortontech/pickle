@@ -1522,6 +1522,38 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 		t.Fatalf("promote audit rows = %d, want 1", promoteRows)
 	}
 
+	loadedAdminCtx := httpx.NewContext(req)
+	loadedAdminCtx.SetAuth(&httpx.AuthInfo{UserID: uuid.New().String(), Role: "viewer"})
+	loadedAdminCtx.SetRoles([]httpx.RoleInfo{{Slug: "admin"}})
+	if err := user.Ban(loadedAdminCtx, models.BanAction{Reason: "loaded-admin"}); err != nil {
+		t.Fatalf("ban with loaded admin role: %v", err)
+	}
+	if performed != 3 {
+		t.Fatalf("performed audit hook count after loaded admin ban = %d, want 3", performed)
+	}
+	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if auditRows != 3 {
+		t.Fatalf("audit rows after loaded admin action = %d, want 3", auditRows)
+	}
+
+	loadedEmptyCtx := httpx.NewContext(req)
+	loadedEmptyCtx.SetAuth(&httpx.AuthInfo{UserID: uuid.New().String(), Role: "admin"})
+	loadedEmptyCtx.SetRoles(nil)
+	if err := user.Ban(loadedEmptyCtx, models.BanAction{Reason: "loaded-empty"}); !errors.Is(err, models.ErrUnauthorized) {
+		t.Fatalf("ban with empty loaded roles error = %v, want ErrUnauthorized", err)
+	}
+	if denied != 1 || deniedReason != "gate denied" {
+		t.Fatalf("denied audit hook count/reason after empty loaded roles = %d/%q, want 1/gate denied", denied, deniedReason)
+	}
+	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if auditRows != 3 {
+		t.Fatalf("audit rows after empty loaded roles = %d, want 3", auditRows)
+	}
+
 	badAuditCtx := httpx.NewContext(req)
 	badAuditCtx.SetAuth(&httpx.AuthInfo{UserID: "not-a-uuid", Role: "admin"})
 	if err := user.Ban(badAuditCtx, models.BanAction{Reason: "audit-fail"}); err == nil || !strings.Contains(err.Error(), "audit user id") {
@@ -1530,15 +1562,15 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
 		t.Fatal(err)
 	}
-	if auditRows != 2 {
-		t.Fatalf("audit rows after failed audit persistence = %d, want 2", auditRows)
+	if auditRows != 3 {
+		t.Fatalf("audit rows after failed audit persistence = %d, want 3", auditRows)
 	}
 	var persistedName string
 	if err := db.Raw("SELECT name FROM users WHERE id = ?", userID.String()).Scan(&persistedName).Error; err != nil {
 		t.Fatal(err)
 	}
-	if persistedName != "banned" {
-		t.Fatalf("user name after failed audit persistence = %q, want banned", persistedName)
+	if persistedName != "loaded-admin" {
+		t.Fatalf("user name after failed audit persistence = %q, want loaded-admin", persistedName)
 	}
 
 	deniedCtx := httpx.NewContext(req)
@@ -1546,14 +1578,14 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	if err := user.Ban(deniedCtx, models.BanAction{Reason: "denied"}); !errors.Is(err, models.ErrUnauthorized) {
 		t.Fatalf("denied ban error = %v, want ErrUnauthorized", err)
 	}
-	if denied != 1 || deniedReason != "gate denied" {
-		t.Fatalf("denied audit hook count/reason = %d/%q, want 1/gate denied", denied, deniedReason)
+	if denied != 2 || deniedReason != "gate denied" {
+		t.Fatalf("denied audit hook count/reason = %d/%q, want 2/gate denied", denied, deniedReason)
 	}
 	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
 		t.Fatal(err)
 	}
-	if auditRows != 2 {
-		t.Fatalf("audit rows after denied action = %d, want 2", auditRows)
+	if auditRows != 3 {
+		t.Fatalf("audit rows after denied action = %d, want 3", auditRows)
 	}
 
 	if err := user.Fail(ctx, models.FailAction{}); err == nil {
@@ -1568,8 +1600,8 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
 		t.Fatal(err)
 	}
-	if auditRows != 2 {
-		t.Fatalf("audit rows after failed action = %d, want 2", auditRows)
+	if auditRows != 3 {
+		t.Fatalf("audit rows after failed action = %d, want 3", auditRows)
 	}
 
 	models.OnAuditFailed = nil

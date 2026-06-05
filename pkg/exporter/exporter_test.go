@@ -3141,6 +3141,31 @@ func TestExportedContextClientIPIgnoresSpoofedProxyHeadersByDefault(t *testing.T
 
 func TestExportedContextHelpersHandleNilRequest(t *testing.T) {
 	ctx := NewContext(nil)
+	ctx.SetParam("id", "123")
+	if got := ctx.Param("id"); got != "123" {
+		t.Fatalf("Param after SetParam = %q, want 123", got)
+	}
+	ctx.params = nil
+	ctx.SetParam("restored", "456")
+	if got := ctx.Param("restored"); got != "456" {
+		t.Fatalf("Param after SetParam on nil params = %q, want 456", got)
+	}
+	ctx.SetAuth(&AuthInfo{UserID: "user-1", Role: "admin"})
+	if !ctx.IsAuthenticated() || ctx.Auth().UserID != "user-1" {
+		t.Fatalf("SetAuth did not authenticate context: %#v", ctx.Auth())
+	}
+	ctx.SetAuth(nil)
+	if ctx.IsAuthenticated() || ctx.Auth().UserID != "" {
+		t.Fatalf("SetAuth(nil) should clear auth, got %#v", ctx.Auth())
+	}
+	ctx.SetRoles([]RoleInfo{{Slug: "admin", Manages: true}})
+	if !ctx.HasRole("admin") || !ctx.IsAdmin() {
+		t.Fatalf("SetRoles did not load admin role: roles=%#v admin=%v", ctx.Roles(), ctx.IsAdmin())
+	}
+	ctx.SetRoles(nil)
+	if ctx.HasRole("admin") || ctx.IsAdmin() {
+		t.Fatalf("SetRoles(nil) should clear role state: roles=%#v admin=%v", ctx.Roles(), ctx.IsAdmin())
+	}
 	if got := ctx.Query("secret"); got != "" {
 		t.Fatalf("Query on nil request = %q, want empty", got)
 	}
@@ -3176,6 +3201,13 @@ func TestExportedContextHelpersHandleNilRequest(t *testing.T) {
 	if nilCtx.Auth().UserID != "" {
 		t.Fatalf("Auth on nil context = %#v, want empty auth info", nilCtx.Auth())
 	}
+	if got := nilCtx.Param("missing"); got != "" {
+		t.Fatalf("Param on nil context = %q, want empty", got)
+	}
+	nilCtx.SetParam("id", "123")
+	nilCtx.SetAuth(&AuthInfo{UserID: "user-1"})
+	nilCtx.SetAuth(nil)
+	nilCtx.SetRoles([]RoleInfo{{Slug: "admin", Manages: true}})
 	if nilCtx.IsAuthenticated() {
 		t.Fatal("nil context should not be authenticated")
 	}

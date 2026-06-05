@@ -6678,17 +6678,17 @@ type Context struct { request *http.Request; response http.ResponseWriter; auth 
 func NewContext(r *http.Request) *Context { return &Context{request: r, params: map[string]string{}} }
 func (c *Context) Request() *http.Request { if c == nil { return nil }; return c.request }
 func (c *Context) ResponseWriter() http.ResponseWriter { if c == nil { return nil }; return c.response }
-func (c *Context) Param(name string) string { value, ok := c.params[name]; if !ok { panic("pickle: ctx.Param(\"" + name + "\") - no such route parameter") }; return value }
-func (c *Context) SetParam(name, value string) { c.params[name] = value }
+func (c *Context) Param(name string) string { if c == nil { return "" }; value, ok := c.params[name]; if !ok { panic("pickle: ctx.Param(\"" + name + "\") - no such route parameter") }; return value }
+func (c *Context) SetParam(name, value string) { if c == nil { return }; if c.params == nil { c.params = map[string]string{} }; c.params[name] = value }
 func (c *Context) ParamUUID(name string) (uuid.UUID, error) { value, err := uuid.Parse(c.Param(name)); if err != nil { return uuid.Nil, fmt.Errorf("invalid uuid parameter") }; return value, nil }
 func (c *Context) Cookie(name string) (string, error) { if c == nil || c.request == nil { return "", http.ErrNoCookie }; cookie, err := c.request.Cookie(name); if err != nil { return "", err }; return cookie.Value, nil }
 func (c *Context) Query(name string) string { if c == nil || c.request == nil || c.request.URL == nil { return "" }; return c.request.URL.Query().Get(name) }
 func (c *Context) BearerToken() string { if c == nil || c.request == nil { return "" }; h := c.request.Header.Get("Authorization"); parts := strings.Fields(h); if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") { return parts[1] }; return "" }
 func (c *Context) ClientIP() string { if c == nil || c.request == nil { return "" }; return clientIP(c.request) }
 func (c *Context) Auth() *AuthInfo { if c == nil || c.auth == nil { return &AuthInfo{} }; return c.auth }
-func (c *Context) SetAuth(claims any) { switch v := claims.(type) { case *AuthInfo: c.auth = v; default: panic(fmt.Sprintf("pickle: SetAuth() requires *AuthInfo, got %T", claims)) } }
+func (c *Context) SetAuth(claims any) { if c == nil { return }; switch v := claims.(type) { case nil: c.auth = nil; case *AuthInfo: c.auth = v; default: panic(fmt.Sprintf("pickle: SetAuth() requires *AuthInfo, got %T", claims)) } }
 func (c *Context) IsAuthenticated() bool { return c != nil && c.auth != nil && c.auth.UserID != "" }
-func (c *Context) SetRoles(roles []RoleInfo) { c.rolesLoaded = true; c.roles = make([]string, len(roles)); c.isAdmin = false; for i, role := range roles { c.roles[i] = role.Slug; if role.Manages { c.isAdmin = true } } }
+func (c *Context) SetRoles(roles []RoleInfo) { if c == nil { return }; c.rolesLoaded = true; c.roles = make([]string, len(roles)); c.isAdmin = false; for i, role := range roles { c.roles[i] = role.Slug; if role.Manages { c.isAdmin = true } } }
 func (c *Context) Role() string { if c == nil { return "" }; if len(c.roles) > 0 { return c.roles[0] }; if !c.rolesLoaded && c.auth != nil { return c.auth.Role }; return "" }
 func (c *Context) Roles() []string { if c == nil { return nil }; roles := append([]string{}, c.roles...); if !c.rolesLoaded && len(roles) == 0 && c.auth != nil && c.auth.Role != "" { roles = append(roles, c.auth.Role) }; return roles }
 func (c *Context) HasRole(slug string) bool { if c == nil { return false }; for _, role := range c.roles { if role == slug { return true } }; return !c.rolesLoaded && c.auth != nil && c.auth.Role == slug }
@@ -6705,8 +6705,8 @@ func (c *Context) NoContent() Response { return Response{Status: 204, StatusCode
 type ResourceQuery interface { FetchResource(ownerID string) (any, error) }
 type ResourceListQuery interface { FetchResources(ownerID string) (any, error) }
 func isResourceNotFound(err error) bool { return errors.Is(err, sql.ErrNoRows) || errors.Is(err, gorm.ErrRecordNotFound) }
-func (c *Context) Resource(q ResourceQuery) Response { ownerID := ""; if c.auth != nil { ownerID = c.auth.UserID }; result, err := q.FetchResource(ownerID); if err != nil { if isResourceNotFound(err) { return c.NotFound("not found") }; return c.Error(err) }; return c.JSON(http.StatusOK, result) }
-func (c *Context) Resources(q ResourceListQuery) Response { ownerID := ""; if c.auth != nil { ownerID = c.auth.UserID }; result, err := q.FetchResources(ownerID); if err != nil { return c.Error(err) }; return c.JSON(http.StatusOK, result) }
+func (c *Context) Resource(q ResourceQuery) Response { ownerID := ""; if c != nil && c.auth != nil { ownerID = c.auth.UserID }; result, err := q.FetchResource(ownerID); if err != nil { if isResourceNotFound(err) { return c.NotFound("not found") }; return c.Error(err) }; return c.JSON(http.StatusOK, result) }
+func (c *Context) Resources(q ResourceListQuery) Response { ownerID := ""; if c != nil && c.auth != nil { ownerID = c.auth.UserID }; result, err := q.FetchResources(ownerID); if err != nil { return c.Error(err) }; return c.JSON(http.StatusOK, result) }
 
 func (r Response) WithCookie(cookie *http.Cookie) Response { r.Cookies = append(r.Cookies, cookie); return r }
 

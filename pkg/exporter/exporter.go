@@ -116,6 +116,7 @@ func Export(opts Options) (*Result, error) {
 	views := analysis.Views
 	ex.migrations = analysis.Migrations
 	ex.models = modelSet(tables)
+	ex.schemaTables = schemaTableSet(tables)
 	ex.hasEncryptedColumns = tablesHaveEncryptedColumns(tables)
 	ex.integrityModels = integrityModelSet(tables)
 	for _, view := range views {
@@ -183,6 +184,7 @@ type exporter struct {
 	result              *Result
 	dryRun              bool
 	models              map[string]bool
+	schemaTables        map[string]*schema.Table
 	migrations          []generator.MigrationOps
 	sqlMigrations       []sqlMigration
 	hasEncryptedColumns bool
@@ -556,7 +558,7 @@ func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, 
 		if len(s.Rhs) == 1 {
 			call, ok := s.Rhs[0].(*ast.CallExpr)
 			if ok {
-				if assign, ok, err := rewriteQueryVarMutation(call, queryVars); err != nil {
+				if assign, ok, err := e.rewriteQueryVarMutation(call, queryVars); err != nil {
 					return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
 				} else if ok {
 					if len(s.Lhs) != 1 {
@@ -635,7 +637,7 @@ func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, 
 		if !ok {
 			return stmt, nil
 		}
-		assign, ok, err := rewriteQueryVarMutation(call, queryVars)
+		assign, ok, err := e.rewriteQueryVarMutation(call, queryVars)
 		if err != nil {
 			return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
 		}
@@ -1009,7 +1011,7 @@ func parseQueryVarTerminal(call *ast.CallExpr, queryVars map[string]queryVarStat
 	}, true, nil
 }
 
-func rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[string]queryVarState) (ast.Stmt, bool, error) {
+func (e *exporter) rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[string]queryVarState) (ast.Stmt, bool, error) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return nil, false, nil
@@ -1036,12 +1038,12 @@ func rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[string]queryVarSt
 			if len(call.Args) != 2 {
 				return nil, true, fmt.Errorf("%s requires two arguments", sel.Sel.Name)
 			}
-			expr, err = gormVarWhereExpr(id.Name, col, op, call.Args[0], call.Args[1])
+			expr, err = e.gormVarWhereExpr(state.Model, id.Name, col, op, call.Args[0], call.Args[1])
 		} else {
 			if len(call.Args) != 1 {
 				return nil, true, fmt.Errorf("%s requires one argument", sel.Sel.Name)
 			}
-			expr, err = gormVarWhereExpr(id.Name, col, op, call.Args[0])
+			expr, err = e.gormVarWhereExpr(state.Model, id.Name, col, op, call.Args[0])
 		}
 		if col == "version_id" {
 			state.VersionFilter = true
@@ -1070,6 +1072,9 @@ func rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[string]queryVarSt
 			return nil, true, argErr
 		}
 		column := pascalToSnake(strings.TrimPrefix(sel.Sel.Name, "OrderBy"))
+		if resolved := e.resolveQueryColumn(state.Model, column, "ORDER"); resolved.Column != "" {
+			column = resolved.Column
+		}
 		expr, err = parseExpr(fmt.Sprintf("%s.Order(models.OrderClause(%q, %s))", id.Name, column, arg))
 	case sel.Sel.Name == "OrderBy":
 		if len(call.Args) != 2 {
@@ -1288,10 +1293,69 @@ func (e *exporter) lockTimeoutStmt(q any) string {
 	return fmt.Sprintf("if err := models.ApplyLockTimeout(%s, %s); err != nil { return nil, err };", dbRoot, arg)
 }
 
-func gormVarWhereExpr(varName, col, op string, args ...ast.Expr) (ast.Expr, error) {
+type exportedQueryColumn struct {
+	Column      string
+	Encrypted   bool
+	Unsupported string
+}
+
+func (e *exporter) resolveQueryColumn(model, col, op string) exportedQueryColumn {
+	if col == "__owner__" {
+		return exportedQueryColumn{Column: "user_id"}
+	}
+	table := e.schemaTables[model]
+	if table == nil {
+		return exportedQueryColumn{Column: col}
+	}
+	for _, column := range table.Columns {
+		if column.Name != col {
+			continue
+		}
+		if column.IsSealed {
+			return exportedQueryColumn{Column: col + "_encrypted", Unsupported: fmt.Sprintf("sealed column %s cannot be filtered", col)}
+		}
+		if column.IsEncrypted {
+			if op != "=" && op != "IN" && op != "<>" && op != "NOT IN" {
+				return exportedQueryColumn{Column: col + "_encrypted", Unsupported: fmt.Sprintf("encrypted column %s does not support %s filters", col, op)}
+			}
+			return exportedQueryColumn{Column: col + "_encrypted", Encrypted: true}
+		}
+		return exportedQueryColumn{Column: col}
+	}
+	return exportedQueryColumn{Column: col}
+}
+
+func (e *exporter) resolveQueryOrderColumn(model, expr string) string {
+	unquoted, err := strconv.Unquote(expr)
+	if err != nil {
+		return expr
+	}
+	resolved := e.resolveQueryColumn(model, unquoted, "ORDER")
+	if resolved.Column == "" {
+		return expr
+	}
+	return fmt.Sprintf("%q", resolved.Column)
+}
+
+func (e *exporter) gormVarWhereExpr(model, varName, col, op string, args ...ast.Expr) (ast.Expr, error) {
 	if col == "__owner__" {
 		col = "user_id"
 	}
+	resolved := e.resolveQueryColumn(model, col, op)
+	if resolved.Unsupported != "" {
+		return parseExpr(fmt.Sprintf("%s.Scopes(models.UnsupportedQueryFilterScope(%q))", varName, resolved.Unsupported))
+	}
+	if resolved.Encrypted {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("%s requires one argument", op)
+		}
+		argStr, err := exprString(args[0])
+		if err != nil {
+			return nil, err
+		}
+		return parseExpr(fmt.Sprintf("%s.Scopes(models.EncryptedWhereScope(%q, %q, %s))", varName, resolved.Column, op, argStr))
+	}
+	col = resolved.Column
 	if op == "BETWEEN" {
 		if len(args) != 2 {
 			return nil, fmt.Errorf("BETWEEN requires two arguments")
@@ -1338,7 +1402,17 @@ func (e *exporter) gormChain(q queryChain) string {
 		if col == "__owner__" {
 			col = q.ownerColumn()
 		}
+		resolved := e.resolveQueryColumn(q.Model, col, f.Op)
+		if resolved.Unsupported != "" {
+			chain += fmt.Sprintf(".Scopes(models.UnsupportedQueryFilterScope(%q))", resolved.Unsupported)
+			continue
+		}
 		arg, _ := exprString(f.Arg)
+		if resolved.Encrypted {
+			chain += fmt.Sprintf(".Scopes(models.EncryptedWhereScope(%q, %q, %s))", resolved.Column, f.Op, arg)
+			continue
+		}
+		col = resolved.Column
 		if f.Op == "BETWEEN" {
 			arg2, _ := exprString(f.Arg2)
 			chain += fmt.Sprintf(".Where(%q, %s, %s)", col+" BETWEEN ? AND ?", arg, arg2)
@@ -1350,7 +1424,7 @@ func (e *exporter) gormChain(q queryChain) string {
 		chain += fmt.Sprintf(".Preload(%q)", p)
 	}
 	for _, order := range q.Orders {
-		chain += fmt.Sprintf(".Order(models.OrderClause(%s, %s))", order.Column, order.Direction)
+		chain += fmt.Sprintf(".Order(models.OrderClause(%s, %s))", e.resolveQueryOrderColumn(q.Model, order.Column), order.Direction)
 	}
 	if q.Limit != nil {
 		arg, _ := exprString(q.Limit)
@@ -5409,6 +5483,14 @@ func modelSet(tables []*schema.Table) map[string]bool {
 	return out
 }
 
+func schemaTableSet(tables []*schema.Table) map[string]*schema.Table {
+	out := map[string]*schema.Table{}
+	for _, tbl := range tables {
+		out[tableToStruct(tbl.Name)] = tbl
+	}
+	return out
+}
+
 func modelFileName(table string) string {
 	name := table
 	if strings.HasSuffix(name, "ies") {
@@ -6598,6 +6680,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"gorm.io/gorm"
 )
 
 type exportedEncryptedModel interface {
@@ -6706,6 +6790,66 @@ func encryptDeterministic(key, plaintext []byte) (string, error) {
 	copy(out[:aes.BlockSize], iv)
 	copy(out[aes.BlockSize:], ciphertext)
 	return base64.StdEncoding.EncodeToString(out), nil
+}
+
+func EncryptedWhereScope(column, op string, value any) func(*gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		encryptedValue, err := EncryptDeterministicFilterValue(value)
+		if err != nil {
+			db.AddError(err)
+			return db.Where("1 = 0")
+		}
+		return db.Where(column+" "+op+" ?", encryptedValue)
+	}
+}
+
+func UnsupportedQueryFilterScope(message string) func(*gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		db.AddError(errors.New(message))
+		return db.Where("1 = 0")
+	}
+}
+
+func EncryptDeterministicFilterValue(value any) (any, error) {
+	key, err := exportedEncryptionKey()
+	if err != nil {
+		return nil, err
+	}
+	switch v := value.(type) {
+	case string:
+		return encryptDeterministic(key, []byte(v))
+	case *string:
+		if v == nil {
+			return nil, nil
+		}
+		return encryptDeterministic(key, []byte(*v))
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			encrypted, err := encryptDeterministic(key, []byte(item))
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, encrypted)
+		}
+		return out, nil
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("encrypted filter values must be strings, got %T", item)
+			}
+			encrypted, err := encryptDeterministic(key, []byte(s))
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, encrypted)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("encrypted filter value must be a string or []string, got %T", value)
+	}
 }
 
 func decryptDeterministic(key []byte, encoded string) ([]byte, error) {

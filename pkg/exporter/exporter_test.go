@@ -3628,6 +3628,89 @@ func Index(role string, direction string) ([]models.User, error) {
 	}
 }
 
+func TestRewriteQueryEncryptedFiltersUseStorageScopes(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"User": true},
+		schemaTables: map[string]*schema.Table{
+			"User": {Name: "users", Columns: []*schema.Column{
+				{Name: "id", Type: schema.UUID, IsPrimaryKey: true},
+				{Name: "email", Type: schema.String, IsEncrypted: true},
+				{Name: "private_key", Type: schema.String, IsSealed: true},
+			}},
+		},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func Find(email string) (*models.User, error) {
+	return models.QueryUser().
+		WhereEmail(email).
+		OrderByEmail("ASC").
+		First()
+}
+
+func Denied(privateKey string) (*models.User, error) {
+	return models.QueryUser().WherePrivateKey(privateKey).First()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	compact := strings.Join(strings.Fields(got), " ")
+	assertContainsAll(t, compact,
+		`EncryptedWhereScope("email_encrypted", "=", email`,
+		`Order(models.OrderClause("email_encrypted", "ASC"))`,
+		`UnsupportedQueryFilterScope("sealed column private_key cannot be filtered"`,
+	)
+	for _, unexpected := range []string{`Where("email = ?"`, `Where("private_key = ?"`, "WhereEmail", "WherePrivateKey"} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("rewritten source retained unsafe encrypted query %q:\n%s", unexpected, got)
+		}
+	}
+}
+
+func TestRewriteMutableQueryEncryptedFiltersUseStorageScopes(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"User": true},
+		schemaTables: map[string]*schema.Table{
+			"User": {Name: "users", Columns: []*schema.Column{
+				{Name: "id", Type: schema.UUID, IsPrimaryKey: true},
+				{Name: "email", Type: schema.String, IsEncrypted: true},
+			}},
+		},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func Find(email string) ([]models.User, error) {
+	q := models.QueryUser()
+	q.WhereEmail(email)
+	return q.All()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	compact := strings.Join(strings.Fields(got), " ")
+	assertContainsAll(t, compact,
+		`q = q.Scopes(models.EncryptedWhereScope("email_encrypted", "=", email))`,
+		`return func() ([]models.User, error)`,
+	)
+	if strings.Contains(got, `Where("email = ?"`) || strings.Contains(got, "WhereEmail") {
+		t.Fatalf("rewritten mutable source retained unsafe encrypted query:\n%s", got)
+	}
+}
+
 func TestRewriteQueryFilterOperatorSuffixes(t *testing.T) {
 	ex := &exporter{
 		sourceModule: "example.com/app",

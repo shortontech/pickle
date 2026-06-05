@@ -1730,6 +1730,9 @@ func (e *exporter) writeActionSupport(model string) error {
 
 import (
 	"errors"
+	"fmt"
+	"log"
+	"net"
 
 	"%s/internal/httpx"
 )
@@ -1737,6 +1740,81 @@ import (
 type Context = httpx.Context
 
 var ErrUnauthorized = errors.New("unauthorized")
+
+type AuditFunc func(ctx *httpx.Context, action, model string, resourceID any, extra string)
+
+var OnAuditPerformed AuditFunc
+var OnAuditDenied AuditFunc
+var OnAuditFailed AuditFunc
+
+func AuditPerformed(ctx *httpx.Context, action, model string, resourceID any) {
+	if OnAuditPerformed != nil {
+		OnAuditPerformed(ctx, action, model, resourceID, "")
+		return
+	}
+	log.Printf("audit.performed user_id=%%s roles=%%v action=%%s model=%%s resource_id=%%v ip=%%s request_id=%%s",
+		auditUserID(ctx), auditRoles(ctx), action, model, resourceID, auditContextIP(ctx), auditContextRequestID(ctx))
+}
+
+func AuditDenied(ctx *httpx.Context, action, model string, resourceID any, reason string) {
+	if OnAuditDenied != nil {
+		OnAuditDenied(ctx, action, model, resourceID, reason)
+		return
+	}
+	log.Printf("audit.denied user_id=%%s roles=%%v action=%%s model=%%s resource_id=%%v reason=%%s ip=%%s request_id=%%s",
+		auditUserID(ctx), auditRoles(ctx), action, model, resourceID, reason, auditContextIP(ctx), auditContextRequestID(ctx))
+}
+
+func AuditFailed(ctx *httpx.Context, action, model string, resourceID any, err error) {
+	if OnAuditFailed != nil {
+		OnAuditFailed(ctx, action, model, resourceID, err.Error())
+		return
+	}
+	log.Printf("audit.failed user_id=%%s roles=%%v action=%%s model=%%s resource_id=%%v error=%%v ip=%%s request_id=%%s",
+		auditUserID(ctx), auditRoles(ctx), action, model, resourceID, err, auditContextIP(ctx), auditContextRequestID(ctx))
+}
+
+func auditUserID(ctx *httpx.Context) string {
+	if ctx == nil || ctx.Auth() == nil {
+		return ""
+	}
+	return ctx.Auth().UserID
+}
+
+func auditRoles(ctx *httpx.Context) string {
+	if ctx == nil {
+		return "[]"
+	}
+	return fmt.Sprintf("%%v", ctx.Roles())
+}
+
+func auditContextIP(ctx *httpx.Context) string {
+	if ctx == nil || ctx.Request() == nil {
+		return ""
+	}
+	req := ctx.Request()
+	if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
+		return xff
+	}
+	if xri := req.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+	host, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		return req.RemoteAddr
+	}
+	return host
+}
+
+func auditContextRequestID(ctx *httpx.Context) string {
+	if ctx == nil || ctx.Request() == nil {
+		return ""
+	}
+	if id := ctx.Request().Header.Get("X-Request-ID"); id != "" {
+		return id
+	}
+	return ctx.Request().Header.Get("X-Request-Id")
+}
 `, e.modulePath)
 	formatted, err := format.Source([]byte(src))
 	if err != nil {
@@ -1841,6 +1919,7 @@ func (e *exporter) generateActionModelWiring(set *generator.ActionSet) ([]byte, 
 		}
 		b.WriteString(fmt.Sprintf("\troleID := Can%s(ctx, m)\n", action.Name))
 		b.WriteString("\tif roleID == nil {\n")
+		b.WriteString(fmt.Sprintf("\t\tAuditDenied(ctx, %q, %q, m.ID, \"gate denied\")\n", action.Name, structName))
 		if action.HasResult {
 			b.WriteString("\t\treturn nil, ErrUnauthorized\n")
 		} else {
@@ -1919,7 +1998,6 @@ func (e *exporter) generateActionAuditSupport(sets map[string]*generator.ActionS
 import (
 	"errors"
 	"fmt"
-	"net"
 	"reflect"
 	"sync"
 	"time"
@@ -2030,11 +2108,15 @@ func runAuditedAction(ctx *httpx.Context, model, action string, resourceID uuid.
 			return err
 		}
 		if err := fn(); err != nil {
+			AuditFailed(ctx, action, model, resourceID, err)
 			return err
 		}
 		return recordActionPerformed(tx, ctx, actionID, resourceID, resourceVersionID, roleID)
 	})
 	DB = previous
+	if err == nil {
+		AuditPerformed(ctx, action, model, resourceID)
+	}
 	return err
 }
 
@@ -2085,34 +2167,6 @@ func nullableString(value string) any {
 		return nil
 	}
 	return value
-}
-
-func auditContextIP(ctx *httpx.Context) string {
-	if ctx == nil || ctx.Request() == nil {
-		return ""
-	}
-	req := ctx.Request()
-	if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
-		return xff
-	}
-	if xri := req.Header.Get("X-Real-IP"); xri != "" {
-		return xri
-	}
-	host, _, err := net.SplitHostPort(req.RemoteAddr)
-	if err != nil {
-		return req.RemoteAddr
-	}
-	return host
-}
-
-func auditContextRequestID(ctx *httpx.Context) string {
-	if ctx == nil || ctx.Request() == nil {
-		return ""
-	}
-	if id := ctx.Request().Header.Get("X-Request-ID"); id != "" {
-		return id
-	}
-	return ctx.Request().Header.Get("X-Request-Id")
 }
 `)
 	return format.Source([]byte(b.String()))

@@ -545,9 +545,37 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	ctx := httpx.NewContext(req)
 	ctx.SetAuth(&httpx.AuthInfo{UserID: uuid.New().String(), Role: "admin"})
 
+	var performed, denied, failed int
+	var deniedReason, failedError string
+	models.OnAuditPerformed = func(ctx *httpx.Context, action, model string, resourceID any, extra string) {
+		if action == "Ban" && model == "User" {
+			performed++
+		}
+	}
+	models.OnAuditDenied = func(ctx *httpx.Context, action, model string, resourceID any, extra string) {
+		if action == "Ban" && model == "User" {
+			denied++
+			deniedReason = extra
+		}
+	}
+	models.OnAuditFailed = func(ctx *httpx.Context, action, model string, resourceID any, extra string) {
+		if action == "Fail" && model == "User" {
+			failed++
+			failedError = extra
+		}
+	}
+	defer func() {
+		models.OnAuditPerformed = nil
+		models.OnAuditDenied = nil
+		models.OnAuditFailed = nil
+	}()
+
 	user := &models.User{ID: userID, Name: "before"}
 	if err := user.Ban(ctx, models.BanAction{Reason: "banned"}); err != nil {
 		t.Fatalf("ban: %v", err)
+	}
+	if performed != 1 {
+		t.Fatalf("performed audit hook count = %d, want 1", performed)
 	}
 	var auditRows int64
 	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
@@ -569,6 +597,9 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	if err := user.Ban(deniedCtx, models.BanAction{Reason: "denied"}); !errors.Is(err, models.ErrUnauthorized) {
 		t.Fatalf("denied ban error = %v, want ErrUnauthorized", err)
 	}
+	if denied != 1 || deniedReason != "gate denied" {
+		t.Fatalf("denied audit hook count/reason = %d/%q, want 1/gate denied", denied, deniedReason)
+	}
 	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -578,6 +609,9 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 
 	if err := user.Fail(ctx, models.FailAction{}); err == nil {
 		t.Fatal("expected failed action error")
+	}
+	if failed != 1 || failedError != "boom" {
+		t.Fatalf("failed audit hook count/error = %d/%q, want 1/boom", failed, failedError)
 	}
 	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
 		t.Fatal(err)

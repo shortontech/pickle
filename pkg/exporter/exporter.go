@@ -4369,15 +4369,27 @@ func Init(env func(string, string) string, db *sql.DB) {
 }
 
 func Driver(name string) AuthDriver {
-	d, ok := registry[name]
-	if !ok {
-		panic(fmt.Sprintf("auth: unknown driver %%q", name))
+	d, err := TryDriver(name)
+	if err != nil {
+		panic(err.Error())
 	}
 	return d
 }
 
+func TryDriver(name string) (AuthDriver, error) {
+	d, ok := registry[name]
+	if !ok {
+		return nil, fmt.Errorf("auth: unknown driver %%q", name)
+	}
+	return d, nil
+}
+
 func ActiveDriver() AuthDriver {
 	return Driver(activeDriverName())
+}
+
+func TryActiveDriver() (AuthDriver, error) {
+	return TryDriver(activeDriverName())
 }
 
 func activeDriverName() string {
@@ -4394,7 +4406,11 @@ func ActiveDriverName() string {
 }
 
 func Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
-	return ActiveDriver().Authenticate(r)
+	driver, err := TryActiveDriver()
+	if err != nil {
+		return nil, err
+	}
+	return driver.Authenticate(r)
 }
 
 func DefaultAuthMiddleware(ctx *httpx.Context, next func() httpx.Response) httpx.Response {

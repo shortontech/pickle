@@ -160,6 +160,7 @@ import (
 	"basic-crud/app/http/auth/jwt"
 	"basic-crud/app/http/auth/oauth"
 	"basic-crud/app/http/auth/session"
+	"basic-crud/internal/httpx"
 )
 
 func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
@@ -238,6 +239,27 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	}
 	if sessionInfo.UserID != "user-2" || sessionInfo.Role != "viewer" {
 		t.Fatalf("session auth info = %#v", sessionInfo)
+	}
+
+	badEnv := func(key, fallback string) string {
+		if key == "AUTH_DRIVER" {
+			return "bogus"
+		}
+		return env(key, fallback)
+	}
+	auth.Init(badEnv, db)
+	if _, err := auth.TryActiveDriver(); err == nil {
+		t.Fatal("TryActiveDriver should reject unknown AUTH_DRIVER")
+	}
+	if _, err := auth.Authenticate(req); err == nil {
+		t.Fatal("Authenticate should return an error for unknown AUTH_DRIVER")
+	}
+	resp := auth.DefaultAuthMiddleware(httpx.NewContext(req), func() httpx.Response {
+		t.Fatal("middleware should not call next for unknown AUTH_DRIVER")
+		return httpx.Response{}
+	})
+	if resp.Status != 401 {
+		t.Fatalf("middleware status = %d, want 401", resp.Status)
 	}
 }
 `

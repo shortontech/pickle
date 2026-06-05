@@ -87,6 +87,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertNoGoFileContains(t, out, "PICKLE_")
 	assertFileContains(t, filepath.Join(out, "go.sum"), "gorm.io/gorm")
 	writeExportedAuthBehaviorTest(t, out)
+	writeExportedSessionCSRFBehaviorTest(t, out)
 	writeExportedActionAuditBehaviorTest(t, out)
 	writeExportedMigrationBehaviorTest(t, out)
 	writeExportedPolicyBehaviorTest(t, out)
@@ -193,6 +194,146 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "http", "auth", "exported_auth_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedSessionCSRFBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package session
+
+import (
+	"database/sql"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	_ "github.com/mattn/go-sqlite3"
+
+	"basic-crud/internal/httpx"
+)
+
+func TestExportedSessionCSRFBoundary(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(` + "`" + `CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, role TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `); err != nil {
+		t.Fatal(err)
+	}
+	env := func(key, fallback string) string {
+		values := map[string]string{
+			"SESSION_SECRET": "session-secret",
+			"SESSION_COOKIE": "sid",
+			"CSRF_COOKIE": "csrf_token",
+		}
+		if value, ok := values[key]; ok {
+			return value
+		}
+		return fallback
+	}
+	NewDriver(env, db, "sqlite")
+
+	getCtx := httpx.NewContext(requestWithSession(http.MethodGet, "sess-1"))
+	getResp := CSRF(getCtx, func() httpx.Response {
+		return getCtx.NoContent()
+	})
+	if getResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("GET status = %d", getResp.StatusCode)
+	}
+	if cookie := findCookie(getResp.Cookies, "csrf_token"); cookie == nil {
+		t.Fatal("safe request should receive a CSRF cookie")
+	} else if cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("csrf cookie security attributes = %#v", cookie)
+	}
+
+	postCtx := httpx.NewContext(requestWithSession(http.MethodPost, "sess-1"))
+	missing := CSRF(postCtx, func() httpx.Response {
+		t.Fatal("CSRF should block missing token")
+		return httpx.Response{}
+	})
+	if missing.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing token status = %d", missing.StatusCode)
+	}
+
+	invalidReq := requestWithSession(http.MethodPost, "sess-1")
+	invalidReq.Header.Set("X-CSRF-TOKEN", "bogus.token")
+	invalidCtx := httpx.NewContext(invalidReq)
+	invalid := CSRF(invalidCtx, func() httpx.Response {
+		t.Fatal("CSRF should block invalid token")
+		return httpx.Response{}
+	})
+	if invalid.StatusCode != http.StatusForbidden {
+		t.Fatalf("invalid token status = %d", invalid.StatusCode)
+	}
+
+	validReq := requestWithSession(http.MethodPost, "sess-1")
+	validReq.Header.Set("X-CSRF-TOKEN", generateCSRFToken("sess-1", csrfConfig.secret))
+	validCtx := httpx.NewContext(validReq)
+	valid := CSRF(validCtx, func() httpx.Response {
+		return validCtx.NoContent()
+	})
+	if valid.StatusCode != http.StatusNoContent {
+		t.Fatalf("valid token status = %d", valid.StatusCode)
+	}
+
+	bearerReq := requestWithSession(http.MethodPost, "sess-1")
+	bearerReq.Header.Set("Authorization", "Bearer api-token")
+	bearerCtx := httpx.NewContext(bearerReq)
+	bearer := CSRF(bearerCtx, func() httpx.Response {
+		return bearerCtx.NoContent()
+	})
+	if bearer.StatusCode != http.StatusNoContent {
+		t.Fatalf("bearer token bypass status = %d", bearer.StatusCode)
+	}
+}
+
+func TestExportedSessionCreateSetsSessionAndCSRFCookies(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(` + "`" + `CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, role TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `); err != nil {
+		t.Fatal(err)
+	}
+	NewDriver(func(key, fallback string) string {
+		if key == "SESSION_SECRET" {
+			return "session-secret"
+		}
+		return fallback
+	}, db, "sqlite")
+
+	ctx := httpx.NewContext(httptest.NewRequest(http.MethodPost, "/login", nil))
+	resp, err := Create(ctx, "user-1", "member")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if findCookie(resp.Cookies, sessionCookieName) == nil {
+		t.Fatal("session cookie should be set")
+	}
+	if findCookie(resp.Cookies, csrfConfig.cookieName) == nil {
+		t.Fatal("csrf cookie should be set")
+	}
+}
+
+func requestWithSession(method, sessionID string) *http.Request {
+	req := httptest.NewRequest(method, "/", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sessionID})
+	return req
+}
+
+func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
+	for _, cookie := range cookies {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+	return nil
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "http", "auth", "session", "exported_csrf_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

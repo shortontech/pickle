@@ -86,6 +86,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileNotContains(t, filepath.Join(out, "app", "commands", "support.go"), "log.Fatal(err)")
 	assertFileNotContains(t, filepath.Join(out, "app", "commands", "support.go"), "failed to unwrap database handle")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "support.go"), "func (r *Runner) Migrate(entries []MigrationEntry) error")
+	assertFileContains(t, filepath.Join(out, "database", "migrations", "support.go"), `return fmt.Errorf("fresh rollback %s: %w", entries[i].ID, err)`)
+	assertFileNotContains(t, filepath.Join(out, "database", "migrations", "support.go"), `_ = r.execMigrationFile(entries[i].DownFile)`)
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "crypto/hmac")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "ErrInvalidToken")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "maxJWTTokenBytes")
@@ -1818,6 +1820,37 @@ func TestExportedMigrationFailureDoesNotLeakStatementText(t *testing.T) {
 	}
 }
 
+func TestExportedMigrationFreshFailsClosedOnDownErrors(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := migrations.NewRunner(db, "sqlite")
+	failingFresh := migrations.MigrationEntry{
+		ID:       "99990101000003_fresh_down_failure",
+		UpFile:   "99990101000003_fresh_down_failure.up.sql",
+		DownFile: "99990101000003_fresh_down_failure.down.sql",
+	}
+	if err := runner.Migrate([]migrations.MigrationEntry{failingFresh}); err != nil {
+		t.Fatalf("setup migration: %v", err)
+	}
+	assertSQLiteTableExists(t, db, "fresh_down_failure")
+	assertMigrationRowCount(t, db, failingFresh.ID, 1)
+
+	err = runner.Fresh([]migrations.MigrationEntry{failingFresh})
+	if err == nil {
+		t.Fatal("expected fresh to fail on down migration error")
+	}
+	if strings.Contains(err.Error(), "password=swordfish") || strings.Contains(err.Error(), "SELECT") {
+		t.Fatalf("fresh error leaked statement text: %v", err)
+	}
+	if !strings.Contains(err.Error(), "fresh rollback "+failingFresh.ID) || !strings.Contains(err.Error(), "executing migration statement 1") {
+		t.Fatalf("fresh error missing migration and statement context: %v", err)
+	}
+	assertSQLiteTableExists(t, db, "fresh_down_failure")
+	assertMigrationRowCount(t, db, failingFresh.ID, 1)
+}
+
 func TestExportedMigrationRunnerRejectsNilDBWithoutPanic(t *testing.T) {
 	runner := migrations.NewRunner(nil, "sqlite")
 	for _, tc := range []struct {
@@ -1913,6 +1946,8 @@ func TestExportedSplitSQLStatementsPreservesQuotedSemicolons(t *testing.T) {
 		"99990101000001_atomic_rollback.down.sql": "DROP TABLE atomic_rollback;\nSELECT * FROM definitely_missing_table;\n",
 		"99990101000002_secret_failure.up.sql":    "SELECT 'password=swordfish' FROM definitely_missing_table;\n",
 		"99990101000002_secret_failure.down.sql":  "SELECT 1;\n",
+		"99990101000003_fresh_down_failure.up.sql": "CREATE TABLE fresh_down_failure (id TEXT PRIMARY KEY);\n",
+		"99990101000003_fresh_down_failure.down.sql": "SELECT 'password=swordfish' FROM definitely_missing_table;\nDROP TABLE fresh_down_failure;\n",
 	} {
 		if err := os.WriteFile(filepath.Join(out, "database", "migrations", name), []byte(src), 0o644); err != nil {
 			t.Fatal(err)

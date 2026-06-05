@@ -4397,7 +4397,9 @@ func (r *Runner) Fresh(entries []MigrationEntry) error {
 		return err
 	}
 	for i := len(entries) - 1; i >= 0; i-- {
-		_ = r.execMigrationFile(entries[i].DownFile)
+		if err := r.execMigrationFile(entries[i].DownFile); err != nil {
+			return fmt.Errorf("fresh rollback %s: %w", entries[i].ID, err)
+		}
 	}
 	if err := r.DB.Exec("DROP TABLE IF EXISTS migrations").Error; err != nil {
 		return err

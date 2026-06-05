@@ -718,6 +718,7 @@ func writeExportedRequestBindingBehaviorTest(t *testing.T, out string) {
 	testSrc := `package requests
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -744,6 +745,17 @@ func TestExportedRequestBindingsRejectUnsafeBodies(t *testing.T) {
 	invalid := requestWithBody(` + "`" + `{"name":"Ada","email":"not-an-email","password":"short"}` + "`" + `)
 	if _, bindErr := BindCreateUserRequest(invalid); bindErr == nil || bindErr.Status != http.StatusUnprocessableEntity {
 		t.Fatalf("validation bind error = %#v, want 422", bindErr)
+	}
+
+	fallbackErr := formatValidationErrors(errors.New("database password is swordfish"))
+	if fallbackErr.Status != http.StatusUnprocessableEntity {
+		t.Fatalf("fallback validation status = %d, want 422", fallbackErr.Status)
+	}
+	if len(fallbackErr.Errors) != 1 || fallbackErr.Errors[0].Message != "validation failed" {
+		t.Fatalf("fallback validation errors = %#v", fallbackErr.Errors)
+	}
+	if strings.Contains(fallbackErr.Error(), "swordfish") || strings.Contains(fallbackErr.Error(), "database password") {
+		t.Fatalf("fallback validation error leaked raw detail: %q", fallbackErr.Error())
 	}
 
 	oversized := requestWithBody(strings.Repeat(" ", maxJSONRequestBodyBytes+1))

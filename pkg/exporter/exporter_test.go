@@ -44,6 +44,9 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "user.go"), "type User struct")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_post_stat.go"), "type UserPostStat struct")
 	assertFileContains(t, filepath.Join(out, "app", "models", "db.go"), "var DB *gorm.DB")
+	assertFileContains(t, filepath.Join(out, "app", "models", "db.go"), "func WithTransaction(fn func(tx *Tx) error) error")
+	assertFileContains(t, filepath.Join(out, "app", "models", "db.go"), "func ApplyLockTimeout(db *gorm.DB, d time.Duration) error")
+	assertFileContains(t, filepath.Join(out, "app", "models", "db.go"), "type LockOutsideTransactionError struct")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.up.sql"), "CREATE TABLE")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.up.sql"), "email_encrypted")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.up.sql"), "password_hash_encrypted")
@@ -1751,7 +1754,8 @@ func TestExportLedgerCompiles(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "account.go"), "[]byte")
 	assertFileContains(t, filepath.Join(out, "app", "models", "integrity_support.go"), "func CreateAccount(record *Account) error")
 	assertFileContains(t, filepath.Join(out, "app", "models", "integrity_support.go"), "func VerifyTransactionChain() error")
-	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "account_controller.go"), "models.DB.Model(&models.Account{})")
+	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "account_controller.go"), "models.DB.Model(&models.")
+	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "account_controller.go"), "Account{})")
 	assertPathMissing(t, filepath.Join(out, "integrity_test.go"))
 	assertCleanExportReport(t, out)
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
@@ -2991,15 +2995,24 @@ func TestRewriteQueryLockClauses(t *testing.T) {
 	}
 	src := []byte(`package controllers
 
-import "example.com/app/app/models"
+import (
+	"time"
 
-func Claim(status string) ([]models.Job, error) {
-	return models.QueryJob().
-		WhereStatus(status).
-		Lock().
-		SkipLocked().
-		Limit(10).
-		All()
+	"example.com/app/app/models"
+)
+
+func Claim(status string) error {
+	return models.WithTransaction(func(tx *models.Tx) error {
+		jobs, err := tx.QueryJob().
+			WhereStatus(status).
+			Lock().
+			SkipLocked().
+			Timeout(time.Second).
+			Limit(10).
+			All()
+		_ = jobs
+		return err
+	})
 }
 `)
 	out, err := ex.rewriteGoFile("controller.go", src)
@@ -3010,7 +3023,12 @@ func Claim(status string) ([]models.Job, error) {
 	compact := strings.Join(strings.Fields(got), " ")
 	assertContainsAll(t, compact,
 		`"gorm.io/gorm/clause"`,
-		`Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"`,
+		`models.WithTransaction(func(tx *models.Tx) error`,
+		`models.ApplyLockTimeout(tx.DB, time.Second)`,
+		`tx.DB.Model(&models.`,
+		`Job{})`,
+		`Clauses(clause.`,
+		`Locking{Strength: "UPDATE", Options: "SKIP LOCKED"`,
 		`Where("status = ?", status)`,
 		"Limit(10)",
 	)
@@ -3031,12 +3049,16 @@ func TestRewriteQueryShareNoWaitLockClause(t *testing.T) {
 
 import "example.com/app/app/models"
 
-func ReadOne(id string) (*models.Job, error) {
-	return models.QueryJob().
-		WhereID(id).
-		LockForShare().
-		NoWait().
-		First()
+func ReadOne(id string) error {
+	return models.WithTransaction(func(tx *models.Tx) error {
+		job, err := tx.QueryJob().
+			WhereID(id).
+			LockForShare().
+			NoWait().
+			First()
+		_ = job
+		return err
+	})
 }
 `)
 	out, err := ex.rewriteGoFile("controller.go", src)
@@ -3047,6 +3069,8 @@ func ReadOne(id string) (*models.Job, error) {
 	compact := strings.Join(strings.Fields(got), " ")
 	assertContainsAll(t, compact,
 		`"gorm.io/gorm/clause"`,
+		`tx.DB.Model(&models.`,
+		`Job{})`,
 		`Clauses(clause.Locking{Strength: "SHARE", Options: "NOWAIT"`,
 		`Where("id = ?", id)`,
 	)
@@ -3054,6 +3078,37 @@ func ReadOne(id string) (*models.Job, error) {
 		if strings.Contains(got, unexpected) {
 			t.Fatalf("rewritten source retained %q:\n%s", unexpected, got)
 		}
+	}
+}
+
+func TestRewriteQueryLockOutsideTransactionReturnsPickleEquivalentError(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"Job": true},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func Claim(status string) ([]models.Job, error) {
+	return models.QueryJob().
+		WhereStatus(status).
+		Lock().
+		All()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	compact := strings.Join(strings.Fields(got), " ")
+	assertContainsAll(t, compact,
+		`return nil, models.NewLockOutsideTransactionError("Job")`,
+	)
+	if strings.Contains(got, "clause.Locking") {
+		t.Fatalf("outside-transaction lock should not emit a GORM lock clause:\n%s", got)
 	}
 }
 
@@ -3067,11 +3122,15 @@ func TestRewriteMutableQueryLockClauses(t *testing.T) {
 
 import "example.com/app/app/models"
 
-func Claim() ([]models.Job, error) {
-	q := models.QueryJob()
-	q.Lock()
-	q.SkipLocked()
-	return q.All()
+func Claim() error {
+	return models.WithTransaction(func(tx *models.Tx) error {
+		q := tx.QueryJob()
+		q.Lock()
+		q.SkipLocked()
+		jobs, err := q.All()
+		_ = jobs
+		return err
+	})
 }
 `)
 	out, err := ex.rewriteGoFile("controller.go", src)
@@ -3082,6 +3141,8 @@ func Claim() ([]models.Job, error) {
 	compact := strings.Join(strings.Fields(got), " ")
 	assertContainsAll(t, compact,
 		`"gorm.io/gorm/clause"`,
+		`q := tx.DB.Model(&models.`,
+		`Job{})`,
 		`q = q.Clauses(clause.Locking{Strength: "UPDATE"`,
 		`q = q.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"`,
 	)
@@ -3129,7 +3190,7 @@ func ReadOne(id string) (*models.Job, error) {
 	}
 }
 
-func TestRewriteMutableQueryTimeoutRemainsUnsupportedBoundary(t *testing.T) {
+func TestRewriteMutableQueryTimeoutInTransaction(t *testing.T) {
 	ex := &exporter{
 		sourceModule: "example.com/app",
 		modulePath:   "exported-app",
@@ -3144,14 +3205,33 @@ import (
 )
 
 func Claim() ([]models.Job, error) {
-	q := models.QueryJob()
+	var jobs []models.Job
+	err := models.WithTransaction(func(tx *models.Tx) error {
+	q := tx.QueryJob()
+	q.Lock()
 	q.Timeout(time.Second)
-	return q.All()
+	var err error
+	jobs, err = q.All()
+	return err
+	})
+	return jobs, err
 }
 `)
-	_, err := ex.rewriteGoFile("controller.go", src)
-	if err == nil || !strings.Contains(err.Error(), "Timeout query locks are not exported yet") {
-		t.Fatalf("rewriteGoFile error = %v, want timeout unsupported boundary", err)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	compact := strings.Join(strings.Fields(got), " ")
+	assertContainsAll(t, compact,
+		`"gorm.io/gorm/clause"`,
+		`models.ApplyLockTimeout(tx.DB, time.Second)`,
+		`q = q.Clauses(clause.Locking{Strength: "UPDATE"`,
+	)
+	for _, unexpected := range []string{"QueryJob", ".Timeout("} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("rewritten source retained %q:\n%s", unexpected, got)
+		}
 	}
 }
 
@@ -3182,7 +3262,7 @@ func Show(id string) (*m.User, error) {
 		`"exported-app/app/models"`,
 		"func Show(id string) (*models.User, error)",
 		"models.DB.Model(&models.User{})",
-		`.Where( "id = ?", id).First(&record).Error`,
+		`.Where("id = ?", id).First(&record).Error`,
 	)
 }
 

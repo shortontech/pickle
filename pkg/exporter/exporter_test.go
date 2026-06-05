@@ -95,6 +95,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	writeExportedConfigBehaviorTest(t, out)
 	writeExportedActionAuditBehaviorTest(t, out)
 	writeExportedMigrationBehaviorTest(t, out)
+	writeExportedCommandAppBehaviorTest(t, out)
 	writeExportedPolicyBehaviorTest(t, out)
 	writeExportedRouterMiddlewareBehaviorTest(t, out)
 	writeExportedRBACMiddlewareBehaviorTest(t, out)
@@ -692,6 +693,64 @@ func TestExportedMigrationsApplyToSQLite(t *testing.T) {
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "database", "migrations", "exported_migration_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedCommandAppBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package commands_test
+
+import (
+	"database/sql"
+	"path/filepath"
+	"testing"
+
+	_ "github.com/mattn/go-sqlite3"
+
+	"basic-crud/app/commands"
+)
+
+func TestExportedCommandAppRunsMigrations(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "app.sqlite")
+	t.Setenv("DB_CONNECTION", "sqlite")
+	t.Setenv("DB_DATABASE", dbPath)
+	t.Setenv("JWT_SECRET", "0123456789abcdef0123456789abcdef")
+	t.Setenv("APP_ENCRYPTION_KEY", "12345678901234567890123456789012")
+
+	commands.NewApp().Run([]string{"migrate"})
+	commands.NewApp().Run([]string{"migrate:status"})
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	var migrations int
+	if err := db.QueryRow("SELECT COUNT(*) FROM migrations").Scan(&migrations); err != nil {
+		t.Fatalf("count migrations: %v", err)
+	}
+	if migrations == 0 {
+		t.Fatal("migrate command did not record any migrations")
+	}
+	var roles int
+	if err := db.QueryRow("SELECT COUNT(*) FROM roles").Scan(&roles); err != nil {
+		t.Fatalf("count roles: %v", err)
+	}
+	if roles != 3 {
+		t.Fatalf("roles after migrate command = %d, want 3", roles)
+	}
+	var exposures int
+	if err := db.QueryRow("SELECT COUNT(*) FROM graphql_exposures WHERE model = 'users' AND operation = 'list'").Scan(&exposures); err != nil {
+		t.Fatalf("count graphql exposures: %v", err)
+	}
+	if exposures != 1 {
+		t.Fatalf("graphql user list exposures = %d, want 1", exposures)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "commands", "exported_command_app_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

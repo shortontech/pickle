@@ -3105,6 +3105,7 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "srv.AddTransport(transport.POST{})")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "srv.AddTransport(transport.GET{})")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), `w.Header().Set("X-Content-Type-Options", "nosniff")`)
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), `mime.ParseMediaType(contentType)`)
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "err.Path = graphQLErrorPath(path)")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLRequestBodyBytes = 1 << 20")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "http.MaxBytesReader(w, r.Body, maxGraphQLRequestBodyBytes)")
@@ -3451,6 +3452,44 @@ fragment UserFields on User {
 		}
 		if !strings.Contains(rec.Body.String(), "invalid GraphQL request body") {
 			t.Fatalf("missing sanitized body error: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("json_content_type_with_charset_is_accepted", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{"query": ` + "`" + `query CharsetJSON {
+  users(page: { first: 1 }) { edges { node { id } } }
+}` + "`" + `})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json; charset=utf-8")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "\"errors\"") {
+			t.Fatalf("charset JSON request should execute without errors: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("non_json_content_type_rejected_before_parse", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(` + "`" + `{"query":"{ users { edges { node { id } } } }"}` + "`" + `))
+		req.Header.Set("Content-Type", "text/plain")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnsupportedMediaType {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusUnsupportedMediaType, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Type"); got != "application/json" {
+			t.Fatalf("non-json Content-Type = %q, want application/json", got)
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL POST requests require application/json") {
+			t.Fatalf("missing sanitized media type error: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "text/plain") {
+			t.Fatalf("media type rejection leaked request content type: %s", rec.Body.String())
 		}
 	})
 

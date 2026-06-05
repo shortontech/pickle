@@ -2084,6 +2084,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -2166,6 +2167,10 @@ func graphQLErrorPresenter(ctx context.Context, err error) *gqlerror.Error {
 }
 
 func prepareGraphQLPostBody(w http.ResponseWriter, r *http.Request) bool {
+	if !isGraphQLJSONContentType(r.Header.Get("Content-Type")) {
+		writeGraphQLHTTPStatusError(w, http.StatusUnsupportedMediaType, "GraphQL POST requests require application/json", CodeBadUserInput)
+		return false
+	}
 	if r.ContentLength > maxGraphQLRequestBodyBytes {
 		writeGraphQLHTTPStatusError(w, http.StatusRequestEntityTooLarge, "graphql request body too large", CodeBadUserInput)
 		return false
@@ -2203,6 +2208,17 @@ func prepareGraphQLPostBody(w http.ResponseWriter, r *http.Request) bool {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	return true
+}
+
+func isGraphQLJSONContentType(contentType string) bool {
+	if contentType == "" {
+		return true
+	}
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	return mediaType == "application/json"
 }
 
 func writeGraphQLHTTPError(w http.ResponseWriter, message, code string) {

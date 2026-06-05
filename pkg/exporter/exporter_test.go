@@ -399,6 +399,9 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	if tokenResp.StatusCode != http.StatusOK {
 		t.Fatalf("oauth token endpoint status = %d body = %#v", tokenResp.StatusCode, tokenResp.Body)
 	}
+	if tokenResp.Headers["Cache-Control"] != "no-store" || tokenResp.Headers["Pragma"] != "no-cache" {
+		t.Fatalf("oauth token cache headers = %#v", tokenResp.Headers)
+	}
 	tokenBody, ok := tokenResp.Body.(map[string]any)
 	if !ok {
 		t.Fatalf("oauth token body type = %T", tokenResp.Body)

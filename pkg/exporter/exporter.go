@@ -6301,7 +6301,11 @@ func (d *Driver) TokenEndpoint(ctx *httpx.Context) httpx.Response {
 	if _, err := d.db.Exec(bindPlaceholders(d.driver, "INSERT INTO oauth_tokens (token, client_id, expires_at, created_at) VALUES (?, ?, ?, ?)"), token, clientID, expiresAt, time.Now().UTC()); err != nil {
 		return ctx.Error(fmt.Errorf("oauth: failed to store token: %%w", err))
 	}
-	return ctx.JSON(200, map[string]any{"access_token": token, "token_type": "bearer", "expires_in": d.expiry})
+	resp := ctx.JSON(200, map[string]any{"access_token": token, "token_type": "bearer", "expires_in": d.expiry})
+	if resp.Headers == nil { resp.Headers = map[string]string{} }
+	resp.Headers["Cache-Control"] = "no-store"
+	resp.Headers["Pragma"] = "no-cache"
+	return resp
 }
 
 func bindPlaceholders(driver, query string) string {

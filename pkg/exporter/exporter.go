@@ -2465,7 +2465,7 @@ func writeGraphQLAPIColumnFilter(b *strings.Builder, col *schema.Column, field s
 		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > 0 { q.Where%sIn(filter.%s.In) }\n", field, field, field))
 	case schema.Timestamp, schema.Date, schema.Time:
 		for _, op := range []struct{ gql, method string }{{"Gt", "After"}, {"Gte", "GTE"}, {"Lt", "Before"}, {"Lte", "LTE"}} {
-			b.WriteString(fmt.Sprintf("\t\tif filter.%s.%s != nil { if value, err := time.Parse(time.RFC3339, *filter.%s.%s); err == nil { q.Where%s%s(value) } }\n", field, op.gql, field, op.gql, field, op.method))
+			b.WriteString(fmt.Sprintf("\t\tif filter.%s.%s != nil { value, err := time.Parse(time.RFC3339, *filter.%s.%s); if err != nil { return graphQLAPIBadInput(\"invalid GraphQL timestamp filter\") }; q.Where%s%s(value) }\n", field, op.gql, field, op.gql, field, op.method))
 		}
 	case schema.Boolean:
 		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Eq != nil { q.Where%s(*filter.%s.Eq) }\n", field, field, field))

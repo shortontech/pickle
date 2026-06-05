@@ -4152,6 +4152,7 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileNotContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `q.db = q.db.Order(column + " " + dir)`)
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), "q.WhereCreatedAtGTE(value)")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), "q.WhereCreatedAtLTE(value)")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), `graphQLAPIBadInput("invalid GraphQL timestamp filter")`)
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `mux.Handle("/graphql", graphqlapi.Handler())`)
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "routes.API.RegisterRoutes(mux)")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "gqlgen-backed GraphQL API export target")
@@ -4244,9 +4245,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vektah/gqlparser/v2/gqlerror"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
+	"graphql-safety/app/graphqlapi/model"
 	"graphql-safety/app/models"
 )
 
@@ -4304,6 +4307,22 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 	if managerUser.Email != "ada@example.com" || managerUser.CreatedAt.IsZero() {
 		t.Fatalf("manager visibility user = %+v", managerUser)
 	}
+
+	badTimestamp := "not-a-timestamp"
+	if _, err := queries.Users(managerCtx, &model.UserFilter{CreatedAt: &model.DateTimeFilter{Gte: &badTimestamp}}, nil, nil); !isBadInput(err) {
+		t.Fatalf("invalid timestamp filter error = %v, want BAD_USER_INPUT", err)
+	}
+}
+
+func isBadInput(err error) bool {
+	if err == nil {
+		return false
+	}
+	gqlErr, ok := err.(*gqlerror.Error)
+	if !ok {
+		return false
+	}
+	return gqlErr.Extensions["code"] == "BAD_USER_INPUT"
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "resolver", "exported_visibility_test.go"), []byte(testSrc), 0o644); err != nil {

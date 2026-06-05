@@ -960,6 +960,33 @@ func TestExportedSessionPayloadErrorsAreSanitized(t *testing.T) {
 	}
 }
 
+func TestExportedSessionCreateDestroyDatabaseErrorsAreSanitized(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(` + "`" + `CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, role TEXT NOT NULL, payload TEXT, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `); err != nil {
+		t.Fatal(err)
+	}
+	NewDriver(func(key, fallback string) string {
+		if key == "SESSION_SECRET" {
+			return "session-secret"
+		}
+		return fallback
+	}, db, "sqlite")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := httpx.NewContext(requestWithSession(http.MethodPost, "sess-1"))
+	if _, err := Create(ctx, "user-1", "member"); err == nil || err.Error() != "session: database error" || strings.Contains(err.Error(), "sql:") {
+		t.Fatalf("Create closed DB error = %v, want sanitized database error", err)
+	}
+	if _, err := Destroy(ctx); err == nil || err.Error() != "session: database error" || strings.Contains(err.Error(), "sql:") {
+		t.Fatalf("Destroy closed DB error = %v, want sanitized database error", err)
+	}
+}
+
 func requestWithSession(method, sessionID string) *http.Request {
 	req := httptest.NewRequest(method, "/", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sessionID})

@@ -6454,7 +6454,7 @@ func Create(ctx *httpx.Context, userID, role string) (*SessionCookies, error) {
 	sessionID := uuid.New().String()
 	expiresAt := time.Now().UTC().Add(time.Duration(d.ttl) * time.Second)
 	if _, err := d.db.Exec(bindPlaceholders(d.driver, "INSERT INTO sessions (id, user_id, role, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"), sessionID, userID, role, expiresAt, time.Now().UTC(), time.Now().UTC()); err != nil {
-		return nil, err
+		return nil, errors.New("session: database error")
 	}
 	cookies := &SessionCookies{
 		Session: &http.Cookie{Name: d.cookieName, Value: sessionID, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode, Expires: expiresAt},
@@ -6488,7 +6488,7 @@ func Destroy(ctx *httpx.Context) (httpx.Response, error) {
 		return httpx.Response{}, errors.New("session: no session cookie")
 	}
 	if _, err := d.db.Exec(bindPlaceholders(d.driver, "DELETE FROM sessions WHERE id = ?"), sessionID); err != nil {
-		return httpx.Response{}, fmt.Errorf("session: destroy: %%w", err)
+		return httpx.Response{}, errors.New("session: database error")
 	}
 	expired := time.Unix(0, 0)
 	resp := ctx.NoContent().

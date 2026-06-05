@@ -2252,9 +2252,7 @@ func (pickleExecutableSchema) Complexity(ctx context.Context, typeName, fieldNam
 	if cost.IsList {
 		limit := defaultGraphQLPageSize
 		if pageArg, ok := args["page"].(map[string]any); ok {
-			if n, err := parsePositivePageInt(pageArg["first"]); err == nil {
-				limit = n
-			}
+			limit = graphQLRequestedPageLimit(pageArg, limit)
 		}
 		maxLimit := cost.MaxLimit
 		if maxLimit <= 0 {
@@ -2266,6 +2264,19 @@ func (pickleExecutableSchema) Complexity(ctx context.Context, typeName, fieldNam
 		base *= limit
 	}
 	return childComplexity + base, true
+}
+
+func graphQLRequestedPageLimit(pageArg map[string]any, fallback int) int {
+	if pageArg == nil {
+		return fallback
+	}
+	if n, err := parsePositivePageInt(pageArg["first"]); err == nil {
+		return n
+	}
+	if n, err := parsePositivePageInt(pageArg["last"]); err == nil {
+		return n
+	}
+	return fallback
 }
 
 func (pickleExecutableSchema) Exec(ctx context.Context) gqlgen.ResponseHandler {

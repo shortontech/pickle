@@ -3016,7 +3016,10 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "err.Path = graphQLErrorPath(path)")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLRequestBodyBytes = 1 << 20")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "http.MaxBytesReader(w, r.Body, maxGraphQLRequestBodyBytes)")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func graphQLRequestedPageLimit")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), `parsePositivePageInt(pageArg["last"])`)
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "pickle_gen.go"), "maxQueryComplexity")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "pickle_gen.go"), `pageArg["last"] != nil`)
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "pickle_gen.go"), "var allowIntrospection = false")
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), "func (q *UserQuery) WhereID")
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `q.db = q.db.Select([]string{"id", "name"})`)
@@ -3032,6 +3035,7 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "pickle.")
 	writeExportedGraphQLSafetyBehaviorTest(t, out)
+	writeExportedGraphQLCostBehaviorTest(t, out)
 	writeExportedGraphQLErrorBehaviorTest(t, out)
 	writeExportedGraphQLRBACBehaviorTest(t, out)
 	writeExportedGraphQLModelVisibilityBehaviorTest(t, out)
@@ -3399,6 +3403,56 @@ fragment UserFields on User {
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphql", "exported_safety_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedGraphQLCostBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package graphql
+
+import (
+	"context"
+	"strings"
+	"testing"
+)
+
+func TestExportedGraphQLCostModelPricesBackwardPagination(t *testing.T) {
+	cost := FieldCost{TypeName: "Query", FieldName: "users", BaseCost: 3, IsList: true, MaxLimit: 100}
+	first, err := fieldComplexity(Field{Name: "users", Args: map[string]any{"page": map[string]any{"first": 40}}}, cost)
+	if err != nil {
+		t.Fatalf("first complexity: %v", err)
+	}
+	last, err := fieldComplexity(Field{Name: "users", Args: map[string]any{"page": map[string]any{"last": 40}}}, cost)
+	if err != nil {
+		t.Fatalf("last complexity: %v", err)
+	}
+	if first != 120 || last != first {
+		t.Fatalf("first/last complexity = %d/%d, want both 120", first, last)
+	}
+	if _, err := fieldComplexity(Field{Name: "users", Args: map[string]any{"page": map[string]any{"last": 101}}}, cost); err == nil || !strings.Contains(err.Error(), "page.last 101 exceeds maximum 100") {
+		t.Fatalf("last over-limit error = %v", err)
+	}
+
+	previous, hadPrevious := generatedFieldCosts["Query.users"]
+	generatedFieldCosts["Query.users"] = cost
+	defer func() {
+		if hadPrevious {
+			generatedFieldCosts["Query.users"] = previous
+		} else {
+			delete(generatedFieldCosts, "Query.users")
+		}
+	}()
+	got, ok := (pickleExecutableSchema{}).Complexity(context.Background(), "Query", "users", 7, map[string]any{"page": map[string]any{"last": 40}})
+	if !ok {
+		t.Fatal("schema complexity did not handle Query.users")
+	}
+	if got != 127 {
+		t.Fatalf("schema complexity with page.last = %d, want child 7 + list cost 120", got)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "graphql", "exported_cost_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -524,6 +524,7 @@ func fieldComplexity(field Field, cost FieldCost) (int, error) {
 	}
 	if cost.IsList {
 		limit := defaultGraphQLPageSize
+		limitArg := "page.first"
 		if pageArg, ok := field.Args["page"].(map[string]any); ok {
 			if pageArg["first"] != nil {
 				n, err := parsePositivePageInt(pageArg["first"])
@@ -532,13 +533,21 @@ func fieldComplexity(field Field, cost FieldCost) (int, error) {
 				}
 				limit = n
 			}
+			if pageArg["first"] == nil && pageArg["last"] != nil {
+				n, err := parsePositivePageInt(pageArg["last"])
+				if err != nil {
+					return 0, fmt.Errorf("field %s page.last: %w", field.Name, err)
+				}
+				limit = n
+				limitArg = "page.last"
+			}
 		}
 		maxLimit := cost.MaxLimit
 		if maxLimit <= 0 {
 			maxLimit = maxGraphQLPageSize
 		}
 		if limit > maxLimit {
-			return 0, fmt.Errorf("field %s page.first %d exceeds maximum %d", field.Name, limit, maxLimit)
+			return 0, fmt.Errorf("field %s %s %d exceeds maximum %d", field.Name, limitArg, limit, maxLimit)
 		}
 		return base * limit, nil
 	}

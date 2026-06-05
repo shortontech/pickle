@@ -6255,6 +6255,7 @@ func TestFindingCategoryClassifiesUnlowerableBoundariesAsUnsupported(t *testing.
 		"gate_export_policy_dependency",
 		"gate_export_dynamic_role",
 		"gate_export_callsite",
+		"new_unclassified_export_boundary",
 	} {
 		if got := findingCategory(rule); got != "unsupported" {
 			t.Fatalf("findingCategory(%q) = %q, want unsupported", rule, got)

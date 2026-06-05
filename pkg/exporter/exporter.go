@@ -3815,42 +3815,68 @@ type ConnectionConfig struct {
 }
 
 func (c ConnectionConfig) DSN() string {
+	dsn, err := c.dsn()
+	if err != nil { return "" }
+	return dsn
+}
+
+func (c ConnectionConfig) Validate() error {
+	switch c.Driver {
+	case "pgsql", "postgres", "mysql", "sqlite":
+		return nil
+	default:
+		return fmt.Errorf("unsupported database driver: %s", c.Driver)
+	}
+}
+
+func (c ConnectionConfig) dsn() (string, error) {
 	switch c.Driver {
 	case "pgsql", "postgres":
 		params := url.Values{}
 		params.Set("sslmode", "disable")
 		for k, v := range c.Options { params.Set(k, v) }
-		return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?%s", url.PathEscape(c.User), url.PathEscape(c.Password), c.Host, c.Port, c.Name, params.Encode())
+		return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?%s", url.PathEscape(c.User), url.PathEscape(c.Password), c.Host, c.Port, c.Name, params.Encode()), nil
 	case "mysql":
 		params := url.Values{}
 		params.Set("parseTime", "true")
 		for k, v := range c.Options { params.Set(k, v) }
-		return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?%s", url.PathEscape(c.User), url.PathEscape(c.Password), c.Host, c.Port, c.Name, params.Encode())
+		return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?%s", url.PathEscape(c.User), url.PathEscape(c.Password), c.Host, c.Port, c.Name, params.Encode()), nil
 	case "sqlite":
-		return c.Name
+		return c.Name, nil
 	default:
-		panic("unsupported database driver: " + c.Driver)
+		return "", fmt.Errorf("unsupported database driver: %s", c.Driver)
 	}
 }
 
-func (c ConnectionConfig) driverName() string {
+func (c ConnectionConfig) driverName() (string, error) {
 	switch c.Driver {
-	case "pgsql", "postgres": return "pgx"
-	case "mysql": return "mysql"
-	case "sqlite": return "sqlite3"
-	default: panic("unsupported database driver: " + c.Driver)
+	case "pgsql", "postgres": return "pgx", nil
+	case "mysql": return "mysql", nil
+	case "sqlite": return "sqlite3", nil
+	default: return "", fmt.Errorf("unsupported database driver: %s", c.Driver)
 	}
+}
+
+func TryOpenDB(conn ConnectionConfig) (*sql.DB, error) {
+	driverName, err := conn.driverName()
+	if err != nil { return nil, err }
+	dsn, err := conn.dsn()
+	if err != nil { return nil, err }
+	db, err := sql.Open(driverName, dsn)
+	if err != nil { return nil, fmt.Errorf("open database: %w", err) }
+	if err := db.Ping(); err != nil { db.Close(); return nil, fmt.Errorf("ping database: %w", err) }
+	return db, nil
 }
 
 func OpenDB(conn ConnectionConfig) *sql.DB {
-	db, err := sql.Open(conn.driverName(), conn.DSN())
+	db, err := TryOpenDB(conn)
 	if err != nil { log.Fatalf("config: failed to open database: %v", err) }
-	if err := db.Ping(); err != nil { log.Fatalf("config: failed to ping database: %v", err) }
 	return db
 }
 
-func OpenGORM(conn ConnectionConfig) *gorm.DB {
-	sqlDB := OpenDB(conn)
+func TryOpenGORM(conn ConnectionConfig) (*gorm.DB, error) {
+	sqlDB, err := TryOpenDB(conn)
+	if err != nil { return nil, err }
 	var dialector gorm.Dialector
 	switch conn.Driver {
 	case "pgsql", "postgres":
@@ -3860,10 +3886,17 @@ func OpenGORM(conn ConnectionConfig) *gorm.DB {
 	case "sqlite":
 		dialector = sqlite.Dialector{Conn: sqlDB}
 	default:
-		panic("unsupported database driver: " + conn.Driver)
+		sqlDB.Close()
+		return nil, fmt.Errorf("unsupported database driver: %s", conn.Driver)
 	}
 	db, err := gorm.Open(dialector, &gorm.Config{})
-	if err != nil { log.Fatalf("config: failed to initialize gorm: %v", err) }
+	if err != nil { sqlDB.Close(); return nil, fmt.Errorf("initialize gorm: %w", err) }
+	return db, nil
+}
+
+func OpenGORM(conn ConnectionConfig) *gorm.DB {
+	db, err := TryOpenGORM(conn)
+	if err != nil { log.Fatalf("config: failed to initialize database: %v", err) }
 	return db
 }
 

@@ -91,12 +91,57 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "go.sum"), "gorm.io/gorm")
 	writeExportedAuthBehaviorTest(t, out)
 	writeExportedSessionCSRFBehaviorTest(t, out)
+	writeExportedConfigBehaviorTest(t, out)
 	writeExportedActionAuditBehaviorTest(t, out)
 	writeExportedMigrationBehaviorTest(t, out)
 	writeExportedPolicyBehaviorTest(t, out)
 	writeExportedRouterMiddlewareBehaviorTest(t, out)
 	writeExportedRBACMiddlewareBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
+}
+
+func writeExportedConfigBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package config
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestConnectionConfigRejectsUnsupportedDriversWithoutPanic(t *testing.T) {
+	conn := ConnectionConfig{Driver: "oracle", Name: "ignored"}
+	if err := conn.Validate(); err == nil || !strings.Contains(err.Error(), "unsupported database driver: oracle") {
+		t.Fatalf("Validate() error = %v, want unsupported driver", err)
+	}
+	if got := conn.DSN(); got != "" {
+		t.Fatalf("unsupported DSN = %q, want empty string", got)
+	}
+	if _, err := TryOpenDB(conn); err == nil || !strings.Contains(err.Error(), "unsupported database driver: oracle") {
+		t.Fatalf("TryOpenDB() error = %v, want unsupported driver", err)
+	}
+	if _, err := TryOpenGORM(conn); err == nil || !strings.Contains(err.Error(), "unsupported database driver: oracle") {
+		t.Fatalf("TryOpenGORM() error = %v, want unsupported driver", err)
+	}
+}
+
+func TestConnectionConfigTryOpenGORM(t *testing.T) {
+	db, err := TryOpenGORM(ConnectionConfig{Driver: "sqlite", Name: ":memory:"})
+	if err != nil {
+		t.Fatalf("TryOpenGORM(sqlite): %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "config", "exported_config_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeExportedAuthBehaviorTest(t *testing.T, out string) {

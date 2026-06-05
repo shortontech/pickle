@@ -1943,9 +1943,12 @@ func gqlgenStringPtr(value string) *string {
 	return &value
 }
 
-func gqlgenPageLimit(page *model.PageInput) int {
+func gqlgenPageLimit(page *model.PageInput) (int, error) {
 	limit := defaultGraphQLAPIPageSize
 	if page != nil {
+		if page.First != nil && page.Last != nil {
+			return 0, fmt.Errorf("page.first and page.last cannot both be set")
+		}
 		if page.First != nil {
 			limit = *page.First
 		} else if page.Last != nil {
@@ -1953,26 +1956,42 @@ func gqlgenPageLimit(page *model.PageInput) int {
 		}
 	}
 	if limit <= 0 {
-		return defaultGraphQLAPIPageSize
+		return 0, fmt.Errorf("page limit must be positive")
 	}
 	if limit > maxGraphQLAPIPageSize {
-		return maxGraphQLAPIPageSize
+		return 0, fmt.Errorf("page limit exceeds maximum %d", maxGraphQLAPIPageSize)
 	}
-	return limit
+	return limit, nil
 }
 
-func gqlgenPageOffset(page *model.PageInput) int {
-	if page == nil || page.After == nil {
-		return 0
+func gqlgenPageOffset(page *model.PageInput) (int, error) {
+	if page == nil {
+		return 0, nil
 	}
-	if !strings.HasPrefix(*page.After, "cursor:") {
-		return 0
+	if page.Before != nil {
+		if _, err := gqlgenParseCursor(*page.Before); err != nil {
+			return 0, fmt.Errorf("page.before: %w", err)
+		}
+	}
+	if page.After == nil {
+		return 0, nil
+	}
+	offset, err := gqlgenParseCursor(*page.After)
+	if err != nil {
+		return 0, fmt.Errorf("page.after: %w", err)
+	}
+	return offset, nil
+}
+
+func gqlgenParseCursor(cursor string) (int, error) {
+	if !strings.HasPrefix(cursor, "cursor:") {
+		return 0, fmt.Errorf("invalid cursor")
 	}
 	var offset int
-	if _, err := fmt.Sscanf(*page.After, "cursor:%d", &offset); err != nil || offset < 0 {
-		return 0
+	if _, err := fmt.Sscanf(cursor, "cursor:%d", &offset); err != nil || offset < 0 {
+		return 0, fmt.Errorf("invalid cursor")
 	}
-	return offset
+	return offset, nil
 }
 
 func gqlgenCursor(offset int) string {
@@ -2092,10 +2111,10 @@ func writeGraphQLAPIListResolver(b *strings.Builder, tbl *schema.Table) {
 		b.WriteString("\tq.SelectPublic()\n")
 	}
 	b.WriteString("\tif filter != nil {\n")
-	fmt.Fprintf(b, "\t\tapply%sFilter(q, filter)\n", structName)
+	fmt.Fprintf(b, "\t\tif err := apply%sFilter(q, filter); err != nil {\n\t\t\treturn nil, err\n\t\t}\n", structName)
 	b.WriteString("\t}\n")
 	b.WriteString("\tif sort != nil {\n\t\tcolumn, dir := gqlgenSortParts(string(*sort))\n\t\tif column != \"\" {\n\t\t\tq.OrderBy(column, dir)\n\t\t}\n\t}\n")
-	b.WriteString("\tlimit := gqlgenPageLimit(page)\n\toffset := gqlgenPageOffset(page)\n\tq.Limit(limit + 1)\n\tif offset > 0 {\n\t\tq.Offset(offset)\n\t}\n")
+	b.WriteString("\tlimit, err := gqlgenPageLimit(page)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\toffset, err := gqlgenPageOffset(page)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tq.Limit(limit + 1)\n\tif offset > 0 {\n\t\tq.Offset(offset)\n\t}\n")
 	b.WriteString("\trecords, err := q.All()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n")
 	b.WriteString("\thasNext := len(records) > limit\n\tif hasNext {\n\t\trecords = records[:limit]\n\t}\n")
 	fmt.Fprintf(b, "\tedges := make([]*model.%sEdge, 0, len(records))\n", structName)
@@ -2297,7 +2316,7 @@ func graphQLTableHasColumn(tbl *schema.Table, name string) bool {
 
 func writeGraphQLAPIFilterApplier(b *strings.Builder, tbl *schema.Table) {
 	structName := tableToStruct(tbl.Name)
-	fmt.Fprintf(b, "func apply%sFilter(q *models.%sQuery, filter *model.%sFilter) {\n", structName, structName, structName)
+	fmt.Fprintf(b, "func apply%sFilter(q *models.%sQuery, filter *model.%sFilter) error {\n", structName, structName, structName)
 	for _, col := range tbl.Columns {
 		if isExcludedFromExportedGraphQL(tbl, col) {
 			continue
@@ -2308,25 +2327,29 @@ func writeGraphQLAPIFilterApplier(b *strings.Builder, tbl *schema.Table) {
 		writeGraphQLAPIColumnFilter(b, col, field)
 		b.WriteString("\t}\n")
 	}
+	b.WriteString("\treturn nil\n")
 	b.WriteString("}\n\n")
 }
 
 func writeGraphQLAPIColumnFilter(b *strings.Builder, col *schema.Column, field string) {
 	switch col.Type {
 	case schema.UUID:
-		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Eq != nil { if value, err := uuid.Parse(*filter.%s.Eq); err == nil { q.Where%s(value) } }\n", field, field, field))
-		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > 0 && len(filter.%s.In) <= maxGraphQLAPIInputListSize { values := make([]uuid.UUID, 0, len(filter.%s.In)); for _, raw := range filter.%s.In { if value, err := uuid.Parse(raw); err == nil { values = append(values, value) } }; q.Where%sIn(values) }\n", field, field, field, field, field))
+		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Eq != nil { value, err := uuid.Parse(*filter.%s.Eq); if err != nil { return err }; q.Where%s(value) }\n", field, field, field))
+		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > maxGraphQLAPIInputListSize { return fmt.Errorf(\"%s.in exceeds maximum %%d\", maxGraphQLAPIInputListSize) }\n", field, col.Name))
+		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > 0 { values := make([]uuid.UUID, 0, len(filter.%s.In)); for _, raw := range filter.%s.In { value, err := uuid.Parse(raw); if err != nil { return err }; values = append(values, value) }; q.Where%sIn(values) }\n", field, field, field, field))
 	case schema.String, schema.Text:
 		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Eq != nil { q.Where%s(*filter.%s.Eq) }\n", field, field, field))
 		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Like != nil { q.Where%sLike(*filter.%s.Like) }\n", field, field, field))
-		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > 0 && len(filter.%s.In) <= maxGraphQLAPIInputListSize { q.Where%sIn(filter.%s.In) }\n", field, field, field, field))
+		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > maxGraphQLAPIInputListSize { return fmt.Errorf(\"%s.in exceeds maximum %%d\", maxGraphQLAPIInputListSize) }\n", field, col.Name))
+		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > 0 { q.Where%sIn(filter.%s.In) }\n", field, field, field))
 	case schema.Integer, schema.BigInteger:
 		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Eq != nil { q.Where%s(*filter.%s.Eq) }\n", field, field, field))
 		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Gt != nil { q.Where%sGT(*filter.%s.Gt) }\n", field, field, field))
 		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Gte != nil { q.Where%sGTE(*filter.%s.Gte) }\n", field, field, field))
 		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Lt != nil { q.Where%sLT(*filter.%s.Lt) }\n", field, field, field))
 		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Lte != nil { q.Where%sLTE(*filter.%s.Lte) }\n", field, field, field))
-		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > 0 && len(filter.%s.In) <= maxGraphQLAPIInputListSize { q.Where%sIn(filter.%s.In) }\n", field, field, field, field))
+		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > maxGraphQLAPIInputListSize { return fmt.Errorf(\"%s.in exceeds maximum %%d\", maxGraphQLAPIInputListSize) }\n", field, col.Name))
+		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > 0 { q.Where%sIn(filter.%s.In) }\n", field, field, field))
 	case schema.Timestamp, schema.Date, schema.Time:
 		for _, op := range []struct{ gql, method string }{{"Gt", "After"}, {"Gte", "GTE"}, {"Lt", "Before"}, {"Lte", "LTE"}} {
 			b.WriteString(fmt.Sprintf("\t\tif filter.%s.%s != nil { if value, err := time.Parse(time.RFC3339, *filter.%s.%s); err == nil { q.Where%s%s(value) } }\n", field, op.gql, field, op.gql, field, op.method))

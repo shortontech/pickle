@@ -3373,6 +3373,29 @@ func TestExportedGQLGenTargetCRUDResolvers(t *testing.T) {
 	if len(posts.Edges) != 1 || posts.Edges[0].Node.ID != post.ID {
 		t.Fatalf("posts connection = %+v", posts)
 	}
+	tooManyIDs := make([]string, maxGraphQLAPIInputListSize+1)
+	for i := range tooManyIDs {
+		tooManyIDs[i] = uuid.NewString()
+	}
+	if _, err := queries.Posts(ctx, &model.PostFilter{ID: &model.IDFilter{In: tooManyIDs}}, nil, nil); err == nil {
+		t.Fatal("oversized id filter should fail")
+	}
+	badID := "not-a-uuid"
+	if _, err := queries.Posts(ctx, &model.PostFilter{ID: &model.IDFilter{Eq: &badID}}, nil, nil); err == nil {
+		t.Fatal("invalid id filter should fail")
+	}
+	tooLargePage := maxGraphQLAPIPageSize + 1
+	if _, err := queries.Posts(ctx, nil, nil, &model.PageInput{First: &tooLargePage}); err == nil {
+		t.Fatal("oversized page should fail")
+	}
+	zeroPage := 0
+	if _, err := queries.Posts(ctx, nil, nil, &model.PageInput{First: &zeroPage}); err == nil {
+		t.Fatal("zero page size should fail")
+	}
+	badCursor := "not-a-cursor"
+	if _, err := queries.Posts(ctx, nil, nil, &model.PageInput{After: &badCursor}); err == nil {
+		t.Fatal("invalid cursor should fail")
+	}
 
 	updated, err := mutations.UpdatePost(ctx, post.ID.String(), model.UpdatePostInput{Title: stringPtr("Updated")})
 	if err != nil {

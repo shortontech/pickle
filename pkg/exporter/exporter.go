@@ -5846,6 +5846,12 @@ func (d *Driver) ValidateToken(token string) (*httpx.AuthInfo, error) {
 
 func (d *Driver) TokenEndpoint(ctx *httpx.Context) httpx.Response {
 	r := ctx.Request()
+	if d.db == nil {
+		return ctx.Error(errors.New("oauth: database not configured"))
+	}
+	if d.clientID == "" || d.clientSecret == "" {
+		return ctx.Error(errors.New("oauth: client credentials not configured"))
+	}
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
 		return ctx.JSON(400, map[string]string{"error": "invalid_request", "error_description": "Content-Type must be application/x-www-form-urlencoded"})
 	}

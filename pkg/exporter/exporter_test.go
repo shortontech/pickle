@@ -184,6 +184,7 @@ func writeExportedAuthBehaviorTest(t *testing.T, out string) {
 import (
 	"database/sql"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -287,6 +288,43 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	}
 	if oauthInfo.UserID != "client-1" || oauthInfo.Role != "client" {
 		t.Fatalf("oauth auth info = %#v", oauthInfo)
+	}
+	tokenReq, _ := http.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader("grant_type=client_credentials"))
+	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	tokenReq.SetBasicAuth("client-1", "secret-1")
+	tokenResp := oauthDriver.TokenEndpoint(httpx.NewContext(tokenReq))
+	if tokenResp.StatusCode != http.StatusOK {
+		t.Fatalf("oauth token endpoint status = %d body = %#v", tokenResp.StatusCode, tokenResp.Body)
+	}
+	tokenBody, ok := tokenResp.Body.(map[string]any)
+	if !ok {
+		t.Fatalf("oauth token body type = %T", tokenResp.Body)
+	}
+	issuedToken, ok := tokenBody["access_token"].(string)
+	if !ok || issuedToken == "" {
+		t.Fatalf("oauth access token body = %#v", tokenBody)
+	}
+	issuedInfo, err := oauthDriver.ValidateToken(issuedToken)
+	if err != nil {
+		t.Fatalf("validate issued oauth token: %v", err)
+	}
+	if issuedInfo.UserID != "client-1" || issuedInfo.Role != "client" {
+		t.Fatalf("issued oauth auth info = %#v", issuedInfo)
+	}
+	badTokenReq, _ := http.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader("grant_type=client_credentials"))
+	badTokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	badTokenReq.SetBasicAuth("client-1", "wrong")
+	badTokenResp := oauthDriver.TokenEndpoint(httpx.NewContext(badTokenReq))
+	if badTokenResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("invalid oauth credentials status = %d body = %#v", badTokenResp.StatusCode, badTokenResp.Body)
+	}
+	misconfigured := oauth.NewDriver(func(string, string) string { return "" }, db, "sqlite")
+	misconfiguredReq, _ := http.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader("grant_type=client_credentials"))
+	misconfiguredReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	misconfiguredReq.SetBasicAuth("", "")
+	misconfiguredResp := misconfigured.TokenEndpoint(httpx.NewContext(misconfiguredReq))
+	if misconfiguredResp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("misconfigured oauth status = %d body = %#v", misconfiguredResp.StatusCode, misconfiguredResp.Body)
 	}
 
 	sessionDriver := auth.Driver("session").(*session.Driver)

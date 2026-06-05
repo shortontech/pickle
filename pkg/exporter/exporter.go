@@ -3121,6 +3121,10 @@ func validateGraphQLAPIRequestEnvelope(w http.ResponseWriter, raw map[string]any
 		writeGraphQLAPIHTTPError(w, "GraphQL query is too large", "BAD_USER_INPUT")
 		return false
 	}
+	if graphQLAPIQueryRequestsIntrospection(query) {
+		writeGraphQLAPIHTTPError(w, "GraphQL introspection is disabled", "BAD_USER_INPUT")
+		return false
+	}
 	if operationName, ok := raw["operationName"]; ok {
 		name, ok := operationName.(string)
 		if operationName != nil && !ok {
@@ -3176,6 +3180,10 @@ func validateGraphQLAPIRequestEnvelopeFields(w http.ResponseWriter, raw map[stri
 		}
 	}
 	return true
+}
+
+func graphQLAPIQueryRequestsIntrospection(query string) bool {
+	return strings.Contains(query, "__schema") || strings.Contains(query, "__type")
 }
 
 func validateGraphQLAPIVariables(variables map[string]any) error {
@@ -5293,6 +5301,7 @@ func (e *exporter) generateCommandsSupport() ([]byte, error) {
 	b.WriteString("\t\"time\"\n\n")
 	if hasGraphQL {
 		b.WriteString(fmt.Sprintf("\t\"%s/app/graphql\"\n", e.modulePath))
+		b.WriteString(fmt.Sprintf("\t\"%s/app/graphqlapi\"\n", e.modulePath))
 	}
 	b.WriteString(fmt.Sprintf("\t\"%s/app/http/auth\"\n", e.modulePath))
 	b.WriteString(fmt.Sprintf("\t\"%s/app/models\"\n", e.modulePath))
@@ -5471,7 +5480,7 @@ func HTTPHandler() http.Handler {
 	routes.API.RegisterRoutes(mux)
 `)
 	if hasGraphQL {
-		b.WriteString("\tmux.Handle(\"/graphql\", graphql.Handler())\n")
+		b.WriteString("\tmux.Handle(\"/graphql\", graphqlapi.Handler())\n")
 		b.WriteString("\tmux.Handle(\"/graphql/playground\", graphql.PlaygroundHandler(\"/graphql\"))\n")
 	}
 	b.WriteString(`	return mux
@@ -6101,6 +6110,7 @@ func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL, hasSchedule
 	b.WriteString("\n")
 	if hasGraphQL {
 		b.WriteString(fmt.Sprintf("\t\"%s/app/graphql\"\n", e.modulePath))
+		b.WriteString(fmt.Sprintf("\t\"%s/app/graphqlapi\"\n", e.modulePath))
 	}
 	if hasDatabaseConfig {
 		b.WriteString(fmt.Sprintf("\t\"%s/app/models\"\n", e.modulePath))
@@ -6125,7 +6135,7 @@ func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL, hasSchedule
 	b.WriteString("\tmux := http.NewServeMux()\n")
 	b.WriteString("\troutes.API.RegisterRoutes(mux)\n")
 	if hasGraphQL {
-		b.WriteString("\tmux.Handle(\"/graphql\", graphql.Handler())\n")
+		b.WriteString("\tmux.Handle(\"/graphql\", graphqlapi.Handler())\n")
 		b.WriteString("\tmux.Handle(\"/graphql/playground\", graphql.PlaygroundHandler(\"/graphql\"))\n")
 	}
 	b.WriteString("\taddr := \":\" + config.App.Port\n")

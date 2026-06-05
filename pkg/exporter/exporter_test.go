@@ -3143,7 +3143,7 @@ func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 	assertFileNotContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `case "email":`)
 	assertFileNotContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `column = "email_encrypted"`)
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "commands.NewApp().Run(os.Args[1:])")
-	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), `mux.Handle("/graphql", graphql.Handler())`)
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), `mux.Handle("/graphql", graphqlapi.Handler())`)
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "routes.API.RegisterRoutes(mux)")
 	assertFileContains(t, filepath.Join(out, "app", "http", "requests", "bindings.go"), "package requests")
 	assertCleanExportReport(t, out)
@@ -3153,6 +3153,7 @@ func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 	writeExportedZeroGraphQLHTTPMethodSafetyTest(t, out)
 	writeExportedZeroGraphQLAPITargetBehaviorTest(t, out)
 	writeExportedZeroGraphQLAPIHTTPBehaviorTest(t, out)
+	writeExportedZeroGraphQLRouteTargetBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
 
@@ -3571,6 +3572,7 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 		"duplicate_field":  []byte(` + "`" + `{"query":"{ posts { totalCount } }","query":"{ comments { totalCount } }"}` + "`" + `),
 		"unsupported":      []byte(` + "`" + `{"query":"{ posts { totalCount } }","unexpected":true}` + "`" + `),
 		"invalid_op_name":  []byte(` + "`" + `{"query":"query Good { posts { totalCount } }","operationName":"1 Bad"}` + "`" + `),
+		"introspection":    []byte(` + "`" + `{"query":"{ __schema { queryType { name } } }"}` + "`" + `),
 		"bad_variables":    []byte(` + "`" + `{"query":"query Good($id: ID) { post(id: $id) { id } }","variables":["not","object"]}` + "`" + `),
 		"deep_variables":   []byte(` + "`" + `{"query":"query Good($v: String) { posts { totalCount } }","variables":{"deep":{"a":{"b":{"c":{"d":{"e":{"f":{"g":{"h":{"i":"too deep"}}}}}}}}}}}` + "`" + `),
 		"bad_extensions":   []byte(` + "`" + `{"query":"{ posts { totalCount } }","extensions":["not","object"]}` + "`" + `),
@@ -3615,6 +3617,39 @@ func mustJSONQuote(value string) string {
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "exported_handler_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedZeroGraphQLRouteTargetBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package commands_test
+
+import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"zero-graphql/app/commands"
+)
+
+func TestExportedGraphQLRouteUsesHardenedGQLGenTarget(t *testing.T) {
+	body := []byte(` + "`" + `{"query":"{ __schema { queryType { name } } }"}` + "`" + `)
+	req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	commands.HTTPHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "GraphQL introspection is disabled") {
+		t.Fatalf("route did not use hardened gqlgen target handler: %s", rec.Body.String())
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "commands", "exported_graphql_route_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -3687,7 +3722,7 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileNotContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `q.db = q.db.Order(column + " " + dir)`)
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "resolver_gen.go"), "q.WhereCreatedAtGTE(t)")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "resolver_gen.go"), "q.WhereCreatedAtLTE(t)")
-	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `mux.Handle("/graphql", graphql.Handler())`)
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `mux.Handle("/graphql", graphqlapi.Handler())`)
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "routes.API.RegisterRoutes(mux)")
 	assertCleanExportReport(t, out)
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")

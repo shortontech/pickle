@@ -3019,6 +3019,15 @@ fragment UserFields on User {
 		if rec.Code != http.StatusRequestEntityTooLarge {
 			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
 		}
+		if got := rec.Header().Get("Content-Type"); got != "application/json" {
+			t.Fatalf("oversized Content-Type = %q, want application/json", got)
+		}
+		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Fatalf("oversized X-Content-Type-Options = %q, want nosniff", got)
+		}
+		if !strings.Contains(rec.Body.String(), "graphql request body too large") {
+			t.Fatalf("oversized body missing sanitized error: %s", rec.Body.String())
+		}
 	})
 
 	t.Run("unknown_length_oversized_request_body_rejected_before_parse", func(t *testing.T) {
@@ -3030,6 +3039,15 @@ fragment UserFields on User {
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusRequestEntityTooLarge {
 			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Type"); got != "application/json" {
+			t.Fatalf("streaming oversized Content-Type = %q, want application/json", got)
+		}
+		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Fatalf("streaming oversized X-Content-Type-Options = %q, want nosniff", got)
+		}
+		if !strings.Contains(rec.Body.String(), "graphql request body too large") {
+			t.Fatalf("streaming oversized body missing sanitized error: %s", rec.Body.String())
 		}
 	})
 

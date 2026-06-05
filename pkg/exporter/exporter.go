@@ -2135,7 +2135,7 @@ func Handler() http.Handler {
 
 func prepareGraphQLPostBody(w http.ResponseWriter, r *http.Request) bool {
 	if r.ContentLength > maxGraphQLRequestBodyBytes {
-		http.Error(w, "graphql request body too large", http.StatusRequestEntityTooLarge)
+		writeGraphQLHTTPStatusError(w, http.StatusRequestEntityTooLarge, "graphql request body too large", CodeBadUserInput)
 		return false
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxGraphQLRequestBodyBytes)
@@ -2143,7 +2143,7 @@ func prepareGraphQLPostBody(w http.ResponseWriter, r *http.Request) bool {
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
-			http.Error(w, "graphql request body too large", http.StatusRequestEntityTooLarge)
+			writeGraphQLHTTPStatusError(w, http.StatusRequestEntityTooLarge, "graphql request body too large", CodeBadUserInput)
 			return false
 		}
 		writeGraphQLHTTPError(w, "invalid GraphQL request body", CodeBadUserInput)
@@ -2174,8 +2174,13 @@ func prepareGraphQLPostBody(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func writeGraphQLHTTPError(w http.ResponseWriter, message, code string) {
+	writeGraphQLHTTPStatusError(w, http.StatusOK, message, code)
+}
+
+func writeGraphQLHTTPStatusError(w http.ResponseWriter, status int, message, code string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(gqlgenErrorResponse(message, code)); err != nil {
 		log.Printf("graphql: failed to write error response: %%v", err)
 	}

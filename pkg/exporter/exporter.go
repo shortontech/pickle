@@ -2093,7 +2093,7 @@ func whereSuffixOperator(suffix string) string {
 
 func (e *exporter) writeActionSet(set *generator.ActionSet) error {
 	if err := generator.ValidateActions(set); err != nil {
-		e.result.Findings = append(e.result.Findings, Finding{File: filepath.Join("database", "actions", set.Model), Rule: "action_export_unsupported_signature", Message: err.Error()})
+		return fmt.Errorf("exporting actions for %s: %w", set.Model, err)
 	}
 	seen := map[string]bool{}
 	for _, action := range set.Actions {

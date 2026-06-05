@@ -2536,6 +2536,41 @@ func TestExportRefusesNonEmptyOutputWithoutForce(t *testing.T) {
 	}
 }
 
+func TestExportFailsUngatedActionsBeforeWritingBrokenWiring(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
+	actionsDir := filepath.Join(projectDir, "database", "actions", "user")
+	if err := os.MkdirAll(actionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	action := `package user
+
+import (
+	models "github.com/shortontech/pickle/testdata/basic-crud/app/models"
+	pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
+)
+
+type SuspendAction struct{}
+
+func (a SuspendAction) Suspend(ctx *pickle.Context, user *models.User) error {
+	user.Name = "suspended"
+	return models.QueryUser().Update(user)
+}
+`
+	if err := os.WriteFile(filepath.Join(actionsDir, "suspend.go"), []byte(action), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "exported")
+	_, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "actions without gates in user: Suspend") {
+		t.Fatalf("Export error = %v, want ungated action failure", err)
+	}
+}
+
 func TestExportFailsUnknownViewMigrations(t *testing.T) {
 	migrationsDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(migrationsDir, "2026_02_21_100000_create_active_users_view.go"), []byte("package migrations\n"), 0o644); err != nil {

@@ -253,9 +253,11 @@ func writeExportedAuthBehaviorTest(t *testing.T, out string) {
 	testSrc := `package auth_test
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -547,6 +549,10 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	if _, err := auth.Authenticate(req); err == nil {
 		t.Fatal("Authenticate should return an error for unknown AUTH_DRIVER")
 	}
+	var logs bytes.Buffer
+	previousLogOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousLogOutput)
 	resp := auth.DefaultAuthMiddleware(httpx.NewContext(req), func() httpx.Response {
 		t.Fatal("middleware should not call next for unknown AUTH_DRIVER")
 		return httpx.Response{}
@@ -560,6 +566,12 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	}
 	if body["error"] != "unauthorized" || strings.Contains(body["error"], "bogus") {
 		t.Fatalf("middleware error body = %#v, want sanitized unauthorized", body)
+	}
+	if strings.Contains(logs.String(), "bogus") {
+		t.Fatalf("middleware auth log leaked driver detail: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "auth middleware failed") {
+		t.Fatalf("middleware auth log missing sanitized marker: %s", logs.String())
 	}
 
 	auth.Init(env, db)

@@ -1976,6 +1976,10 @@ func GraphQLAPIAuthFromContext(ctx context.Context) *GraphQLAPIAuthClaims {
 	return claims
 }
 
+func graphQLAPIAuthCanManage(claims *GraphQLAPIAuthClaims) bool {
+	return claims != nil && (claims.Manages || (!claims.RBACLoaded && claims.Role == "admin"))
+}
+
 func graphQLAPIBadInput(message string) *gqlerror.Error {
 	return &gqlerror.Error{
 		Message:    message,
@@ -2458,6 +2462,28 @@ func writeGraphQLAPIScopeOwnerFromAuth(b *strings.Builder, tbl *schema.Table, op
 	}
 }
 
+func writeGraphQLAPIScopeRelationshipOwnerFromAuth(b *strings.Builder, tbl *schema.Table, operation, failureReturn string) {
+	ownerCol := exportedGraphQLOwnerColumn(tbl)
+	if ownerCol == nil {
+		return
+	}
+	field := snakeToPascal(ownerCol.Name)
+	b.WriteString("\tauth := GraphQLAPIAuthFromContext(ctx)\n")
+	fmt.Fprintf(b, "\tif auth == nil {\n\t\treturn %s, graphQLAPIUnauthenticated(%q)\n\t}\n", failureReturn, operation+": authentication required")
+	b.WriteString("\tif !graphQLAPIAuthCanManage(auth) {\n")
+	switch ownerCol.Type {
+	case schema.UUID:
+		b.WriteString("\t\townerID, err := uuid.Parse(auth.UserID)\n")
+		fmt.Fprintf(b, "\t\tif err != nil {\n\t\t\treturn %s, graphQLAPIBadInput(%q)\n\t\t}\n", failureReturn, operation+": invalid owner ID")
+		fmt.Fprintf(b, "\t\tq.Where%s(ownerID)\n", field)
+	case schema.String, schema.Text:
+		fmt.Fprintf(b, "\t\tq.Where%s(auth.UserID)\n", field)
+	default:
+		fmt.Fprintf(b, "\t\treturn %s, graphQLAPIBadInput(%q)\n", failureReturn, operation+": unsupported owner ID type")
+	}
+	b.WriteString("\t}\n")
+}
+
 func writeGraphQLAPIAssignCreateInput(b *strings.Builder, tbl *schema.Table) {
 	for _, col := range tbl.Columns {
 		if !graphQLAPICreateInputHasColumn(tbl, col) {
@@ -2647,6 +2673,7 @@ func writeGraphQLAPIRelationshipResolver(b *strings.Builder, parent, child *sche
 		if exportedGraphQLTableHasVisibility(child) {
 			fmt.Fprintf(b, "\tgraphQLAPISelect%sVisibility(ctx, q)\n", childStruct)
 		}
+		writeGraphQLAPIScopeRelationshipOwnerFromAuth(b, child, strings.ToLower(methodName), "nil")
 		b.WriteString("\trecord, err := q.First()\n\tif err != nil {\n\t\treturn nil, nil\n\t}\n\treturn record, nil\n")
 		b.WriteString("}\n\n")
 	default:
@@ -2656,6 +2683,7 @@ func writeGraphQLAPIRelationshipResolver(b *strings.Builder, parent, child *sche
 		if exportedGraphQLTableHasVisibility(child) {
 			fmt.Fprintf(b, "\tgraphQLAPISelect%sVisibility(ctx, q)\n", childStruct)
 		}
+		writeGraphQLAPIScopeRelationshipOwnerFromAuth(b, child, strings.ToLower(methodName), "nil")
 		b.WriteString("\tq.Limit(maxGraphQLAPIPageSize)\n")
 		b.WriteString("\trecords, err := q.All()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n")
 		fmt.Fprintf(b, "\titems := make([]*models.%s, 0, len(records))\n", childStruct)

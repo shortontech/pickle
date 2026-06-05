@@ -5073,8 +5073,10 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "comments: [Comment!]! @auth")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *userResolver) Posts")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "q := models.QueryPost().WhereUserID(obj.ID)")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "q.WhereUserID(ownerID)")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "q.Limit(maxGraphQLAPIPageSize)")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *postResolver) Comments")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), "func graphQLAPIAuthCanManage")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), `mime.ParseMediaType(contentType)`)
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIRequestBodyBytes = 1 << 20")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIRequestEnvelopeFieldBytes = 32")
@@ -5278,6 +5280,27 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 	}
 
 	userFields := &userResolver{Resolver: &Resolver{}}
+	if _, err := userFields.Posts(context.Background(), user); !isUnauthenticated(err) {
+		t.Fatalf("unauthenticated relationship error = %v, want UNAUTHENTICATED", err)
+	}
+
+	strangerPosts, err := userFields.Posts(ownerCtx, user)
+	if err != nil {
+		t.Fatalf("stranger posts: %v", err)
+	}
+	if len(strangerPosts) != 0 {
+		t.Fatalf("stranger relationship posts = %d, want 0", len(strangerPosts))
+	}
+
+	matchingOwnerCtx := WithGraphQLAPIAuthClaims(context.Background(), &GraphQLAPIAuthClaims{UserID: user.ID.String(), Role: "viewer"})
+	ownerPosts, err := userFields.Posts(matchingOwnerCtx, user)
+	if err != nil {
+		t.Fatalf("owner posts: %v", err)
+	}
+	if len(ownerPosts) != maxGraphQLAPIPageSize {
+		t.Fatalf("owner relationship posts = %d, want capped %d", len(ownerPosts), maxGraphQLAPIPageSize)
+	}
+
 	posts, err := userFields.Posts(managerCtx, user)
 	if err != nil {
 		t.Fatalf("user posts: %v", err)
@@ -5299,6 +5322,17 @@ func isBadInput(err error) bool {
 		return false
 	}
 	return gqlErr.Extensions["code"] == "BAD_USER_INPUT"
+}
+
+func isUnauthenticated(err error) bool {
+	if err == nil {
+		return false
+	}
+	gqlErr, ok := err.(*gqlerror.Error)
+	if !ok {
+		return false
+	}
+	return gqlErr.Extensions["code"] == "UNAUTHENTICATED"
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "resolver", "exported_visibility_test.go"), []byte(testSrc), 0o644); err != nil {

@@ -6568,9 +6568,12 @@ func CSRF(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
 	method := ctx.Request().Method
 	if method == "GET" || method == "HEAD" || method == "OPTIONS" {
 		resp := next()
-		if _, err := ctx.Cookie(csrfConfig.cookieName); err != nil { resp = resp.WithCookie(newCSRFCookie(sessionID)) }
+		if sessionID != "" {
+			if _, err := ctx.Cookie(csrfConfig.cookieName); err != nil { resp = resp.WithCookie(newCSRFCookie(sessionID)) }
+		}
 		return resp
 	}
+	if sessionID == "" { return ctx.Forbidden("CSRF session missing") }
 	token := ctx.Request().Header.Get("X-CSRF-TOKEN")
 	if token == "" { return ctx.Forbidden("CSRF token missing") }
 	if !validateCSRFToken(token, sessionID, csrfConfig.secret) { return ctx.Forbidden("CSRF token invalid") }

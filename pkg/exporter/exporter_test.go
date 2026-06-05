@@ -792,6 +792,17 @@ func TestExportedSessionCSRFBoundary(t *testing.T) {
 		t.Fatalf("csrf cookie security attributes = %#v", cookie)
 	}
 
+	anonymousGetCtx := httpx.NewContext(httptest.NewRequest(http.MethodGet, "/", nil))
+	anonymousGetResp := CSRF(anonymousGetCtx, func() httpx.Response {
+		return anonymousGetCtx.NoContent()
+	})
+	if anonymousGetResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("anonymous GET status = %d", anonymousGetResp.StatusCode)
+	}
+	if cookie := findCookie(anonymousGetResp.Cookies, "csrf_token"); cookie != nil {
+		t.Fatalf("anonymous safe request should not receive CSRF cookie: %#v", cookie)
+	}
+
 	postCtx := httpx.NewContext(requestWithSession(http.MethodPost, "sess-1"))
 	missing := CSRF(postCtx, func() httpx.Response {
 		t.Fatal("CSRF should block missing token")
@@ -810,6 +821,17 @@ func TestExportedSessionCSRFBoundary(t *testing.T) {
 	})
 	if invalid.StatusCode != http.StatusForbidden {
 		t.Fatalf("invalid token status = %d", invalid.StatusCode)
+	}
+
+	anonymousPostReq := httptest.NewRequest(http.MethodPost, "/", nil)
+	anonymousPostReq.Header.Set("X-CSRF-TOKEN", generateCSRFToken("", csrfConfig.secret))
+	anonymousPostCtx := httpx.NewContext(anonymousPostReq)
+	anonymousPost := CSRF(anonymousPostCtx, func() httpx.Response {
+		t.Fatal("CSRF should block unsafe request without session")
+		return httpx.Response{}
+	})
+	if anonymousPost.StatusCode != http.StatusForbidden {
+		t.Fatalf("anonymous POST status = %d", anonymousPost.StatusCode)
 	}
 
 	validReq := requestWithSession(http.MethodPost, "sess-1")

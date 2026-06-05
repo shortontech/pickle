@@ -2546,6 +2546,84 @@ func (c *countingCommand) Run(args []string) error {
 	if err := os.WriteFile(filepath.Join(out, "app", "commands", "exported_command_security_test.go"), []byte(securityTestSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	cliTestSrc := `package main
+
+import (
+	"database/sql"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	_ "github.com/mattn/go-sqlite3"
+)
+
+func TestExportedServerBinaryRunsMigrationCommand(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "binary.sqlite")
+	cmd := exec.Command("go", "run", ".", "migrate")
+	cmd.Env = append(os.Environ(),
+		"DB_CONNECTION=sqlite",
+		"DB_DATABASE="+dbPath,
+		"JWT_SECRET=0123456789abcdef0123456789abcdef",
+		"APP_ENCRYPTION_KEY=12345678901234567890123456789012",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go run . migrate failed: %v\n%s", err, output)
+	}
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if got := countBinaryRows(t, db, "migrations"); got == 0 {
+		t.Fatal("binary migrate did not record app migrations")
+	}
+	if got := countBinaryRows(t, db, "roles"); got != 3 {
+		t.Fatalf("binary migrate roles = %d, want 3", got)
+	}
+	if got := countBinaryWhere(t, db, "graphql_exposures", "model = 'users' AND operation = 'list'"); got != 1 {
+		t.Fatalf("binary migrate graphql exposure count = %d, want 1", got)
+	}
+}
+
+func TestExportedServerBinaryRejectsUnknownCommandBeforeStartup(t *testing.T) {
+	cmd := exec.Command("go", "run", ".", "missing-password=swordfish")
+	cmd.Env = append(os.Environ(), "DB_CONNECTION=sqlite", "DB_DATABASE=/definitely/missing/exported.sqlite")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("unknown command unexpectedly succeeded: %s", output)
+	}
+	text := string(output)
+	if !strings.Contains(text, "unknown command") {
+		t.Fatalf("unknown command output = %s, want sanitized marker", text)
+	}
+	for _, leak := range []string{"swordfish", "missing-password", "database startup failed", "no such file", "/definitely/missing"} {
+		if strings.Contains(text, leak) {
+			t.Fatalf("unknown command output leaked %q: %s", leak, text)
+		}
+	}
+}
+
+func countBinaryRows(t *testing.T, db *sql.DB, table string) int {
+	t.Helper()
+	return countBinaryWhere(t, db, table, "1 = 1")
+}
+
+func countBinaryWhere(t *testing.T, db *sql.DB, table, where string) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM " + table + " WHERE " + where).Scan(&count); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	return count
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "cmd", "server", "exported_cli_test.go"), []byte(cliTestSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeExportedPolicyBehaviorTest(t *testing.T, out string) {

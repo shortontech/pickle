@@ -6373,6 +6373,7 @@ var ErrInvalidToken = errors.New("jwt: invalid token")
 const (
 	maxJWTTokenBytes   = 8 << 10
 	maxJWTSegmentBytes = 4 << 10
+	maxJWTExpirySeconds = 365 * 24 * 60 * 60
 )
 
 type Claims struct {
@@ -6396,11 +6397,7 @@ type Driver struct {
 
 func NewDriver(env func(string, string) string, db *sql.DB, driver string) *Driver {
 	expiry := 3600
-	if v := env("JWT_EXPIRY", ""); v != "" {
-		n := 0
-		for _, c := range v { if c >= '0' && c <= '9' { n = n*10 + int(c-'0') } }
-		if n > 0 { expiry = n }
-	}
+	expiry = boundedPositiveSeconds(env("JWT_EXPIRY", ""), expiry, maxJWTExpirySeconds)
 	secret := env("JWT_SECRET", "")
 	alg := env("JWT_ALGORITHM", "HS256")
 	if secret == "" {
@@ -6487,6 +6484,32 @@ func validJWTShape(token string, parts []string) bool {
 		}
 	}
 	return true
+}
+
+func boundedPositiveSeconds(raw string, fallback, max int) int {
+	if raw == "" {
+		return fallback
+	}
+	n := 0
+	found := false
+	for _, c := range raw {
+		if c < '0' || c > '9' {
+			continue
+		}
+		found = true
+		digit := int(c - '0')
+		if n > (max-digit)/10 {
+			return max
+		}
+		n = n*10 + digit
+		if n > max {
+			return max
+		}
+	}
+	if !found || n <= 0 {
+		return fallback
+	}
+	return n
 }
 
 func (d *Driver) registerToken(claims Claims) error {
@@ -6589,14 +6612,11 @@ type Driver struct {
 }
 
 const maxTokenRequestBodyBytes = 8 << 10
+const maxOAuthTokenExpirySeconds = 365 * 24 * 60 * 60
 
 func NewDriver(env func(string, string) string, db *sql.DB, driver string) *Driver {
 	expiry := 3600
-	if v := env("OAUTH_TOKEN_EXPIRY", ""); v != "" {
-		n := 0
-		for _, c := range v { if c >= '0' && c <= '9' { n = n*10 + int(c-'0') } }
-		if n > 0 { expiry = n }
-	}
+	expiry = boundedPositiveSeconds(env("OAUTH_TOKEN_EXPIRY", ""), expiry, maxOAuthTokenExpirySeconds)
 	return &Driver{db: db, driver: driver, clientID: env("OAUTH_CLIENT_ID", ""), clientSecret: env("OAUTH_CLIENT_SECRET", ""), expiry: expiry}
 }
 
@@ -6703,6 +6723,32 @@ func generateToken() (string, error) {
 	if _, err := rand.Read(buf); err != nil { return "", err }
 	return hex.EncodeToString(buf), nil
 }
+
+func boundedPositiveSeconds(raw string, fallback, max int) int {
+	if raw == "" {
+		return fallback
+	}
+	n := 0
+	found := false
+	for _, c := range raw {
+		if c < '0' || c > '9' {
+			continue
+		}
+		found = true
+		digit := int(c - '0')
+		if n > (max-digit)/10 {
+			return max
+		}
+		n = n*10 + digit
+		if n > max {
+			return max
+		}
+	}
+	if !found || n <= 0 {
+		return fallback
+	}
+	return n
+}
 `
 
 const sessionSupportSource = `package session
@@ -6733,6 +6779,7 @@ var sessionCookieName = "session_id"
 var activeDriver *Driver
 
 const maxSessionCookieNameBytes = 64
+const maxSessionTTLSeconds = 365 * 24 * 60 * 60
 
 type Driver struct {
 	db *sql.DB
@@ -6743,11 +6790,7 @@ type Driver struct {
 
 func NewDriver(env func(string, string) string, db *sql.DB, driver string) *Driver {
 	ttl := 86400
-	if v := env("SESSION_TTL", ""); v != "" {
-		n := 0
-		for _, c := range v { if c >= '0' && c <= '9' { n = n*10 + int(c-'0') } }
-		if n > 0 { ttl = n }
-	}
+	ttl = boundedPositiveSeconds(env("SESSION_TTL", ""), ttl, maxSessionTTLSeconds)
 	cookieName := env("SESSION_COOKIE", "session_id")
 	csrfCookieName := env("CSRF_COOKIE", "csrf_token")
 	if !validCookieName(cookieName) { panic("session: invalid SESSION_COOKIE") }
@@ -6972,6 +7015,32 @@ func validCookieName(name string) bool {
 		}
 	}
 	return true
+}
+
+func boundedPositiveSeconds(raw string, fallback, max int) int {
+	if raw == "" {
+		return fallback
+	}
+	n := 0
+	found := false
+	for _, c := range raw {
+		if c < '0' || c > '9' {
+			continue
+		}
+		found = true
+		digit := int(c - '0')
+		if n > (max-digit)/10 {
+			return max
+		}
+		n = n*10 + digit
+		if n > max {
+			return max
+		}
+	}
+	if !found || n <= 0 {
+		return fallback
+	}
+	return n
 }
 
 func bindPlaceholders(driver, query string) string {

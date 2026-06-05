@@ -88,16 +88,22 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "ErrInvalidToken")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "maxJWTTokenBytes")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "validJWTShape")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "maxJWTExpirySeconds")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "boundedPositiveSeconds")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "oauth.NewDriver")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "session.NewDriver")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "func DefaultAuthMiddleware")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "func ActiveDriverName")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "const maxAuthorizationHeaderBytes = 12 << 10")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "func (d *Driver) TokenEndpoint")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "maxOAuthTokenExpirySeconds")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "boundedPositiveSeconds")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func CSRF")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "len(parts[0]) != 64 || len(parts[1]) != 64")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func validSessionID")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func validCookieName")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "maxSessionTTLSeconds")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "boundedPositiveSeconds")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_ban.go"), "DB.Save(user).Error")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_promote.go"), "type PromoteResult struct")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_standalone_gate.go"), "func CanView")
@@ -448,6 +454,27 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	} else if !errors.Is(err, jwt.ErrInvalidToken) {
 		t.Fatalf("missing allowlist jwt error = %v, want ErrInvalidToken", err)
 	}
+	cappedJWTDriver := jwt.NewDriver(func(key, fallback string) string {
+		switch key {
+		case "JWT_SECRET":
+			return "0123456789abcdef0123456789abcdef"
+		case "JWT_EXPIRY":
+			return strings.Repeat("9", 80)
+		default:
+			return fallback
+		}
+	}, db, "sqlite")
+	cappedJWT, err := cappedJWTDriver.SignToken(jwt.Claims{Subject: "user-capped", Role: "admin"})
+	if err != nil {
+		t.Fatalf("sign capped jwt: %v", err)
+	}
+	cappedJWTClaims, err := cappedJWTDriver.ValidateToken(cappedJWT)
+	if err != nil {
+		t.Fatalf("validate capped jwt: %v", err)
+	}
+	if cappedJWTClaims.ExpiresAt-cappedJWTClaims.IssuedAt != 365*24*60*60 {
+		t.Fatalf("capped jwt expiry seconds = %d, want %d", cappedJWTClaims.ExpiresAt-cappedJWTClaims.IssuedAt, 365*24*60*60)
+	}
 
 	oauthDriver := auth.Driver("oauth").(*oauth.Driver)
 	if _, err := db.Exec("INSERT INTO oauth_tokens (token, client_id, expires_at, created_at) VALUES (?, ?, ?, ?)", "opaque", "client-1", time.Now().Add(time.Hour), time.Now()); err != nil {
@@ -529,6 +556,32 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	if misconfiguredResp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("misconfigured oauth status = %d body = %#v", misconfiguredResp.StatusCode, misconfiguredResp.Body)
 	}
+	cappedOAuthDriver := oauth.NewDriver(func(key, fallback string) string {
+		switch key {
+		case "OAUTH_CLIENT_ID":
+			return "client-1"
+		case "OAUTH_CLIENT_SECRET":
+			return "secret-1"
+		case "OAUTH_TOKEN_EXPIRY":
+			return strings.Repeat("9", 80)
+		default:
+			return fallback
+		}
+	}, db, "sqlite")
+	cappedTokenReq, _ := http.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader("grant_type=client_credentials"))
+	cappedTokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	cappedTokenReq.SetBasicAuth("client-1", "secret-1")
+	cappedTokenResp := cappedOAuthDriver.TokenEndpoint(httpx.NewContext(cappedTokenReq))
+	if cappedTokenResp.StatusCode != http.StatusOK {
+		t.Fatalf("capped oauth token endpoint status = %d body = %#v", cappedTokenResp.StatusCode, cappedTokenResp.Body)
+	}
+	cappedTokenBody, ok := cappedTokenResp.Body.(map[string]any)
+	if !ok {
+		t.Fatalf("capped oauth token body type = %T", cappedTokenResp.Body)
+	}
+	if cappedTokenBody["expires_in"] != 365*24*60*60 {
+		t.Fatalf("capped oauth expires_in = %#v, want %d", cappedTokenBody["expires_in"], 365*24*60*60)
+	}
 
 	sessionDriver := auth.Driver("session").(*session.Driver)
 	sessionID := "11111111-1111-4111-8111-111111111111"
@@ -600,6 +653,19 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	}
 	if err := session.Put(expiredCtx, "stale", "updated"); err == nil {
 		t.Fatal("expired session put should fail")
+	}
+	cappedSessionDriver := session.NewDriver(func(key, fallback string) string {
+		switch key {
+		case "SESSION_SECRET":
+			return "session-secret"
+		case "SESSION_TTL":
+			return strings.Repeat("9", 80)
+		default:
+			return fallback
+		}
+	}, db, "sqlite")
+	if cappedSessionDriver.TTL() != 365*24*60*60 {
+		t.Fatalf("capped session TTL = %d, want %d", cappedSessionDriver.TTL(), 365*24*60*60)
 	}
 
 	badEnv := func(key, fallback string) string {

@@ -2915,6 +2915,74 @@ func Search(start time.Time, end time.Time) ([]models.Post, error) {
 	}
 }
 
+func TestRewriteImmutableQueryAllVersions(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"Transaction": true},
+		integrityModels: map[string]integrityModelInfo{
+			"Transaction": {
+				Table:     &schema.Table{Name: "transactions"},
+				Immutable: true,
+			},
+		},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func History(accountID string) ([]models.Transaction, error) {
+	return models.QueryTransaction().
+		WhereAccountID(accountID).
+		AllVersions().
+		All()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	compact := strings.Join(strings.Fields(got), " ")
+	if !strings.Contains(compact, `Where("account_id = ?", accountID)`) {
+		t.Fatalf("rewritten source missing account filter:\n%s", got)
+	}
+	if strings.Contains(got, "Where(\"version_id = (SELECT MAX(version_id)") {
+		t.Fatalf("AllVersions query retained latest-version predicate:\n%s", got)
+	}
+	if strings.Contains(got, "AllVersions") || strings.Contains(got, "QueryTransaction") {
+		t.Fatalf("rewritten source retained Pickle query method:\n%s", got)
+	}
+}
+
+func TestRewriteMutableImmutableAllVersionsRequiresFluentChain(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"Transaction": true},
+		integrityModels: map[string]integrityModelInfo{
+			"Transaction": {
+				Table:     &schema.Table{Name: "transactions"},
+				Immutable: true,
+			},
+		},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func History() ([]models.Transaction, error) {
+	q := models.QueryTransaction()
+	q.AllVersions()
+	return q.All()
+}
+`)
+	_, err := ex.rewriteGoFile("controller.go", src)
+	if err == nil || !strings.Contains(err.Error(), "AllVersions must be used in a fluent query chain for export") {
+		t.Fatalf("rewriteGoFile error = %v, want fluent-chain AllVersions boundary", err)
+	}
+}
+
 func TestRewriteAliasedModelsImportQueryChain(t *testing.T) {
 	ex := &exporter{
 		sourceModule: "example.com/app",

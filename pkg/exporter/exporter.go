@@ -649,13 +649,14 @@ func (e *exporter) rejectRemainingPickleQueries(path string, fset *token.FileSet
 }
 
 type queryChain struct {
-	Model    string
-	Terminal string
-	Filters  []queryFilter
-	Preloads []string
-	Limit    ast.Expr
-	Offset   ast.Expr
-	Arg      ast.Expr
+	Model       string
+	Terminal    string
+	Filters     []queryFilter
+	Preloads    []string
+	Limit       ast.Expr
+	Offset      ast.Expr
+	Arg         ast.Expr
+	AllVersions bool
 }
 
 type queryFilter struct {
@@ -720,6 +721,11 @@ func buildQueryChain(model string, methods []struct {
 		m := methods[i]
 		switch {
 		case m.name == "AnyOwner":
+		case m.name == "AllVersions":
+			if len(m.args) != 0 {
+				return qc, true, fmt.Errorf("AllVersions does not accept arguments")
+			}
+			qc.AllVersions = true
 		case m.name == "Limit":
 			if len(m.args) != 1 {
 				return qc, true, fmt.Errorf("Limit requires one argument")
@@ -874,6 +880,8 @@ func rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[string]string) (a
 			return nil, true, dirErr
 		}
 		expr, err = parseExpr(fmt.Sprintf("%s.Order(%s + \" \" + %s)", id.Name, col, dir))
+	case sel.Sel.Name == "AllVersions":
+		return nil, true, fmt.Errorf("AllVersions must be used in a fluent query chain for export")
 	case sel.Sel.Name == "SelectAll" || sel.Sel.Name == "AnyOwner":
 		if len(call.Args) != 0 {
 			return nil, true, fmt.Errorf("%s does not accept arguments", sel.Sel.Name)
@@ -1008,7 +1016,7 @@ func gormVarWhereExpr(varName, col, op string, args ...ast.Expr) (ast.Expr, erro
 
 func (e *exporter) gormChain(q queryChain) string {
 	chain := fmt.Sprintf("models.DB.Model(&models.%s{})", q.Model)
-	if info, ok := e.integrityModels[q.Model]; ok && info.Immutable && !q.hasVersionFilter() {
+	if info, ok := e.integrityModels[q.Model]; ok && info.Immutable && !q.AllVersions && !q.hasVersionFilter() {
 		table := info.Table.Name
 		chain += fmt.Sprintf(".Where(%q)", "version_id = (SELECT MAX(version_id) FROM "+table+" latest WHERE latest.id = "+table+".id)")
 	}

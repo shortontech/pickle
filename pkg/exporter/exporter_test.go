@@ -1416,7 +1416,7 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	var performed, denied, failed int
 	var deniedReason, failedError string
 	models.OnAuditPerformed = func(ctx *httpx.Context, action, model string, resourceID any, extra string) {
-		if action == "Ban" && model == "User" {
+		if (action == "Ban" || action == "Promote") && model == "User" {
 			performed++
 		}
 	}
@@ -1467,6 +1467,30 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 		t.Fatalf("audit ip = %q, want unspoofed remote address", auditIP)
 	}
 
+	result, err := user.Promote(ctx, models.PromoteAction{Level: "gold"})
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if result == nil || result.Level != "gold" {
+		t.Fatalf("promote result = %+v, want level gold", result)
+	}
+	if performed != 2 {
+		t.Fatalf("performed audit hook count after promote = %d, want 2", performed)
+	}
+	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if auditRows != 2 {
+		t.Fatalf("audit rows after result-bearing action = %d, want 2", auditRows)
+	}
+	var promoteRows int64
+	if err := db.Raw("SELECT COUNT(*) FROM user_actions ua JOIN action_types at ON at.id = ua.action_type_id WHERE at.name = ?", "Promote").Scan(&promoteRows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if promoteRows != 1 {
+		t.Fatalf("promote audit rows = %d, want 1", promoteRows)
+	}
+
 	badAuditCtx := httpx.NewContext(req)
 	badAuditCtx.SetAuth(&httpx.AuthInfo{UserID: "not-a-uuid", Role: "admin"})
 	if err := user.Ban(badAuditCtx, models.BanAction{Reason: "audit-fail"}); err == nil || !strings.Contains(err.Error(), "audit user id") {
@@ -1475,8 +1499,8 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
 		t.Fatal(err)
 	}
-	if auditRows != 1 {
-		t.Fatalf("audit rows after failed audit persistence = %d, want 1", auditRows)
+	if auditRows != 2 {
+		t.Fatalf("audit rows after failed audit persistence = %d, want 2", auditRows)
 	}
 	var persistedName string
 	if err := db.Raw("SELECT name FROM users WHERE id = ?", userID.String()).Scan(&persistedName).Error; err != nil {
@@ -1497,8 +1521,8 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
 		t.Fatal(err)
 	}
-	if auditRows != 1 {
-		t.Fatalf("audit rows after denied action = %d, want 1", auditRows)
+	if auditRows != 2 {
+		t.Fatalf("audit rows after denied action = %d, want 2", auditRows)
 	}
 
 	if err := user.Fail(ctx, models.FailAction{}); err == nil {
@@ -1513,8 +1537,8 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
 		t.Fatal(err)
 	}
-	if auditRows != 1 {
-		t.Fatalf("audit rows after failed action = %d, want 1", auditRows)
+	if auditRows != 2 {
+		t.Fatalf("audit rows after failed action = %d, want 2", auditRows)
 	}
 
 	models.OnAuditFailed = nil

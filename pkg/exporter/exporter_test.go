@@ -5156,7 +5156,8 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "if auth := GraphQLAPIAuthFromContext(ctx); auth != nil && !graphQLAPIAuthCanManage(auth)")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "q := models.QueryPost().WhereUserID(obj.ID)")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "q.WhereUserID(ownerID)")
-	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "q.Limit(maxGraphQLAPIPageSize)")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "q.Limit(maxGraphQLAPIPageSize + 1)")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "GraphQL relationship exceeds maximum page size")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *postResolver) Comments")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), "func graphQLAPIAuthCanManage")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), `mime.ParseMediaType(contentType)`)
@@ -5412,22 +5413,44 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 	}
 
 	ownerPosts, err := userFields.Posts(matchingOwnerCtx, user)
-	if err != nil {
-		t.Fatalf("owner posts: %v", err)
-	}
-	if len(ownerPosts) != maxGraphQLAPIPageSize {
-		t.Fatalf("owner relationship posts = %d, want capped %d", len(ownerPosts), maxGraphQLAPIPageSize)
+	if !isBadInput(err) || ownerPosts != nil {
+		t.Fatalf("owner overflowing relationship posts = %d/%v, want BAD_USER_INPUT and nil", len(ownerPosts), err)
 	}
 
 	posts, err := userFields.Posts(managerCtx, user)
+	if !isBadInput(err) || posts != nil {
+		t.Fatalf("manager overflowing relationship posts = %d/%v, want BAD_USER_INPUT and nil", len(posts), err)
+	}
+
+	if err := models.DB.Where("1 = 1").Delete(&models.Post{}).Error; err != nil {
+		t.Fatalf("delete overflowing posts: %v", err)
+	}
+	var firstAllowedPost *models.Post
+	for i := 0; i < maxGraphQLAPIPageSize; i++ {
+		post := &models.Post{
+			ID:        uuid.New(),
+			UserID:    user.ID,
+			Title:     "Allowed",
+			Body:      "Body",
+			CreatedAt: createdAt,
+			UpdatedAt: createdAt,
+		}
+		if err := models.QueryPost().Create(post); err != nil {
+			t.Fatalf("create allowed post %d: %v", i, err)
+		}
+		if firstAllowedPost == nil {
+			firstAllowedPost = post
+		}
+	}
+	posts, err = userFields.Posts(managerCtx, user)
 	if err != nil {
-		t.Fatalf("user posts: %v", err)
+		t.Fatalf("bounded user posts: %v", err)
 	}
 	if len(posts) != maxGraphQLAPIPageSize {
-		t.Fatalf("relationship posts = %d, want capped %d", len(posts), maxGraphQLAPIPageSize)
+		t.Fatalf("bounded relationship posts = %d, want %d", len(posts), maxGraphQLAPIPageSize)
 	}
-	if posts[0].UserID != user.ID {
-		t.Fatalf("relationship post user_id = %s, want %s", posts[0].UserID, user.ID)
+	if posts[0].UserID != user.ID || posts[0].ID != firstAllowedPost.ID {
+		t.Fatalf("relationship first post = %+v, want user %s post %s", posts[0], user.ID, firstAllowedPost.ID)
 	}
 }
 

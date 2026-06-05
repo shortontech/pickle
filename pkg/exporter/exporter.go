@@ -2712,8 +2712,9 @@ func writeGraphQLAPIRelationshipResolver(b *strings.Builder, parent, child *sche
 			fmt.Fprintf(b, "\tgraphQLAPISelect%sVisibility(ctx, q)\n", childStruct)
 		}
 		writeGraphQLAPIScopeRelationshipOwnerFromAuth(b, child, strings.ToLower(methodName), "nil")
-		b.WriteString("\tq.Limit(maxGraphQLAPIPageSize)\n")
+		b.WriteString("\tq.Limit(maxGraphQLAPIPageSize + 1)\n")
 		b.WriteString("\trecords, err := q.All()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n")
+		b.WriteString("\tif len(records) > maxGraphQLAPIPageSize {\n\t\treturn nil, graphQLAPIBadInput(\"GraphQL relationship exceeds maximum page size; expose a paginated relationship field\")\n\t}\n")
 		fmt.Fprintf(b, "\titems := make([]*models.%s, 0, len(records))\n", childStruct)
 		b.WriteString("\tfor i := range records {\n\t\titems = append(items, &records[i])\n\t}\n\treturn items, nil\n")
 		b.WriteString("}\n\n")

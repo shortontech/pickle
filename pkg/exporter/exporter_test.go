@@ -3592,6 +3592,49 @@ fragment UserFields on User {
 		}
 	})
 
+	t.Run("non_object_variables_rejected_before_parse", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{
+			"query":     "query AllowedUsers { users(page: { first: 1 }) { edges { node { id } } } }",
+			"variables": []any{"not", "an", "object"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL variables must be an object") {
+			t.Fatalf("missing variables type error: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "not") {
+			t.Fatalf("variables type error leaked request value: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("null_variables_are_accepted", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{
+			"query":     "query AllowedUsers { users(page: { first: 1 }) { edges { node { id } } } }",
+			"variables": nil,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "\"errors\"") {
+			t.Fatalf("null variables should execute without errors: %s", rec.Body.String())
+		}
+	})
+
 	t.Run("batched_json_requests_are_rejected", func(t *testing.T) {
 		body := ` + "`" + `[
   { "query": "{ users { edges { node { id } } } }" },

@@ -2236,6 +2236,17 @@ func validateGraphQLRequestEnvelope(w http.ResponseWriter, raw map[string]any) b
 			return false
 		}
 	}
+	if variables, ok := raw["variables"]; ok && variables != nil {
+		values, ok := variables.(map[string]any)
+		if !ok {
+			writeGraphQLHTTPError(w, "GraphQL variables must be an object", CodeBadUserInput)
+			return false
+		}
+		if err := validateGraphQLVariables(values); err != nil {
+			writeGraphQLHTTPError(w, err.Error(), CodeBadUserInput)
+			return false
+		}
+	}
 	return true
 }
 

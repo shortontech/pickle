@@ -3108,6 +3108,8 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), `mime.ParseMediaType(contentType)`)
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "err.Path = graphQLErrorPath(path)")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLRequestBodyBytes = 1 << 20")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLVariables = 64")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func validateGraphQLVariables")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "http.MaxBytesReader(w, r.Body, maxGraphQLRequestBodyBytes)")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func graphQLRequestedPageLimit")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), `parsePositivePageInt(pageArg["last"])`)
@@ -3493,6 +3495,31 @@ fragment UserFields on User {
 		}
 	})
 
+	t.Run("oversized_variable_string_rejected", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{
+			"query": ` + "`" + `query OversizedVariable($id: ID!) {
+  user(id: $id) { id name }
+}` + "`" + `,
+			"variables": map[string]any{"id": strings.Repeat("x", 4097)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL variables exceed safety limits") {
+			t.Fatalf("missing variable budget error: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), strings.Repeat("x", 128)) {
+			t.Fatalf("variable budget error leaked oversized variable: %s", rec.Body.String())
+		}
+	})
+
 	t.Run("batched_json_requests_are_rejected", func(t *testing.T) {
 		body := ` + "`" + `[
   { "query": "{ users { edges { node { id } } } }" },
@@ -3580,6 +3607,39 @@ func TestExportedGraphQLCostModelPricesBackwardPagination(t *testing.T) {
 	}
 	if got != 127 {
 		t.Fatalf("schema complexity with page.last = %d, want child 7 + list cost 120", got)
+	}
+}
+
+func TestExportedGraphQLVariableBudget(t *testing.T) {
+	if err := validateGraphQLVariables(map[string]any{
+		"ok": map[string]any{"items": []any{"one", "two"}},
+	}); err != nil {
+		t.Fatalf("valid variables rejected: %v", err)
+	}
+
+	tooMany := map[string]any{}
+	for i := 0; i < maxGraphQLVariables+1; i++ {
+		tooMany[string(rune('a'+i))] = i
+	}
+	if err := validateGraphQLVariables(tooMany); err == nil || !strings.Contains(err.Error(), "too many GraphQL variables") {
+		t.Fatalf("too many variables error = %v", err)
+	}
+
+	if err := validateGraphQLVariables(map[string]any{"s": strings.Repeat("x", maxGraphQLVariableStringBytes+1)}); err == nil || !strings.Contains(err.Error(), "GraphQL variables exceed safety limits") {
+		t.Fatalf("oversized string variable error = %v", err)
+	}
+
+	wide := make([]any, maxGraphQLVariableCollectionItems+1)
+	if err := validateGraphQLVariables(map[string]any{"wide": wide}); err == nil || !strings.Contains(err.Error(), "GraphQL variables exceed safety limits") {
+		t.Fatalf("wide variable error = %v", err)
+	}
+
+	var deep any = "leaf"
+	for i := 0; i <= maxGraphQLVariableDepth; i++ {
+		deep = map[string]any{"next": deep}
+	}
+	if err := validateGraphQLVariables(map[string]any{"deep": deep}); err == nil || !strings.Contains(err.Error(), "GraphQL variables exceed safety limits") {
+		t.Fatalf("deep variable error = %v", err)
 	}
 }
 `

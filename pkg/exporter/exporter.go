@@ -2101,6 +2101,10 @@ import (
 )
 
 const maxGraphQLRequestBodyBytes = 1 << 20
+const maxGraphQLVariables = 64
+const maxGraphQLVariableDepth = 8
+const maxGraphQLVariableCollectionItems = 256
+const maxGraphQLVariableStringBytes = 4096
 
 // Handler returns a production GraphQL handler backed by gqlgen's parser,
 // validator, transport handling, and executable schema runtime.
@@ -2337,6 +2341,9 @@ func documentFromOperationContext(opCtx *gqlgen.OperationContext) (*Document, er
 	if opCtx == nil || opCtx.Operation == nil {
 		return nil, BadInput("operation is required")
 	}
+	if err := validateGraphQLVariables(opCtx.Variables); err != nil {
+		return nil, err
+	}
 	fragments := ast.FragmentDefinitionList(nil)
 	if opCtx.Doc != nil {
 		fragments = opCtx.Doc.Fragments
@@ -2347,6 +2354,50 @@ func documentFromOperationContext(opCtx *gqlgen.OperationContext) (*Document, er
 		Fields:    convertSelectionSetWithVariables(opCtx.Operation.SelectionSet, opCtx.Variables, fragments, map[string]bool{}),
 		Variables: opCtx.Variables,
 	}, nil
+}
+
+func validateGraphQLVariables(variables map[string]any) error {
+	if len(variables) > maxGraphQLVariables {
+		return BadInput("too many GraphQL variables")
+	}
+	for _, value := range variables {
+		if !validGraphQLVariableValue(value, 0) {
+			return BadInput("GraphQL variables exceed safety limits")
+		}
+	}
+	return nil
+}
+
+func validGraphQLVariableValue(value any, depth int) bool {
+	if depth > maxGraphQLVariableDepth {
+		return false
+	}
+	switch v := value.(type) {
+	case string:
+		return len(v) <= maxGraphQLVariableStringBytes
+	case []any:
+		if len(v) > maxGraphQLVariableCollectionItems {
+			return false
+		}
+		for _, item := range v {
+			if !validGraphQLVariableValue(item, depth+1) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		if len(v) > maxGraphQLVariableCollectionItems {
+			return false
+		}
+		for _, item := range v {
+			if !validGraphQLVariableValue(item, depth+1) {
+				return false
+			}
+		}
+		return true
+	default:
+		return true
+	}
 }
 
 func convertSelectionSetWithVariables(ss ast.SelectionSet, variables map[string]any, fragments ast.FragmentDefinitionList, seen map[string]bool) []Field {

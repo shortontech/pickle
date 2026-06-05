@@ -2102,6 +2102,7 @@ import (
 
 const maxGraphQLRequestBodyBytes = 1 << 20
 const maxGraphQLQueryBytes = 64 << 10
+const maxGraphQLOperationNameBytes = 256
 const maxGraphQLVariables = 64
 const maxGraphQLVariableDepth = 8
 const maxGraphQLVariableCollectionItems = 256
@@ -2220,12 +2221,20 @@ func prepareGraphQLPostBody(w http.ResponseWriter, r *http.Request) bool {
 
 func validateGraphQLRequestEnvelope(w http.ResponseWriter, raw map[string]any) bool {
 	query, ok := raw["query"].(string)
-	if !ok {
-		return true
-	}
-	if len(query) > maxGraphQLQueryBytes {
+	if ok && len(query) > maxGraphQLQueryBytes {
 		writeGraphQLHTTPError(w, "GraphQL query is too large", CodeBadUserInput)
 		return false
+	}
+	if operationName, ok := raw["operationName"]; ok {
+		name, ok := operationName.(string)
+		if operationName != nil && !ok {
+			writeGraphQLHTTPError(w, "GraphQL operationName must be a string", CodeBadUserInput)
+			return false
+		}
+		if len(name) > maxGraphQLOperationNameBytes {
+			writeGraphQLHTTPError(w, "GraphQL operationName is too large", CodeBadUserInput)
+			return false
+		}
 	}
 	return true
 }

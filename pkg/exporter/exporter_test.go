@@ -3109,6 +3109,7 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "err.Path = graphQLErrorPath(path)")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLRequestBodyBytes = 1 << 20")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLQueryBytes = 64 << 10")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLOperationNameBytes = 256")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func validateGraphQLRequestEnvelope")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLVariables = 64")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func validateGraphQLVariables")
@@ -3462,6 +3463,52 @@ fragment UserFields on User {
 		}
 		if strings.Contains(rec.Body.String(), strings.Repeat("x", 128)) {
 			t.Fatalf("query size error leaked oversized query: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("oversized_operation_name_rejected_before_parse", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{
+			"query":         "query AllowedUsers { users(page: { first: 1 }) { edges { node { id } } } }",
+			"operationName": strings.Repeat("x", 257),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL operationName is too large") {
+			t.Fatalf("missing operationName size error: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), strings.Repeat("x", 128)) {
+			t.Fatalf("operationName size error leaked oversized value: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("non_string_operation_name_rejected_before_parse", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{
+			"query":         "query AllowedUsers { users(page: { first: 1 }) { edges { node { id } } } }",
+			"operationName": []any{"not", "a", "string"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL operationName must be a string") {
+			t.Fatalf("missing operationName type error: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "not") {
+			t.Fatalf("operationName type error leaked request value: %s", rec.Body.String())
 		}
 	})
 

@@ -949,6 +949,7 @@ func writeExportedActionAuditBehaviorTest(t *testing.T, out string) {
 import (
 	"errors"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -1035,6 +1036,25 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	}
 	if actionName != "Ban" {
 		t.Fatalf("audit action name = %q, want Ban", actionName)
+	}
+
+	badAuditCtx := httpx.NewContext(req)
+	badAuditCtx.SetAuth(&httpx.AuthInfo{UserID: "not-a-uuid", Role: "admin"})
+	if err := user.Ban(badAuditCtx, models.BanAction{Reason: "audit-fail"}); err == nil || !strings.Contains(err.Error(), "audit user id") {
+		t.Fatalf("ban with invalid audit user id error = %v, want audit user id error", err)
+	}
+	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if auditRows != 1 {
+		t.Fatalf("audit rows after failed audit persistence = %d, want 1", auditRows)
+	}
+	var persistedName string
+	if err := db.Raw("SELECT name FROM users WHERE id = ?", userID.String()).Scan(&persistedName).Error; err != nil {
+		t.Fatal(err)
+	}
+	if persistedName != "banned" {
+		t.Fatalf("user name after failed audit persistence = %q, want banned", persistedName)
 	}
 
 	deniedCtx := httpx.NewContext(req)

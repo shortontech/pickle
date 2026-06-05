@@ -6719,10 +6719,13 @@ type ResourceController interface { Index(*Context) Response; Show(*Context) Res
 type ErrorReporter func(*Context, error)
 type Route struct { Method string; Path string; Handler HandlerFunc; Middleware []MiddlewareFunc }
 type Router struct{ prefix string; middleware []MiddlewareFunc; routes []Route; onError ErrorReporter }
-func Routes(fn func(*Router)) *Router { r := &Router{}; fn(r); return r }
-func (r *Router) OnError(fn ErrorReporter) { r.onError = fn }
+func Routes(fn func(*Router)) *Router { r := &Router{}; if fn != nil { fn(r) }; return r }
+func (r *Router) OnError(fn ErrorReporter) { if r != nil { r.onError = fn } }
 func (r *Router) OnRateLimit(fn func(*Context, RateLimitEvent)) { rateLimitCallback = fn }
 func (r *Router) Group(path string, args ...any) {
+	if r == nil {
+		return
+	}
 	child := &Router{prefix: joinPath(r.prefix, path), middleware: append([]MiddlewareFunc{}, r.middleware...)}
 	var bodies []func(*Router)
 	for _, arg := range args {
@@ -6745,19 +6748,35 @@ func (r *Router) Post(path string, handler HandlerFunc, middleware ...any) { r.a
 func (r *Router) Put(path string, handler HandlerFunc, middleware ...any) { r.add("PUT", path, handler, middleware...) }
 func (r *Router) Patch(path string, handler HandlerFunc, middleware ...any) { r.add("PATCH", path, handler, middleware...) }
 func (r *Router) Delete(path string, handler HandlerFunc, middleware ...any) { r.add("DELETE", path, handler, middleware...) }
-func (r *Router) add(method, path string, handler HandlerFunc, middleware ...any) { r.routes = append(r.routes, Route{Method: method, Path: joinPath(r.prefix, path), Handler: handler, Middleware: append(append([]MiddlewareFunc{}, r.middleware...), resolveMiddleware(middleware)...)} ) }
+func (r *Router) add(method, path string, handler HandlerFunc, middleware ...any) { if r == nil { return }; r.routes = append(r.routes, Route{Method: method, Path: joinPath(r.prefix, path), Handler: handler, Middleware: append(append([]MiddlewareFunc{}, r.middleware...), resolveMiddleware(middleware)...)} ) }
 func (r *Router) Resource(prefix string, c ResourceController, middleware ...any) { r.Get(prefix, c.Index, middleware...); r.Get(prefix + "/:id", c.Show, middleware...); r.Post(prefix, c.Store, middleware...); r.Put(prefix + "/:id", c.Update, middleware...); r.Delete(prefix + "/:id", c.Destroy, middleware...) }
 func resolveMiddleware(middleware []any) []MiddlewareFunc { resolved := make([]MiddlewareFunc, 0, len(middleware)); for _, mw := range middleware { switch v := mw.(type) { case MiddlewareFunc: resolved = append(resolved, v); case func(*Context, func() Response) Response: resolved = append(resolved, MiddlewareFunc(v)); case MiddlewareProvider: resolved = append(resolved, v.Middleware()); default: panic("pickle export: invalid middleware type") } }; return resolved }
-func (r *Router) AllRoutes() []Route { routes := make([]Route, len(r.routes)); copy(routes, r.routes); return routes }
+func (r *Router) AllRoutes() []Route { if r == nil { return nil }; routes := make([]Route, len(r.routes)); copy(routes, r.routes); return routes }
 func writeRecoveredError(w http.ResponseWriter) { Response{StatusCode: http.StatusInternalServerError, Body: map[string]string{"error": "internal server error"}}.Write(w) }
+func writeRouterBadRequest(w http.ResponseWriter) { Response{StatusCode: http.StatusBadRequest, Body: map[string]string{"error": "bad request"}}.Write(w) }
 func writeRouterNotFound(w http.ResponseWriter) { Response{StatusCode: http.StatusNotFound, Body: map[string]string{"error": "not found"}}.Write(w) }
 func recoveredPanicError(_ any) error { return fmt.Errorf("panic recovered") }
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if w == nil {
+		return
+	}
 	var ctx *Context
-	defer func() { if recovered := recover(); recovered != nil { log.Printf("panic recovered"); if r.onError != nil { r.onError(ctx, recoveredPanicError(recovered)) }; writeRecoveredError(w) } }()
+	var reporter ErrorReporter
+	if r != nil {
+		reporter = r.onError
+	}
+	defer func() { if recovered := recover(); recovered != nil { log.Printf("panic recovered"); if reporter != nil { reporter(ctx, recoveredPanicError(recovered)) }; writeRecoveredError(w) } }()
+	if req == nil || req.URL == nil {
+		writeRouterBadRequest(w)
+		return
+	}
 	rateLimitResp, rateLimitHeaders := checkRateLimit(req)
 	if rateLimitResp != nil {
 		rateLimitResp.Write(w)
+		return
+	}
+	if r == nil {
+		writeRouterNotFound(w)
 		return
 	}
 	for _, rt := range r.routes {
@@ -6779,6 +6798,9 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 var paramPattern = regexp.MustCompile(` + "`" + `:(\w+)` + "`" + `)
 func (r *Router) RegisterRoutes(mux *http.ServeMux) {
+	if r == nil || mux == nil {
+		return
+	}
 	registered := map[string]bool{}
 	for _, route := range r.AllRoutes() {
 		goPath := paramPattern.ReplaceAllString(route.Path, "{$1}")

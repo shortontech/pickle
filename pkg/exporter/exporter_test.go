@@ -2751,6 +2751,53 @@ func TestExportedAllRoutesAndRegisterRoutes(t *testing.T) {
 	}
 }
 
+func TestExportedRouterNilInputsFailClosed(t *testing.T) {
+	t.Setenv("RATE_LIMIT", "false")
+
+	router := httpx.Routes(nil)
+	if router == nil {
+		t.Fatal("Routes(nil) returned nil router")
+	}
+	if routes := router.AllRoutes(); len(routes) != 0 {
+		t.Fatalf("Routes(nil).AllRoutes() = %#v, want empty", routes)
+	}
+
+	var nilRouter *httpx.Router
+	nilRouter.OnError(func(ctx *httpx.Context, err error) {
+		t.Fatal("nil router OnError should not register a callback")
+	})
+	nilRouter.Group("/api", func(r *httpx.Router) {
+		t.Fatal("nil router Group should not invoke body")
+	})
+	nilRouter.Get("/health", func(ctx *httpx.Context) httpx.Response {
+		t.Fatal("nil router Get should not register handler")
+		return httpx.Response{}
+	})
+	nilRouter.RegisterRoutes(nil)
+	nilRouter.RegisterRoutes(http.NewServeMux())
+	if routes := nilRouter.AllRoutes(); routes != nil {
+		t.Fatalf("nil router AllRoutes = %#v, want nil", routes)
+	}
+
+	nilReqRec := httptest.NewRecorder()
+	router.ServeHTTP(nilReqRec, nil)
+	if nilReqRec.Code != http.StatusBadRequest {
+		t.Fatalf("nil request status = %d body=%s", nilReqRec.Code, nilReqRec.Body.String())
+	}
+	if strings.Contains(nilReqRec.Body.String(), "panic") || strings.Contains(nilReqRec.Body.String(), "nil pointer") {
+		t.Fatalf("nil request response leaked internals: %s", nilReqRec.Body.String())
+	}
+
+	nilRouterRec := httptest.NewRecorder()
+	nilRouter.ServeHTTP(nilRouterRec, httptest.NewRequest(http.MethodGet, "/missing", nil))
+	if nilRouterRec.Code != http.StatusNotFound {
+		t.Fatalf("nil router ServeHTTP status = %d body=%s", nilRouterRec.Code, nilRouterRec.Body.String())
+	}
+	if strings.Contains(nilRouterRec.Body.String(), "panic") || strings.Contains(nilRouterRec.Body.String(), "nil pointer") {
+		t.Fatalf("nil router response leaked internals: %s", nilRouterRec.Body.String())
+	}
+}
+
 func TestExportedRouterDirectMissUsesHardenedJSONNotFound(t *testing.T) {
 	t.Setenv("RATE_LIMIT", "false")
 	router := httpx.Routes(func(r *httpx.Router) {

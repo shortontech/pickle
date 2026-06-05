@@ -2551,6 +2551,7 @@ func (c *countingCommand) Run(args []string) error {
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -2728,6 +2729,79 @@ func TestExportedServerBinaryServesMigratedRoutes(t *testing.T) {
 	}
 	if !strings.Contains(string(graphQLRespBody), "GraphQL introspection is disabled") {
 		t.Fatalf("graphql route did not use hardened gqlgen handler: %s", graphQLRespBody)
+	}
+
+	usersBody := ` + "`" + `{"query":"{ users { totalCount edges { node { id name email } } } }"}` + "`" + `
+	usersResp, err := http.Post("http://127.0.0.1:"+port+"/graphql", "application/json", strings.NewReader(usersBody))
+	if err != nil {
+		t.Fatalf("exported server binary did not serve GraphQL users query: %v\n%s", err, server.output.String())
+	}
+	defer usersResp.Body.Close()
+	usersRespBody, err := io.ReadAll(usersResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usersResp.StatusCode != http.StatusOK {
+		t.Fatalf("graphql users status = %d body=%s output=%s", usersResp.StatusCode, usersRespBody, server.output.String())
+	}
+	if !strings.Contains(string(usersRespBody), "UNAUTHENTICATED") {
+		t.Fatalf("unauthenticated graphql users query should fail closed: %s", usersRespBody)
+	}
+
+	loginBody := ` + "`" + `{"email":"ada@example.com","password":"correct horse"}` + "`" + `
+	loginResp, err := http.Post("http://127.0.0.1:"+port+"/api/login", "application/json", strings.NewReader(loginBody))
+	if err != nil {
+		t.Fatalf("exported server binary did not serve /api/login: %v\n%s", err, server.output.String())
+	}
+	defer loginResp.Body.Close()
+	loginRespBody, err := io.ReadAll(loginResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loginResp.StatusCode != http.StatusOK {
+		t.Fatalf("login status = %d body=%s output=%s", loginResp.StatusCode, loginRespBody, server.output.String())
+	}
+	var loginPayload struct {
+		Token string ` + "`" + `json:"token"` + "`" + `
+	}
+	if err := json.Unmarshal(loginRespBody, &loginPayload); err != nil {
+		t.Fatalf("decode login response: %v body=%s", err, loginRespBody)
+	}
+	if loginPayload.Token == "" {
+		t.Fatalf("login response missing token: %s", loginRespBody)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+port+"/graphql", strings.NewReader(usersBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+loginPayload.Token)
+	authUsersResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("authenticated GraphQL users query failed: %v\n%s", err, server.output.String())
+	}
+	defer authUsersResp.Body.Close()
+	authUsersRespBody, err := io.ReadAll(authUsersResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authUsersResp.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated graphql users status = %d body=%s output=%s", authUsersResp.StatusCode, authUsersRespBody, server.output.String())
+	}
+	if strings.Contains(string(authUsersRespBody), "UNAUTHENTICATED") {
+		t.Fatalf("authenticated graphql users query was denied: %s", authUsersRespBody)
+	}
+	usersText := string(authUsersRespBody)
+	for _, want := range []string{` + "`" + `"totalCount":1` + "`" + `, ` + "`" + `"name":"Ada"` + "`" + `, ` + "`" + `"email":"ada@example.com"` + "`" + `} {
+		if !strings.Contains(usersText, want) {
+			t.Fatalf("graphql users response missing %s: %s", want, usersText)
+		}
+	}
+	for _, leak := range []string{"password", "passwordHash", "password_hash", "correct horse"} {
+		if strings.Contains(usersText, leak) {
+			t.Fatalf("graphql users response leaked %q: %s", leak, usersText)
+		}
 	}
 }
 

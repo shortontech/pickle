@@ -7158,6 +7158,7 @@ func (d *Driver) ValidateToken(token string) (Claims, error) {
 }
 
 func (d *Driver) Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
+	if r == nil { return nil, errors.New("missing authorization header") }
 	header := r.Header.Get("Authorization")
 	if header == "" { return nil, errors.New("missing authorization header") }
 	parts := strings.Fields(header)
@@ -7316,6 +7317,7 @@ func NewDriver(env func(string, string) string, db *sql.DB, driver string) *Driv
 }
 
 func (d *Driver) Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
+	if r == nil { return nil, errors.New("missing bearer token") }
 	h := r.Header.Get("Authorization")
 	if !strings.HasPrefix(h, "Bearer ") { return nil, errors.New("missing bearer token") }
 	return d.ValidateToken(h[7:])
@@ -7337,6 +7339,9 @@ func (d *Driver) ValidateToken(token string) (*httpx.AuthInfo, error) {
 
 func (d *Driver) TokenEndpoint(ctx *httpx.Context) httpx.Response {
 	r := ctx.Request()
+	if r == nil {
+		return ctx.JSON(400, map[string]string{"error": "invalid_request", "error_description": "missing request"})
+	}
 	if d.db == nil {
 		return ctx.Error(errors.New("oauth: database not configured"))
 	}
@@ -7505,6 +7510,7 @@ func NewDriver(env func(string, string) string, db *sql.DB, driver string) *Driv
 }
 
 func (d *Driver) Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
+	if r == nil { return nil, errors.New("session: missing session cookie") }
 	cookie, err := r.Cookie(d.cookieName)
 	if err != nil { return nil, errors.New("session: missing session cookie") }
 	if !validSessionID(cookie.Value) { return nil, errors.New("session: invalid or expired session") }
@@ -7679,9 +7685,11 @@ func Put(ctx *httpx.Context, key string, value any) error {
 
 func CSRF(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
 	if len(csrfConfig.secret) == 0 { return ctx.Forbidden("CSRF secret not configured") }
-	if strings.HasPrefix(ctx.Request().Header.Get("Authorization"), "Bearer ") { return next() }
-	sessionID := sessionIDFromRequest(ctx.Request())
-	method := ctx.Request().Method
+	r := ctx.Request()
+	if r == nil { return ctx.Forbidden("CSRF request missing") }
+	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") { return next() }
+	sessionID := sessionIDFromRequest(r)
+	method := r.Method
 	if method == "GET" || method == "HEAD" || method == "OPTIONS" {
 		resp := next()
 		if sessionID != "" {
@@ -7690,13 +7698,14 @@ func CSRF(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
 		return resp
 	}
 	if sessionID == "" { return ctx.Forbidden("CSRF session missing") }
-	token := ctx.Request().Header.Get("X-CSRF-TOKEN")
+	token := r.Header.Get("X-CSRF-TOKEN")
 	if token == "" { return ctx.Forbidden("CSRF token missing") }
 	if !validateCSRFToken(token, sessionID, csrfConfig.secret) { return ctx.Forbidden("CSRF token invalid") }
 	return next()
 }
 
 func sessionIDFromRequest(r *http.Request) string {
+	if r == nil { return "" }
 	c, err := r.Cookie(sessionCookieName)
 	if err != nil { return "" }
 	if !validSessionID(c.Value) { return "" }

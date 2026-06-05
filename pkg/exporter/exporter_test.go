@@ -454,6 +454,9 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	}
 
 	jwtDriver := auth.Driver("jwt").(*jwt.Driver)
+	if _, err := jwtDriver.Authenticate(nil); err == nil || err.Error() != "missing authorization header" {
+		t.Fatalf("nil jwt request error = %v, want missing authorization header", err)
+	}
 	token, err := jwtDriver.SignToken(jwt.Claims{Subject: "user-1", Role: "admin"})
 	if err != nil {
 		t.Fatalf("sign jwt: %v", err)
@@ -616,6 +619,16 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	}
 
 	oauthDriver := auth.Driver("oauth").(*oauth.Driver)
+	if _, err := oauthDriver.Authenticate(nil); err == nil || err.Error() != "missing bearer token" {
+		t.Fatalf("nil oauth request error = %v, want missing bearer token", err)
+	}
+	nilTokenResp := oauthDriver.TokenEndpoint(httpx.NewContext(nil))
+	if nilTokenResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("nil oauth token request status = %d body = %#v", nilTokenResp.StatusCode, nilTokenResp.Body)
+	}
+	if body, ok := nilTokenResp.Body.(map[string]string); !ok || body["error"] != "invalid_request" || strings.Contains(fmt.Sprint(body), "panic") {
+		t.Fatalf("nil oauth token request body = %#v", nilTokenResp.Body)
+	}
 	if _, err := db.Exec("INSERT INTO oauth_tokens (token, client_id, expires_at, created_at) VALUES (?, ?, ?, ?)", "opaque", "client-1", time.Now().Add(time.Hour), time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -774,6 +787,9 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	}
 
 	sessionDriver := auth.Driver("session").(*session.Driver)
+	if _, err := sessionDriver.Authenticate(nil); err == nil || err.Error() != "session: missing session cookie" {
+		t.Fatalf("nil session request error = %v, want missing session cookie", err)
+	}
 	sessionID := "11111111-1111-4111-8111-111111111111"
 	if _, err := db.Exec("INSERT INTO sessions (id, user_id, role, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", sessionID, "user-2", "viewer", time.Now().Add(time.Hour), time.Now(), time.Now()); err != nil {
 		t.Fatal(err)
@@ -899,6 +915,13 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	}
 
 	auth.Init(env, db)
+	nilCtxResp := auth.DefaultAuthMiddleware(nil, func() httpx.Response {
+		t.Fatal("middleware should not call next for nil context")
+		return httpx.Response{}
+	})
+	if nilCtxResp.Status != http.StatusUnauthorized {
+		t.Fatalf("nil context auth middleware status = %d, want 401", nilCtxResp.Status)
+	}
 	token, err = jwtDriver.SignToken(jwt.Claims{Subject: "user-4", Role: "editor"})
 	if err != nil {
 		t.Fatalf("sign jwt for middleware: %v", err)
@@ -1410,6 +1433,34 @@ func TestExportedCSRFRequiresConfiguredSecretWithoutPanic(t *testing.T) {
 	})
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("missing secret status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+}
+
+func TestExportedCSRFFailsClosedForNilRequest(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	NewDriver(func(key, fallback string) string {
+		if key == "SESSION_SECRET" {
+			return "session-secret"
+		}
+		return fallback
+	}, db, "sqlite")
+	resp := CSRF(httpx.NewContext(nil), func() httpx.Response {
+		t.Fatal("CSRF should not call next for nil request")
+		return httpx.Response{}
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("nil request CSRF status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	body, ok := resp.Body.(map[string]string)
+	if !ok || body["error"] != "CSRF request missing" {
+		t.Fatalf("nil request CSRF body = %#v", resp.Body)
+	}
+	if got := sessionIDFromRequest(nil); got != "" {
+		t.Fatalf("sessionIDFromRequest(nil) = %q, want empty", got)
 	}
 }
 

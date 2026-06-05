@@ -1800,6 +1800,9 @@ func (e *exporter) writeGraphQLPackage(tables []*schema.Table, views []*schema.V
 	if err := e.writeGraphQLTargetFiles(schemaSDL); err != nil {
 		return err
 	}
+	if err := e.writeGraphQLAPIResolverTarget(schemaSDL, tables); err != nil {
+		return err
+	}
 	return e.writeGraphQLQuerySupport(tables, views)
 }
 
@@ -1833,6 +1836,368 @@ package tools
 
 import _ "github.com/99designs/gqlgen"
 `))
+}
+
+func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*schema.Table) error {
+	exposed := graphQLTablesInSDL(schemaSDL, tables)
+	if len(exposed) == 0 {
+		return nil
+	}
+	if err := e.writeFile(filepath.Join("app", "graphqlapi", "resolver", "resolver.go"), []byte("package resolver\n\ntype Resolver struct{}\n")); err != nil {
+		return err
+	}
+
+	var b strings.Builder
+	b.WriteString("package resolver\n\n")
+	b.WriteString("import (\n")
+	b.WriteString("\t\"context\"\n")
+	b.WriteString("\t\"fmt\"\n")
+	b.WriteString("\t\"time\"\n\n")
+	b.WriteString("\t\"github.com/google/uuid\"\n")
+	fmt.Fprintf(&b, "\t\"%s/app/graphqlapi/generated\"\n", e.modulePath)
+	fmt.Fprintf(&b, "\t\"%s/app/graphqlapi/model\"\n", e.modulePath)
+	fmt.Fprintf(&b, "\t\"%s/app/models\"\n", e.modulePath)
+	b.WriteString(")\n\n")
+	b.WriteString("type queryResolver struct{ *Resolver }\n")
+	for _, tbl := range exposed {
+		if graphQLTableNeedsObjectResolver(tbl) {
+			fmt.Fprintf(&b, "type %sResolver struct{ *Resolver }\n", graphQLResolverTypeName(tbl))
+		}
+	}
+	b.WriteString("\n")
+	for _, tbl := range exposed {
+		if graphQLSDLHasQueryField(schemaSDL, graphQLListFieldName(tbl)) {
+			writeGraphQLAPIListResolver(&b, tbl)
+		}
+		if graphQLSDLHasQueryField(schemaSDL, graphQLSingleFieldName(tbl)) {
+			writeGraphQLAPISingleResolver(&b, tbl)
+		}
+		if graphQLTableNeedsObjectResolver(tbl) {
+			writeGraphQLAPIObjectResolvers(&b, tbl)
+		}
+	}
+	for _, tbl := range exposed {
+		if graphQLTableNeedsObjectResolver(tbl) {
+			structName := tableToStruct(tbl.Name)
+			resolverName := graphQLResolverTypeName(tbl)
+			fmt.Fprintf(&b, "func (r *Resolver) %s() generated.%sResolver { return &%sResolver{r} }\n\n", structName, structName, resolverName)
+		}
+	}
+	b.WriteString("func (r *Resolver) Query() generated.QueryResolver { return &queryResolver{r} }\n")
+
+	formatted, err := format.Source([]byte(b.String()))
+	if err != nil {
+		return fmt.Errorf("formatting exported gqlgen resolver target: %w", err)
+	}
+	if err := e.writeFile(filepath.Join("app", "graphqlapi", "resolver", "schema.resolvers.go"), formatted); err != nil {
+		return err
+	}
+
+	var support strings.Builder
+	support.WriteString("package resolver\n\n")
+	support.WriteString("import (\n")
+	support.WriteString("\t\"fmt\"\n")
+	support.WriteString("\t\"strings\"\n")
+	support.WriteString("\t\"time\"\n\n")
+	support.WriteString("\t\"github.com/google/uuid\"\n")
+	fmt.Fprintf(&support, "\t\"%s/app/graphqlapi/model\"\n", e.modulePath)
+	fmt.Fprintf(&support, "\t\"%s/app/models\"\n", e.modulePath)
+	support.WriteString(")\n\n")
+	writeGraphQLAPIResolverSupport(&support)
+	for _, tbl := range exposed {
+		if graphQLSDLHasQueryField(schemaSDL, graphQLListFieldName(tbl)) {
+			writeGraphQLAPIFilterApplier(&support, tbl)
+		}
+	}
+	formattedSupport, err := format.Source([]byte(support.String()))
+	if err != nil {
+		return fmt.Errorf("formatting exported gqlgen resolver support: %w", err)
+	}
+	return e.writeFile(filepath.Join("app", "graphqlapi", "resolver", "support_gen.go"), formattedSupport)
+}
+
+func writeGraphQLAPIResolverSupport(b *strings.Builder) {
+	b.WriteString(`const defaultGraphQLAPIPageSize = 25
+const maxGraphQLAPIPageSize = 100
+const maxGraphQLAPIInputListSize = 100
+
+func gqlgenStringPtr(value string) *string {
+	return &value
+}
+
+func gqlgenPageLimit(page *model.PageInput) int {
+	limit := defaultGraphQLAPIPageSize
+	if page != nil {
+		if page.First != nil {
+			limit = *page.First
+		} else if page.Last != nil {
+			limit = *page.Last
+		}
+	}
+	if limit <= 0 {
+		return defaultGraphQLAPIPageSize
+	}
+	if limit > maxGraphQLAPIPageSize {
+		return maxGraphQLAPIPageSize
+	}
+	return limit
+}
+
+func gqlgenPageOffset(page *model.PageInput) int {
+	if page == nil || page.After == nil {
+		return 0
+	}
+	if !strings.HasPrefix(*page.After, "cursor:") {
+		return 0
+	}
+	var offset int
+	if _, err := fmt.Sscanf(*page.After, "cursor:%d", &offset); err != nil || offset < 0 {
+		return 0
+	}
+	return offset
+}
+
+func gqlgenCursor(offset int) string {
+	return fmt.Sprintf("cursor:%d", offset)
+}
+
+func gqlgenSortParts(sort string) (string, string) {
+	if strings.HasSuffix(sort, "_DESC") {
+		return strings.ToLower(strings.TrimSuffix(sort, "_DESC")), "DESC"
+	}
+	if strings.HasSuffix(sort, "_ASC") {
+		return strings.ToLower(strings.TrimSuffix(sort, "_ASC")), "ASC"
+	}
+	return "", "ASC"
+}
+
+`)
+}
+
+func graphQLTablesInSDL(schemaSDL string, tables []*schema.Table) []*schema.Table {
+	var out []*schema.Table
+	for _, tbl := range tables {
+		structName := tableToStruct(tbl.Name)
+		if strings.Contains(schemaSDL, "type "+structName+" {") || strings.Contains(schemaSDL, "type "+structName+" ") {
+			out = append(out, tbl)
+		}
+	}
+	return out
+}
+
+func graphQLSDLHasQueryField(schemaSDL, field string) bool {
+	return strings.Contains(schemaSDL, "\n  "+field+"(") || strings.Contains(schemaSDL, "\n  "+field+":")
+}
+
+func graphQLListFieldName(tbl *schema.Table) string {
+	return snakeToCamel(tbl.Name)
+}
+
+func graphQLSingleFieldName(tbl *schema.Table) string {
+	return snakeToCamel(modelFileName(tbl.Name))
+}
+
+func graphQLResolverTypeName(tbl *schema.Table) string {
+	structName := tableToStruct(tbl.Name)
+	return strings.ToLower(structName[:1]) + structName[1:]
+}
+
+func graphQLTableNeedsObjectResolver(tbl *schema.Table) bool {
+	for _, col := range tbl.Columns {
+		if graphQLColumnResolverReturnType(col) != "" && !isExcludedFromExportedGraphQL(tbl, col) {
+			return true
+		}
+	}
+	return false
+}
+
+func isExcludedFromExportedGraphQL(tbl *schema.Table, col *schema.Column) bool {
+	if col.Type == schema.Binary {
+		return true
+	}
+	if col.Name == "password_hash" || col.Name == "password" || col.Name == "row_hash" || col.Name == "prev_hash" || col.Name == "version_id" {
+		return true
+	}
+	if tbl != nil {
+		switch tbl.Name {
+		case "jwt_tokens":
+			return col.Name == "jti"
+		case "oauth_tokens":
+			return col.Name == "token"
+		case "sessions":
+			return col.Name == "id"
+		}
+	}
+	return false
+}
+
+func graphQLColumnResolverReturnType(col *schema.Column) string {
+	switch col.Type {
+	case schema.UUID, schema.Timestamp, schema.Date, schema.Time, schema.Decimal, schema.JSONB:
+		if col.IsNullable {
+			return "*string"
+		}
+		return "string"
+	default:
+		return ""
+	}
+}
+
+func writeGraphQLAPIListResolver(b *strings.Builder, tbl *schema.Table) {
+	structName := tableToStruct(tbl.Name)
+	listField := graphQLListFieldName(tbl)
+	fmt.Fprintf(b, "func (r *queryResolver) %s(ctx context.Context, filter *model.%sFilter, sort *model.%sSort, page *model.PageInput) (*model.%sConnection, error) {\n", snakeToPascal(listField), structName, structName, structName)
+	fmt.Fprintf(b, "\tq := models.Query%s()\n", structName)
+	if exportedGraphQLTableHasVisibility(tbl) {
+		b.WriteString("\tq.SelectPublic()\n")
+	}
+	b.WriteString("\tif filter != nil {\n")
+	fmt.Fprintf(b, "\t\tapply%sFilter(q, filter)\n", structName)
+	b.WriteString("\t}\n")
+	b.WriteString("\tif sort != nil {\n\t\tcolumn, dir := gqlgenSortParts(string(*sort))\n\t\tif column != \"\" {\n\t\t\tq.OrderBy(column, dir)\n\t\t}\n\t}\n")
+	b.WriteString("\tlimit := gqlgenPageLimit(page)\n\toffset := gqlgenPageOffset(page)\n\tq.Limit(limit + 1)\n\tif offset > 0 {\n\t\tq.Offset(offset)\n\t}\n")
+	b.WriteString("\trecords, err := q.All()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n")
+	b.WriteString("\thasNext := len(records) > limit\n\tif hasNext {\n\t\trecords = records[:limit]\n\t}\n")
+	fmt.Fprintf(b, "\tedges := make([]*model.%sEdge, 0, len(records))\n", structName)
+	b.WriteString("\tfor i := range records {\n\t\trecord := records[i]\n")
+	fmt.Fprintf(b, "\t\tedges = append(edges, &model.%sEdge{Node: &record, Cursor: gqlgenCursor(offset + i)})\n\t}\n", structName)
+	b.WriteString("\tvar startCursor *string\n\tvar endCursor *string\n\tif len(edges) > 0 {\n\t\tstartCursor = gqlgenStringPtr(edges[0].Cursor)\n\t\tendCursor = gqlgenStringPtr(edges[len(edges)-1].Cursor)\n\t}\n")
+	fmt.Fprintf(b, "\treturn &model.%sConnection{Edges: edges, PageInfo: &model.PageInfo{HasNextPage: hasNext, HasPreviousPage: offset > 0, StartCursor: startCursor, EndCursor: endCursor}, TotalCount: len(edges)}, nil\n", structName)
+	b.WriteString("}\n\n")
+}
+
+func writeGraphQLAPISingleResolver(b *strings.Builder, tbl *schema.Table) {
+	structName := tableToStruct(tbl.Name)
+	pk := primaryKeyColumn(tbl)
+	if pk == nil {
+		return
+	}
+	fmt.Fprintf(b, "func (r *queryResolver) %s(ctx context.Context, id string) (*models.%s, error) {\n", snakeToPascal(graphQLSingleFieldName(tbl)), structName)
+	writeGraphQLAPIPKParse(b, tbl, pk)
+	fmt.Fprintf(b, "\tq := models.Query%s().Where%s(parsedID)\n", structName, snakeToPascal(pk.Name))
+	if exportedGraphQLTableHasVisibility(tbl) {
+		b.WriteString("\tq.SelectPublic()\n")
+	}
+	b.WriteString("\trecord, err := q.First()\n\tif err != nil {\n\t\treturn nil, nil\n\t}\n\treturn record, nil\n")
+	b.WriteString("}\n\n")
+}
+
+func writeGraphQLAPIPKParse(b *strings.Builder, tbl *schema.Table, pk *schema.Column) {
+	switch pk.Type {
+	case schema.UUID:
+		b.WriteString("\tparsedID, err := uuid.Parse(id)\n\tif err != nil {\n")
+		fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(%q)\n", graphQLSingleFieldName(tbl)+": invalid id")
+		b.WriteString("\t}\n")
+	case schema.Integer:
+		b.WriteString("\tvar parsedID int\n\tif _, err := fmt.Sscanf(id, \"%d\", &parsedID); err != nil {\n\t\treturn nil, fmt.Errorf(\"invalid id\")\n\t}\n")
+	case schema.BigInteger:
+		b.WriteString("\tvar parsedID int64\n\tif _, err := fmt.Sscanf(id, \"%d\", &parsedID); err != nil {\n\t\treturn nil, fmt.Errorf(\"invalid id\")\n\t}\n")
+	default:
+		b.WriteString("\tparsedID := id\n")
+	}
+}
+
+func writeGraphQLAPIFilterApplier(b *strings.Builder, tbl *schema.Table) {
+	structName := tableToStruct(tbl.Name)
+	fmt.Fprintf(b, "func apply%sFilter(q *models.%sQuery, filter *model.%sFilter) {\n", structName, structName, structName)
+	for _, col := range tbl.Columns {
+		if isExcludedFromExportedGraphQL(tbl, col) {
+			continue
+		}
+		field := snakeToPascal(col.Name)
+		filterField := field
+		b.WriteString(fmt.Sprintf("\tif filter.%s != nil {\n", filterField))
+		writeGraphQLAPIColumnFilter(b, col, field)
+		b.WriteString("\t}\n")
+	}
+	b.WriteString("}\n\n")
+}
+
+func writeGraphQLAPIColumnFilter(b *strings.Builder, col *schema.Column, field string) {
+	switch col.Type {
+	case schema.UUID:
+		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Eq != nil { if value, err := uuid.Parse(*filter.%s.Eq); err == nil { q.Where%s(value) } }\n", field, field, field))
+		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > 0 && len(filter.%s.In) <= maxGraphQLAPIInputListSize { values := make([]uuid.UUID, 0, len(filter.%s.In)); for _, raw := range filter.%s.In { if value, err := uuid.Parse(raw); err == nil { values = append(values, value) } }; q.Where%sIn(values) }\n", field, field, field, field, field))
+	case schema.String, schema.Text:
+		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Eq != nil { q.Where%s(*filter.%s.Eq) }\n", field, field, field))
+		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Like != nil { q.Where%sLike(*filter.%s.Like) }\n", field, field, field))
+		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > 0 && len(filter.%s.In) <= maxGraphQLAPIInputListSize { q.Where%sIn(filter.%s.In) }\n", field, field, field, field))
+	case schema.Integer, schema.BigInteger:
+		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Eq != nil { q.Where%s(*filter.%s.Eq) }\n", field, field, field))
+		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Gt != nil { q.Where%sGT(*filter.%s.Gt) }\n", field, field, field))
+		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Gte != nil { q.Where%sGTE(*filter.%s.Gte) }\n", field, field, field))
+		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Lt != nil { q.Where%sLT(*filter.%s.Lt) }\n", field, field, field))
+		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Lte != nil { q.Where%sLTE(*filter.%s.Lte) }\n", field, field, field))
+		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > 0 && len(filter.%s.In) <= maxGraphQLAPIInputListSize { q.Where%sIn(filter.%s.In) }\n", field, field, field, field))
+	case schema.Timestamp, schema.Date, schema.Time:
+		for _, op := range []struct{ gql, method string }{{"Gt", "After"}, {"Gte", "GTE"}, {"Lt", "Before"}, {"Lte", "LTE"}} {
+			b.WriteString(fmt.Sprintf("\t\tif filter.%s.%s != nil { if value, err := time.Parse(time.RFC3339, *filter.%s.%s); err == nil { q.Where%s%s(value) } }\n", field, op.gql, field, op.gql, field, op.method))
+		}
+	case schema.Boolean:
+		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Eq != nil { q.Where%s(*filter.%s.Eq) }\n", field, field, field))
+	}
+}
+
+func writeGraphQLAPIObjectResolvers(b *strings.Builder, tbl *schema.Table) {
+	structName := tableToStruct(tbl.Name)
+	resolverType := graphQLResolverTypeName(tbl)
+	for _, col := range tbl.Columns {
+		returnType := graphQLColumnResolverReturnType(col)
+		if returnType == "" || isExcludedFromExportedGraphQL(tbl, col) {
+			continue
+		}
+		goField := snakeToPascal(col.Name)
+		fmt.Fprintf(b, "func (r *%sResolver) %s(ctx context.Context, obj *models.%s) (%s, error) {\n", resolverType, goField, structName, returnType)
+		if strings.HasPrefix(returnType, "*") {
+			b.WriteString("\tif obj == nil {\n\t\treturn nil, nil\n\t}\n")
+		} else {
+			b.WriteString("\tif obj == nil {\n\t\treturn \"\", nil\n\t}\n")
+		}
+		writeGraphQLAPIFieldReturn(b, col, goField, returnType)
+		b.WriteString("}\n\n")
+	}
+}
+
+func writeGraphQLAPIFieldReturn(b *strings.Builder, col *schema.Column, goField, returnType string) {
+	nullable := strings.HasPrefix(returnType, "*")
+	if nullable {
+		b.WriteString(fmt.Sprintf("\tif obj.%s == nil {\n\t\treturn nil, nil\n\t}\n", goField))
+	}
+	switch col.Type {
+	case schema.UUID:
+		if nullable {
+			fmt.Fprintf(b, "\tvalue := obj.%s.String()\n\treturn &value, nil\n", goField)
+		} else {
+			fmt.Fprintf(b, "\treturn obj.%s.String(), nil\n", goField)
+		}
+	case schema.Timestamp, schema.Date, schema.Time:
+		if nullable {
+			fmt.Fprintf(b, "\tvalue := obj.%s.Format(time.RFC3339)\n\treturn &value, nil\n", goField)
+		} else {
+			fmt.Fprintf(b, "\treturn obj.%s.Format(time.RFC3339), nil\n", goField)
+		}
+	case schema.Decimal:
+		if nullable {
+			fmt.Fprintf(b, "\tvalue := obj.%s.String()\n\treturn &value, nil\n", goField)
+		} else {
+			fmt.Fprintf(b, "\treturn obj.%s.String(), nil\n", goField)
+		}
+	default:
+		if nullable {
+			fmt.Fprintf(b, "\tvalue := fmt.Sprint(obj.%s)\n\treturn &value, nil\n", goField)
+		} else {
+			fmt.Fprintf(b, "\treturn fmt.Sprint(obj.%s), nil\n", goField)
+		}
+	}
+}
+
+func exportedGraphQLTableHasVisibility(tbl *schema.Table) bool {
+	for _, col := range tbl.Columns {
+		if col.IsPublic || col.IsOwnerSees {
+			return true
+		}
+	}
+	return false
 }
 
 func extractStringConstFromGoSource(src []byte, name string) (string, error) {
@@ -6019,6 +6384,17 @@ func snakeToPascal(s string) string {
 	return strings.Join(parts, "")
 }
 
+func snakeToCamel(s string) string {
+	pascal := snakeToPascal(s)
+	if pascal == "" {
+		return pascal
+	}
+	if strings.HasPrefix(pascal, "ID") && len(pascal) > 2 {
+		return "id" + pascal[2:]
+	}
+	return strings.ToLower(pascal[:1]) + pascal[1:]
+}
+
 func tableToStruct(table string) string {
 	if strings.HasSuffix(table, "ies") {
 		return snakeToPascal(strings.TrimSuffix(table, "ies") + "y")
@@ -6027,6 +6403,15 @@ func tableToStruct(table string) string {
 		return snakeToPascal(strings.TrimSuffix(table, "s"))
 	}
 	return snakeToPascal(table)
+}
+
+func primaryKeyColumn(tbl *schema.Table) *schema.Column {
+	for _, col := range tbl.Columns {
+		if col.IsPrimaryKey {
+			return col
+		}
+	}
+	return nil
 }
 
 func modelSet(tables []*schema.Table) map[string]bool {

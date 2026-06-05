@@ -754,6 +754,26 @@ func TestExportedCommandAppRunsMigrations(t *testing.T) {
 		t.Fatalf("graphql user list exposures = %d, want 1", exposures)
 	}
 
+	commands.NewApp().Run([]string{"migrate:rollback"})
+	migrations = countRows(t, db, "migrations")
+	if migrations != 0 {
+		t.Fatalf("migrations after rollback command = %d, want 0", migrations)
+	}
+
+	commands.NewApp().Run([]string{"migrate:fresh"})
+	migrations = countRows(t, db, "migrations")
+	if migrations == 0 {
+		t.Fatal("fresh command did not re-record migrations")
+	}
+	roles = countRows(t, db, "roles")
+	if roles != 3 {
+		t.Fatalf("roles after fresh command = %d, want 3", roles)
+	}
+	exposures = countWhere(t, db, "graphql_exposures", "model = 'users' AND operation = 'list'")
+	if exposures != 1 {
+		t.Fatalf("graphql user list exposures after fresh = %d, want 1", exposures)
+	}
+
 	req := httptest.NewRequest(http.MethodPost, "/api/users", bytes.NewBufferString(` + "`" + `{"name":"Ada","email":"ada@example.com","password":"correct horse"}` + "`" + `))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -764,6 +784,20 @@ func TestExportedCommandAppRunsMigrations(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "Ada") {
 		t.Fatalf("create user response = %s, want Ada", rec.Body.String())
 	}
+}
+
+func countRows(t *testing.T, db *sql.DB, table string) int {
+	t.Helper()
+	return countWhere(t, db, table, "1 = 1")
+}
+
+func countWhere(t *testing.T, db *sql.DB, table, where string) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM " + table + " WHERE " + where).Scan(&count); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	return count
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "commands", "exported_command_app_test.go"), []byte(testSrc), 0o644); err != nil {

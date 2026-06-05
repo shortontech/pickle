@@ -2005,9 +2005,21 @@ func TestExportedEncryptedColumnsRoundTrip(t *testing.T) {
 		t.Fatalf("sealed private key should be non-deterministic")
 	}
 
+	tampered := user.PrivateKeyEncrypted[:len(user.PrivateKeyEncrypted)-1] + "A"
+	if tampered == user.PrivateKeyEncrypted {
+		tampered = user.PrivateKeyEncrypted[:len(user.PrivateKeyEncrypted)-1] + "B"
+	}
+	if err := db.Model(&models.User{}).Where("id = ?", user.ID).Update("private_key_encrypted", tampered).Error; err != nil {
+		t.Fatalf("tamper sealed field: %v", err)
+	}
+	var broken models.User
+	if err := db.First(&broken, "id = ?", user.ID).Error; err == nil {
+		t.Fatal("tampered sealed ciphertext should fail authentication")
+	}
+
 	os.Unsetenv("APP_ENCRYPTION_KEY")
 }
-`
+	`
 	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_encryption_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}

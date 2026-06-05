@@ -3256,8 +3256,11 @@ func graphQLAPIHasRole(claims *resolver.GraphQLAPIAuthClaims, role string) bool 
 }
 
 func loadGraphQLAPIRBACClaims(claims *resolver.GraphQLAPIAuthClaims) error {
-	if claims == nil || claims.UserID == "" || appmodels.DB == nil {
+	if claims == nil || claims.UserID == "" {
 		return nil
+	}
+	if appmodels.DB == nil {
+		return errors.New("graphql rbac database unavailable")
 	}
 	var roles []graphQLAPIRoleRow
 	err := appmodels.DB.Raw("SELECT r.slug, r.manages FROM roles r JOIN role_user ru ON ru.role_id = r.id WHERE ru.user_id = ?", claims.UserID).Scan(&roles).Error
@@ -3303,6 +3306,11 @@ func handleMissingGraphQLAPIRBACSchema() error {
 }
 
 func graphQLAPIRBACTableExists(table string) (bool, error) {
+	switch table {
+	case "roles", "role_user":
+	default:
+		return false, errors.New("graphql rbac schema check rejected")
+	}
 	err := appmodels.DB.Exec("SELECT 1 FROM " + table + " LIMIT 0").Error
 	if err == nil {
 		return true, nil

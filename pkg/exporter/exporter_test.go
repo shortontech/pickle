@@ -5489,6 +5489,25 @@ func TestExportedGQLGenTargetAuthRBACFallbackOnlyWhenSchemaMissing(t *testing.T)
 		t.Fatalf("missing schema claims = %+v, want token fallback role", missingClaims)
 	}
 
+	models.SetDB(nil)
+	nilDBReq, err := http.NewRequest(http.MethodPost, "/graphql", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nilDBReq.Header.Set("Authorization", "Bearer "+missingToken)
+	if claims, err := extractGraphQLAPIAuth(nilDBReq); err == nil {
+		t.Fatalf("nil GraphQL RBAC DB should fail closed, got claims %+v", claims)
+	} else if err.Error() != "graphql rbac database unavailable" || strings.Contains(err.Error(), "SELECT") || strings.Contains(err.Error(), "jwt_tokens") {
+		t.Fatalf("nil GraphQL RBAC DB error = %v, want sanitized unavailable error", err)
+	}
+	models.SetDB(missingDB)
+
+	if exists, err := graphQLAPIRBACTableExists("roles; DROP TABLE role_user"); err == nil || exists {
+		t.Fatalf("unsafe RBAC table probe should be rejected, exists=%v err=%v", exists, err)
+	} else if err.Error() != "graphql rbac schema check rejected" || strings.Contains(err.Error(), "DROP") {
+		t.Fatalf("unsafe RBAC table probe error = %v, want sanitized rejection", err)
+	}
+
 	partialDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)

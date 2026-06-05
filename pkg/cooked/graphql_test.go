@@ -62,9 +62,25 @@ func TestExtractPageRejectsOversizedFirst(t *testing.T) {
 	}
 }
 
+func TestExtractPageRejectsOversizedNumericFirst(t *testing.T) {
+	for _, first := range []any{101, int32(101), int64(101), float64(101)} {
+		_, err := extractPage(map[string]any{
+			"page": map[string]any{"first": first},
+		})
+		if err == nil {
+			t.Fatalf("expected error for first=%#v", first)
+		}
+		if !strings.Contains(err.Error(), "exceeds maximum") {
+			t.Errorf("error = %q", err.Error())
+		}
+	}
+}
+
 func TestExtractPageRejectsInvalidValues(t *testing.T) {
 	tests := []map[string]any{
 		{"page": map[string]any{"first": "0"}},
+		{"page": map[string]any{"first": 0}},
+		{"page": map[string]any{"first": 1.5}},
 		{"page": map[string]any{"last": "0"}},
 		{"page": map[string]any{"first": "1", "last": "1"}},
 		{"page": map[string]any{"after": "bad"}},
@@ -126,6 +142,23 @@ func TestEnforceQueryBudgetRejectsComplexity(t *testing.T) {
 
 	_, err := enforceQueryBudget(&Document{Fields: []Field{
 		{Name: "posts", Args: map[string]any{"page": map[string]any{"first": "100"}}},
+	}}, defaultQueryBudget())
+	if err == nil {
+		t.Fatal("expected budget error")
+	}
+	if !strings.Contains(err.Error(), "complexity") {
+		t.Errorf("error = %q", err.Error())
+	}
+}
+
+func TestEnforceQueryBudgetUsesNumericPageVariables(t *testing.T) {
+	registerGraphQLFieldCosts(map[string]FieldCost{
+		"User.posts": {FieldName: "posts", BaseCost: 20, IsList: true, IsRelation: true},
+	})
+	defer func() { generatedFieldCosts = map[string]FieldCost{} }()
+
+	_, err := enforceQueryBudget(&Document{Fields: []Field{
+		{Name: "posts", Args: map[string]any{"page": map[string]any{"first": 100}}},
 	}}, defaultQueryBudget())
 	if err == nil {
 		t.Fatal("expected budget error")

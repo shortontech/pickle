@@ -1932,6 +1932,7 @@ func TestExportedGraphQLSafetyCorpus(t *testing.T) {
 	cases := []struct {
 		name      string
 		query     string
+		variables map[string]any
 		wantError bool
 	}{
 		{"allowed", ` + "`" + `query AllowedUsers {
@@ -1939,15 +1940,18 @@ func TestExportedGraphQLSafetyCorpus(t *testing.T) {
     edges { node { id name } }
     pageInfo { hasNextPage }
   }
-}` + "`" + `, false},
+}` + "`" + `, nil, false},
 		{"huge_first", ` + "`" + `query HugeFirst {
   users(page: { first: 101 }) { edges { node { id } } }
-}` + "`" + `, true},
+}` + "`" + `, nil, true},
+		{"huge_first_variable", ` + "`" + `query HugeFirstVariable($first: Int) {
+  users(page: { first: $first }) { edges { node { id } } }
+}` + "`" + `, map[string]any{"first": 101}, true},
 		{"introspection_disabled", ` + "`" + `query IntrospectionDisabled {
   __schema { queryType { name } }
-}` + "`" + `, true},
+}` + "`" + `, nil, true},
 		{"multi_operation", ` + "`" + `query One { users { edges { node { id } } } }
-query Two { posts { edges { node { id } } } }` + "`" + `, true},
+query Two { posts { edges { node { id } } } }` + "`" + `, nil, true},
 		{"repeated_aliases", ` + "`" + `query RepeatedAliases {
   a1: users { edges { node { id } } }
   a2: users { edges { node { id } } }
@@ -1975,24 +1979,24 @@ query Two { posts { edges { node { id } } } }` + "`" + `, true},
   a24: users { edges { node { id } } }
   a25: users { edges { node { id } } }
   a26: users { edges { node { id } } }
-}` + "`" + `, true},
+}` + "`" + `, nil, true},
 		{"unexposed_create", ` + "`" + `mutation UnexposedCreate {
   createUser(input: { name: "bad", email: "bad@example.com" }) { id }
-}` + "`" + `, true},
+}` + "`" + `, nil, true},
 		{"unexposed_delete", ` + "`" + `mutation UnexposedDelete {
   deleteUser(id: "00000000-0000-0000-0000-000000000001")
-}` + "`" + `, true},
+}` + "`" + `, nil, true},
 		{"relationship_fanout", ` + "`" + `query RelationshipFanout {
   users(page: { first: 100 }) {
     edges { node { posts { comments { body } } } }
   }
-}` + "`" + `, true},
+}` + "`" + `, nil, true},
 	}
 
 	handler := graphql.Handler()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			body, err := json.Marshal(map[string]any{"query": tc.query})
+			body, err := json.Marshal(map[string]any{"query": tc.query, "variables": tc.variables})
 			if err != nil {
 				t.Fatal(err)
 			}

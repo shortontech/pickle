@@ -322,8 +322,8 @@ func extractPage(args map[string]any) (PageArgs, error) {
 	if hasFirst && hasLast {
 		return p, fmt.Errorf("page cannot specify both first and last")
 	}
-	if v, ok := page["first"].(string); ok {
-		n, err := parsePositiveInt(v)
+	if page["first"] != nil {
+		n, err := parsePositivePageInt(page["first"])
 		if err != nil {
 			return p, fmt.Errorf("page.first: %w", err)
 		}
@@ -340,8 +340,8 @@ func extractPage(args map[string]any) (PageArgs, error) {
 		p.After = v
 		p.Offset = offset
 	}
-	if v, ok := page["last"].(string); ok {
-		n, err := parsePositiveInt(v)
+	if page["last"] != nil {
+		n, err := parsePositivePageInt(page["last"])
 		if err != nil {
 			return p, fmt.Errorf("page.last: %w", err)
 		}
@@ -378,6 +378,39 @@ func parsePositiveInt(s string) (int, error) {
 		return 0, fmt.Errorf("must be positive")
 	}
 	return n, nil
+}
+
+func parsePositivePageInt(v any) (int, error) {
+	maxInt := int64(^uint(0) >> 1)
+	switch n := v.(type) {
+	case int:
+		if n <= 0 {
+			return 0, fmt.Errorf("must be positive")
+		}
+		return n, nil
+	case int32:
+		if n <= 0 {
+			return 0, fmt.Errorf("must be positive")
+		}
+		return int(n), nil
+	case int64:
+		if n <= 0 {
+			return 0, fmt.Errorf("must be positive")
+		}
+		if n > maxInt {
+			return 0, fmt.Errorf("must fit in an integer")
+		}
+		return int(n), nil
+	case float64:
+		if n <= 0 || n > float64(maxInt) || n != float64(int(n)) {
+			return 0, fmt.Errorf("must be a positive integer")
+		}
+		return int(n), nil
+	case string:
+		return parsePositiveInt(n)
+	default:
+		return 0, fmt.Errorf("must be a positive integer")
+	}
 }
 
 // encodeCursor encodes an offset as a cursor string.
@@ -468,8 +501,8 @@ func fieldComplexity(field Field, cost FieldCost) int {
 	if cost.IsList {
 		limit := defaultGraphQLPageSize
 		if pageArg, ok := field.Args["page"].(map[string]any); ok {
-			if v, ok := pageArg["first"].(string); ok {
-				if n := parseInt(v); n > 0 {
+			if pageArg["first"] != nil {
+				if n, err := parsePositivePageInt(pageArg["first"]); err == nil {
 					limit = n
 				}
 			}

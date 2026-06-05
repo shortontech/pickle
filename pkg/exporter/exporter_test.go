@@ -549,10 +549,13 @@ func writeExportedRouterMiddlewareBehaviorTest(t *testing.T, out string) {
 	testSrc := `package httpx_test
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"basic-crud/internal/httpx"
 )
@@ -587,6 +590,105 @@ func TestExportedRouterRunsMiddlewareInDeclaredOrder(t *testing.T) {
 	want := []string{"group", "route", "handler:42"}
 	if !reflect.DeepEqual(order, want) {
 		t.Fatalf("middleware order = %#v, want %#v", order, want)
+	}
+}
+
+func TestExportedGroupMiddlewareAfterBodyAppliesToRoutes(t *testing.T) {
+	t.Setenv("RATE_LIMIT", "false")
+	var order []string
+	authMiddleware := func(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
+		order = append(order, "auth")
+		return next()
+	}
+	router := httpx.Routes(func(r *httpx.Router) {
+		r.Group("/api", func(r *httpx.Router) {
+			r.Get("/secure", func(ctx *httpx.Context) httpx.Response {
+				order = append(order, "handler")
+				return ctx.NoContent()
+			})
+		}, authMiddleware)
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/secure", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	want := []string{"auth", "handler"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("middleware order = %#v, want %#v", order, want)
+	}
+}
+
+func TestExportedResourceRoutesAndContextHelpers(t *testing.T) {
+	t.Setenv("RATE_LIMIT", "false")
+	id := uuid.New()
+	controller := &resourceController{}
+	router := httpx.Routes(func(r *httpx.Router) {
+		r.Resource("/posts", controller)
+	})
+
+	cases := []struct {
+		method string
+		path   string
+		want   string
+		status int
+	}{
+		{http.MethodGet, "/posts?filter=recent", "index:recent", http.StatusOK},
+		{http.MethodGet, "/posts/" + id.String(), "show:" + id.String(), http.StatusOK},
+		{http.MethodPost, "/posts", "store", http.StatusCreated},
+		{http.MethodPut, "/posts/" + id.String(), "update:" + id.String(), http.StatusAccepted},
+		{http.MethodDelete, "/posts/" + id.String(), "destroy:" + id.String(), http.StatusNoContent},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req.AddCookie(&http.Cookie{Name: "flavor", Value: "dill"})
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != tc.status {
+				t.Fatalf("status = %d, want %d body=%s", rec.Code, tc.status, rec.Body.String())
+			}
+			if controller.last != tc.want {
+				t.Fatalf("last handler = %q, want %q", controller.last, tc.want)
+			}
+			if controller.sawWriter == false {
+				t.Fatal("ResponseWriter should be available inside routed contexts")
+			}
+			if controller.cookie != "dill" {
+				t.Fatalf("cookie = %q, want dill", controller.cookie)
+			}
+		})
+	}
+}
+
+func TestExportedContextResourceHelpersPropagateOwner(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx := httpx.NewContext(req)
+	ctx.SetAuth(&httpx.AuthInfo{UserID: "owner-1"})
+
+	one := &resourceQuery{value: map[string]string{"id": "one"}}
+	resp := ctx.Resource(one)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Resource status = %d", resp.StatusCode)
+	}
+	if one.ownerID != "owner-1" {
+		t.Fatalf("resource owner = %q", one.ownerID)
+	}
+
+	list := &resourceListQuery{value: []string{"a", "b"}}
+	resp = ctx.Resources(list)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Resources status = %d", resp.StatusCode)
+	}
+	if list.ownerID != "owner-1" {
+		t.Fatalf("resources owner = %q", list.ownerID)
+	}
+
+	missing := &resourceQuery{err: errors.New("sql: no rows in result set")}
+	resp = ctx.Resource(missing)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing resource status = %d", resp.StatusCode)
 	}
 }
 
@@ -659,6 +761,73 @@ func TestExportedAuthRateLimitProviderSupportsTiers(t *testing.T) {
 	if adminRec.Code != http.StatusNoContent {
 		t.Fatalf("admin tier should use a separate bucket, got %d", adminRec.Code)
 	}
+}
+
+type resourceController struct {
+	last      string
+	cookie    string
+	sawWriter bool
+}
+
+func (c *resourceController) capture(ctx *httpx.Context) {
+	c.sawWriter = ctx.ResponseWriter() != nil
+	c.cookie, _ = ctx.Cookie("flavor")
+}
+
+func (c *resourceController) Index(ctx *httpx.Context) httpx.Response {
+	c.capture(ctx)
+	c.last = "index:" + ctx.Query("filter")
+	return ctx.JSON(http.StatusOK, nil)
+}
+
+func (c *resourceController) Show(ctx *httpx.Context) httpx.Response {
+	c.capture(ctx)
+	id, err := ctx.ParamUUID("id")
+	if err != nil {
+		return ctx.BadRequest(err.Error())
+	}
+	c.last = "show:" + id.String()
+	return ctx.JSON(http.StatusOK, nil)
+}
+
+func (c *resourceController) Store(ctx *httpx.Context) httpx.Response {
+	c.capture(ctx)
+	c.last = "store"
+	return ctx.JSON(http.StatusCreated, nil)
+}
+
+func (c *resourceController) Update(ctx *httpx.Context) httpx.Response {
+	c.capture(ctx)
+	c.last = "update:" + ctx.Param("id")
+	return ctx.JSON(http.StatusAccepted, nil)
+}
+
+func (c *resourceController) Destroy(ctx *httpx.Context) httpx.Response {
+	c.capture(ctx)
+	c.last = "destroy:" + ctx.Param("id")
+	return ctx.NoContent()
+}
+
+type resourceQuery struct {
+	ownerID string
+	value   any
+	err     error
+}
+
+func (q *resourceQuery) FetchResource(ownerID string) (any, error) {
+	q.ownerID = ownerID
+	return q.value, q.err
+}
+
+type resourceListQuery struct {
+	ownerID string
+	value   any
+	err     error
+}
+
+func (q *resourceListQuery) FetchResources(ownerID string) (any, error) {
+	q.ownerID = ownerID
+	return q.value, q.err
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "internal", "httpx", "exported_router_test.go"), []byte(testSrc), 0o644); err != nil {

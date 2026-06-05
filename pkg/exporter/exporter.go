@@ -3961,6 +3961,7 @@ const httpxSource = `package httpx
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"net"
 	"net/http"
@@ -3969,21 +3970,27 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type Controller struct{}
 type Response struct { Status int; StatusCode int; Body any; Headers map[string]string; Cookies []*http.Cookie }
 type AuthInfo struct { UserID string; Role string }
 type RoleInfo struct { Slug string; Manages bool }
-type Context struct { request *http.Request; auth *AuthInfo; params map[string]string; roles []string; isAdmin bool }
+type Context struct { request *http.Request; response http.ResponseWriter; auth *AuthInfo; params map[string]string; roles []string; isAdmin bool }
 
 func NewContext(r *http.Request) *Context { return &Context{request: r, params: map[string]string{}} }
 func (c *Context) Request() *http.Request { return c.request }
-func (c *Context) Param(name string) string { return c.params[name] }
-func (c *Context) Cookie(name string) (*http.Cookie, error) { return c.request.Cookie(name) }
+func (c *Context) ResponseWriter() http.ResponseWriter { return c.response }
+func (c *Context) Param(name string) string { value, ok := c.params[name]; if !ok { panic("pickle: ctx.Param(\"" + name + "\") - no such route parameter") }; return value }
+func (c *Context) SetParam(name, value string) { c.params[name] = value }
+func (c *Context) ParamUUID(name string) (uuid.UUID, error) { return uuid.Parse(c.Param(name)) }
+func (c *Context) Cookie(name string) (string, error) { cookie, err := c.request.Cookie(name); if err != nil { return "", err }; return cookie.Value, nil }
+func (c *Context) Query(name string) string { return c.request.URL.Query().Get(name) }
 func (c *Context) BearerToken() string { h := c.request.Header.Get("Authorization"); parts := strings.Fields(h); if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") { return parts[1] }; return "" }
 func (c *Context) Auth() *AuthInfo { if c.auth == nil { return &AuthInfo{} }; return c.auth }
-func (c *Context) SetAuth(info *AuthInfo) { c.auth = info }
+func (c *Context) SetAuth(claims any) { switch v := claims.(type) { case *AuthInfo: c.auth = v; default: panic(fmt.Sprintf("pickle: SetAuth() requires *AuthInfo, got %T", claims)) } }
 func (c *Context) IsAuthenticated() bool { return c.auth != nil && c.auth.UserID != "" }
 func (c *Context) SetRoles(roles []RoleInfo) { c.roles = make([]string, len(roles)); c.isAdmin = false; for i, role := range roles { c.roles[i] = role.Slug; if role.Manages { c.isAdmin = true } } }
 func (c *Context) Role() string { if len(c.roles) > 0 { return c.roles[0] }; if c.auth != nil { return c.auth.Role }; return "" }
@@ -3999,6 +4006,11 @@ func (c *Context) Forbidden(msg string) Response { return c.JSON(403, map[string
 func (c *Context) NotFound(msg string) Response { return c.JSON(404, map[string]string{"error": msg}) }
 func (c *Context) NoContent() Response { return Response{Status: 204, StatusCode: 204} }
 
+type ResourceQuery interface { FetchResource(ownerID string) (any, error) }
+type ResourceListQuery interface { FetchResources(ownerID string) (any, error) }
+func (c *Context) Resource(q ResourceQuery) Response { ownerID := ""; if c.auth != nil { ownerID = c.auth.UserID }; result, err := q.FetchResource(ownerID); if err != nil { if err.Error() == "sql: no rows in result set" { return c.NotFound("not found") }; return c.Error(err) }; return c.JSON(http.StatusOK, result) }
+func (c *Context) Resources(q ResourceListQuery) Response { ownerID := ""; if c.auth != nil { ownerID = c.auth.UserID }; result, err := q.FetchResources(ownerID); if err != nil { return c.Error(err) }; return c.JSON(http.StatusOK, result) }
+
 func (r Response) WithCookie(cookie *http.Cookie) Response { r.Cookies = append(r.Cookies, cookie); return r }
 
 func (r Response) Write(w http.ResponseWriter) { for k, v := range r.Headers { w.Header().Set(k, v) }; for _, cookie := range r.Cookies { http.SetCookie(w, cookie) }; status := r.Status; if status == 0 { status = r.StatusCode }; if status == 0 { status = 200 }; w.WriteHeader(status); if r.Body != nil { _ = json.NewEncoder(w).Encode(r.Body) } }
@@ -4006,11 +4018,13 @@ func (r Response) Write(w http.ResponseWriter) { for k, v := range r.Headers { w
 type HandlerFunc func(*Context) Response
 type MiddlewareFunc func(*Context, func() Response) Response
 type MiddlewareProvider interface { Middleware() MiddlewareFunc }
+type ResourceController interface { Index(*Context) Response; Show(*Context) Response; Store(*Context) Response; Update(*Context) Response; Destroy(*Context) Response }
 type route struct { method string; path string; handler HandlerFunc; middleware []MiddlewareFunc }
 type Router struct{ prefix string; middleware []MiddlewareFunc; routes []route }
 func Routes(fn func(*Router)) *Router { r := &Router{}; fn(r); return r }
 func (r *Router) Group(path string, args ...any) {
 	child := &Router{prefix: joinPath(r.prefix, path), middleware: append([]MiddlewareFunc{}, r.middleware...)}
+	var bodies []func(*Router)
 	for _, arg := range args {
 		switch v := arg.(type) {
 		case MiddlewareFunc:
@@ -4020,9 +4034,10 @@ func (r *Router) Group(path string, args ...any) {
 		case MiddlewareProvider:
 			child.middleware = append(child.middleware, v.Middleware())
 		case func(*Router):
-			v(child)
+			bodies = append(bodies, v)
 		}
 	}
+	for _, body := range bodies { body(child) }
 	r.routes = append(r.routes, child.routes...)
 }
 func (r *Router) Get(path string, handler HandlerFunc, middleware ...any) { r.add("GET", path, handler, middleware...) }
@@ -4031,6 +4046,7 @@ func (r *Router) Put(path string, handler HandlerFunc, middleware ...any) { r.ad
 func (r *Router) Patch(path string, handler HandlerFunc, middleware ...any) { r.add("PATCH", path, handler, middleware...) }
 func (r *Router) Delete(path string, handler HandlerFunc, middleware ...any) { r.add("DELETE", path, handler, middleware...) }
 func (r *Router) add(method, path string, handler HandlerFunc, middleware ...any) { r.routes = append(r.routes, route{method: method, path: joinPath(r.prefix, path), handler: handler, middleware: append(append([]MiddlewareFunc{}, r.middleware...), resolveMiddleware(middleware)...)} ) }
+func (r *Router) Resource(prefix string, c ResourceController, middleware ...any) { r.Get(prefix, c.Index, middleware...); r.Get(prefix + "/:id", c.Show, middleware...); r.Post(prefix, c.Store, middleware...); r.Put(prefix + "/:id", c.Update, middleware...); r.Delete(prefix + "/:id", c.Destroy, middleware...) }
 func resolveMiddleware(middleware []any) []MiddlewareFunc { resolved := make([]MiddlewareFunc, 0, len(middleware)); for _, mw := range middleware { switch v := mw.(type) { case MiddlewareFunc: resolved = append(resolved, v); case func(*Context, func() Response) Response: resolved = append(resolved, MiddlewareFunc(v)); case MiddlewareProvider: resolved = append(resolved, v.Middleware()); default: panic("pickle export: invalid middleware type") } }; return resolved }
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	defer func() { if recovered := recover(); recovered != nil { http.Error(w, "internal server error", http.StatusInternalServerError) } }()
@@ -4042,7 +4058,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	for _, rt := range r.routes {
 		params, ok := matchPath(rt.path, req.URL.Path)
 		if rt.method != req.Method || !ok { continue }
-		ctx := NewContext(req); ctx.params = params
+		ctx := NewContext(req); ctx.response = w; ctx.params = params
 		next := func() Response { return rt.handler(ctx) }
 		for i := len(rt.middleware) - 1; i >= 0; i-- {
 			mw := rt.middleware[i]

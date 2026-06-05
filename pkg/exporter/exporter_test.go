@@ -5087,6 +5087,7 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "posts: [Post!]! @auth")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "comments: [Comment!]! @auth")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *userResolver) Posts")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "if auth := GraphQLAPIAuthFromContext(ctx); auth != nil && !graphQLAPIAuthCanManage(auth)")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "q := models.QueryPost().WhereUserID(obj.ID)")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "q.WhereUserID(ownerID)")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "q.Limit(maxGraphQLAPIPageSize)")
@@ -5242,6 +5243,7 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 	if err := models.QueryUser().Create(user); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	var firstPost *models.Post
 	for i := 0; i < maxGraphQLAPIPageSize+5; i++ {
 		post := &models.Post{
 			ID:        uuid.New(),
@@ -5253,6 +5255,9 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 		}
 		if err := models.QueryPost().Create(post); err != nil {
 			t.Fatalf("create post %d: %v", i, err)
+		}
+		if firstPost == nil {
+			firstPost = post
 		}
 	}
 
@@ -5294,6 +5299,36 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 		t.Fatalf("invalid timestamp filter error = %v, want BAD_USER_INPUT", err)
 	}
 
+	strangerTopPosts, err := queries.Posts(ownerCtx, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("stranger top-level posts: %v", err)
+	}
+	if len(strangerTopPosts.Edges) != 0 || strangerTopPosts.TotalCount != 0 {
+		t.Fatalf("stranger top-level posts edges/total = %d/%d, want 0/0", len(strangerTopPosts.Edges), strangerTopPosts.TotalCount)
+	}
+
+	matchingOwnerCtx := WithGraphQLAPIAuthClaims(context.Background(), &GraphQLAPIAuthClaims{UserID: user.ID.String(), Role: "viewer"})
+	ownerTopPosts, err := queries.Posts(matchingOwnerCtx, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("owner top-level posts: %v", err)
+	}
+	if len(ownerTopPosts.Edges) != defaultGraphQLAPIPageSize || ownerTopPosts.TotalCount != maxGraphQLAPIPageSize+5 {
+		t.Fatalf("owner top-level posts edges/total = %d/%d, want %d/%d", len(ownerTopPosts.Edges), ownerTopPosts.TotalCount, defaultGraphQLAPIPageSize, maxGraphQLAPIPageSize+5)
+	}
+
+	ownerPost, err := queries.Post(matchingOwnerCtx, firstPost.ID.String())
+	if err != nil || ownerPost == nil || ownerPost.ID != firstPost.ID {
+		t.Fatalf("owner top-level post = %+v, %v", ownerPost, err)
+	}
+	strangerPost, err := queries.Post(ownerCtx, firstPost.ID.String())
+	if err != nil || strangerPost != nil {
+		t.Fatalf("stranger top-level post = %+v, %v; want nil without error", strangerPost, err)
+	}
+	managerPost, err := queries.Post(managerCtx, firstPost.ID.String())
+	if err != nil || managerPost == nil || managerPost.ID != firstPost.ID {
+		t.Fatalf("manager top-level post = %+v, %v", managerPost, err)
+	}
+
 	userFields := &userResolver{Resolver: &Resolver{}}
 	if _, err := userFields.Posts(context.Background(), user); !isUnauthenticated(err) {
 		t.Fatalf("unauthenticated relationship error = %v, want UNAUTHENTICATED", err)
@@ -5307,7 +5342,6 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 		t.Fatalf("stranger relationship posts = %d, want 0", len(strangerPosts))
 	}
 
-	matchingOwnerCtx := WithGraphQLAPIAuthClaims(context.Background(), &GraphQLAPIAuthClaims{UserID: user.ID.String(), Role: "viewer"})
 	ownerPosts, err := userFields.Posts(matchingOwnerCtx, user)
 	if err != nil {
 		t.Fatalf("owner posts: %v", err)

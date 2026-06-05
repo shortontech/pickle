@@ -2282,6 +2282,7 @@ func writeGraphQLAPIListResolver(b *strings.Builder, tbl *schema.Table) {
 	if exportedGraphQLTableHasVisibility(tbl) {
 		fmt.Fprintf(b, "\tgraphQLAPISelect%sVisibility(ctx, q)\n", structName)
 	}
+	writeGraphQLAPIScopeTopLevelOwnerReadFromAuth(b, tbl, listField, "nil")
 	b.WriteString("\tif filter != nil {\n")
 	fmt.Fprintf(b, "\t\tif err := apply%sFilter(q, filter); err != nil {\n\t\t\treturn nil, err\n\t\t}\n", structName)
 	b.WriteString("\t}\n")
@@ -2309,6 +2310,7 @@ func writeGraphQLAPISingleResolver(b *strings.Builder, tbl *schema.Table) {
 	if exportedGraphQLTableHasVisibility(tbl) {
 		fmt.Fprintf(b, "\tgraphQLAPISelect%sVisibility(ctx, q)\n", structName)
 	}
+	writeGraphQLAPIScopeTopLevelOwnerReadFromAuth(b, tbl, graphQLSingleFieldName(tbl), "nil")
 	b.WriteString("\trecord, err := q.First()\n\tif err != nil {\n\t\tif graphQLAPIRecordNotFound(err) {\n\t\t\treturn nil, nil\n\t\t}\n\t\treturn nil, err\n\t}\n\treturn record, nil\n")
 	b.WriteString("}\n\n")
 }
@@ -2466,6 +2468,26 @@ func writeGraphQLAPIScopeOwnerFromAuth(b *strings.Builder, tbl *schema.Table, op
 	default:
 		fmt.Fprintf(b, "\treturn %s, graphQLAPIBadInput(%q)\n", failureReturn, operation+": unsupported owner ID type")
 	}
+}
+
+func writeGraphQLAPIScopeTopLevelOwnerReadFromAuth(b *strings.Builder, tbl *schema.Table, operation, failureReturn string) {
+	ownerCol := exportedGraphQLOwnerColumn(tbl)
+	if ownerCol == nil {
+		return
+	}
+	field := snakeToPascal(ownerCol.Name)
+	b.WriteString("\tif auth := GraphQLAPIAuthFromContext(ctx); auth != nil && !graphQLAPIAuthCanManage(auth) {\n")
+	switch ownerCol.Type {
+	case schema.UUID:
+		b.WriteString("\t\townerID, err := uuid.Parse(auth.UserID)\n")
+		fmt.Fprintf(b, "\t\tif err != nil {\n\t\t\treturn %s, graphQLAPIBadInput(%q)\n\t\t}\n", failureReturn, operation+": invalid owner ID")
+		fmt.Fprintf(b, "\t\tq.Where%s(ownerID)\n", field)
+	case schema.String, schema.Text:
+		fmt.Fprintf(b, "\t\tq.Where%s(auth.UserID)\n", field)
+	default:
+		fmt.Fprintf(b, "\t\treturn %s, graphQLAPIBadInput(%q)\n", failureReturn, operation+": unsupported owner ID type")
+	}
+	b.WriteString("\t}\n")
 }
 
 func writeGraphQLAPIScopeRelationshipOwnerFromAuth(b *strings.Builder, tbl *schema.Table, operation, failureReturn string) {

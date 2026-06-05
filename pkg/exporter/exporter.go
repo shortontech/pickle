@@ -7957,7 +7957,7 @@ func (d *Driver) TokenEndpoint(ctx *httpx.Context) httpx.Response {
 		return ctx.JSON(401, map[string]string{"error": "invalid_client", "error_description": "invalid client credentials"})
 	}
 	token, err := generateToken()
-	if err != nil { return ctx.Error(err) }
+	if err != nil { return ctx.Error(errors.New("oauth: token generation error")) }
 	expiresAt := time.Now().Add(time.Duration(d.expiry) * time.Second)
 	if _, err := d.db.Exec(bindPlaceholders(d.driver, "INSERT INTO oauth_tokens (token, client_id, expires_at, created_at) VALUES (?, ?, ?, ?)"), token, clientID, expiresAt, time.Now().UTC()); err != nil {
 		return ctx.Error(errors.New("oauth: database error"))

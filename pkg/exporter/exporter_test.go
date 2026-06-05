@@ -63,6 +63,9 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func Env(key, fallback string) string")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "type ConnectionConfig struct")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func OpenGORM(conn ConnectionConfig) *gorm.DB")
+	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func sanitizedDatabaseStartupError")
+	assertFileNotContains(t, filepath.Join(out, "config", "support.go"), "failed to open database: %v")
+	assertFileNotContains(t, filepath.Join(out, "config", "support.go"), "failed to initialize database: %v")
 	assertFileContains(t, filepath.Join(out, "config", "app.go"), "func app() AppConfig")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "commands.NewApp().Run(os.Args[1:])")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "func BuiltinCommands() []Command")
@@ -180,6 +183,18 @@ func TestDatabaseConfigRejectsUnknownConnectionsWithoutFatal(t *testing.T) {
 	}
 	if _, err := cfg.TryOpenGORM("missing"); err == nil || !strings.Contains(err.Error(), "unknown database connection: missing") {
 		t.Fatalf("TryOpenGORM(missing) error = %v, want unknown connection", err)
+	}
+}
+
+func TestDatabaseStartupFatalMessagesAreSanitized(t *testing.T) {
+	for _, operation := range []string{"open", "initialize", "other"} {
+		msg := sanitizedDatabaseStartupError(operation)
+		if strings.Contains(msg, "password") || strings.Contains(msg, "secret") || strings.Contains(msg, "swordfish") {
+			t.Fatalf("startup error for %q leaked detail: %s", operation, msg)
+		}
+		if !strings.Contains(msg, "database") {
+			t.Fatalf("startup error for %q missing database context: %s", operation, msg)
+		}
 	}
 }
 `

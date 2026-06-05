@@ -5455,7 +5455,7 @@ func TryOpenDB(conn ConnectionConfig) (*sql.DB, error) {
 
 func OpenDB(conn ConnectionConfig) *sql.DB {
 	db, err := TryOpenDB(conn)
-	if err != nil { log.Fatalf("config: failed to open database: %v", err) }
+	if err != nil { log.Fatal(sanitizedDatabaseStartupError("open")) }
 	return db
 }
 
@@ -5481,8 +5481,19 @@ func TryOpenGORM(conn ConnectionConfig) (*gorm.DB, error) {
 
 func OpenGORM(conn ConnectionConfig) *gorm.DB {
 	db, err := TryOpenGORM(conn)
-	if err != nil { log.Fatalf("config: failed to initialize database: %v", err) }
+	if err != nil { log.Fatal(sanitizedDatabaseStartupError("initialize")) }
 	return db
+}
+
+func sanitizedDatabaseStartupError(operation string) string {
+	switch operation {
+	case "open":
+		return "config: failed to open database"
+	case "initialize":
+		return "config: failed to initialize database"
+	default:
+		return "config: database startup failed"
+	}
 }
 
 {{ range .Configs }}var {{ .VarName }} {{ .ReturnType }}

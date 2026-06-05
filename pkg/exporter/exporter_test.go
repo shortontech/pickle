@@ -5639,7 +5639,9 @@ func TestExportMonorepoCompiles(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "IdleTimeout:       120 * time.Second")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "MaxHeaderBytes:    1 << 20")
 	assertCleanExportReport(t, out)
+	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "QueryOrder")
+	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
 	writeExportedMonorepoServerBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }

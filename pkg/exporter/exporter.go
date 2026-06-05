@@ -1162,7 +1162,8 @@ func (e *exporter) writeGraphQLPackage(tables []*schema.Table, views []*schema.V
 
 func (e *exporter) rewriteGeneratedGraphQLSource(path string, data []byte) ([]byte, error) {
 	if filepath.Base(path) == "handler_gen.go" {
-		formatted, err := format.Source([]byte(exportedGQLGenHandlerSource))
+		src := fmt.Sprintf(exportedGQLGenHandlerSource, e.modulePath)
+		formatted, err := format.Source([]byte(src))
 		if err != nil {
 			return nil, fmt.Errorf("formatting exported gqlgen handler %s: %w", path, err)
 		}
@@ -1257,6 +1258,8 @@ import (
 	"github.com/99designs/gqlgen/graphql/handler/transport"
 	"github.com/vektah/gqlparser/v2/ast"
 	"github.com/vektah/gqlparser/v2/gqlerror"
+
+	appauth "%s/app/http/auth"
 )
 
 // Handler returns a production GraphQL handler backed by gqlgen's parser,
@@ -1330,7 +1333,10 @@ func execGQLGenOperation(ctx context.Context) *gqlgen.Response {
 	if err != nil {
 		return gqlgenErrorResponse(err.Error(), CodeBadUserInput)
 	}
-	auth := extractAuthFromHeaders(opCtx.Headers)
+	auth, err := extractAuthFromHeaders(opCtx.Headers)
+	if err != nil {
+		return gqlgenErrorResponse(err.Error(), CodeUnauthenticated)
+	}
 	resolveCtx := &ResolveContext{
 		auth:      auth,
 		variables: opCtx.Variables,
@@ -1361,16 +1367,74 @@ func documentFromOperationContext(opCtx *gqlgen.OperationContext) (*Document, er
 	return &Document{
 		Operation: strings.ToLower(string(opCtx.Operation.Operation)),
 		Name:      opCtx.Operation.Name,
-		Fields:    convertSelectionSet(opCtx.Operation.SelectionSet),
+		Fields:    convertSelectionSetWithVariables(opCtx.Operation.SelectionSet, opCtx.Variables),
 		Variables: opCtx.Variables,
 	}, nil
 }
 
-func extractAuthFromHeaders(headers http.Header) *AuthClaims {
-	if len(headers) == 0 {
+func convertSelectionSetWithVariables(ss ast.SelectionSet, variables map[string]any) []Field {
+	fields := make([]Field, 0, len(ss))
+	for _, sel := range ss {
+		switch s := sel.(type) {
+		case *ast.Field:
+			fields = append(fields, Field{
+				Name:       s.Name,
+				Alias:      s.Alias,
+				Args:       convertArgumentsWithVariables(s.Arguments, variables),
+				Selections: convertSelectionSetWithVariables(s.SelectionSet, variables),
+			})
+		case *ast.InlineFragment:
+			fields = append(fields, convertSelectionSetWithVariables(s.SelectionSet, variables)...)
+		}
+	}
+	return fields
+}
+
+func convertArgumentsWithVariables(args ast.ArgumentList, variables map[string]any) map[string]any {
+	if len(args) == 0 {
 		return nil
 	}
-	return extractAuth(&http.Request{Header: headers})
+	m := make(map[string]any, len(args))
+	for _, arg := range args {
+		m[arg.Name] = valueToGoWithVariables(arg.Value, variables)
+	}
+	return m
+}
+
+func valueToGoWithVariables(v *ast.Value, variables map[string]any) any {
+	if v == nil {
+		return nil
+	}
+	if v.Kind == ast.Variable {
+		return variables[v.Raw]
+	}
+	switch v.Kind {
+	case ast.ListValue:
+		list := make([]any, len(v.Children))
+		for i, child := range v.Children {
+			list[i] = valueToGoWithVariables(child.Value, variables)
+		}
+		return list
+	case ast.ObjectValue:
+		obj := make(map[string]any, len(v.Children))
+		for _, child := range v.Children {
+			obj[child.Name] = valueToGoWithVariables(child.Value, variables)
+		}
+		return obj
+	default:
+		return valueToGo(v)
+	}
+}
+
+func extractAuthFromHeaders(headers http.Header) (*AuthClaims, error) {
+	if len(headers) == 0 || headers.Get("Authorization") == "" {
+		return nil, nil
+	}
+	info, err := appauth.Authenticate(&http.Request{Header: headers})
+	if err != nil {
+		return nil, err
+	}
+	return &AuthClaims{UserID: info.UserID, Role: info.Role}, nil
 }
 
 func gqlgenErrorResponse(message, code string) *gqlgen.Response {

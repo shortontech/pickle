@@ -1712,6 +1712,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -1720,6 +1721,8 @@ import (
 	"gorm.io/gorm"
 
 	"graphql-safety/app/graphql"
+	"graphql-safety/app/http/auth"
+	"graphql-safety/app/http/auth/jwt"
 	"graphql-safety/app/models"
 )
 
@@ -1733,6 +1736,7 @@ func TestExportedGraphQLSafetyCorpus(t *testing.T) {
 		` + "`" + `CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL, password_hash TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
 		` + "`" + `CREATE TABLE posts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
 		` + "`" + `CREATE TABLE comments (id TEXT PRIMARY KEY, post_id TEXT NOT NULL, user_id TEXT NOT NULL, body TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
+		` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL)` + "`" + `,
 	} {
 		if err := db.Exec(stmt).Error; err != nil {
 			t.Fatal(err)
@@ -1742,6 +1746,26 @@ func TestExportedGraphQLSafetyCorpus(t *testing.T) {
 	userID := uuid.New()
 	if err := db.Exec("INSERT INTO users (id, name, email, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", userID.String(), "Ada", "ada@example.com", "hash", now, now).Error; err != nil {
 		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth.Init(func(key, fallback string) string {
+		switch key {
+		case "AUTH_DRIVER":
+			return "jwt"
+		case "DB_CONNECTION":
+			return "sqlite"
+		case "JWT_SECRET":
+			return "0123456789abcdef0123456789abcdef"
+		default:
+			return fallback
+		}
+	}, sqlDB)
+	token, err := auth.Driver("jwt").(*jwt.Driver).SignToken(jwt.Claims{Subject: userID.String(), Role: "admin"})
+	if err != nil {
+		t.Fatalf("sign jwt: %v", err)
 	}
 
 	cases := []struct {
@@ -1832,6 +1856,28 @@ query Two { posts { edges { node { id } } } }` + "`" + `, true},
 			}
 		})
 	}
+
+	t.Run("authenticated_fields_use_exported_auth_driver", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{"query": ` + "`" + `query AuthenticatedUser($id: ID!) {
+  user(id: $id) { id email name }
+}` + "`" + `, "variables": map[string]any{"id": userID.String()}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "\"errors\"") {
+			t.Fatalf("unexpected authenticated GraphQL errors: %s", rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), userID.String()) || !strings.Contains(rec.Body.String(), "ada@example.com") {
+			t.Fatalf("authenticated GraphQL response did not include auth-only fields: %s", rec.Body.String())
+		}
+	})
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphql", "exported_safety_test.go"), []byte(testSrc), 0o644); err != nil {

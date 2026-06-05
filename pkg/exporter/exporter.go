@@ -2626,6 +2626,10 @@ var OnAuditPerformed AuditFunc
 var OnAuditDenied AuditFunc
 var OnAuditFailed AuditFunc
 
+func sanitizedAuditFailureReason(_ error) string {
+	return "action failed"
+}
+
 func AuditPerformed(ctx *httpx.Context, action, model string, resourceID any) {
 	if OnAuditPerformed != nil {
 		OnAuditPerformed(ctx, action, model, resourceID, "")
@@ -2646,7 +2650,7 @@ func AuditDenied(ctx *httpx.Context, action, model string, resourceID any, reaso
 
 func AuditFailed(ctx *httpx.Context, action, model string, resourceID any, err error) {
 	if OnAuditFailed != nil {
-		OnAuditFailed(ctx, action, model, resourceID, err.Error())
+		OnAuditFailed(ctx, action, model, resourceID, sanitizedAuditFailureReason(err))
 		return
 	}
 	log.Printf("audit.failed user_id=%%s roles=%%v action=%%s model=%%s resource_id=%%v error=action failed ip=%%s request_id=%%s",

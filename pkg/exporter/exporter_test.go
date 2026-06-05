@@ -1188,8 +1188,11 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	if err := user.Fail(ctx, models.FailAction{}); err == nil {
 		t.Fatal("expected failed action error")
 	}
-	if failed != 1 || failedError != "boom" {
-		t.Fatalf("failed audit hook count/error = %d/%q, want 1/boom", failed, failedError)
+	if failed != 1 || failedError != "action failed" {
+		t.Fatalf("failed audit hook count/error = %d/%q, want 1/action failed", failed, failedError)
+	}
+	if strings.Contains(failedError, "boom") {
+		t.Fatalf("failed audit hook leaked raw error: %q", failedError)
 	}
 	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
 		t.Fatal(err)
@@ -1203,8 +1206,16 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	previousLogOutput := log.Writer()
 	log.SetOutput(&logs)
 	defer log.SetOutput(previousLogOutput)
+	models.OnAuditFailed = func(ctx *httpx.Context, action, model string, resourceID any, extra string) {
+		failedError = extra
+	}
 	models.AuditFailed(ctx, "Fail", "User", user.ID, errors.New("database password is swordfish"))
-	if strings.Contains(logs.String(), "swordfish") {
+	if failedError != "action failed" || strings.Contains(failedError, "swordfish") || strings.Contains(failedError, "password") {
+		t.Fatalf("custom audit failed hook leaked detail: %q", failedError)
+	}
+	models.OnAuditFailed = nil
+	models.AuditFailed(ctx, "Fail", "User", user.ID, errors.New("database password is swordfish"))
+	if strings.Contains(logs.String(), "swordfish") || strings.Contains(logs.String(), "password") {
 		t.Fatalf("default audit failed log leaked detail: %s", logs.String())
 	}
 	if !strings.Contains(logs.String(), "audit.failed") || !strings.Contains(logs.String(), "action failed") {

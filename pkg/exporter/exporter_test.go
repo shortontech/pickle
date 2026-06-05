@@ -1695,12 +1695,16 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "pickle_gen.go"), "maxQueryComplexity")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "pickle_gen.go"), "var allowIntrospection = false")
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), "func (q *UserQuery) WhereID")
+	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `q.db = q.db.Select([]string{"id", "name"})`)
+	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `q.db = q.db.Select([]string{"id", "name", "email"})`)
+	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `q.db = q.db.Select([]string{"id", "user_id", "title"})`)
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `mux.Handle("/graphql", graphql.Handler())`)
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "routes.API.RegisterRoutes(mux)")
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "pickle.")
 	writeExportedGraphQLSafetyBehaviorTest(t, out)
 	writeExportedGraphQLRBACBehaviorTest(t, out)
+	writeExportedGraphQLModelVisibilityBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
 
@@ -2021,6 +2025,41 @@ func TestExportedGraphQLRBACMissingTablesDoNotBreakPlainAuth(t *testing.T) {
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphql", "exported_rbac_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedGraphQLModelVisibilityBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package models
+
+import (
+	"reflect"
+	"testing"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+func TestExportedGraphQLVisibilitySelectsProjectedColumns(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetDB(db)
+
+	if got, want := QueryUser().SelectPublic().db.Statement.Selects, []string{"id", "name"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("User SelectPublic columns = %#v, want %#v", got, want)
+	}
+	if got, want := QueryUser().SelectOwner().db.Statement.Selects, []string{"id", "name", "email"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("User SelectOwner columns = %#v, want %#v", got, want)
+	}
+	if got, want := QueryPost().SelectPublic().db.Statement.Selects, []string{"id", "user_id", "title"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Post SelectPublic columns = %#v, want %#v", got, want)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_graphql_visibility_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

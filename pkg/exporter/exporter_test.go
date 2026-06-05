@@ -2339,7 +2339,7 @@ import (
 
 func TestExportedCommandFatalMessagesAreSanitized(t *testing.T) {
 	for _, msg := range []string{
-		commandFailureMessage("migrate"),
+		commandFailureMessage(),
 		commandStartupFailureMessage("database"),
 		serverFailureMessage(assertSecretError("listen tcp :8080: password=swordfish")),
 	} {
@@ -2356,11 +2356,46 @@ func TestExportedCommandFatalMessagesAreSanitized(t *testing.T) {
 	if strings.Contains(unknownCommandMessage(), "token=secret") || strings.Contains(unknownCommandMessage(), "password") {
 		t.Fatalf("unknown command message leaked detail: %s", unknownCommandMessage())
 	}
+	if strings.Contains(commandFailureMessage(), "migrate") || strings.Contains(commandFailureMessage(), "token=secret") {
+		t.Fatalf("command failure message should not include command names: %s", commandFailureMessage())
+	}
+}
+
+func TestExportedCommandAppHandlesNilPieces(t *testing.T) {
+	var nilApp *App
+	nilApp.Run(nil)
+	nilApp.PrintCommands()
+
+	var nilCommand Command
+	app := BuildApp(nil, nil, nilCommand, emptyNameCommand{}, secretNameCommand{})
+	app.Run(nil)
+	app.PrintCommands()
+	if _, ok := app.commands[""]; ok {
+		t.Fatal("empty command name should not be registered")
+	}
+	if _, ok := app.commands["deploy-password=swordfish"]; !ok {
+		t.Fatal("valid custom command should be registered")
+	}
+	if strings.Contains(commandFailureMessage(), "deploy-password=swordfish") {
+		t.Fatalf("command failure message leaked custom command name: %s", commandFailureMessage())
+	}
 }
 
 type assertSecretError string
 
 func (e assertSecretError) Error() string { return string(e) }
+
+type emptyNameCommand struct{}
+
+func (emptyNameCommand) Name() string { return "" }
+func (emptyNameCommand) Description() string { return "empty" }
+func (emptyNameCommand) Run(args []string) error { return nil }
+
+type secretNameCommand struct{}
+
+func (secretNameCommand) Name() string { return "deploy-password=swordfish" }
+func (secretNameCommand) Description() string { return "secret name" }
+func (secretNameCommand) Run(args []string) error { return assertSecretError("password=swordfish") }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "commands", "exported_command_security_test.go"), []byte(securityTestSrc), 0o644); err != nil {
 		t.Fatal(err)

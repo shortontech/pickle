@@ -4706,13 +4706,21 @@ type App struct {
 func BuildApp(initFn func(), serveFn func(), cmds ...Command) *App {
 	app := &App{commands: map[string]Command{}, initFn: initFn, serveFn: serveFn}
 	for _, cmd := range cmds {
+		if cmd == nil || cmd.Name() == "" {
+			continue
+		}
 		app.commands[cmd.Name()] = cmd
 	}
 	return app
 }
 
 func (a *App) Run(args []string) {
-	a.initFn()
+	if a == nil {
+		return
+	}
+	if a.initFn != nil {
+		a.initFn()
+	}
 	if len(args) > 0 {
 		cmd, ok := a.commands[args[0]]
 		if !ok {
@@ -4720,18 +4728,17 @@ func (a *App) Run(args []string) {
 			log.Fatal(unknownCommandMessage())
 		}
 		if err := cmd.Run(args[1:]); err != nil {
-			log.Fatal(commandFailureMessage(args[0]))
+			log.Fatal(commandFailureMessage())
 		}
 		return
 	}
-	a.serveFn()
+	if a.serveFn != nil {
+		a.serveFn()
+	}
 }
 
-func commandFailureMessage(name string) string {
-	if name == "" {
-		return "command failed"
-	}
-	return fmt.Sprintf("command %s failed", name)
+func commandFailureMessage() string {
+	return "command failed"
 }
 
 func unknownCommandMessage() string {
@@ -4751,7 +4758,13 @@ func serverFailureMessage(_ error) string {
 
 func (a *App) PrintCommands() {
 	fmt.Println("Available commands:")
+	if a == nil {
+		return
+	}
 	for name, cmd := range a.commands {
+		if cmd == nil {
+			continue
+		}
 		fmt.Printf("  %-25s %s\n", name, cmd.Description())
 	}
 }

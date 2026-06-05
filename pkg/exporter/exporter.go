@@ -5785,9 +5785,10 @@ func (r *Router) Resource(prefix string, c ResourceController, middleware ...any
 func resolveMiddleware(middleware []any) []MiddlewareFunc { resolved := make([]MiddlewareFunc, 0, len(middleware)); for _, mw := range middleware { switch v := mw.(type) { case MiddlewareFunc: resolved = append(resolved, v); case func(*Context, func() Response) Response: resolved = append(resolved, MiddlewareFunc(v)); case MiddlewareProvider: resolved = append(resolved, v.Middleware()); default: panic("pickle export: invalid middleware type") } }; return resolved }
 func (r *Router) AllRoutes() []Route { routes := make([]Route, len(r.routes)); copy(routes, r.routes); return routes }
 func writeRecoveredError(w http.ResponseWriter) { Response{StatusCode: http.StatusInternalServerError, Body: map[string]string{"error": "internal server error"}}.Write(w) }
+func recoveredPanicError(_ any) error { return fmt.Errorf("panic recovered") }
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var ctx *Context
-	defer func() { if recovered := recover(); recovered != nil { err, ok := recovered.(error); if !ok { err = fmt.Errorf("%v", recovered) }; log.Printf("panic recovered\n%s", debug.Stack()); if r.onError != nil { r.onError(ctx, err) }; writeRecoveredError(w) } }()
+	defer func() { if recovered := recover(); recovered != nil { log.Printf("panic recovered\n%s", debug.Stack()); if r.onError != nil { r.onError(ctx, recoveredPanicError(recovered)) }; writeRecoveredError(w) } }()
 	rateLimitResp, rateLimitHeaders := checkRateLimit(req)
 	if rateLimitResp != nil {
 		rateLimitResp.Write(w)

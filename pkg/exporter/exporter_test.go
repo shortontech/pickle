@@ -1830,7 +1830,7 @@ func TestExportedOnErrorReceivesRecoveredPanic(t *testing.T) {
 			}
 		})
 		r.Get("/panic/:id", func(ctx *httpx.Context) httpx.Response {
-			panic("boom")
+			panic("database password is swordfish")
 		})
 	})
 
@@ -1845,16 +1845,19 @@ func TestExportedOnErrorReceivesRecoveredPanic(t *testing.T) {
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("panic X-Content-Type-Options = %q, want nosniff", got)
 	}
-	if strings.Contains(rec.Body.String(), "boom") {
+	if strings.Contains(rec.Body.String(), "swordfish") || strings.Contains(rec.Body.String(), "password") {
 		t.Fatalf("panic response leaked detail: %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "internal server error") {
 		t.Fatalf("panic response missing sanitized error: %s", rec.Body.String())
 	}
-	if reported == nil || reported.Error() != "boom" {
+	if reported == nil || reported.Error() != "panic recovered" {
 		t.Fatalf("reported error = %v", reported)
 	}
-	if strings.Contains(logs.String(), "boom") {
+	if strings.Contains(reported.Error(), "swordfish") || strings.Contains(reported.Error(), "password") {
+		t.Fatalf("reported error leaked detail: %v", reported)
+	}
+	if strings.Contains(logs.String(), "swordfish") || strings.Contains(logs.String(), "password") {
 		t.Fatalf("panic log leaked detail: %s", logs.String())
 	}
 	if !strings.Contains(logs.String(), "panic recovered") {

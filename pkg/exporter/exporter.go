@@ -4822,7 +4822,9 @@ func main() {
 	config.Init()
 	addr := ":" + config.App.Port
 	log.Printf("listening on %%s", addr)
-	if err := http.ListenAndServe(addr, routes.API); err != nil {
+	mux := http.NewServeMux()
+	routes.API.RegisterRoutes(mux)
+	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -4857,7 +4859,9 @@ func main() {
 	models.SetDB(config.Database.OpenGORM())
 	addr := ":" + config.App.Port
 	log.Printf("listening on %%s", addr)
-	if err := http.ListenAndServe(addr, routes.API); err != nil {
+	mux := http.NewServeMux()
+	routes.API.RegisterRoutes(mux)
+	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
 	}
 }

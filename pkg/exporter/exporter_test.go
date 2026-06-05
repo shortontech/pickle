@@ -575,6 +575,26 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	if err := closedJWTDriver.RevokeAllForUser("secret-user"); err == nil || err.Error() != "jwt: database error" || strings.Contains(err.Error(), "sql:") || strings.Contains(err.Error(), "secret-user") {
 		t.Fatalf("closed DB revoke all error = %v", err)
 	}
+	validateJWTDB, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateJWTDB.Exec(` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, revoked_at DATETIME, created_at DATETIME NOT NULL)` + "`" + `); err != nil {
+		t.Fatal(err)
+	}
+	validateJWTDriver := jwt.NewDriver(env, validateJWTDB, "sqlite")
+	validateJWT, err := validateJWTDriver.SignToken(jwt.Claims{Subject: "secret-user", Role: "admin"})
+	if err != nil {
+		t.Fatalf("sign validation jwt: %v", err)
+	}
+	if err := validateJWTDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateJWTDriver.ValidateToken(validateJWT); err == nil || !errors.Is(err, jwt.ErrInvalidToken) {
+		t.Fatalf("closed DB validate token error = %v, want ErrInvalidToken", err)
+	} else if strings.Contains(err.Error(), "sql:") || strings.Contains(err.Error(), "closed") || strings.Contains(err.Error(), "secret-user") || strings.Contains(err.Error(), "jwt_tokens") {
+		t.Fatalf("closed DB validate token leaked detail: %v", err)
+	}
 
 	oauthDriver := auth.Driver("oauth").(*oauth.Driver)
 	if _, err := db.Exec("INSERT INTO oauth_tokens (token, client_id, expires_at, created_at) VALUES (?, ?, ?, ?)", "opaque", "client-1", time.Now().Add(time.Hour), time.Now()); err != nil {
@@ -701,6 +721,11 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprint(closedTokenResp.Body), "sql:") || strings.Contains(fmt.Sprint(closedTokenResp.Body), "closed") {
 		t.Fatalf("closed oauth DB response leaked detail: %#v", closedTokenResp.Body)
+	}
+	if _, err := closedOAuthDriver.ValidateToken("secret-oauth-token"); err == nil || err.Error() != "oauth: database error" {
+		t.Fatalf("closed oauth ValidateToken error = %v, want sanitized database error", err)
+	} else if strings.Contains(err.Error(), "sql:") || strings.Contains(err.Error(), "closed") || strings.Contains(err.Error(), "secret-oauth-token") || strings.Contains(err.Error(), "oauth_tokens") {
+		t.Fatalf("closed oauth ValidateToken leaked detail: %v", err)
 	}
 	cappedOAuthDriver := oauth.NewDriver(func(key, fallback string) string {
 		switch key {

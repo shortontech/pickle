@@ -4842,6 +4842,8 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 		t.Fatalf("missing content type response status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
+	fieldFloodQuery := "{ posts { " + strings.Repeat("totalCount ", 201) + "} }"
+	inputFloodQuery := "{ posts(filter: { title: { in: [" + strings.TrimSuffix(strings.Repeat("\"x\",", 501), ",") + "] } }) { totalCount } }"
 	for name, body := range map[string][]byte{
 		"batched":          []byte(` + "`" + `[{"query":"{ posts { totalCount } }"}]` + "`" + `),
 		"duplicate_field":  []byte(` + "`" + `{"query":"{ posts { totalCount } }","query":"{ comments { totalCount } }"}` + "`" + `),
@@ -4850,6 +4852,8 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 		"invalid_id":       []byte(` + "`" + `{"query":"query BadID($id: ID) { posts(filter: { id: { eq: $id } }) { totalCount } }","variables":{"id":"not-a-uuid-secret"}}` + "`" + `),
 		"introspection":    []byte(` + "`" + `{"query":"{ __schema { queryType { name } } }"}` + "`" + `),
 		"alias_flood":      []byte(` + "`" + `{"query":"{ ` + "`" + ` + strings.Repeat("alias: posts { totalCount } ", 26) + ` + "`" + `}"}` + "`" + `),
+		"field_flood":      []byte(` + "`" + `{"query":` + "`" + ` + mustJSONQuote(fieldFloodQuery) + ` + "`" + `}` + "`" + `),
+		"input_flood":      []byte(` + "`" + `{"query":` + "`" + ` + mustJSONQuote(inputFloodQuery) + ` + "`" + `}` + "`" + `),
 		"operation_flood":  []byte(` + "`" + `{"query":"` + "`" + ` + strings.Repeat("query TooMany { posts { totalCount } } ", 9) + ` + "`" + `"}` + "`" + `),
 		"deep_query":       []byte(` + "`" + `{"query":"{ posts { edges { node { id { a { b { c { d { e { f { g } } } } } } } } } } }"}` + "`" + `),
 		"bad_variables":    []byte(` + "`" + `{"query":"query Good($id: ID) { post(id: $id) { id } }","variables":["not","object"]}` + "`" + `),
@@ -5164,8 +5168,10 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "GraphQL query must be a string")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIOperationNameBytes = 256")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "func validateGraphQLAPIRequestEnvelope")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIFields = 200")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIVariables = 64")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIOperations = 8")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIInputNodes = 500")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIVariableNameBytes = 256")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "func validateGraphQLAPIVariables")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "func validateGraphQLAPIExtensions")

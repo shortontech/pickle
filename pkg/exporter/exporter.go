@@ -3087,7 +3087,9 @@ const maxGraphQLAPIVariableStringBytes = 4096
 const maxGraphQLAPITokenMultiplier = 20
 const maxGraphQLAPIComplexity = 1000
 const maxGraphQLAPIDepth = 10
+const maxGraphQLAPIFields = 200
 const maxGraphQLAPIAliases = 25
+const maxGraphQLAPIInputNodes = 500
 const maxGraphQLAPIOperations = 8
 
 type graphQLAPIRoleRow struct {
@@ -3552,8 +3554,10 @@ func graphQLAPIQueryRequestsIntrospection(query string) bool {
 }
 
 type graphQLAPIQueryShape struct {
-	Depth   int
-	Aliases int
+	Depth      int
+	Fields     int
+	Aliases    int
+	InputNodes int
 }
 
 func validateGraphQLAPIQueryShape(query string) error {
@@ -3579,7 +3583,9 @@ func validateGraphQLAPIQueryShape(query string) error {
 		if operationShape.Depth > shape.Depth {
 			shape.Depth = operationShape.Depth
 		}
+		shape.Fields += operationShape.Fields
 		shape.Aliases += operationShape.Aliases
+		shape.InputNodes += operationShape.InputNodes
 	}
 	if operations > maxGraphQLAPIOperations {
 		return graphQLAPICodedError("GraphQL query operations exceed safety limit", "BAD_USER_INPUT")
@@ -3587,8 +3593,14 @@ func validateGraphQLAPIQueryShape(query string) error {
 	if shape.Depth > maxGraphQLAPIDepth {
 		return graphQLAPICodedError("GraphQL query depth exceeds safety limit", "BAD_USER_INPUT")
 	}
+	if shape.Fields > maxGraphQLAPIFields {
+		return graphQLAPICodedError("GraphQL query fields exceed safety limit", "BAD_USER_INPUT")
+	}
 	if shape.Aliases > maxGraphQLAPIAliases {
 		return graphQLAPICodedError("GraphQL query aliases exceed safety limit", "BAD_USER_INPUT")
+	}
+	if shape.InputNodes > maxGraphQLAPIInputNodes {
+		return graphQLAPICodedError("GraphQL query inputs exceed safety limit", "BAD_USER_INPUT")
 	}
 	return nil
 }
@@ -3601,27 +3613,36 @@ func graphQLAPISelectionShape(selections ast.SelectionSet, fragments map[string]
 			if sel == nil {
 				continue
 			}
+			shape.Fields++
 			if sel.Alias != "" && sel.Alias != sel.Name {
 				shape.Aliases++
 			}
+			shape.InputNodes += graphQLAPIArgumentInputNodes(sel.Arguments)
+			shape.InputNodes += graphQLAPIDirectiveInputNodes(sel.Directives)
 			child := graphQLAPISelectionShape(sel.SelectionSet, fragments, seenFragments, depth+1)
 			if child.Depth > shape.Depth {
 				shape.Depth = child.Depth
 			}
+			shape.Fields += child.Fields
 			shape.Aliases += child.Aliases
+			shape.InputNodes += child.InputNodes
 		case *ast.InlineFragment:
 			if sel == nil {
 				continue
 			}
+			shape.InputNodes += graphQLAPIDirectiveInputNodes(sel.Directives)
 			child := graphQLAPISelectionShape(sel.SelectionSet, fragments, seenFragments, depth)
 			if child.Depth > shape.Depth {
 				shape.Depth = child.Depth
 			}
+			shape.Fields += child.Fields
 			shape.Aliases += child.Aliases
+			shape.InputNodes += child.InputNodes
 		case *ast.FragmentSpread:
 			if sel == nil || seenFragments[sel.Name] {
 				continue
 			}
+			shape.InputNodes += graphQLAPIDirectiveInputNodes(sel.Directives)
 			fragment := fragments[sel.Name]
 			if fragment == nil {
 				continue
@@ -3632,10 +3653,45 @@ func graphQLAPISelectionShape(selections ast.SelectionSet, fragments map[string]
 			if child.Depth > shape.Depth {
 				shape.Depth = child.Depth
 			}
+			shape.Fields += child.Fields
 			shape.Aliases += child.Aliases
+			shape.InputNodes += child.InputNodes
 		}
 	}
 	return shape
+}
+
+func graphQLAPIArgumentInputNodes(arguments ast.ArgumentList) int {
+	total := 0
+	for _, argument := range arguments {
+		if argument == nil {
+			continue
+		}
+		total += graphQLAPIValueInputNodes(argument.Value)
+	}
+	return total
+}
+
+func graphQLAPIDirectiveInputNodes(directives ast.DirectiveList) int {
+	total := 0
+	for _, directive := range directives {
+		if directive == nil {
+			continue
+		}
+		total += graphQLAPIArgumentInputNodes(directive.Arguments)
+	}
+	return total
+}
+
+func graphQLAPIValueInputNodes(value *ast.Value) int {
+	if value == nil {
+		return 0
+	}
+	total := 1
+	for _, child := range value.Children {
+		total += graphQLAPIValueInputNodes(child.Value)
+	}
+	return total
 }
 
 func validateGraphQLAPIVariables(variables map[string]any) error {

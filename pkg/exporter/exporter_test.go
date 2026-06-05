@@ -2093,6 +2093,27 @@ func TestExportedIntegrityTablesPreserveBehavior(t *testing.T) {
 		t.Fatalf("verify account chain: %v", err)
 	}
 
+	staleCopy1 := *account
+	staleCopy2 := *account
+	staleCopy1.Name = "Updated by copy1"
+	if err := models.UpdateAccount(&staleCopy1); err != nil {
+		t.Fatalf("first stale-version update: %v", err)
+	}
+	staleCopy2.Name = "Updated by copy2"
+	err = models.UpdateAccount(&staleCopy2)
+	if err == nil {
+		t.Fatal("expected stale immutable update to fail")
+	}
+	if _, ok := err.(*models.StaleVersionError); !ok {
+		t.Fatalf("expected StaleVersionError, got %T: %v", err, err)
+	}
+	if err := db.Model(&models.Account{}).Where("id = ?", account.ID).Count(&accountRows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if accountRows != 3 {
+		t.Fatalf("failed stale update should not insert another version, got %d rows", accountRows)
+	}
+
 	tx1 := &models.Transaction{AccountID: account.ID, Type: "credit", Amount: decimal.NewFromInt(100), Currency: "USD"}
 	tx2 := &models.Transaction{AccountID: account.ID, Type: "debit", Amount: decimal.NewFromInt(25), Currency: "USD"}
 	if err := models.CreateTransaction(tx1); err != nil {

@@ -6223,6 +6223,7 @@ const authSupportSource = `package auth
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -6237,6 +6238,8 @@ import (
 type AuthDriver interface {
 	Authenticate(r *http.Request) (*httpx.AuthInfo, error)
 }
+
+const maxAuthorizationHeaderBytes = 12 << 10
 
 var (
 	registry = map[string]AuthDriver{}
@@ -6318,6 +6321,9 @@ func ActiveDriverName() string {
 }
 
 func Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
+	if r != nil && len(r.Header.Get("Authorization")) > maxAuthorizationHeaderBytes {
+		return nil, errors.New("auth: authorization header too large")
+	}
 	driver, err := TryActiveDriver()
 	if err != nil {
 		return nil, err

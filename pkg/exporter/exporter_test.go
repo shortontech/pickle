@@ -92,6 +92,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "session.NewDriver")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "func DefaultAuthMiddleware")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "func ActiveDriverName")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "const maxAuthorizationHeaderBytes = 12 << 10")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "func (d *Driver) TokenEndpoint")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func CSRF")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "len(parts[0]) != 64 || len(parts[1]) != 64")
@@ -348,6 +349,15 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 		}, db, "sqlite")
 	})
 	auth.Init(env, db)
+
+	hugeAuthHeader := strings.Repeat("x", 13<<10)
+	hugeAuthReq, _ := http.NewRequest("GET", "/", nil)
+	hugeAuthReq.Header.Set("Authorization", hugeAuthHeader)
+	if _, err := auth.Authenticate(hugeAuthReq); err == nil {
+		t.Fatal("oversized Authorization header should fail")
+	} else if strings.Contains(err.Error(), strings.Repeat("x", 128)) {
+		t.Fatalf("oversized Authorization error leaked header value: %v", err)
+	}
 
 	jwtDriver := auth.Driver("jwt").(*jwt.Driver)
 	token, err := jwtDriver.SignToken(jwt.Claims{Subject: "user-1", Role: "admin"})
@@ -3402,6 +3412,37 @@ fragment UserFields on User {
 		}
 		if strings.Contains(logs.String(), "dont-leak-me") || strings.Contains(logs.String(), "jwt:") {
 			t.Fatalf("auth failure leaked implementation details in logs: %s", logs.String())
+		}
+		if !strings.Contains(logs.String(), "graphql auth failed") {
+			t.Fatalf("auth failure log missing sanitized marker: %s", logs.String())
+		}
+	})
+
+	t.Run("oversized_auth_header_is_sanitized", func(t *testing.T) {
+		var logs bytes.Buffer
+		previousLogOutput := log.Writer()
+		log.SetOutput(&logs)
+		defer log.SetOutput(previousLogOutput)
+
+		body, err := json.Marshal(map[string]any{"query": ` + "`" + `query AuthFailure($id: ID!) {
+  user(id: $id) { id email name }
+}` + "`" + `, "variables": map[string]any{"id": userID.String()}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		hugeHeader := "Bearer " + strings.Repeat("x", 13<<10)
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Authorization", hugeHeader)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "unauthenticated") {
+			t.Fatalf("missing sanitized auth error: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), strings.Repeat("x", 128)) || strings.Contains(logs.String(), strings.Repeat("x", 128)) {
+			t.Fatalf("oversized auth header leaked in response/logs: body=%s logs=%s", rec.Body.String(), logs.String())
 		}
 		if !strings.Contains(logs.String(), "graphql auth failed") {
 			t.Fatalf("auth failure log missing sanitized marker: %s", logs.String())

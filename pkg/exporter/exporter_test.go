@@ -2220,7 +2220,68 @@ func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 	assertCleanExportReport(t, out)
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "pickle.")
+	writeExportedZeroGraphQLEncryptedFilterTest(t, out)
 	runExported(t, out, "go", "test", "./...")
+}
+
+func writeExportedZeroGraphQLEncryptedFilterTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package models
+
+import (
+	"os"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+func TestExportedGraphQLQueryFiltersDeterministicEncryptedColumns(t *testing.T) {
+	t.Setenv("APP_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef")
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetDB(db)
+	if err := db.AutoMigrate(&User{}); err != nil {
+		t.Fatalf("auto migrate: %v", err)
+	}
+	now := time.Now().UTC()
+	user := &User{
+		ID:           uuid.New(),
+		Name:         "Ada",
+		Email:        "ada@example.com",
+		PasswordHash: "hash",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := QueryUser().Create(user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if user.EmailEncrypted == "" || user.EmailEncrypted == "ada@example.com" {
+		t.Fatalf("email was not stored as ciphertext: %q", user.EmailEncrypted)
+	}
+	found, err := QueryUser().WhereEmail("ada@example.com").First()
+	if err != nil {
+		t.Fatalf("find by encrypted email: %v", err)
+	}
+	if found.ID != user.ID || found.Email != "ada@example.com" {
+		t.Fatalf("found = %+v, want user %s with decrypted email", found, user.ID)
+	}
+
+	t.Setenv("APP_ENCRYPTION_KEY", "")
+	t.Setenv("ENCRYPTION_KEY", "")
+	if _, err := QueryUser().WhereEmail("ada@example.com").First(); err == nil {
+		t.Fatal("encrypted filter without an encryption key should fail closed")
+	}
+	_ = os.Unsetenv("APP_ENCRYPTION_KEY")
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_graphql_encrypted_filter_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
@@ -3215,6 +3276,30 @@ func TestCreateViewSQLUsesEncryptedStorageColumns(t *testing.T) {
 	}
 	if strings.Contains(sql, `"u"."email",`) {
 		t.Fatalf("view SQL retained logical encrypted column:\n%s", sql)
+	}
+}
+
+func TestGraphQLQuerySupportUsesEncryptedStorageAndFailsClosed(t *testing.T) {
+	var b strings.Builder
+	writeGraphQLModelQuerySupport(&b, "users", []*schema.Column{
+		{Name: "id", Type: schema.UUID, IsPrimaryKey: true},
+		{Name: "email", Type: schema.String, IsEncrypted: true},
+		{Name: "private_key", Type: schema.String, IsSealed: true},
+	}, false)
+	src := b.String()
+	for _, want := range []string{
+		`WhereEmail(value any) *UserQuery { q.db = graphQLEncryptedWhere(q.db, "email_encrypted", "=", value); return q }`,
+		`case "email":`,
+		`column = "email_encrypted"`,
+		`encrypted column email does not support Like filters`,
+		`sealed column private_key cannot be filtered`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("GraphQL query support missing %q:\n%s", want, src)
+		}
+	}
+	if strings.Contains(src, `q.db.Where("email = ?`) || strings.Contains(src, `q.db.Where("private_key_encrypted = ?`) {
+		t.Fatalf("GraphQL query support retained unsafe encrypted/sealed predicates:\n%s", src)
 	}
 }
 

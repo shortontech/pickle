@@ -3473,6 +3473,7 @@ func (e *exporter) generateCommandsSupport() ([]byte, error) {
 	b.WriteString("\t\"fmt\"\n")
 	b.WriteString("\t\"log\"\n")
 	b.WriteString("\t\"net/http\"\n")
+	b.WriteString("\t\"time\"\n")
 	if hasSchedule {
 		b.WriteString("\t\"os\"\n")
 		b.WriteString("\t\"os/signal\"\n")
@@ -4177,6 +4178,7 @@ func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL, hasSchedule
 	}
 	b.WriteString("\t\"log\"\n")
 	b.WriteString("\t\"net/http\"\n")
+	b.WriteString("\t\"time\"\n")
 	if hasSchedule {
 		b.WriteString("\t\"os\"\n")
 		b.WriteString("\t\"os/signal\"\n")
@@ -4213,7 +4215,15 @@ func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL, hasSchedule
 	}
 	b.WriteString("\taddr := \":\" + config.App.Port\n")
 	b.WriteString("\tlog.Printf(\"listening on %s\", addr)\n")
-	b.WriteString("\tif err := http.ListenAndServe(addr, mux); err != nil {\n")
+	b.WriteString("\tserver := &http.Server{\n")
+	b.WriteString("\t\tAddr:              addr,\n")
+	b.WriteString("\t\tHandler:           mux,\n")
+	b.WriteString("\t\tReadHeaderTimeout: 10 * time.Second,\n")
+	b.WriteString("\t\tReadTimeout:       30 * time.Second,\n")
+	b.WriteString("\t\tWriteTimeout:      60 * time.Second,\n")
+	b.WriteString("\t\tIdleTimeout:       120 * time.Second,\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tif err := server.ListenAndServe(); err != nil {\n")
 	b.WriteString("\t\tlog.Fatal(err)\n")
 	b.WriteString("\t}\n")
 	b.WriteString("}\n")
@@ -4229,6 +4239,7 @@ func (e *exporter) generateMultiServiceServerMain(hasDatabaseConfig, hasSchedule
 	}
 	b.WriteString("\t\"log\"\n")
 	b.WriteString("\t\"net/http\"\n")
+	b.WriteString("\t\"time\"\n")
 	if hasSchedule {
 		b.WriteString("\t\"os\"\n")
 		b.WriteString("\t\"os/signal\"\n")
@@ -4272,7 +4283,15 @@ func (e *exporter) generateMultiServiceServerMain(hasDatabaseConfig, hasSchedule
 	}
 	b.WriteString("\taddr := \":\" + config.App.Port\n")
 	b.WriteString("\tlog.Printf(\"listening on %s\", addr)\n")
-	b.WriteString("\tif err := http.ListenAndServe(addr, mux); err != nil {\n")
+	b.WriteString("\tserver := &http.Server{\n")
+	b.WriteString("\t\tAddr:              addr,\n")
+	b.WriteString("\t\tHandler:           mux,\n")
+	b.WriteString("\t\tReadHeaderTimeout: 10 * time.Second,\n")
+	b.WriteString("\t\tReadTimeout:       30 * time.Second,\n")
+	b.WriteString("\t\tWriteTimeout:      60 * time.Second,\n")
+	b.WriteString("\t\tIdleTimeout:       120 * time.Second,\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tif err := server.ListenAndServe(); err != nil {\n")
 	b.WriteString("\t\tlog.Fatal(err)\n")
 	b.WriteString("\t}\n")
 	b.WriteString("}\n")
@@ -6323,6 +6342,7 @@ const serverMainSource = `package main
 import (
 	"log"
 	"net/http"
+	"time"
 
 	"%s/config"
 	"%s/routes"
@@ -6334,7 +6354,8 @@ func main() {
 	log.Printf("listening on %%s", addr)
 	mux := http.NewServeMux()
 	routes.API.RegisterRoutes(mux)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second}
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -6358,6 +6379,7 @@ const serverMainWithDatabaseSource = `package main
 import (
 	"log"
 	"net/http"
+	"time"
 
 	"%s/app/models"
 	"%s/config"
@@ -6372,7 +6394,8 @@ func main() {
 	log.Printf("listening on %%s", addr)
 	mux := http.NewServeMux()
 	routes.API.RegisterRoutes(mux)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second}
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }

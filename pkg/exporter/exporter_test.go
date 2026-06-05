@@ -3502,6 +3502,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vektah/gqlparser/v2/gqlerror"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -3545,6 +3546,15 @@ func TestExportedGraphQLQueryFiltersDeterministicEncryptedColumns(t *testing.T) 
 		t.Fatal("encrypted filter without an encryption key should fail closed")
 	}
 	_ = os.Unsetenv("APP_ENCRYPTION_KEY")
+
+	if _, err := QueryUser().WhereEmailLike("ada%").First(); !isBadInput(err) {
+		t.Fatalf("unsupported encrypted GraphQL filter error = %v, want BAD_USER_INPUT", err)
+	}
+}
+
+func isBadInput(err error) bool {
+	gqlErr, ok := err.(*gqlerror.Error)
+	return ok && gqlErr.Extensions["code"] == "BAD_USER_INPUT"
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_graphql_encrypted_filter_test.go"), []byte(testSrc), 0o644); err != nil {
@@ -4986,6 +4996,7 @@ func TestGraphQLQuerySupportUsesEncryptedStorageAndFailsClosed(t *testing.T) {
 	src := b.String()
 	for _, want := range []string{
 		`WhereEmail(value any) *UserQuery { q.db = graphQLEncryptedWhere(q.db, "email_encrypted", "=", value); return q }`,
+		`AddError(graphQLModelBadInput("encrypted column email does not support Like filters"))`,
 		`encrypted column email does not support Like filters`,
 		`sealed column private_key cannot be filtered`,
 	} {
@@ -4999,6 +5010,7 @@ func TestGraphQLQuerySupportUsesEncryptedStorageAndFailsClosed(t *testing.T) {
 		`case "email":`,
 		`case "private_key":`,
 		`column = "email_encrypted"`,
+		`AddError(fmt.Errorf("encrypted column email does not support Like filters"))`,
 	} {
 		if strings.Contains(src, unexpected) {
 			t.Fatalf("GraphQL query support retained unsafe encrypted/sealed behavior %q:\n%s", unexpected, src)

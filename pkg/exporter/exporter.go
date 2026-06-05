@@ -2581,8 +2581,11 @@ func (e *exporter) writeGraphQLQuerySupport(tables []*schema.Table, views []*sch
 	}
 	b.WriteString("\t\"strings\"\n")
 	b.WriteString("\n")
+	b.WriteString("\t\"github.com/vektah/gqlparser/v2/gqlerror\"\n")
+	b.WriteString("\n")
 	b.WriteString("\t\"gorm.io/gorm\"\n")
 	b.WriteString(")\n\n")
+	b.WriteString(exportedGraphQLModelErrorHelpers)
 	if hasEncrypted {
 		b.WriteString(exportedGraphQLQuerySupportHelpers)
 	}
@@ -2645,7 +2648,7 @@ func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns
 			columnName := graphQLSelectColumnName(col)
 			op := whereSuffixOperator(suffix)
 			if col.IsSealed || (col.IsEncrypted && !graphQLEncryptedWhereSuffixSupported(suffix)) {
-				b.WriteString(fmt.Sprintf("func (q *%s) Where%s%s(value any) *%s { q.db.AddError(fmt.Errorf(%q)); q.db = q.db.Where(\"1 = 0\"); return q }\n", queryName, fieldName, suffix, queryName, graphQLUnsupportedFilterMessage(col, suffix)))
+				b.WriteString(fmt.Sprintf("func (q *%s) Where%s%s(value any) *%s { q.db.AddError(graphQLModelBadInput(%q)); q.db = q.db.Where(\"1 = 0\"); return q }\n", queryName, fieldName, suffix, queryName, graphQLUnsupportedFilterMessage(col, suffix)))
 				continue
 			}
 			if col.IsEncrypted {
@@ -2716,6 +2719,15 @@ func graphQLUnsupportedFilterMessage(col *schema.Column, suffix string) string {
 	}
 	return fmt.Sprintf("encrypted column %s does not support %s filters", col.Name, strings.TrimPrefix(suffix, "Where"))
 }
+
+const exportedGraphQLModelErrorHelpers = `func graphQLModelBadInput(message string) *gqlerror.Error {
+	return &gqlerror.Error{
+		Message:    message,
+		Extensions: map[string]any{"code": "BAD_USER_INPUT"},
+	}
+}
+
+`
 
 const exportedGraphQLQuerySupportHelpers = `func graphQLEncryptedWhere(db *gorm.DB, column, op string, value any) *gorm.DB {
 	encryptedValue, err := graphQLEncryptFilterValue(value)

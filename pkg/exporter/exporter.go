@@ -3249,7 +3249,7 @@ func isGraphQLAPIName(name string) bool {
 
 func isGraphQLAPIJSONContentType(contentType string) bool {
 	if contentType == "" {
-		return true
+		return false
 	}
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	return err == nil && mediaType == "application/json"

@@ -3442,6 +3442,9 @@ func TestExportZeroGraphQLLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "generated.NewExecutableSchema")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "Auth:        graphQLAPIAuthDirective")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "extension.FixedComplexityLimit")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), `if contentType == "" {
+		return false
+	}`)
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "generated", "generated.go"), "type ResolverRoot interface")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *Resolver) Query() generated.QueryResolver")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), "func gqlgenPageWindow")
@@ -3955,6 +3958,12 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !responseHasErrorCode(t, rec.Body.Bytes(), "BAD_USER_INPUT") {
 		t.Fatalf("bad query response status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader([]byte(` + "`" + `{"query":"{ posts { totalCount } }"}` + "`" + `)))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnsupportedMediaType || !responseHasErrorCode(t, rec.Body.Bytes(), "BAD_USER_INPUT") {
+		t.Fatalf("missing content type response status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
 	for name, body := range map[string][]byte{

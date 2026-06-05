@@ -597,12 +597,21 @@ func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, 
 					if chainOK && chain.Terminal == "" {
 						ident, identOK := s.Lhs[0].(*ast.Ident)
 						if identOK {
+							chain.DeferLatest = true
 							expr, err := e.gormBuilderExpr(chain)
 							if err != nil {
 								return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
 							}
 							s.Rhs[0] = expr
-							queryVars[ident.Name] = queryVarState{Model: chain.Model, DBRoot: chain.dbRoot()}
+							queryVars[ident.Name] = queryVarState{
+								Model:         chain.Model,
+								DBRoot:        chain.dbRoot(),
+								AllVersions:   chain.AllVersions,
+								VersionFilter: chain.hasVersionFilter(),
+								LockStrength:  chain.LockStrength,
+								LockOptions:   chain.LockOptions,
+								LockTimeout:   chain.LockTimeout,
+							}
 							return stmt, nil
 						}
 					}
@@ -706,6 +715,7 @@ type queryChain struct {
 	Offset       ast.Expr
 	Arg          ast.Expr
 	AllVersions  bool
+	DeferLatest  bool
 	LockStrength string
 	LockOptions  string
 	LockTimeout  ast.Expr
@@ -719,11 +729,13 @@ type queryFilter struct {
 }
 
 type queryVarState struct {
-	Model        string
-	DBRoot       string
-	LockStrength string
-	LockOptions  string
-	LockTimeout  ast.Expr
+	Model         string
+	DBRoot        string
+	AllVersions   bool
+	VersionFilter bool
+	LockStrength  string
+	LockOptions   string
+	LockTimeout   ast.Expr
 }
 
 func (q queryChain) dbRoot() string {
@@ -923,13 +935,15 @@ func buildQueryChain(model, dbRoot string, methods []struct {
 }
 
 type queryVarTerminal struct {
-	Var          string
-	Model        string
-	DBRoot       string
-	Terminal     string
-	LockStrength string
-	LockOptions  string
-	LockTimeout  ast.Expr
+	Var           string
+	Model         string
+	DBRoot        string
+	Terminal      string
+	AllVersions   bool
+	VersionFilter bool
+	LockStrength  string
+	LockOptions   string
+	LockTimeout   ast.Expr
 }
 
 func parseQueryVarTerminal(call *ast.CallExpr, queryVars map[string]queryVarState) (queryVarTerminal, bool, error) {
@@ -952,13 +966,15 @@ func parseQueryVarTerminal(call *ast.CallExpr, queryVars map[string]queryVarStat
 		return queryVarTerminal{}, true, fmt.Errorf("%s does not accept arguments", sel.Sel.Name)
 	}
 	return queryVarTerminal{
-		Var:          id.Name,
-		Model:        state.Model,
-		DBRoot:       state.dbRoot(),
-		Terminal:     sel.Sel.Name,
-		LockStrength: state.LockStrength,
-		LockOptions:  state.LockOptions,
-		LockTimeout:  state.LockTimeout,
+		Var:           id.Name,
+		Model:         state.Model,
+		DBRoot:        state.dbRoot(),
+		Terminal:      sel.Sel.Name,
+		AllVersions:   state.AllVersions,
+		VersionFilter: state.VersionFilter,
+		LockStrength:  state.LockStrength,
+		LockOptions:   state.LockOptions,
+		LockTimeout:   state.LockTimeout,
 	}, true, nil
 }
 
@@ -995,6 +1011,10 @@ func rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[string]queryVarSt
 				return nil, true, fmt.Errorf("%s requires one argument", sel.Sel.Name)
 			}
 			expr, err = gormVarWhereExpr(id.Name, col, op, call.Args[0])
+		}
+		if col == "version_id" {
+			state.VersionFilter = true
+			queryVars[id.Name] = state
 		}
 	case strings.HasPrefix(sel.Sel.Name, "With"):
 		if len(call.Args) != 0 {
@@ -1034,7 +1054,12 @@ func rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[string]queryVarSt
 		}
 		expr, err = parseExpr(fmt.Sprintf("%s.Order(%s + \" \" + %s)", id.Name, col, dir))
 	case sel.Sel.Name == "AllVersions":
-		return nil, true, fmt.Errorf("AllVersions must be used in a fluent query chain for export")
+		if len(call.Args) != 0 {
+			return nil, true, fmt.Errorf("AllVersions does not accept arguments")
+		}
+		state.AllVersions = true
+		queryVars[id.Name] = state
+		return &ast.EmptyStmt{}, true, nil
 	case sel.Sel.Name == "Lock" || sel.Sel.Name == "LockForUpdate":
 		if len(call.Args) != 0 {
 			return nil, true, fmt.Errorf("%s does not accept arguments", sel.Sel.Name)
@@ -1158,13 +1183,14 @@ func (e *exporter) gormVarTerminalExpr(q queryVarTerminal) (ast.Expr, error) {
 	if q.lockRequiresTransaction() && !q.inTransaction() {
 		return e.lockOutsideTransactionExpr(q.Model, q.Terminal)
 	}
+	query := e.gormVarTerminalRoot(q)
 	switch {
 	case q.Terminal == "First":
-		return parseExpr(fmt.Sprintf("func() (*models.%s, error) { %s var record models.%s; err := %s.First(&record).Error; return &record, err }()", q.Model, e.lockTimeoutStmt(q), q.Model, q.Var))
+		return parseExpr(fmt.Sprintf("func() (*models.%s, error) { %s var record models.%s; err := %s.First(&record).Error; return &record, err }()", q.Model, e.lockTimeoutStmt(q), q.Model, query))
 	case q.Terminal == "All":
-		return parseExpr(fmt.Sprintf("func() ([]models.%s, error) { %s var records []models.%s; err := %s.Find(&records).Error; return records, err }()", q.Model, e.lockTimeoutStmt(q), q.Model, q.Var))
+		return parseExpr(fmt.Sprintf("func() ([]models.%s, error) { %s var records []models.%s; err := %s.Find(&records).Error; return records, err }()", q.Model, e.lockTimeoutStmt(q), q.Model, query))
 	case q.Terminal == "Count":
-		return parseExpr(fmt.Sprintf("func() (int64, error) { var count int64; err := %s.Count(&count).Error; return count, err }()", q.Var))
+		return parseExpr(fmt.Sprintf("func() (int64, error) { var count int64; err := %s.Count(&count).Error; return count, err }()", query))
 	case strings.HasPrefix(q.Terminal, "Sum") || strings.HasPrefix(q.Terminal, "Avg"):
 		fn := "SUM"
 		field := strings.TrimPrefix(q.Terminal, "Sum")
@@ -1176,10 +1202,17 @@ func (e *exporter) gormVarTerminalExpr(q queryVarTerminal) (ast.Expr, error) {
 			return nil, fmt.Errorf("unsupported aggregate query method %s", q.Terminal)
 		}
 		column := pascalToSnake(field)
-		return parseExpr(fmt.Sprintf("func() (*float64, error) { var value *float64; err := %s.Select(%q).Scan(&value).Error; return value, err }()", q.Var, fn+"("+column+")"))
+		return parseExpr(fmt.Sprintf("func() (*float64, error) { var value *float64; err := %s.Select(%q).Scan(&value).Error; return value, err }()", query, fn+"("+column+")"))
 	default:
 		return nil, fmt.Errorf("unsupported terminal query method %s", q.Terminal)
 	}
+}
+
+func (e *exporter) gormVarTerminalRoot(q queryVarTerminal) string {
+	if info, ok := e.integrityModels[q.Model]; ok && info.Immutable && !q.AllVersions && !q.VersionFilter {
+		return fmt.Sprintf("%s.Where(%q)", q.Var, latestVersionPredicate(info.Table.Name))
+	}
+	return q.Var
 }
 
 func (e *exporter) lockOutsideTransactionExpr(model, terminal string) (ast.Expr, error) {
@@ -1266,9 +1299,8 @@ func gormVarLockExpr(varName, strength, options string) (ast.Expr, error) {
 
 func (e *exporter) gormChain(q queryChain) string {
 	chain := fmt.Sprintf("%s.Model(&models.%s{})", q.dbRoot(), q.Model)
-	if info, ok := e.integrityModels[q.Model]; ok && info.Immutable && !q.AllVersions && !q.hasVersionFilter() {
-		table := info.Table.Name
-		chain += fmt.Sprintf(".Where(%q)", "version_id = (SELECT MAX(version_id) FROM "+table+" latest WHERE latest.id = "+table+".id)")
+	if info, ok := e.integrityModels[q.Model]; ok && info.Immutable && !q.DeferLatest && !q.AllVersions && !q.hasVersionFilter() {
+		chain += fmt.Sprintf(".Where(%q)", latestVersionPredicate(info.Table.Name))
 	}
 	for _, f := range q.Filters {
 		col := f.Column
@@ -1306,6 +1338,10 @@ func (e *exporter) gormChain(q queryChain) string {
 		chain += "})"
 	}
 	return chain
+}
+
+func latestVersionPredicate(table string) string {
+	return "version_id = (SELECT MAX(version_id) FROM " + table + " latest WHERE latest.id = " + table + ".id)"
 }
 
 func (q queryChain) hasVersionFilter() bool {

@@ -110,6 +110,9 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func validCookieName")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "maxSessionTTLSeconds")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "boundedPositiveSeconds")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), `errors.New("session: invalid session value")`)
+	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "session: put: %w")
+	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "session: get: %w")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_ban.go"), "DB.Save(user).Error")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_promote.go"), "type PromoteResult struct")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_standalone_gate.go"), "func CanView")
@@ -1330,6 +1333,15 @@ func TestExportedSessionPayloadErrorsAreSanitized(t *testing.T) {
 	}
 	if err := Put(missingCtx, "secret", "value"); err == nil || err.Error() != "session: invalid or expired session" || strings.Contains(err.Error(), "sql:") {
 		t.Fatalf("Put missing session error = %v, want sanitized invalid session", err)
+	}
+
+	validSessionID := "55555555-5555-4555-8555-555555555555"
+	if _, err := db.Exec("INSERT INTO sessions (id, user_id, role, payload, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", validSessionID, "user-1", "member", "{}", time.Now().Add(time.Hour), time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	validCtx := httpx.NewContext(requestWithSession(http.MethodPost, validSessionID))
+	if err := Put(validCtx, "secret", make(chan int)); err == nil || err.Error() != "session: invalid session value" || strings.Contains(err.Error(), "chan") || strings.Contains(err.Error(), "json:") {
+		t.Fatalf("Put unsupported value error = %v, want sanitized invalid session value", err)
 	}
 }
 

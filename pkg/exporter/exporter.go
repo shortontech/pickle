@@ -8198,7 +8198,7 @@ func Get(ctx *httpx.Context, key string) (string, error) {
 	}
 	data, err := json.Marshal(val)
 	if err != nil {
-		return "", fmt.Errorf("session: get: %%w", err)
+		return "", errors.New("session: invalid session payload")
 	}
 	return string(data), nil
 }
@@ -8236,7 +8236,7 @@ func Put(ctx *httpx.Context, key string, value any) error {
 	payload[key] = value
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("session: put: %%w", err)
+		return errors.New("session: invalid session value")
 	}
 	res, err := d.db.Exec(bindPlaceholders(d.driver, "UPDATE sessions SET payload = ?, updated_at = ? WHERE id = ?"), string(data), time.Now().UTC(), sessionID)
 	if err != nil {

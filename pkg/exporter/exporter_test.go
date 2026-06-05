@@ -3343,6 +3343,7 @@ func writeExportedIntegrityBehaviorTest(t *testing.T, out string) {
 	testSrc := `package models_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -3448,6 +3449,42 @@ func TestExportedIntegrityTablesPreserveBehavior(t *testing.T) {
 	}
 }
 
+func TestExportedIntegrityDatabaseErrorsAreSanitized(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	if err := db.AutoMigrate(&models.Account{}, &models.Transaction{}); err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tx := &models.Transaction{AccountID: uuid.New(), Type: "credit", Amount: decimal.NewFromInt(100), Currency: "USD"}
+	for name, err := range map[string]error{
+		"create": models.CreateTransaction(tx),
+		"verify": models.VerifyTransactionChain(),
+	} {
+		if err == nil {
+			t.Fatalf("%s should fail with closed database", name)
+		}
+		if err.Error() != "integrity database error" {
+			t.Fatalf("%s error = %v, want sanitized integrity database error", name, err)
+		}
+		for _, forbidden := range []string{"sql:", "closed", "transactions", "SELECT", "password"} {
+			if strings.Contains(err.Error(), forbidden) {
+				t.Fatalf("%s error leaked %q: %v", name, forbidden, err)
+			}
+		}
+	}
+}
+
 func bytesEqual(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false
@@ -3483,6 +3520,8 @@ func TestExportLedgerCompiles(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "account.go"), "[]byte")
 	assertFileContains(t, filepath.Join(out, "app", "models", "integrity_support.go"), "func CreateAccount(record *Account) error")
 	assertFileContains(t, filepath.Join(out, "app", "models", "integrity_support.go"), "func VerifyTransactionChain() error")
+	assertFileContains(t, filepath.Join(out, "app", "models", "integrity_support.go"), "func integrityDatabaseError() error")
+	assertFileNotContains(t, filepath.Join(out, "app", "models", "integrity_support.go"), "return db.Create(record).Error")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "account_controller.go"), "models.DB.Model(&models.")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "account_controller.go"), "Account{})")
 	assertPathMissing(t, filepath.Join(out, "integrity_test.go"))

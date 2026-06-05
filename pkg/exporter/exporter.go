@@ -5898,7 +5898,8 @@ func (e *ChainError) Error() string {
 		b.WriteString("}\n\n")
 		fmt.Fprintf(&b, "func Verify%sChain() error {\n", model)
 		fmt.Fprintf(&b, "\tvar records []%s\n", model)
-		fmt.Fprintf(&b, "\tif err := DB.Order(%q).Find(&records).Error; err != nil { return err }\n", verifyOrder)
+		fmt.Fprintf(&b, "\tif DB == nil { return integrityDatabaseError() }\n")
+		fmt.Fprintf(&b, "\tif err := DB.Order(%q).Find(&records).Error; err != nil { return integrityDatabaseError() }\n", verifyOrder)
 		fmt.Fprintf(&b, "\treturn verifyIntegrityRecords(%q, records, %sIntegrityColumns)\n", table.Name, model)
 		b.WriteString("}\n\n")
 	}
@@ -8173,9 +8174,13 @@ func derefString(value *string) string {
 `
 
 const integritySupportGenericSource = `
+func integrityDatabaseError() error {
+	return errors.New("integrity database error")
+}
+
 func createIntegrityRecord(db *gorm.DB, table string, record any, immutable bool, order string, columns []string) error {
 	if db == nil {
-		return errors.New("models.DB is not configured")
+		return integrityDatabaseError()
 	}
 	if err := ensureUUIDField(record, "ID"); err != nil {
 		return err
@@ -8196,12 +8201,15 @@ func createIntegrityRecord(db *gorm.DB, table string, record any, immutable bool
 	if err := setBytesField(record, "RowHash", rowHash); err != nil {
 		return err
 	}
-	return db.Create(record).Error
+	if err := db.Create(record).Error; err != nil {
+		return integrityDatabaseError()
+	}
+	return nil
 }
 
 func updateImmutableRecord(db *gorm.DB, table string, record any, order string, columns []string) error {
 	if db == nil {
-		return errors.New("models.DB is not configured")
+		return integrityDatabaseError()
 	}
 	id, err := getUUIDField(record, "ID")
 	if err != nil {
@@ -8216,7 +8224,7 @@ func updateImmutableRecord(db *gorm.DB, table string, record any, order string, 
 		RowHash []byte ` + "`" + `gorm:"column:row_hash"` + "`" + `
 	}
 	if err := db.Table(table).Select("version_id, row_hash").Where("id = ?", id).Order("version_id DESC").Limit(1).Scan(&latest).Error; err != nil {
-		return err
+		return integrityDatabaseError()
 	}
 	if latest.VersionID == uuid.Nil {
 		return fmt.Errorf("no current version found for %s id=%s", table, id)
@@ -8234,13 +8242,16 @@ func updateImmutableRecord(db *gorm.DB, table string, record any, order string, 
 	if err := setBytesField(record, "RowHash", rowHash); err != nil {
 		return err
 	}
-	return db.Create(record).Error
+	if err := db.Create(record).Error; err != nil {
+		return integrityDatabaseError()
+	}
+	return nil
 }
 
 func latestIntegrityHash(db *gorm.DB, table, order string) ([]byte, error) {
 	var row struct { RowHash []byte ` + "`" + `gorm:"column:row_hash"` + "`" + ` }
 	if err := db.Table(table).Select("row_hash").Order(order).Limit(1).Scan(&row).Error; err != nil {
-		return nil, err
+		return nil, integrityDatabaseError()
 	}
 	if len(row.RowHash) == 0 {
 		return append([]byte(nil), genesisHash...), nil

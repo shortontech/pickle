@@ -1788,18 +1788,27 @@ func (e *exporter) writeGraphQLTargetFiles(schemaSDL string) error {
 	b.WriteString("schema:\n")
 	b.WriteString("  - app/graphql/schema.graphqls\n\n")
 	b.WriteString("exec:\n")
-	b.WriteString("  filename: app/graphql/generated.go\n")
+	b.WriteString("  filename: app/graphql/gqlgen/generated.go\n")
 	b.WriteString("  package: graphql\n\n")
 	b.WriteString("model:\n")
-	b.WriteString("  filename: app/graphql/model/models_gen.go\n")
+	b.WriteString("  filename: app/graphql/gqlgen/model/models_gen.go\n")
 	b.WriteString("  package: model\n\n")
 	b.WriteString("resolver:\n")
 	b.WriteString("  layout: follow-schema\n")
-	b.WriteString("  dir: app/graphql\n")
+	b.WriteString("  dir: app/graphql/gqlgen\n")
 	b.WriteString("  package: graphql\n\n")
 	b.WriteString("autobind:\n")
 	fmt.Fprintf(&b, "  - %s/app/models\n", e.modulePath)
-	return e.writeFile("gqlgen.yml", []byte(b.String()))
+	if err := e.writeFile("gqlgen.yml", []byte(b.String())); err != nil {
+		return err
+	}
+	return e.writeFile(filepath.Join("tools", "gqlgen.go"), []byte(`//go:build tools
+// +build tools
+
+package tools
+
+import _ "github.com/99designs/gqlgen"
+`))
 }
 
 func extractStringConstFromGoSource(src []byte, name string) (string, error) {

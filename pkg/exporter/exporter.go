@@ -1851,6 +1851,9 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 	b.WriteString("package resolver\n\n")
 	b.WriteString("import (\n")
 	b.WriteString("\t\"context\"\n")
+	if graphQLAPIMutationsNeedJSON(schemaSDL, exposed) {
+		b.WriteString("\t\"encoding/json\"\n")
+	}
 	b.WriteString("\t\"fmt\"\n")
 	b.WriteString("\t\"time\"\n\n")
 	b.WriteString("\t\"github.com/google/uuid\"\n")
@@ -1859,6 +1862,9 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 	fmt.Fprintf(&b, "\t\"%s/app/models\"\n", e.modulePath)
 	b.WriteString(")\n\n")
 	b.WriteString("type queryResolver struct{ *Resolver }\n")
+	if graphQLSDLHasMutationType(schemaSDL) {
+		b.WriteString("type mutationResolver struct{ *Resolver }\n")
+	}
 	for _, tbl := range exposed {
 		if graphQLTableNeedsObjectResolver(tbl) {
 			fmt.Fprintf(&b, "type %sResolver struct{ *Resolver }\n", graphQLResolverTypeName(tbl))
@@ -1872,6 +1878,15 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 		if graphQLSDLHasQueryField(schemaSDL, graphQLSingleFieldName(tbl)) {
 			writeGraphQLAPISingleResolver(&b, tbl)
 		}
+		if graphQLSDLHasMutationField(schemaSDL, "create"+tableToStruct(tbl.Name)) {
+			writeGraphQLAPICreateResolver(&b, tbl)
+		}
+		if graphQLSDLHasMutationField(schemaSDL, "update"+tableToStruct(tbl.Name)) {
+			writeGraphQLAPIUpdateResolver(&b, tbl)
+		}
+		if graphQLSDLHasMutationField(schemaSDL, "delete"+tableToStruct(tbl.Name)) {
+			writeGraphQLAPIDeleteResolver(&b, tbl)
+		}
 		if graphQLTableNeedsObjectResolver(tbl) {
 			writeGraphQLAPIObjectResolvers(&b, tbl)
 		}
@@ -1882,6 +1897,9 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 			resolverName := graphQLResolverTypeName(tbl)
 			fmt.Fprintf(&b, "func (r *Resolver) %s() generated.%sResolver { return &%sResolver{r} }\n\n", structName, structName, resolverName)
 		}
+	}
+	if graphQLSDLHasMutationType(schemaSDL) {
+		b.WriteString("func (r *Resolver) Mutation() generated.MutationResolver { return &mutationResolver{r} }\n\n")
 	}
 	b.WriteString("func (r *Resolver) Query() generated.QueryResolver { return &queryResolver{r} }\n")
 
@@ -1989,6 +2007,28 @@ func graphQLSDLHasQueryField(schemaSDL, field string) bool {
 	return strings.Contains(schemaSDL, "\n  "+field+"(") || strings.Contains(schemaSDL, "\n  "+field+":")
 }
 
+func graphQLSDLHasMutationType(schemaSDL string) bool {
+	return strings.Contains(schemaSDL, "type Mutation {")
+}
+
+func graphQLSDLHasMutationField(schemaSDL, field string) bool {
+	return strings.Contains(schemaSDL, "\n  "+field+"(")
+}
+
+func graphQLAPIMutationsNeedJSON(schemaSDL string, tables []*schema.Table) bool {
+	for _, tbl := range tables {
+		if !graphQLSDLHasMutationField(schemaSDL, "create"+tableToStruct(tbl.Name)) && !graphQLSDLHasMutationField(schemaSDL, "update"+tableToStruct(tbl.Name)) {
+			continue
+		}
+		for _, col := range tbl.Columns {
+			if col.Type == schema.JSONB && graphQLAPICreateInputHasColumn(tbl, col) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func graphQLListFieldName(tbl *schema.Table) string {
 	return snakeToCamel(tbl.Name)
 }
@@ -2073,7 +2113,7 @@ func writeGraphQLAPISingleResolver(b *strings.Builder, tbl *schema.Table) {
 		return
 	}
 	fmt.Fprintf(b, "func (r *queryResolver) %s(ctx context.Context, id string) (*models.%s, error) {\n", snakeToPascal(graphQLSingleFieldName(tbl)), structName)
-	writeGraphQLAPIPKParse(b, tbl, pk)
+	writeGraphQLAPIPKParse(b, tbl, pk, "nil")
 	fmt.Fprintf(b, "\tq := models.Query%s().Where%s(parsedID)\n", structName, snakeToPascal(pk.Name))
 	if exportedGraphQLTableHasVisibility(tbl) {
 		b.WriteString("\tq.SelectPublic()\n")
@@ -2082,19 +2122,177 @@ func writeGraphQLAPISingleResolver(b *strings.Builder, tbl *schema.Table) {
 	b.WriteString("}\n\n")
 }
 
-func writeGraphQLAPIPKParse(b *strings.Builder, tbl *schema.Table, pk *schema.Column) {
+func writeGraphQLAPICreateResolver(b *strings.Builder, tbl *schema.Table) {
+	structName := tableToStruct(tbl.Name)
+	fmt.Fprintf(b, "func (r *mutationResolver) Create%s(ctx context.Context, input model.Create%sInput) (*models.%s, error) {\n", structName, structName, structName)
+	fmt.Fprintf(b, "\trecord := &models.%s{}\n", structName)
+	writeGraphQLAPIInitializeCreateRecord(b, tbl)
+	writeGraphQLAPIAssignCreateInput(b, tbl)
+	fmt.Fprintf(b, "\tif err := models.Query%s().Create(record); err != nil {\n\t\treturn nil, err\n\t}\n", structName)
+	b.WriteString("\treturn record, nil\n")
+	b.WriteString("}\n\n")
+}
+
+func writeGraphQLAPIUpdateResolver(b *strings.Builder, tbl *schema.Table) {
+	structName := tableToStruct(tbl.Name)
+	pk := primaryKeyColumn(tbl)
+	if pk == nil {
+		return
+	}
+	fmt.Fprintf(b, "func (r *mutationResolver) Update%s(ctx context.Context, id string, input model.Update%sInput) (*models.%s, error) {\n", structName, structName, structName)
+	writeGraphQLAPIPKParse(b, tbl, pk, "nil")
+	fmt.Fprintf(b, "\trecord, err := models.Query%s().Where%s(parsedID).First()\n", structName, snakeToPascal(pk.Name))
+	b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n")
+	writeGraphQLAPIAssignUpdateInput(b, tbl)
+	if graphQLTableHasColumn(tbl, "updated_at") {
+		b.WriteString("\trecord.UpdatedAt = time.Now().UTC()\n")
+	}
+	fmt.Fprintf(b, "\tif err := models.Query%s().Update(record); err != nil {\n\t\treturn nil, err\n\t}\n", structName)
+	b.WriteString("\treturn record, nil\n")
+	b.WriteString("}\n\n")
+}
+
+func writeGraphQLAPIDeleteResolver(b *strings.Builder, tbl *schema.Table) {
+	structName := tableToStruct(tbl.Name)
+	pk := primaryKeyColumn(tbl)
+	if pk == nil {
+		return
+	}
+	fmt.Fprintf(b, "func (r *mutationResolver) Delete%s(ctx context.Context, id string) (bool, error) {\n", structName)
+	writeGraphQLAPIPKParse(b, tbl, pk, "false")
+	fmt.Fprintf(b, "\trecord, err := models.Query%s().Where%s(parsedID).First()\n", structName, snakeToPascal(pk.Name))
+	b.WriteString("\tif err != nil {\n\t\treturn false, err\n\t}\n")
+	fmt.Fprintf(b, "\tif err := models.Query%s().Delete(record); err != nil {\n\t\treturn false, err\n\t}\n", structName)
+	b.WriteString("\treturn true, nil\n")
+	b.WriteString("}\n\n")
+}
+
+func writeGraphQLAPIPKParse(b *strings.Builder, tbl *schema.Table, pk *schema.Column, failureReturn string) {
 	switch pk.Type {
 	case schema.UUID:
 		b.WriteString("\tparsedID, err := uuid.Parse(id)\n\tif err != nil {\n")
-		fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(%q)\n", graphQLSingleFieldName(tbl)+": invalid id")
+		fmt.Fprintf(b, "\t\treturn %s, fmt.Errorf(%q)\n", failureReturn, graphQLSingleFieldName(tbl)+": invalid id")
 		b.WriteString("\t}\n")
 	case schema.Integer:
-		b.WriteString("\tvar parsedID int\n\tif _, err := fmt.Sscanf(id, \"%d\", &parsedID); err != nil {\n\t\treturn nil, fmt.Errorf(\"invalid id\")\n\t}\n")
+		fmt.Fprintf(b, "\tvar parsedID int\n\tif _, err := fmt.Sscanf(id, \"%%d\", &parsedID); err != nil {\n\t\treturn %s, fmt.Errorf(\"invalid id\")\n\t}\n", failureReturn)
 	case schema.BigInteger:
-		b.WriteString("\tvar parsedID int64\n\tif _, err := fmt.Sscanf(id, \"%d\", &parsedID); err != nil {\n\t\treturn nil, fmt.Errorf(\"invalid id\")\n\t}\n")
+		fmt.Fprintf(b, "\tvar parsedID int64\n\tif _, err := fmt.Sscanf(id, \"%%d\", &parsedID); err != nil {\n\t\treturn %s, fmt.Errorf(\"invalid id\")\n\t}\n", failureReturn)
 	default:
 		b.WriteString("\tparsedID := id\n")
 	}
+}
+
+func writeGraphQLAPIInitializeCreateRecord(b *strings.Builder, tbl *schema.Table) {
+	nowNeeded := false
+	for _, col := range tbl.Columns {
+		field := snakeToPascal(col.Name)
+		switch {
+		case col.IsPrimaryKey && col.Type == schema.UUID:
+			fmt.Fprintf(b, "\trecord.%s = uuid.New()\n", field)
+		case col.IsPrimaryKey && col.Type == schema.String:
+			fmt.Fprintf(b, "\trecord.%s = uuid.NewString()\n", field)
+		case col.Name == "created_at" || col.Name == "updated_at":
+			nowNeeded = true
+		}
+	}
+	if nowNeeded {
+		b.WriteString("\tnow := time.Now().UTC()\n")
+		for _, col := range tbl.Columns {
+			field := snakeToPascal(col.Name)
+			if col.Name == "created_at" || col.Name == "updated_at" {
+				fmt.Fprintf(b, "\trecord.%s = now\n", field)
+			}
+		}
+	}
+}
+
+func writeGraphQLAPIAssignCreateInput(b *strings.Builder, tbl *schema.Table) {
+	for _, col := range tbl.Columns {
+		if !graphQLAPICreateInputHasColumn(tbl, col) {
+			continue
+		}
+		field := snakeToPascal(col.Name)
+		if col.IsNullable || col.HasDefault {
+			fmt.Fprintf(b, "\tif input.%s != nil {\n", field)
+			writeGraphQLAPIAssignInputField(b, col, "*input."+field, true)
+			b.WriteString("\t}\n")
+			continue
+		}
+		writeGraphQLAPIAssignInputField(b, col, "input."+field, false)
+	}
+}
+
+func writeGraphQLAPIAssignUpdateInput(b *strings.Builder, tbl *schema.Table) {
+	for _, col := range tbl.Columns {
+		if !graphQLAPIUpdateInputHasColumn(tbl, col) {
+			continue
+		}
+		field := snakeToPascal(col.Name)
+		fmt.Fprintf(b, "\tif input.%s != nil {\n", field)
+		writeGraphQLAPIAssignInputField(b, col, "*input."+field, true)
+		b.WriteString("\t}\n")
+	}
+}
+
+func writeGraphQLAPIAssignInputField(b *strings.Builder, col *schema.Column, expr string, update bool) {
+	field := snakeToPascal(col.Name)
+	switch col.Type {
+	case schema.UUID:
+		fmt.Fprintf(b, "\t{\n\t\tvalue, err := uuid.Parse(%s)\n", expr)
+		b.WriteString("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
+		fmt.Fprintf(b, "\t\trecord.%s = value\n\t}\n", field)
+	case schema.Timestamp, schema.Date, schema.Time:
+		fmt.Fprintf(b, "\t{\n\t\tvalue, err := time.Parse(time.RFC3339, %s)\n", expr)
+		b.WriteString("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
+		if col.IsNullable {
+			fmt.Fprintf(b, "\t\trecord.%s = &value\n", field)
+		} else {
+			fmt.Fprintf(b, "\t\trecord.%s = value\n", field)
+		}
+		b.WriteString("\t}\n")
+	case schema.JSONB:
+		fmt.Fprintf(b, "\tvalue := json.RawMessage(%s)\n", expr)
+		fmt.Fprintf(b, "\trecord.%s = &value\n", field)
+	case schema.String, schema.Text:
+		if col.IsNullable && !update {
+			fmt.Fprintf(b, "\trecord.%s = %s\n", field, expr)
+		} else if col.IsNullable && update {
+			fmt.Fprintf(b, "\tvalue := %s\n\trecord.%s = &value\n", expr, field)
+		} else {
+			fmt.Fprintf(b, "\trecord.%s = %s\n", field, expr)
+		}
+	case schema.Integer, schema.BigInteger, schema.Boolean:
+		if col.IsNullable && update {
+			fmt.Fprintf(b, "\tvalue := %s\n\trecord.%s = &value\n", expr, field)
+		} else {
+			fmt.Fprintf(b, "\trecord.%s = %s\n", field, expr)
+		}
+	default:
+		fmt.Fprintf(b, "\trecord.%s = %s\n", field, expr)
+	}
+}
+
+func graphQLAPICreateInputHasColumn(tbl *schema.Table, col *schema.Column) bool {
+	if col.IsPrimaryKey || col.Name == "created_at" || col.Name == "updated_at" || isExcludedFromExportedGraphQL(tbl, col) {
+		return false
+	}
+	return true
+}
+
+func graphQLAPIUpdateInputHasColumn(tbl *schema.Table, col *schema.Column) bool {
+	if col.IsPrimaryKey || col.Name == "created_at" || col.Name == "updated_at" || isExcludedFromExportedGraphQL(tbl, col) {
+		return false
+	}
+	return true
+}
+
+func graphQLTableHasColumn(tbl *schema.Table, name string) bool {
+	for _, col := range tbl.Columns {
+		if col.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func writeGraphQLAPIFilterApplier(b *strings.Builder, tbl *schema.Table) {

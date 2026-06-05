@@ -2709,6 +2709,26 @@ func TestExportedServerBinaryServesMigratedRoutes(t *testing.T) {
 	if !strings.Contains(string(respBody), "Ada") {
 		t.Fatalf("create user response = %s, want Ada", respBody)
 	}
+
+	graphQLBody := ` + "`" + `{"query":"{ __schema { queryType { name } } }"}` + "`" + `
+	graphQLResp, err := http.Post("http://127.0.0.1:"+port+"/graphql", "application/json", strings.NewReader(graphQLBody))
+	if err != nil {
+		t.Fatalf("exported server binary did not serve /graphql: %v\n%s", err, server.output.String())
+	}
+	defer graphQLResp.Body.Close()
+	graphQLRespBody, err := io.ReadAll(graphQLResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if graphQLResp.StatusCode != http.StatusOK {
+		t.Fatalf("graphql status = %d body=%s output=%s", graphQLResp.StatusCode, graphQLRespBody, server.output.String())
+	}
+	if got := graphQLResp.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("graphql Content-Type = %q, want application/json", got)
+	}
+	if !strings.Contains(string(graphQLRespBody), "GraphQL introspection is disabled") {
+		t.Fatalf("graphql route did not use hardened gqlgen handler: %s", graphQLRespBody)
+	}
 }
 
 func countBinaryRows(t *testing.T, db *sql.DB, table string) int {

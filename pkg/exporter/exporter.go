@@ -6709,6 +6709,7 @@ func generateCSRFToken(sessionID string, secret []byte) string {
 func validateCSRFToken(token, sessionID string, secret []byte) bool {
 	parts := strings.SplitN(token, ".", 2)
 	if len(parts) != 2 { return false }
+	if len(parts[0]) != 64 || len(parts[1]) != 64 { return false }
 	nonce, err := hex.DecodeString(parts[0])
 	if err != nil { return false }
 	sig, err := hex.DecodeString(parts[1])

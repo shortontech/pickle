@@ -92,6 +92,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "func ActiveDriverName")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "func (d *Driver) TokenEndpoint")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func CSRF")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "len(parts[0]) != 64 || len(parts[1]) != 64")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_ban.go"), "DB.Save(user).Error")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_promote.go"), "type PromoteResult struct")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_standalone_gate.go"), "func CanView")
@@ -936,6 +937,17 @@ func TestExportedSessionCSRFBoundary(t *testing.T) {
 	})
 	if invalid.StatusCode != http.StatusForbidden {
 		t.Fatalf("invalid token status = %d", invalid.StatusCode)
+	}
+
+	oversizedReq := requestWithSession(http.MethodPost, "sess-1")
+	oversizedReq.Header.Set("X-CSRF-TOKEN", strings.Repeat("a", 4096)+"."+strings.Repeat("b", 4096))
+	oversizedCtx := httpx.NewContext(oversizedReq)
+	oversized := CSRF(oversizedCtx, func() httpx.Response {
+		t.Fatal("CSRF should block oversized token")
+		return httpx.Response{}
+	})
+	if oversized.StatusCode != http.StatusForbidden {
+		t.Fatalf("oversized token status = %d", oversized.StatusCode)
 	}
 
 	anonymousPostReq := httptest.NewRequest(http.MethodPost, "/", nil)

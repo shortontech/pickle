@@ -3047,9 +3047,11 @@ func (e *exporter) generateMultiServiceServerMain(hasDatabaseConfig, hasSchedule
 	for i, svc := range e.project.Services {
 		prefix := "/" + strings.Trim(svc.Name, "/") + "/"
 		if i == 0 && svc.Name == "api" {
-			prefix = "/api/"
+			b.WriteString(fmt.Sprintf("\t%sRoutes.API.RegisterRoutes(mux)\n", safeImportAlias(svc.Name)))
+			continue
 		}
-		b.WriteString(fmt.Sprintf("\tmux.Handle(%q, %sRoutes.API)\n", prefix, safeImportAlias(svc.Name)))
+		stripPrefix := strings.TrimSuffix(prefix, "/")
+		b.WriteString(fmt.Sprintf("\tmux.Handle(%q, http.StripPrefix(%q, %sRoutes.API))\n", prefix, stripPrefix, safeImportAlias(svc.Name)))
 	}
 	b.WriteString("\taddr := \":\" + config.App.Port\n")
 	b.WriteString("\tlog.Printf(\"listening on %s\", addr)\n")

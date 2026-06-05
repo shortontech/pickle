@@ -1649,8 +1649,48 @@ func TestExportMonorepoCompiles(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "services", "api", "http", "requests", "bindings.go"), "BindCreateOrderRequest")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "apiRoutes")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "workerRoutes")
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "apiRoutes.API.RegisterRoutes(mux)")
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `http.StripPrefix("/worker", workerRoutes.API)`)
 	assertNoGoFileContains(t, out, "QueryOrder")
+	writeExportedMonorepoServerBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
+}
+
+func writeExportedMonorepoServerBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package main
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	apiRoutes "monorepo/services/api/routes"
+	workerRoutes "monorepo/services/worker/routes"
+)
+
+func TestExportedMultiServiceServerMountsServiceLocalRoutes(t *testing.T) {
+	t.Setenv("RATE_LIMIT", "false")
+	mux := http.NewServeMux()
+	apiRoutes.API.RegisterRoutes(mux)
+	mux.Handle("/worker/", http.StripPrefix("/worker", workerRoutes.API))
+
+	apiRec := httptest.NewRecorder()
+	mux.ServeHTTP(apiRec, httptest.NewRequest(http.MethodGet, "/api/orders", nil))
+	if apiRec.Code != http.StatusUnauthorized {
+		t.Fatalf("api service status = %d body=%s", apiRec.Code, apiRec.Body.String())
+	}
+
+	workerRec := httptest.NewRecorder()
+	mux.ServeHTTP(workerRec, httptest.NewRequest(http.MethodGet, "/worker/api/jobs", nil))
+	if workerRec.Code != http.StatusUnauthorized {
+		t.Fatalf("worker service status = %d body=%s", workerRec.Code, workerRec.Body.String())
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "cmd", "server", "exported_multiservice_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeExportedCronBehaviorTests(t *testing.T, out string) {

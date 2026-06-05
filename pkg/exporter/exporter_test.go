@@ -3467,6 +3467,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -3572,6 +3573,21 @@ func TestExportedGraphQLGQLGenInternalResponsesAreSanitized(t *testing.T) {
 	}
 }
 
+func TestExportedGraphQLHTTPWriteFailuresAreSanitized(t *testing.T) {
+	var logs bytes.Buffer
+	previousLogOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousLogOutput)
+
+	writeGraphQLHTTPStatusError(failingGraphQLWriter{}, http.StatusOK, "bad input", CodeBadUserInput)
+	if strings.Contains(logs.String(), "swordfish") || strings.Contains(logs.String(), "password") {
+		t.Fatalf("write failure log leaked detail: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "graphql: failed to write error response") {
+		t.Fatalf("write failure log missing sanitized marker: %s", logs.String())
+	}
+}
+
 func TestExportedGraphQLGQLGenRecoverHookIsSanitized(t *testing.T) {
 	var logs bytes.Buffer
 	previousLogOutput := log.Writer()
@@ -3615,6 +3631,14 @@ func (panicRoot) resolveQuery(ctx *ResolveContext, field Field) (any, error) {
 
 func (panicRoot) resolveMutation(ctx *ResolveContext, field Field) (any, error) {
 	panic("secret panic detail")
+}
+
+type failingGraphQLWriter struct{}
+
+func (failingGraphQLWriter) Header() http.Header { return http.Header{} }
+func (failingGraphQLWriter) WriteHeader(status int) {}
+func (failingGraphQLWriter) Write(p []byte) (int, error) {
+	return 0, errors.New("broken pipe password=swordfish")
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphql", "exported_error_test.go"), []byte(testSrc), 0o644); err != nil {

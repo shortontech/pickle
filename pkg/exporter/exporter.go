@@ -2214,7 +2214,7 @@ func writeGraphQLHTTPStatusError(w http.ResponseWriter, status int, message, cod
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(gqlgenErrorResponse(message, code)); err != nil {
-		log.Printf("graphql: failed to write error response: %%v", err)
+		log.Printf("graphql: failed to write error response")
 	}
 }
 

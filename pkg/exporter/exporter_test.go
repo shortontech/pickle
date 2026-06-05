@@ -327,6 +327,36 @@ func TestApplyLockTimeoutIsDriverAware(t *testing.T) {
 	}
 }
 
+func TestTransactionsFailClosedOnNilInputs(t *testing.T) {
+	previousDB := DB
+	defer func() { DB = previousDB }()
+
+	SetDB(nil)
+	if err := WithTransaction(func(tx *Tx) error { return nil }); err == nil || err.Error() != "models: DB is nil" {
+		t.Fatalf("WithTransaction nil DB error = %v, want sanitized DB error", err)
+	}
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetDB(db)
+	if err := WithTransaction(nil); err == nil || err.Error() != "models: transaction callback is nil" {
+		t.Fatalf("WithTransaction nil callback error = %v, want sanitized callback error", err)
+	}
+
+	var nilTx *Tx
+	if err := nilTx.Transaction(func(tx *Tx) error { return nil }); err == nil || err.Error() != "models: transaction is nil" {
+		t.Fatalf("nil Tx Transaction error = %v, want sanitized transaction error", err)
+	}
+	if err := (&Tx{}).Transaction(func(tx *Tx) error { return nil }); err == nil || err.Error() != "models: transaction is nil" {
+		t.Fatalf("empty Tx Transaction error = %v, want sanitized transaction error", err)
+	}
+	if err := (&Tx{DB: db}).Transaction(nil); err == nil || err.Error() != "models: transaction callback is nil" {
+		t.Fatalf("Tx nil callback error = %v, want sanitized callback error", err)
+	}
+}
+
 func TestOrderClauseFailsClosedOnUnsafeInput(t *testing.T) {
 	if got := OrderClause("created_at", " desc "); got != "created_at DESC" {
 		t.Fatalf("OrderClause safe result = %q, want created_at DESC", got)

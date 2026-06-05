@@ -1578,6 +1578,9 @@ func WithTransaction(fn func(tx *Tx) error) error {
 	if DB == nil {
 		return fmt.Errorf("models: DB is nil")
 	}
+	if fn == nil {
+		return fmt.Errorf("models: transaction callback is nil")
+	}
 	return DB.Transaction(func(db *gorm.DB) error {
 		return fn(&Tx{DB: db})
 	})
@@ -1586,6 +1589,9 @@ func WithTransaction(fn func(tx *Tx) error) error {
 func (tx *Tx) Transaction(fn func(tx *Tx) error) error {
 	if tx == nil || tx.DB == nil {
 		return fmt.Errorf("models: transaction is nil")
+	}
+	if fn == nil {
+		return fmt.Errorf("models: transaction callback is nil")
 	}
 	return tx.DB.Transaction(func(db *gorm.DB) error {
 		return fn(&Tx{DB: db})

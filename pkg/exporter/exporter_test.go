@@ -3330,7 +3330,7 @@ func TestExportEncryptionLowersGORMHooks(t *testing.T) {
 	runExported(t, out, "go", "test", "./...")
 }
 
-func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
+func TestExportZeroGraphQLLowersToGQLGenTarget(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "zero-graphql"))
 	out := filepath.Join(t.TempDir(), "exported")
 	res, err := Export(Options{
@@ -3381,6 +3381,7 @@ func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "type Query")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "type User")
 	assertNoGoFilesUnder(t, filepath.Join(out, "app", "graphql"))
+	assertNoGoFileContains(t, filepath.Join(out, "app", "graphql"), "github.com/99designs/gqlgen")
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), "func QueryUser() *UserQuery")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "EMAIL_ASC")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "EMAIL_DESC")
@@ -4012,7 +4013,7 @@ func TestExportedGQLGenTargetErrorPresenterSanitizesUncodedErrors(t *testing.T) 
 	}
 }
 
-func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
+func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "graphql-safety"))
 	out := filepath.Join(t.TempDir(), "exported")
 	res, err := Export(Options{
@@ -4064,6 +4065,7 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "http.MaxBytesReader(w, r.Body, maxGraphQLAPIRequestBodyBytes)")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "extension.FixedComplexityLimit")
 	assertNoGoFilesUnder(t, filepath.Join(out, "app", "graphql"))
+	assertNoGoFileContains(t, filepath.Join(out, "app", "graphql"), "github.com/99designs/gqlgen")
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), "func (q *UserQuery) WhereID")
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `q.db = q.db.Select([]string{"id", "name"})`)
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `q.db = q.db.Select([]string{"id", "name", "email"})`)
@@ -7406,6 +7408,9 @@ func assertNoGoFileContains(t *testing.T, root, needle string) {
 	t.Helper()
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
 			return err
 		}
 		if d.IsDir() || !strings.HasSuffix(path, ".go") {
@@ -7420,7 +7425,7 @@ func assertNoGoFileContains(t *testing.T, root, needle string) {
 		}
 		return nil
 	})
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
 }

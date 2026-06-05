@@ -298,6 +298,7 @@ func writeExportedModelDBBehaviorTest(t *testing.T, out string) {
 	testSrc := `package models
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -358,6 +359,62 @@ func TestTransactionsFailClosedOnNilInputs(t *testing.T) {
 	if err := (&Tx{DB: db}).Transaction(nil); err == nil || err.Error() != "models: transaction callback is nil" {
 		t.Fatalf("Tx nil callback error = %v, want sanitized callback error", err)
 	}
+}
+
+func TestWithTransactionCommitsAndRollsBack(t *testing.T) {
+	previousDB := DB
+	defer func() { DB = previousDB }()
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetDB(db)
+	if err := db.Exec("CREATE TABLE tx_items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WithTransaction(func(tx *Tx) error {
+		return tx.DB.Exec("INSERT INTO tx_items (name) VALUES (?)", "committed").Error
+	}); err != nil {
+		t.Fatalf("commit transaction: %v", err)
+	}
+	if got := countTxItems(t, db); got != 1 {
+		t.Fatalf("rows after committed transaction = %d, want 1", got)
+	}
+
+	errRollback := errors.New("rollback")
+	if err := WithTransaction(func(tx *Tx) error {
+		if err := tx.DB.Exec("INSERT INTO tx_items (name) VALUES (?)", "rolled-back").Error; err != nil {
+			return err
+		}
+		return errRollback
+	}); !errors.Is(err, errRollback) {
+		t.Fatalf("rollback transaction error = %v, want rollback sentinel", err)
+	}
+	if got := countTxItems(t, db); got != 1 {
+		t.Fatalf("rows after rolled-back transaction = %d, want 1", got)
+	}
+
+	if err := WithTransaction(func(tx *Tx) error {
+		return tx.Transaction(func(nested *Tx) error {
+			return nested.DB.Exec("INSERT INTO tx_items (name) VALUES (?)", "nested").Error
+		})
+	}); err != nil {
+		t.Fatalf("nested transaction: %v", err)
+	}
+	if got := countTxItems(t, db); got != 2 {
+		t.Fatalf("rows after nested committed transaction = %d, want 2", got)
+	}
+}
+
+func countTxItems(t *testing.T, db *gorm.DB) int64 {
+	t.Helper()
+	var count int64
+	if err := db.Table("tx_items").Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
 
 func TestOrderClauseFailsClosedOnUnsafeInput(t *testing.T) {

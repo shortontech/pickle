@@ -6506,8 +6506,11 @@ func Get(ctx *httpx.Context, key string) (string, error) {
 	var payloadRaw sql.NullString
 	var expiresAt time.Time
 	err = d.db.QueryRow(bindPlaceholders(d.driver, "SELECT payload, expires_at FROM sessions WHERE id = ?"), sessionID).Scan(&payloadRaw, &expiresAt)
+	if err == sql.ErrNoRows {
+		return "", errors.New("session: invalid or expired session")
+	}
 	if err != nil {
-		return "", fmt.Errorf("session: get: %%w", err)
+		return "", errors.New("session: database error")
 	}
 	if time.Now().After(expiresAt) {
 		return "", errors.New("session: expired session")
@@ -6517,7 +6520,7 @@ func Get(ctx *httpx.Context, key string) (string, error) {
 	}
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(payloadRaw.String), &payload); err != nil {
-		return "", fmt.Errorf("session: get: invalid payload JSON: %%w", err)
+		return "", errors.New("session: invalid session payload")
 	}
 	val, ok := payload[key]
 	if !ok {
@@ -6545,8 +6548,11 @@ func Put(ctx *httpx.Context, key string, value any) error {
 	var payloadRaw sql.NullString
 	var expiresAt time.Time
 	err = d.db.QueryRow(bindPlaceholders(d.driver, "SELECT payload, expires_at FROM sessions WHERE id = ?"), sessionID).Scan(&payloadRaw, &expiresAt)
+	if err == sql.ErrNoRows {
+		return errors.New("session: invalid or expired session")
+	}
 	if err != nil {
-		return fmt.Errorf("session: put: %%w", err)
+		return errors.New("session: database error")
 	}
 	if time.Now().After(expiresAt) {
 		return errors.New("session: expired session")
@@ -6554,7 +6560,7 @@ func Put(ctx *httpx.Context, key string, value any) error {
 	payload := map[string]any{}
 	if payloadRaw.Valid && payloadRaw.String != "" {
 		if err := json.Unmarshal([]byte(payloadRaw.String), &payload); err != nil {
-			return fmt.Errorf("session: put: invalid payload JSON: %%w", err)
+			return errors.New("session: invalid session payload")
 		}
 	}
 	payload[key] = value
@@ -6564,7 +6570,7 @@ func Put(ctx *httpx.Context, key string, value any) error {
 	}
 	res, err := d.db.Exec(bindPlaceholders(d.driver, "UPDATE sessions SET payload = ?, updated_at = ? WHERE id = ?"), string(data), time.Now().UTC(), sessionID)
 	if err != nil {
-		return fmt.Errorf("session: put: %%w", err)
+		return errors.New("session: database error")
 	}
 	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
 		return errors.New("session: invalid or expired session")

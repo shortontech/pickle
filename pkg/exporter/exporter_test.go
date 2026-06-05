@@ -750,7 +750,9 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 
@@ -919,6 +921,42 @@ func TestExportedCSRFRequiresConfiguredSecretWithoutPanic(t *testing.T) {
 	})
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("missing secret status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+}
+
+func TestExportedSessionPayloadErrorsAreSanitized(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(` + "`" + `CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, role TEXT NOT NULL, payload TEXT, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `); err != nil {
+		t.Fatal(err)
+	}
+	NewDriver(func(key, fallback string) string {
+		if key == "SESSION_SECRET" {
+			return "session-secret"
+		}
+		return fallback
+	}, db, "sqlite")
+
+	if _, err := db.Exec("INSERT INTO sessions (id, user_id, role, payload, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", "bad-payload", "user-1", "member", "{secret", time.Now().Add(time.Hour), time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	badCtx := httpx.NewContext(requestWithSession(http.MethodGet, "bad-payload"))
+	if _, err := Get(badCtx, "secret"); err == nil || err.Error() != "session: invalid session payload" || strings.Contains(err.Error(), "{secret") {
+		t.Fatalf("Get invalid payload error = %v, want sanitized invalid payload", err)
+	}
+	if err := Put(badCtx, "secret", "value"); err == nil || err.Error() != "session: invalid session payload" || strings.Contains(err.Error(), "{secret") {
+		t.Fatalf("Put invalid payload error = %v, want sanitized invalid payload", err)
+	}
+
+	missingCtx := httpx.NewContext(requestWithSession(http.MethodGet, "missing-session"))
+	if _, err := Get(missingCtx, "secret"); err == nil || err.Error() != "session: invalid or expired session" || strings.Contains(err.Error(), "sql:") {
+		t.Fatalf("Get missing session error = %v, want sanitized invalid session", err)
+	}
+	if err := Put(missingCtx, "secret", "value"); err == nil || err.Error() != "session: invalid or expired session" || strings.Contains(err.Error(), "sql:") {
+		t.Fatalf("Put missing session error = %v, want sanitized invalid session", err)
 	}
 }
 

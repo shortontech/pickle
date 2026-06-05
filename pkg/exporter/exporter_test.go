@@ -63,6 +63,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func Env(key, fallback string) string")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "type ConnectionConfig struct")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func OpenGORM(conn ConnectionConfig) *gorm.DB")
+	assertFileContains(t, filepath.Join(out, "config", "support.go"), "gorm.io/gorm/logger")
+	assertFileContains(t, filepath.Join(out, "config", "support.go"), "Logger: logger.Default.LogMode(logger.Silent)")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func sanitizedDatabaseStartupError")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), `log.Fatal(sanitizedDatabaseStartupError("config"))`)
 	assertFileNotContains(t, filepath.Join(out, "config", "support.go"), "failed to open database: %v")
@@ -171,6 +173,8 @@ func writeExportedConfigBehaviorTest(t *testing.T, out string) {
 	testSrc := `package config
 
 import (
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -208,6 +212,27 @@ func TestConnectionConfigTryOpenGORM(t *testing.T) {
 	}
 	if err := sqlDB.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestConnectionConfigTryOpenGORMSilencesDefaultLogger(t *testing.T) {
+	if os.Getenv("PICKLE_EXPORT_GORM_LOG_CHILD") == "1" {
+		db, err := TryOpenGORM(ConnectionConfig{Driver: "sqlite", Name: ":memory:"})
+		if err != nil {
+			t.Fatalf("TryOpenGORM(sqlite): %v", err)
+		}
+		_ = db.Exec(` + "`" + `SELECT * FROM missing_table WHERE secret = ?` + "`" + `, "password=swordfish").Error
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run", "^TestConnectionConfigTryOpenGORMSilencesDefaultLogger$")
+	cmd.Env = append(os.Environ(), "PICKLE_EXPORT_GORM_LOG_CHILD=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("child test failed: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "swordfish") || strings.Contains(string(out), "password") || strings.Contains(string(out), "missing_table") {
+		t.Fatalf("default GORM logger leaked query detail: %s", out)
 	}
 }
 

@@ -6264,6 +6264,7 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 var envOnce sync.Once
@@ -6380,7 +6381,7 @@ func TryOpenGORM(conn ConnectionConfig) (*gorm.DB, error) {
 		sqlDB.Close()
 		return nil, errors.New("unsupported database driver")
 	}
-	db, err := gorm.Open(dialector, &gorm.Config{})
+	db, err := gorm.Open(dialector, &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil { sqlDB.Close(); return nil, errors.New("initialize gorm") }
 	return db, nil
 }

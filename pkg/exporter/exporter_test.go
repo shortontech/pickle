@@ -1536,6 +1536,7 @@ func writeExportedMigrationBehaviorTest(t *testing.T, out string) {
 	testSrc := `package migrations_test
 
 import (
+	"strings"
 	"testing"
 
 	"gorm.io/driver/sqlite"
@@ -1601,6 +1602,29 @@ func TestExportedMigrationFailuresAreAtomic(t *testing.T) {
 	}
 	assertSQLiteTableExists(t, db, "atomic_rollback")
 	assertMigrationRowCount(t, db, successThenFailingRollback.ID, 1)
+}
+
+func TestExportedMigrationFailureDoesNotLeakStatementText(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := migrations.NewRunner(db, "sqlite")
+	failingMigrate := migrations.MigrationEntry{
+		ID:       "99990101000002_secret_failure",
+		UpFile:   "99990101000002_secret_failure.up.sql",
+		DownFile: "99990101000002_secret_failure.down.sql",
+	}
+	err = runner.Migrate([]migrations.MigrationEntry{failingMigrate})
+	if err == nil {
+		t.Fatal("expected failing migration")
+	}
+	if strings.Contains(err.Error(), "password=swordfish") || strings.Contains(err.Error(), "SELECT") {
+		t.Fatalf("migration error leaked statement text: %v", err)
+	}
+	if !strings.Contains(err.Error(), "executing migration statement 1") {
+		t.Fatalf("migration error missing statement index: %v", err)
+	}
 }
 
 func assertSQLiteTableExists(t *testing.T, db *gorm.DB, table string) {
@@ -1677,6 +1701,8 @@ func TestExportedSplitSQLStatementsPreservesQuotedSemicolons(t *testing.T) {
 		"99990101000000_atomic_failure.down.sql":  "DROP TABLE IF EXISTS atomic_failure;\n",
 		"99990101000001_atomic_rollback.up.sql":   "CREATE TABLE atomic_rollback (id TEXT PRIMARY KEY);\n",
 		"99990101000001_atomic_rollback.down.sql": "DROP TABLE atomic_rollback;\nSELECT * FROM definitely_missing_table;\n",
+		"99990101000002_secret_failure.up.sql":    "SELECT 'password=swordfish' FROM definitely_missing_table;\n",
+		"99990101000002_secret_failure.down.sql":  "SELECT 1;\n",
 	} {
 		if err := os.WriteFile(filepath.Join(out, "database", "migrations", name), []byte(src), 0o644); err != nil {
 			t.Fatal(err)

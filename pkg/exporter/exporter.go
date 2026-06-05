@@ -5192,9 +5192,9 @@ func (r *Runner) execMigrationFileOn(db *gorm.DB, name string) error {
 		return err
 	}
 	sql := normalizeSQLForDriver(string(data), r.Driver)
-	for _, statement := range splitSQLStatements(sql) {
+	for i, statement := range splitSQLStatements(sql) {
 		if err := db.Exec(statement).Error; err != nil {
-			return fmt.Errorf("executing %q: %w", statement, err)
+			return fmt.Errorf("executing migration statement %d: %w", i+1, err)
 		}
 	}
 	return nil

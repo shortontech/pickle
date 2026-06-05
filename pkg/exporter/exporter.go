@@ -4237,6 +4237,7 @@ func generateSQLMigrationSupport(migrations []sqlMigration) ([]byte, error) {
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -4257,6 +4258,12 @@ type MigrationStatus struct {
 	ID string
 	Batch int
 	Applied bool
+}
+
+var errMigrationDatabase = errors.New("migration database error")
+
+func migrationDatabaseError() error {
+	return errMigrationDatabase
 }
 
 var Registry = []MigrationEntry{
@@ -4286,7 +4293,10 @@ func (r *Runner) ensureMigrationsTable() error {
 	if err := r.ensureDB(); err != nil {
 		return err
 	}
-	return r.DB.Exec(migrationsTableSQL(r.Driver)).Error
+	if err := r.DB.Exec(migrationsTableSQL(r.Driver)).Error; err != nil {
+		return migrationDatabaseError()
+	}
+	return nil
 }
 
 func migrationsTableSQL(driver string) string {
@@ -4318,7 +4328,7 @@ func (r *Runner) applied() (map[string]int, error) {
 	}
 	rows, err := r.DB.Raw("SELECT migration, batch FROM migrations").Rows()
 	if err != nil {
-		return nil, err
+		return nil, migrationDatabaseError()
 	}
 	defer rows.Close()
 	out := map[string]int{}
@@ -4326,11 +4336,14 @@ func (r *Runner) applied() (map[string]int, error) {
 		var id string
 		var batch int
 		if err := rows.Scan(&id, &batch); err != nil {
-			return nil, err
+			return nil, migrationDatabaseError()
 		}
 		out[id] = batch
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, migrationDatabaseError()
+	}
+	return out, nil
 }
 
 func nextBatch(applied map[string]int) int {
@@ -4363,7 +4376,7 @@ func (r *Runner) Migrate(entries []MigrationEntry) error {
 				return fmt.Errorf("migrating %s: %w", entry.ID, err)
 			}
 			if err := tx.Exec("INSERT INTO migrations (migration, batch) VALUES (?, ?)", entry.ID, batch).Error; err != nil {
-				return fmt.Errorf("recording %s: %w", entry.ID, err)
+				return fmt.Errorf("recording %s: %w", entry.ID, migrationDatabaseError())
 			}
 			return nil
 		}); err != nil {
@@ -4408,7 +4421,7 @@ func (r *Runner) Rollback(entries []MigrationEntry) error {
 				return fmt.Errorf("rolling back %s: %w", entry.ID, err)
 			}
 			if err := tx.Exec("DELETE FROM migrations WHERE migration = ?", entry.ID).Error; err != nil {
-				return fmt.Errorf("removing %s: %w", entry.ID, err)
+				return fmt.Errorf("removing %s: %w", entry.ID, migrationDatabaseError())
 			}
 			return nil
 		}); err != nil {
@@ -4429,7 +4442,7 @@ func (r *Runner) Fresh(entries []MigrationEntry) error {
 		}
 	}
 	if err := r.DB.Exec("DROP TABLE IF EXISTS migrations").Error; err != nil {
-		return err
+		return migrationDatabaseError()
 	}
 	return r.Migrate(entries)
 }
@@ -4483,7 +4496,7 @@ func (r *Runner) execMigrationFileOn(db *gorm.DB, name string) error {
 	sql := normalizeSQLForDriver(string(data), r.Driver)
 	for i, statement := range splitSQLStatements(sql) {
 		if err := db.Exec(statement).Error; err != nil {
-			return fmt.Errorf("executing migration statement %d: %w", i+1, err)
+			return fmt.Errorf("executing migration statement %d: %w", i+1, migrationDatabaseError())
 		}
 	}
 	return nil

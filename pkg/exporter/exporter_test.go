@@ -2078,6 +2078,44 @@ func TestExportedMigrationRunnerRejectsNilDBWithoutPanic(t *testing.T) {
 	}
 }
 
+func TestExportedMigrationDatabaseErrorsAreSanitized(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(*migrations.Runner) error
+	}{
+		{name: "migrate", run: func(r *migrations.Runner) error { return r.Migrate(nil) }},
+		{name: "rollback", run: func(r *migrations.Runner) error { return r.Rollback(nil) }},
+		{name: "fresh", run: func(r *migrations.Runner) error { return r.Fresh(nil) }},
+		{name: "status", run: func(r *migrations.Runner) error { _, err := r.Status(nil); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sqlDB, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sqlDB.Close(); err != nil {
+				t.Fatal(err)
+			}
+			err = tc.run(migrations.NewRunner(db, "sqlite"))
+			if err == nil {
+				t.Fatalf("%s should fail on closed database", tc.name)
+			}
+			if err.Error() != "migration database error" {
+				t.Fatalf("%s error = %v, want sanitized migration database error", tc.name, err)
+			}
+			for _, forbidden := range []string{"sql:", "closed", "SELECT", "CREATE TABLE", "migrations"} {
+				if strings.Contains(err.Error(), forbidden) {
+					t.Fatalf("%s migration database error leaked %q: %v", tc.name, forbidden, err)
+				}
+			}
+		})
+	}
+}
+
 func assertSQLiteTableExists(t *testing.T, db *gorm.DB, table string) {
 	t.Helper()
 	var count int64

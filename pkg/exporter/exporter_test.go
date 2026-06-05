@@ -3811,6 +3811,7 @@ func writeExportedEncryptionBehaviorTest(t *testing.T, out string) {
 import (
 	"encoding/base64"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -3893,6 +3894,29 @@ func TestExportedEncryptedColumnsRoundTrip(t *testing.T) {
 
 	os.Unsetenv("APP_ENCRYPTION_KEY")
 }
+
+func TestExportedEncryptedFilterErrorsAreSanitized(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	t.Setenv("APP_ENCRYPTION_KEY", key)
+
+	_, err := models.EncryptDeterministicFilterValue(secretFilterValue{})
+	if err == nil || err.Error() != "encrypted filter value must be a string or []string" {
+		t.Fatalf("invalid scalar encrypted filter error = %v, want sanitized scalar error", err)
+	}
+	if err != nil && (strings.Contains(err.Error(), "secretFilterValue") || strings.Contains(err.Error(), "models_test")) {
+		t.Fatalf("invalid scalar encrypted filter leaked type detail: %v", err)
+	}
+
+	_, err = models.EncryptDeterministicFilterValue([]any{"ok", secretFilterValue{}})
+	if err == nil || err.Error() != "encrypted filter values must be strings" {
+		t.Fatalf("invalid list encrypted filter error = %v, want sanitized list error", err)
+	}
+	if err != nil && (strings.Contains(err.Error(), "secretFilterValue") || strings.Contains(err.Error(), "models_test")) {
+		t.Fatalf("invalid list encrypted filter leaked type detail: %v", err)
+	}
+}
+
+type secretFilterValue struct{}
 	`
 	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_encryption_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)

@@ -8290,7 +8290,7 @@ func EncryptDeterministicFilterValue(value any) (any, error) {
 		for _, item := range v {
 			s, ok := item.(string)
 			if !ok {
-				return nil, fmt.Errorf("encrypted filter values must be strings, got %T", item)
+				return nil, errors.New("encrypted filter values must be strings")
 			}
 			encrypted, err := encryptDeterministic(key, []byte(s))
 			if err != nil {
@@ -8300,7 +8300,7 @@ func EncryptDeterministicFilterValue(value any) (any, error) {
 		}
 		return out, nil
 	default:
-		return nil, fmt.Errorf("encrypted filter value must be a string or []string, got %T", value)
+		return nil, errors.New("encrypted filter value must be a string or []string")
 	}
 }
 

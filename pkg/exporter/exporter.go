@@ -42,7 +42,7 @@ type Result struct {
 	Findings     []Finding
 }
 
-// Finding records a lossy or unsupported export step.
+// Finding records an export boundary that needs review or cannot be lowered.
 type Finding struct {
 	File    string
 	Line    int
@@ -3111,10 +3111,8 @@ func (e *exporter) writeReport(orm string) error {
 		b.WriteString("- Standalone RBAC and GraphQL policy state support with changelog tables\n")
 	}
 	b.WriteString("\n")
-	if len(e.result.Findings) == 0 {
-		b.WriteString("## Manual Review\n\n")
-		b.WriteString("No unsupported export findings.\n")
-	} else {
+	e.writeUnsupportedSection(&b)
+	if len(e.result.Findings) > 0 {
 		e.writeFindingSection(&b, "Partial Support", "partial")
 		e.writeFindingSection(&b, "Omitted", "omitted")
 		e.writeFindingSection(&b, "Manual Review", "manual")
@@ -3132,13 +3130,36 @@ func (e *exporter) writeReport(orm string) error {
 	return e.writeFile(rel, []byte(b.String()))
 }
 
-func (e *exporter) writeFindingSection(b *strings.Builder, title, category string) {
+func (e *exporter) writeUnsupportedSection(b *strings.Builder) {
+	findings := e.findingsByCategory("unsupported")
+	b.WriteString("## Unsupported\n\n")
+	if len(findings) == 0 {
+		b.WriteString("No unsupported export findings.\n")
+		b.WriteString("\n")
+		return
+	}
+	for _, f := range findings {
+		loc := f.File
+		if f.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", f.File, f.Line)
+		}
+		fmt.Fprintf(b, "- `%s` `%s` - %s\n", loc, f.Rule, f.Message)
+	}
+	b.WriteString("\n")
+}
+
+func (e *exporter) findingsByCategory(category string) []Finding {
 	var findings []Finding
 	for _, finding := range e.result.Findings {
 		if findingCategory(finding.Rule) == category {
 			findings = append(findings, finding)
 		}
 	}
+	return findings
+}
+
+func (e *exporter) writeFindingSection(b *strings.Builder, title, category string) {
+	findings := e.findingsByCategory(category)
 	if len(findings) == 0 {
 		return
 	}
@@ -3155,11 +3176,13 @@ func (e *exporter) writeFindingSection(b *strings.Builder, title, category strin
 
 func findingCategory(rule string) string {
 	switch rule {
+	case "action_export_unsupported_signature":
+		return "unsupported"
 	case "rbac_policy_export":
 		return "partial"
 	case "generated_graphql", "generated_graphql_policies", "generated_policies", "generated_actions":
 		return "omitted"
-	case "encrypted_columns", "integrity_tables":
+	case "encrypted_columns", "integrity_tables", "raw_sql_migration":
 		return "manual"
 	default:
 		return "manual"

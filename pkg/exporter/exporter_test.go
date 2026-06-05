@@ -50,7 +50,9 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Exported")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone JWT, OAuth client-credentials, and session auth drivers")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone RBAC and GraphQL policy state support with changelog tables")
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Manual Review")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Unsupported")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "No unsupported export findings.")
+	assertFileNotContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Manual Review")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func Env(key, fallback string) string")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "type ConnectionConfig struct")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func OpenGORM(conn ConnectionConfig) *gorm.DB")
@@ -1979,6 +1981,56 @@ func TestGenerateSQLMigrationsLowersRawSQLWithFinding(t *testing.T) {
 	if !hasFinding(ex.result.Findings, "raw_sql_migration") {
 		t.Fatalf("expected raw_sql_migration finding, got %+v", ex.result.Findings)
 	}
+}
+
+func TestExportReportSeparatesManualReviewFromUnsupported(t *testing.T) {
+	out := t.TempDir()
+	reportPath := filepath.Join(out, "EXPORT_REPORT.md")
+	ex := &exporter{
+		project:    &generator.Project{Dir: "source-app"},
+		outDir:     out,
+		modulePath: "exported-app",
+		result: &Result{
+			ReportPath: reportPath,
+			Findings: []Finding{{
+				File:    "database/migrations",
+				Rule:    "raw_sql_migration",
+				Message: "migration seed_users contains raw SQL; exported statements need driver-specific review",
+			}},
+		},
+	}
+	if err := ex.writeReport("gorm"); err != nil {
+		t.Fatalf("writeReport: %v", err)
+	}
+	assertFileContains(t, reportPath, "## Unsupported\n\nNo unsupported export findings.")
+	assertFileContains(t, reportPath, "## Manual Review")
+	assertFileContains(t, reportPath, "`database/migrations` `raw_sql_migration`")
+	assertFileNotContains(t, reportPath, "## Omitted")
+}
+
+func TestExportReportListsUnsupportedBoundariesOnlyWhenUnsupported(t *testing.T) {
+	out := t.TempDir()
+	reportPath := filepath.Join(out, "EXPORT_REPORT.md")
+	ex := &exporter{
+		project:    &generator.Project{Dir: "source-app"},
+		outDir:     out,
+		modulePath: "exported-app",
+		result: &Result{
+			ReportPath: reportPath,
+			Findings: []Finding{{
+				File:    filepath.Join("database", "actions", "users"),
+				Rule:    "action_export_unsupported_signature",
+				Message: "unsupported action signature",
+			}},
+		},
+	}
+	if err := ex.writeReport("gorm"); err != nil {
+		t.Fatalf("writeReport: %v", err)
+	}
+	assertFileContains(t, reportPath, "## Unsupported")
+	assertFileContains(t, reportPath, "`database/actions/users` `action_export_unsupported_signature` - unsupported action signature")
+	assertFileNotContains(t, reportPath, "No unsupported export findings.")
+	assertFileNotContains(t, reportPath, "## Manual Review")
 }
 
 func TestRewriteMutableQueryVariable(t *testing.T) {

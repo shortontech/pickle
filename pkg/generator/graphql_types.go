@@ -59,7 +59,7 @@ func graphqlGoSerType(col *schema.Column) string {
 }
 
 // isExcludedFromGraphQL returns true if the column should not appear in the GraphQL schema.
-func isExcludedFromGraphQL(col *schema.Column) bool {
+func isExcludedFromGraphQL(tbl *schema.Table, col *schema.Column) bool {
 	if col.Type == schema.Binary {
 		return true
 	}
@@ -68,10 +68,29 @@ func isExcludedFromGraphQL(col *schema.Column) bool {
 		return true
 	}
 	// Hash chain internal columns
-	if col.Name == "row_hash" || col.Name == "prev_hash" {
+	if col.Name == "row_hash" || col.Name == "prev_hash" || col.Name == "version_id" {
+		return true
+	}
+	if isAuthCredentialField(tbl, col) {
 		return true
 	}
 	return false
+}
+
+func isAuthCredentialField(tbl *schema.Table, col *schema.Column) bool {
+	if tbl == nil || col == nil {
+		return false
+	}
+	switch tbl.Name {
+	case "jwt_tokens":
+		return col.Name == "jti"
+	case "oauth_tokens":
+		return col.Name == "token"
+	case "sessions":
+		return col.Name == "id"
+	default:
+		return false
+	}
 }
 
 // graphqlNullable returns "!" suffix if the column is not nullable, "" otherwise.

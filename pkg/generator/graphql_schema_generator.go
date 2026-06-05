@@ -135,7 +135,7 @@ func writeObjectType(b *strings.Builder, tbl *schema.Table, rels []SchemaRelatio
 	b.WriteString(fmt.Sprintf("type %s {\n", structName))
 
 	for _, col := range tbl.Columns {
-		if isExcludedFromGraphQL(col) {
+		if isExcludedFromGraphQL(tbl, col) {
 			continue
 		}
 		gqlType := graphqlType(col)
@@ -147,7 +147,7 @@ func writeObjectType(b *strings.Builder, tbl *schema.Table, rels []SchemaRelatio
 
 		// Apply auth directive based on visibility annotation
 		var directive string
-		if col.IsPublic || col.IsPrimaryKey {
+		if col.IsPublic {
 			directive = " @public"
 		} else if col.IsOwnerSees {
 			directive = " @ownerOnly"
@@ -177,7 +177,7 @@ func writeFilterType(b *strings.Builder, tbl *schema.Table) {
 	structName := tableToStructName(tbl.Name)
 	b.WriteString(fmt.Sprintf("input %sFilter {\n", structName))
 	for _, col := range tbl.Columns {
-		if isExcludedFromGraphQL(col) {
+		if isExcludedFromGraphQL(tbl, col) {
 			continue
 		}
 		gqlType := graphqlType(col)
@@ -214,7 +214,7 @@ func writeSortEnum(b *strings.Builder, tbl *schema.Table) {
 	structName := tableToStructName(tbl.Name)
 	b.WriteString(fmt.Sprintf("enum %sSort {\n", structName))
 	for _, col := range tbl.Columns {
-		if isExcludedFromGraphQL(col) {
+		if isExcludedFromGraphQL(tbl, col) {
 			continue
 		}
 		gqlType := graphqlType(col)

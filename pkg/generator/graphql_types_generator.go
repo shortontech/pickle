@@ -36,7 +36,7 @@ func GenerateGraphQLTypesWithPlans(plans []GraphQLModelPlan, requests []RequestD
 		b.WriteString(fmt.Sprintf("// %sGQL is the GraphQL response type for %s.\n", structName, structName))
 		b.WriteString(fmt.Sprintf("type %sGQL struct {\n", structName))
 		for _, col := range tbl.Columns {
-			if isExcludedFromGraphQL(col) {
+			if isExcludedFromGraphQL(tbl, col) {
 				continue
 			}
 			goType := graphqlGoSerType(col)
@@ -151,7 +151,7 @@ func writeGraphQLFieldCostRegistration(b *bytes.Buffer, plans []GraphQLModelPlan
 	for _, tbl := range tables {
 		structName := tableToStructName(tbl.Name)
 		for _, col := range tbl.Columns {
-			if isExcludedFromGraphQL(col) || graphqlGoSerType(col) == "" {
+			if isExcludedFromGraphQL(tbl, col) || graphqlGoSerType(col) == "" {
 				continue
 			}
 			fieldName := snakeToCamel(col.Name)

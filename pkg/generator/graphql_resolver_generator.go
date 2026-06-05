@@ -168,7 +168,7 @@ func writeFilterApplier(b *bytes.Buffer, tbl *schema.Table) {
 	b.WriteString(fmt.Sprintf("func apply%sFilter(q *models.%s, filter map[string]any) error {\n", structName, queryType))
 
 	for _, col := range tbl.Columns {
-		if isExcludedFromGraphQL(col) {
+		if isExcludedFromGraphQL(tbl, col) {
 			continue
 		}
 		gqlType := graphqlType(col)
@@ -415,7 +415,7 @@ func writeFieldResolver(b *bytes.Buffer, tbl *schema.Table, rels []SchemaRelatio
 	b.WriteString(fmt.Sprintf("\tcase \"__typename\":\n\t\treturn \"%s\", nil\n", structName))
 
 	for _, col := range tbl.Columns {
-		if isExcludedFromGraphQL(col) {
+		if isExcludedFromGraphQL(tbl, col) {
 			continue
 		}
 		gqlType := graphqlType(col)

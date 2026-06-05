@@ -43,8 +43,8 @@ func TestGraphQLSchemaDirectives(t *testing.T) {
 	}
 
 	// Field-level directives
-	if !strings.Contains(s, "id: ID! @public") {
-		t.Error("PK should have @public")
+	if !strings.Contains(s, "id: ID! @auth") {
+		t.Error("unannotated PK should have @auth")
 	}
 	if !strings.Contains(s, "name: String! @public") {
 		t.Error("Public column should have @public")
@@ -54,6 +54,66 @@ func TestGraphQLSchemaDirectives(t *testing.T) {
 	}
 	if !strings.Contains(s, "role: String! @auth") {
 		t.Error("unannotated column should have @auth")
+	}
+}
+
+func TestGraphQLSchemaExplicitPublicPrimaryKey(t *testing.T) {
+	tables := []*schema.Table{
+		{
+			Name: "posts",
+			Columns: []*schema.Column{
+				{Name: "id", Type: schema.UUID, IsPrimaryKey: true, IsPublic: true},
+				{Name: "title", Type: schema.String},
+			},
+		},
+	}
+
+	sdl := BuildSDL(tables, nil, nil)
+	if !strings.Contains(sdl, "id: ID! @public") {
+		t.Error("explicitly public PK should have @public")
+	}
+}
+
+func TestGraphQLSchemaExcludesAuthCredentialIdentifiers(t *testing.T) {
+	tables := []*schema.Table{
+		{
+			Name: "jwt_tokens",
+			Columns: []*schema.Column{
+				{Name: "jti", Type: schema.String, IsPrimaryKey: true},
+				{Name: "user_id", Type: schema.UUID},
+			},
+		},
+		{
+			Name: "oauth_tokens",
+			Columns: []*schema.Column{
+				{Name: "token", Type: schema.String, IsPrimaryKey: true},
+				{Name: "client_id", Type: schema.String},
+			},
+		},
+		{
+			Name: "sessions",
+			Columns: []*schema.Column{
+				{Name: "id", Type: schema.String, IsPrimaryKey: true},
+				{Name: "user_id", Type: schema.UUID},
+			},
+		},
+	}
+
+	sdl := BuildSDL(tables, nil, nil)
+	for _, forbidden := range []string{
+		"jti:",
+		"JTI_ASC",
+		"token:",
+		"TOKEN_ASC",
+		"id: String!",
+		"  ID_ASC\n",
+	} {
+		if strings.Contains(sdl, forbidden) {
+			t.Fatalf("auth credential identifier leaked into SDL: %q\n%s", forbidden, sdl)
+		}
+	}
+	if !strings.Contains(sdl, "userId: ID! @auth") {
+		t.Error("non-credential auth table fields should still be emitted when table is exposed")
 	}
 }
 

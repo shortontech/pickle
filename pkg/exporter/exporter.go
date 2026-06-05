@@ -7264,6 +7264,7 @@ func (r *Router) AllRoutes() []Route { if r == nil { return nil }; routes := mak
 func writeRecoveredError(w http.ResponseWriter) { Response{StatusCode: http.StatusInternalServerError, Body: map[string]string{"error": "internal server error"}}.Write(w) }
 func writeRouterBadRequest(w http.ResponseWriter) { Response{StatusCode: http.StatusBadRequest, Body: map[string]string{"error": "bad request"}}.Write(w) }
 func writeRouterNotFound(w http.ResponseWriter) { Response{StatusCode: http.StatusNotFound, Body: map[string]string{"error": "not found"}}.Write(w) }
+func writeRouterMethodNotAllowed(w http.ResponseWriter, allow string) { if allow != "" { w.Header().Set("Allow", allow) }; Response{StatusCode: http.StatusMethodNotAllowed, Body: map[string]string{"error": "method not allowed"}}.Write(w) }
 func recoveredPanicError(_ any) error { return fmt.Errorf("panic recovered") }
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if w == nil {
@@ -7288,9 +7289,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		writeRouterNotFound(w)
 		return
 	}
+	var allowedMethods []string
 	for _, rt := range r.routes {
 		params, ok := matchPath(rt.Path, req.URL.Path)
-		if rt.Method != req.Method || !ok { continue }
+		if !ok { continue }
+		if rt.Method != req.Method { allowedMethods = appendAllowedMethod(allowedMethods, rt.Method); continue }
 		ctx = NewContext(req); ctx.response = w; ctx.params = params
 		next := func() Response { return rt.Handler(ctx) }
 		for i := len(rt.Middleware) - 1; i >= 0; i-- {
@@ -7303,8 +7306,13 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		resp.Write(w)
 		return
 	}
+	if len(allowedMethods) > 0 {
+		writeRouterMethodNotAllowed(w, strings.Join(allowedMethods, ", "))
+		return
+	}
 	writeRouterNotFound(w)
 }
+func appendAllowedMethod(methods []string, method string) []string { for _, existing := range methods { if existing == method { return methods } }; return append(methods, method) }
 var paramPattern = regexp.MustCompile(` + "`" + `:(\w+)` + "`" + `)
 func (r *Router) RegisterRoutes(mux *http.ServeMux) {
 	if r == nil || mux == nil {

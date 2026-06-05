@@ -2965,6 +2965,45 @@ func TestExportedRouterDirectMissUsesHardenedJSONNotFound(t *testing.T) {
 	}
 }
 
+func TestExportedRouterMethodMismatchUsesHardenedJSONMethodNotAllowed(t *testing.T) {
+	t.Setenv("RATE_LIMIT", "false")
+	router := httpx.Routes(func(r *httpx.Router) {
+		r.Get("/known", func(ctx *httpx.Context) httpx.Response {
+			return ctx.NoContent()
+		})
+		r.Post("/known", func(ctx *httpx.Context) httpx.Response {
+			return ctx.NoContent()
+		})
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/known", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("method mismatch status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Allow"); got != "GET, POST" {
+		t.Fatalf("Allow = %q, want GET, POST", got)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("method mismatch Content-Type = %q, want application/json", got)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("method mismatch X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if !strings.Contains(rec.Body.String(), "method not allowed") {
+		t.Fatalf("method mismatch body = %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "/known") || strings.Contains(rec.Body.String(), "DELETE") {
+		t.Fatalf("method mismatch response leaked route detail: %s", rec.Body.String())
+	}
+
+	miss := httptest.NewRecorder()
+	router.ServeHTTP(miss, httptest.NewRequest(http.MethodDelete, "/unknown", nil))
+	if miss.Code != http.StatusNotFound || miss.Header().Get("Allow") != "" {
+		t.Fatalf("unknown path status/allow = %d/%q, want 404/empty", miss.Code, miss.Header().Get("Allow"))
+	}
+}
+
 func TestExportedRegisterRoutesDuplicatePanics(t *testing.T) {
 	router := httpx.Routes(func(r *httpx.Router) {
 		r.Get("/dup", func(ctx *httpx.Context) httpx.Response { return ctx.NoContent() })

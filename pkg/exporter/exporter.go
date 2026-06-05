@@ -5004,7 +5004,17 @@ func NewRunner(db *gorm.DB, driver string) *Runner {
 	return &Runner{DB: db, Driver: driver}
 }
 
+func (r *Runner) ensureDB() error {
+	if r == nil || r.DB == nil {
+		return fmt.Errorf("migrations: DB is nil")
+	}
+	return nil
+}
+
 func (r *Runner) ensureMigrationsTable() error {
+	if err := r.ensureDB(); err != nil {
+		return err
+	}
 	return r.DB.Exec(migrationsTableSQL(r.Driver)).Error
 }
 
@@ -5063,6 +5073,9 @@ func nextBatch(applied map[string]int) int {
 }
 
 func (r *Runner) Migrate(entries []MigrationEntry) error {
+	if err := r.ensureDB(); err != nil {
+		return err
+	}
 	applied, err := r.applied()
 	if err != nil {
 		return err
@@ -5095,6 +5108,9 @@ func (r *Runner) Migrate(entries []MigrationEntry) error {
 }
 
 func (r *Runner) Rollback(entries []MigrationEntry) error {
+	if err := r.ensureDB(); err != nil {
+		return err
+	}
 	applied, err := r.applied()
 	if err != nil {
 		return err
@@ -5133,6 +5149,9 @@ func (r *Runner) Rollback(entries []MigrationEntry) error {
 }
 
 func (r *Runner) Fresh(entries []MigrationEntry) error {
+	if err := r.ensureDB(); err != nil {
+		return err
+	}
 	for i := len(entries) - 1; i >= 0; i-- {
 		_ = r.execMigrationFile(entries[i].DownFile)
 	}
@@ -5143,6 +5162,9 @@ func (r *Runner) Fresh(entries []MigrationEntry) error {
 }
 
 func (r *Runner) Status(entries []MigrationEntry) ([]MigrationStatus, error) {
+	if err := r.ensureDB(); err != nil {
+		return nil, err
+	}
 	applied, err := r.applied()
 	if err != nil {
 		return nil, err
@@ -5171,10 +5193,16 @@ func PrintStatus(statuses []MigrationStatus) {
 }
 
 func (r *Runner) execMigrationFile(name string) error {
+	if err := r.ensureDB(); err != nil {
+		return err
+	}
 	return r.execMigrationFileOn(r.DB, name)
 }
 
 func (r *Runner) execMigrationFileOn(db *gorm.DB, name string) error {
+	if db == nil {
+		return fmt.Errorf("migrations: DB is nil")
+	}
 	data, err := migrationFiles.ReadFile(name)
 	if err != nil {
 		return err

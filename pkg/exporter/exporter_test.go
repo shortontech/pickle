@@ -1670,6 +1670,25 @@ func TestExportedMigrationFailureDoesNotLeakStatementText(t *testing.T) {
 	}
 }
 
+func TestExportedMigrationRunnerRejectsNilDBWithoutPanic(t *testing.T) {
+	runner := migrations.NewRunner(nil, "sqlite")
+	for _, tc := range []struct {
+		name string
+		run  func() error
+	}{
+		{name: "migrate", run: func() error { return runner.Migrate(nil) }},
+		{name: "rollback", run: func() error { return runner.Rollback(nil) }},
+		{name: "fresh", run: func() error { return runner.Fresh(nil) }},
+		{name: "status", run: func() error { _, err := runner.Status(nil); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.run(); err == nil || err.Error() != "migrations: DB is nil" {
+				t.Fatalf("%s error = %v, want migrations: DB is nil", tc.name, err)
+			}
+		})
+	}
+}
+
 func assertSQLiteTableExists(t *testing.T, db *gorm.DB, table string) {
 	t.Helper()
 	var count int64

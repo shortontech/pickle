@@ -710,6 +710,7 @@ type queryChain struct {
 	DBRoot       string
 	Terminal     string
 	Filters      []queryFilter
+	Orders       []queryOrder
 	Preloads     []string
 	Limit        ast.Expr
 	Offset       ast.Expr
@@ -726,6 +727,11 @@ type queryFilter struct {
 	Op     string
 	Arg    ast.Expr
 	Arg2   ast.Expr
+}
+
+type queryOrder struct {
+	Column    string
+	Direction string
 }
 
 type queryVarState struct {
@@ -892,6 +898,31 @@ func buildQueryChain(model, dbRoot string, methods []struct {
 			if len(m.args) != 0 {
 				return qc, true, fmt.Errorf("SelectAll does not accept arguments")
 			}
+		case strings.HasPrefix(m.name, "OrderBy") && m.name != "OrderBy":
+			if len(m.args) != 1 {
+				return qc, true, fmt.Errorf("%s requires one argument", m.name)
+			}
+			direction, err := exprString(m.args[0])
+			if err != nil {
+				return qc, true, err
+			}
+			qc.Orders = append(qc.Orders, queryOrder{
+				Column:    fmt.Sprintf("%q", pascalToSnake(strings.TrimPrefix(m.name, "OrderBy"))),
+				Direction: direction,
+			})
+		case m.name == "OrderBy":
+			if len(m.args) != 2 {
+				return qc, true, fmt.Errorf("OrderBy requires two arguments")
+			}
+			column, err := exprString(m.args[0])
+			if err != nil {
+				return qc, true, err
+			}
+			direction, err := exprString(m.args[1])
+			if err != nil {
+				return qc, true, err
+			}
+			qc.Orders = append(qc.Orders, queryOrder{Column: column, Direction: direction})
 		case strings.HasPrefix(m.name, "Where"):
 			col, op, ok := whereMethodColumn(m.name, model)
 			if !ok {
@@ -1039,7 +1070,7 @@ func rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[string]queryVarSt
 			return nil, true, argErr
 		}
 		column := pascalToSnake(strings.TrimPrefix(sel.Sel.Name, "OrderBy"))
-		expr, err = parseExpr(fmt.Sprintf("%s.Order(%q + \" \" + %s)", id.Name, column, arg))
+		expr, err = parseExpr(fmt.Sprintf("%s.Order(models.OrderClause(%q, %s))", id.Name, column, arg))
 	case sel.Sel.Name == "OrderBy":
 		if len(call.Args) != 2 {
 			return nil, true, fmt.Errorf("OrderBy requires two arguments")
@@ -1052,7 +1083,7 @@ func rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[string]queryVarSt
 		if dirErr != nil {
 			return nil, true, dirErr
 		}
-		expr, err = parseExpr(fmt.Sprintf("%s.Order(%s + \" \" + %s)", id.Name, col, dir))
+		expr, err = parseExpr(fmt.Sprintf("%s.Order(models.OrderClause(%s, %s))", id.Name, col, dir))
 	case sel.Sel.Name == "AllVersions":
 		if len(call.Args) != 0 {
 			return nil, true, fmt.Errorf("AllVersions does not accept arguments")
@@ -1318,6 +1349,9 @@ func (e *exporter) gormChain(q queryChain) string {
 	for _, p := range q.Preloads {
 		chain += fmt.Sprintf(".Preload(%q)", p)
 	}
+	for _, order := range q.Orders {
+		chain += fmt.Sprintf(".Order(models.OrderClause(%s, %s))", order.Column, order.Direction)
+	}
 	if q.Limit != nil {
 		arg, _ := exprString(q.Limit)
 		chain += ".Limit(" + arg + ")"
@@ -1422,6 +1456,7 @@ func exportedModelsDBSource() ([]byte, error) {
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -1458,6 +1493,35 @@ func ApplyLockTimeout(db *gorm.DB, d time.Duration) error {
 		return nil
 	}
 	return db.Exec("SET LOCAL lock_timeout = ?", fmt.Sprintf("%dms", d.Milliseconds())).Error
+}
+
+func OrderClause(column, direction string) string {
+	if !validSQLIdentifier(column) {
+		panic("models: OrderClause column must be a valid identifier, got: " + column)
+	}
+	dir := strings.ToUpper(strings.TrimSpace(direction))
+	if dir != "ASC" && dir != "DESC" {
+		panic("models: OrderClause direction must be ASC or DESC, got: " + direction)
+	}
+	return column + " " + dir
+}
+
+func validSQLIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if i == 0 {
+			if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && r != '_' {
+				return false
+			}
+			continue
+		}
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 type LockOutsideTransactionError struct {
@@ -1757,7 +1821,7 @@ func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns
 	b.WriteString(fmt.Sprintf("func (q *%s) Limit(n int) *%s { q.db = q.db.Limit(n); return q }\n", queryName, queryName))
 	b.WriteString(fmt.Sprintf("func (q *%s) Offset(n int) *%s { q.db = q.db.Offset(n); return q }\n", queryName, queryName))
 	b.WriteString(fmt.Sprintf("func (q *%s) OrderBy(column, direction string) *%s {\n", queryName, queryName))
-	b.WriteString("\tdir := strings.ToUpper(direction)\n")
+	b.WriteString("\tdir := strings.ToUpper(strings.TrimSpace(direction))\n")
 	b.WriteString("\tif dir != \"DESC\" { dir = \"ASC\" }\n")
 	b.WriteString("\tswitch column {\n")
 	for _, col := range columns {
@@ -1766,7 +1830,7 @@ func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns
 	b.WriteString("\tdefault:\n")
 	b.WriteString("\t\treturn q\n")
 	b.WriteString("\t}\n")
-	b.WriteString("\tq.db = q.db.Order(column + \" \" + dir)\n")
+	b.WriteString("\tq.db = q.db.Order(OrderClause(column, dir))\n")
 	b.WriteString("\treturn q\n")
 	b.WriteString("}\n")
 	for _, col := range columns {

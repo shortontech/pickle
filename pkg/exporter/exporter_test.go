@@ -46,6 +46,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "db.go"), "var DB *gorm.DB")
 	assertFileContains(t, filepath.Join(out, "app", "models", "db.go"), "func WithTransaction(fn func(tx *Tx) error) error")
 	assertFileContains(t, filepath.Join(out, "app", "models", "db.go"), "func ApplyLockTimeout(db *gorm.DB, d time.Duration) error")
+	assertFileContains(t, filepath.Join(out, "app", "models", "db.go"), "func OrderClause(column, direction string) string")
 	assertFileContains(t, filepath.Join(out, "app", "models", "db.go"), "type LockOutsideTransactionError struct")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.up.sql"), "CREATE TABLE")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.up.sql"), "email_encrypted")
@@ -1850,6 +1851,8 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `q.db = q.db.Select([]string{"id", "name"})`)
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `q.db = q.db.Select([]string{"id", "name", "email"})`)
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `q.db = q.db.Select([]string{"id", "user_id", "title"})`)
+	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), "q.db = q.db.Order(OrderClause(column, dir))")
+	assertFileNotContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `q.db = q.db.Order(column + " " + dir)`)
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `mux.Handle("/graphql", graphql.Handler())`)
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "routes.API.RegisterRoutes(mux)")
 	assertCleanExportReport(t, out)
@@ -2745,7 +2748,7 @@ func Index(role string) ([]models.User, error) {
 	for _, want := range []string{
 		"q := models.DB.Model(&models. User{})",
 		`q = q.Where("role = ?", role, )`,
-		`q = q.Order("id" + " " + "ASC")`,
+		`q = q.Order(models.OrderClause("id", "ASC"))`,
 		"return func() ([]models.User, error)",
 	} {
 		if !strings.Contains(compact, want) {
@@ -2782,7 +2785,7 @@ func Index(role string, limit int) ([]models.User, error) {
 	for _, want := range []string{
 		"q := models.DB.Model(&models. User{})",
 		`q = q.Where("role = ?", role, )`,
-		`q = q.Order("id" + " " + "ASC")`,
+		`q = q.Order(models.OrderClause("id", "ASC"))`,
 		"q = q.Limit(limit)",
 		"return func() ([]models.User, error)",
 	} {
@@ -2793,6 +2796,45 @@ func Index(role string, limit int) ([]models.User, error) {
 	for _, unexpected := range []string{"WhereRole", "OrderByID", "SelectAll"} {
 		if strings.Contains(got, unexpected) {
 			t.Fatalf("rewritten source still contains %q:\n%s", unexpected, got)
+		}
+	}
+}
+
+func TestRewriteDirectQueryOrderByMethods(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"User": true},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func Index(role string, direction string) ([]models.User, error) {
+	return models.QueryUser().
+		WhereRole(role).
+		OrderByID(direction).
+		OrderBy("email", "DESC").
+		Limit(10).
+		All()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	compact := strings.Join(strings.Fields(got), " ")
+	assertContainsAll(t, compact,
+		`models.DB.Model(&models.User{})`,
+		`Where("role = ?", role)`,
+		`Order(models.OrderClause("id", direction))`,
+		`models.OrderClause("email", "DESC")`,
+		`Limit(10)`,
+	)
+	for _, unexpected := range []string{"OrderByID", `Order("id" + " "`, `Order("email" + " "`} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("rewritten source retained unsafe/order query method %q:\n%s", unexpected, got)
 		}
 	}
 }

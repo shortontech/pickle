@@ -6245,6 +6245,8 @@ type Driver struct {
 	expiry       int
 }
 
+const maxTokenRequestBodyBytes = 8 << 10
+
 func NewDriver(env func(string, string) string, db *sql.DB, driver string) *Driver {
 	expiry := 3600
 	if v := env("OAUTH_TOKEN_EXPIRY", ""); v != "" {
@@ -6283,7 +6285,17 @@ func (d *Driver) TokenEndpoint(ctx *httpx.Context) httpx.Response {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
 		return ctx.JSON(400, map[string]string{"error": "invalid_request", "error_description": "Content-Type must be application/x-www-form-urlencoded"})
 	}
+	if r.ContentLength > maxTokenRequestBodyBytes {
+		return ctx.JSON(http.StatusRequestEntityTooLarge, map[string]string{"error": "invalid_request", "error_description": "request body too large"})
+	}
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(ctx.ResponseWriter(), r.Body, maxTokenRequestBodyBytes)
+	}
 	if err := r.ParseForm(); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return ctx.JSON(http.StatusRequestEntityTooLarge, map[string]string{"error": "invalid_request", "error_description": "request body too large"})
+		}
 		return ctx.JSON(400, map[string]string{"error": "invalid_request", "error_description": "malformed form body"})
 	}
 	if r.FormValue("grant_type") != "client_credentials" {

@@ -424,6 +424,21 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	if badTokenResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("invalid oauth credentials status = %d body = %#v", badTokenResp.StatusCode, badTokenResp.Body)
 	}
+	largeTokenReq, _ := http.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader("grant_type=client_credentials&padding="+strings.Repeat("x", 9000)))
+	largeTokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	largeTokenReq.SetBasicAuth("client-1", "secret-1")
+	largeTokenResp := oauthDriver.TokenEndpoint(httpx.NewContext(largeTokenReq))
+	if largeTokenResp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized oauth request status = %d body = %#v", largeTokenResp.StatusCode, largeTokenResp.Body)
+	}
+	streamingTokenReq, _ := http.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader("grant_type=client_credentials&padding="+strings.Repeat("x", 9000)))
+	streamingTokenReq.ContentLength = -1
+	streamingTokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	streamingTokenReq.SetBasicAuth("client-1", "secret-1")
+	streamingTokenResp := oauthDriver.TokenEndpoint(httpx.NewContext(streamingTokenReq))
+	if streamingTokenResp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("streaming oversized oauth request status = %d body = %#v", streamingTokenResp.StatusCode, streamingTokenResp.Body)
+	}
 	misconfigured := oauth.NewDriver(func(string, string) string { return "" }, db, "sqlite")
 	misconfiguredReq, _ := http.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader("grant_type=client_credentials"))
 	misconfiguredReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")

@@ -5652,13 +5652,22 @@ func NewDriver(env func(string, string) string, db *sql.DB, driver string) *Driv
 		for _, c := range v { if c >= '0' && c <= '9' { n = n*10 + int(c-'0') } }
 		if n > 0 { expiry = n }
 	}
+	secret := env("JWT_SECRET", "")
+	alg := env("JWT_ALGORITHM", "HS256")
+	if secret == "" {
+		panic("jwt: JWT_SECRET is required")
+	}
+	minLen := map[string]int{"HS256": 32, "HS384": 48, "HS512": 64}
+	if min, ok := minLen[alg]; ok && len(secret) < min {
+		panic(fmt.Sprintf("jwt: JWT_SECRET must be at least %%d bytes for %%s, got %%d", min, alg, len(secret)))
+	}
 	return &Driver{
 		db:        db,
 		driver:    driver,
-		secret:    env("JWT_SECRET", ""),
+		secret:    secret,
 		issuer:    env("JWT_ISSUER", ""),
 		expiry:    expiry,
-		algorithm: env("JWT_ALGORITHM", "HS256"),
+		algorithm: alg,
 	}
 }
 

@@ -183,6 +183,7 @@ func writeExportedAuthBehaviorTest(t *testing.T, out string) {
 
 import (
 	"database/sql"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -226,6 +227,26 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 		}
 		return fallback
 	}
+	assertPanicsWith(t, "JWT_SECRET is required", func() {
+		jwt.NewDriver(func(key, fallback string) string {
+			if key == "JWT_SECRET" {
+				return ""
+			}
+			return fallback
+		}, db, "sqlite")
+	})
+	assertPanicsWith(t, "must be at least 48 bytes for HS384", func() {
+		jwt.NewDriver(func(key, fallback string) string {
+			switch key {
+			case "JWT_SECRET":
+				return "0123456789abcdef0123456789abcdef"
+			case "JWT_ALGORITHM":
+				return "HS384"
+			default:
+				return fallback
+			}
+		}, db, "sqlite")
+	})
 	auth.Init(env, db)
 
 	jwtDriver := auth.Driver("jwt").(*jwt.Driver)
@@ -416,6 +437,20 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	if resp.Status != 401 {
 		t.Fatalf("middleware status = %d, want 401", resp.Status)
 	}
+}
+
+func assertPanicsWith(t *testing.T, want string, fn func()) {
+	t.Helper()
+	defer func() {
+		got := recover()
+		if got == nil {
+			t.Fatalf("expected panic containing %q", want)
+		}
+		if !strings.Contains(fmt.Sprint(got), want) {
+			t.Fatalf("panic = %q, want containing %q", got, want)
+		}
+	}()
+	fn()
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "http", "auth", "exported_auth_test.go"), []byte(testSrc), 0o644); err != nil {

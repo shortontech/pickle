@@ -645,9 +645,22 @@ func TestExportedSessionCreateSetsSessionAndCSRFCookies(t *testing.T) {
 	}, db, "sqlite")
 
 	ctx := httpx.NewContext(httptest.NewRequest(http.MethodPost, "/login", nil))
-	resp, err := Create(ctx, "user-1", "member")
+	cookies, err := Create(ctx, "user-1", "member")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
+	}
+	if cookies.Session == nil {
+		t.Fatal("session cookie should be returned")
+	}
+	if cookies.CSRF == nil {
+		t.Fatal("csrf cookie should be returned")
+	}
+	resp := cookies.Apply(ctx.JSON(http.StatusCreated, map[string]string{"ok": "true"}))
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("applied response status = %d", resp.StatusCode)
+	}
+	if body, ok := resp.Body.(map[string]string); !ok || body["ok"] != "true" {
+		t.Fatalf("applied response body = %#v", resp.Body)
 	}
 	if findCookie(resp.Cookies, sessionCookieName) == nil {
 		t.Fatal("session cookie should be set")

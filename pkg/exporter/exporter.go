@@ -6015,19 +6015,37 @@ func driver() *Driver {
 	return activeDriver
 }
 
-func Create(ctx *httpx.Context, userID, role string) (httpx.Response, error) {
+func Create(ctx *httpx.Context, userID, role string) (*SessionCookies, error) {
+	_ = ctx
 	d := driver()
 	sessionID := uuid.New().String()
 	expiresAt := time.Now().UTC().Add(time.Duration(d.ttl) * time.Second)
 	if _, err := d.db.Exec(bindPlaceholders(d.driver, "INSERT INTO sessions (id, user_id, role, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"), sessionID, userID, role, expiresAt, time.Now().UTC(), time.Now().UTC()); err != nil {
-		return httpx.Response{}, err
+		return nil, err
 	}
-	resp := ctx.JSON(200, map[string]string{"status": "ok"})
-	resp = resp.WithCookie(&http.Cookie{Name: d.cookieName, Value: sessionID, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode, Expires: expiresAt})
+	cookies := &SessionCookies{
+		Session: &http.Cookie{Name: d.cookieName, Value: sessionID, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode, Expires: expiresAt},
+	}
 	if len(csrfConfig.secret) > 0 {
-		resp = resp.WithCookie(newCSRFCookie(sessionID))
+		cookies.CSRF = newCSRFCookie(sessionID)
 	}
-	return resp, nil
+	return cookies, nil
+}
+
+type SessionCookies struct {
+	Session *http.Cookie
+	CSRF    *http.Cookie
+}
+
+func (sc *SessionCookies) Apply(resp httpx.Response) httpx.Response {
+	if sc == nil {
+		return resp
+	}
+	resp = resp.WithCookie(sc.Session)
+	if sc.CSRF != nil {
+		resp = resp.WithCookie(sc.CSRF)
+	}
+	return resp
 }
 
 func Destroy(ctx *httpx.Context) (httpx.Response, error) {

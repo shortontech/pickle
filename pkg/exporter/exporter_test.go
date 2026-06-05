@@ -3108,6 +3108,8 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), `mime.ParseMediaType(contentType)`)
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "err.Path = graphQLErrorPath(path)")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLRequestBodyBytes = 1 << 20")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLRequestEnvelopeFieldBytes = 32")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func validateGraphQLRequestEnvelopeFields")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLQueryBytes = 64 << 10")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "GraphQL query must be a string")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLOperationNameBytes = 256")
@@ -3443,6 +3445,52 @@ fragment UserFields on User {
 		}
 		if !strings.Contains(rec.Body.String(), "graphql request body too large") {
 			t.Fatalf("streaming oversized body missing sanitized error: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("unsupported_envelope_field_rejected_before_parse", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{
+			"query": "query AllowedUsers { users(page: { first: 1 }) { edges { node { id } } } }",
+			"debug": "dont-leak-me",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL request contains unsupported field") {
+			t.Fatalf("missing unsupported envelope field error: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "debug") || strings.Contains(rec.Body.String(), "dont-leak-me") {
+			t.Fatalf("unsupported envelope field error leaked request value: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("oversized_envelope_field_rejected_before_parse", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{
+			"query": "query AllowedUsers { users(page: { first: 1 }) { edges { node { id } } } }",
+			strings.Repeat("x", 33): "value",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL request field is too large") {
+			t.Fatalf("missing oversized envelope field error: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), strings.Repeat("x", 16)) {
+			t.Fatalf("oversized envelope field error leaked request value: %s", rec.Body.String())
 		}
 	})
 

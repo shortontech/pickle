@@ -2101,6 +2101,7 @@ import (
 )
 
 const maxGraphQLRequestBodyBytes = 1 << 20
+const maxGraphQLRequestEnvelopeFieldBytes = 32
 const maxGraphQLQueryBytes = 64 << 10
 const maxGraphQLOperationNameBytes = 256
 const maxGraphQLVariables = 64
@@ -2221,6 +2222,9 @@ func prepareGraphQLPostBody(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func validateGraphQLRequestEnvelope(w http.ResponseWriter, raw map[string]any) bool {
+	if !validateGraphQLRequestEnvelopeFields(w, raw) {
+		return false
+	}
 	queryValue, ok := raw["query"]
 	query, isString := queryValue.(string)
 	if !ok || queryValue == nil || !isString {
@@ -2269,6 +2273,23 @@ func validateGraphQLRequestEnvelope(w http.ResponseWriter, raw map[string]any) b
 		}
 		if err := validateGraphQLExtensions(values); err != nil {
 			writeGraphQLHTTPError(w, err.Error(), CodeBadUserInput)
+			return false
+		}
+	}
+	return true
+}
+
+func validateGraphQLRequestEnvelopeFields(w http.ResponseWriter, raw map[string]any) bool {
+	for field := range raw {
+		if len(field) > maxGraphQLRequestEnvelopeFieldBytes {
+			writeGraphQLHTTPError(w, "GraphQL request field is too large", CodeBadUserInput)
+			return false
+		}
+		switch field {
+		case "query", "operationName", "variables", "extensions":
+			continue
+		default:
+			writeGraphQLHTTPError(w, "GraphQL request contains unsupported field", CodeBadUserInput)
 			return false
 		}
 	}

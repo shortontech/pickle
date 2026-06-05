@@ -536,7 +536,7 @@ func (e *exporter) rewriteQueryStatements(path string, fset *token.FileSet, f *a
 		if !ok {
 			return true
 		}
-		queryVars := map[string]string{}
+		queryVars := map[string]queryVarState{}
 		for i, stmt := range block.List {
 			rewritten, err := e.rewriteStmt(path, fset, stmt, queryVars)
 			if err != nil {
@@ -550,7 +550,7 @@ func (e *exporter) rewriteQueryStatements(path string, fset *token.FileSet, f *a
 	return firstErr
 }
 
-func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, queryVars map[string]string) (ast.Stmt, error) {
+func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, queryVars map[string]queryVarState) (ast.Stmt, error) {
 	switch s := stmt.(type) {
 	case *ast.AssignStmt:
 		if len(s.Rhs) == 1 {
@@ -602,7 +602,7 @@ func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, 
 								return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
 							}
 							s.Rhs[0] = expr
-							queryVars[ident.Name] = chain.Model
+							queryVars[ident.Name] = queryVarState{Model: chain.Model}
 							return stmt, nil
 						}
 					}
@@ -714,6 +714,12 @@ type queryFilter struct {
 	Op     string
 	Arg    ast.Expr
 	Arg2   ast.Expr
+}
+
+type queryVarState struct {
+	Model        string
+	LockStrength string
+	LockOptions  string
 }
 
 func parseQueryChain(call *ast.CallExpr) (queryChain, bool, error) {
@@ -860,7 +866,7 @@ type queryVarTerminal struct {
 	Terminal string
 }
 
-func parseQueryVarTerminal(call *ast.CallExpr, queryVars map[string]string) (queryVarTerminal, bool, error) {
+func parseQueryVarTerminal(call *ast.CallExpr, queryVars map[string]queryVarState) (queryVarTerminal, bool, error) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return queryVarTerminal{}, false, nil
@@ -869,7 +875,7 @@ func parseQueryVarTerminal(call *ast.CallExpr, queryVars map[string]string) (que
 	if !ok {
 		return queryVarTerminal{}, false, nil
 	}
-	model, ok := queryVars[id.Name]
+	state, ok := queryVars[id.Name]
 	if !ok {
 		return queryVarTerminal{}, false, nil
 	}
@@ -879,10 +885,10 @@ func parseQueryVarTerminal(call *ast.CallExpr, queryVars map[string]string) (que
 	if len(call.Args) != 0 {
 		return queryVarTerminal{}, true, fmt.Errorf("%s does not accept arguments", sel.Sel.Name)
 	}
-	return queryVarTerminal{Var: id.Name, Model: model, Terminal: sel.Sel.Name}, true, nil
+	return queryVarTerminal{Var: id.Name, Model: state.Model, Terminal: sel.Sel.Name}, true, nil
 }
 
-func rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[string]string) (ast.Stmt, bool, error) {
+func rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[string]queryVarState) (ast.Stmt, bool, error) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return nil, false, nil
@@ -891,10 +897,11 @@ func rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[string]string) (a
 	if !ok {
 		return nil, false, nil
 	}
-	model, ok := queryVars[id.Name]
+	state, ok := queryVars[id.Name]
 	if !ok {
 		return nil, false, nil
 	}
+	model := state.Model
 
 	var expr ast.Expr
 	var err error
@@ -954,8 +961,36 @@ func rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[string]string) (a
 		expr, err = parseExpr(fmt.Sprintf("%s.Order(%s + \" \" + %s)", id.Name, col, dir))
 	case sel.Sel.Name == "AllVersions":
 		return nil, true, fmt.Errorf("AllVersions must be used in a fluent query chain for export")
-	case sel.Sel.Name == "Lock" || sel.Sel.Name == "LockForUpdate" || sel.Sel.Name == "LockForShare" || sel.Sel.Name == "SkipLocked" || sel.Sel.Name == "NoWait" || sel.Sel.Name == "Timeout":
-		return nil, true, fmt.Errorf("%s must be used in a fluent query chain for export", sel.Sel.Name)
+	case sel.Sel.Name == "Lock" || sel.Sel.Name == "LockForUpdate":
+		if len(call.Args) != 0 {
+			return nil, true, fmt.Errorf("%s does not accept arguments", sel.Sel.Name)
+		}
+		state.LockStrength = "UPDATE"
+		queryVars[id.Name] = state
+		expr, err = gormVarLockExpr(id.Name, state.LockStrength, state.LockOptions)
+	case sel.Sel.Name == "LockForShare":
+		if len(call.Args) != 0 {
+			return nil, true, fmt.Errorf("LockForShare does not accept arguments")
+		}
+		state.LockStrength = "SHARE"
+		queryVars[id.Name] = state
+		expr, err = gormVarLockExpr(id.Name, state.LockStrength, state.LockOptions)
+	case sel.Sel.Name == "SkipLocked":
+		if len(call.Args) != 0 {
+			return nil, true, fmt.Errorf("SkipLocked does not accept arguments")
+		}
+		state.LockOptions = "SKIP LOCKED"
+		queryVars[id.Name] = state
+		expr, err = gormVarLockExpr(id.Name, state.LockStrength, state.LockOptions)
+	case sel.Sel.Name == "NoWait":
+		if len(call.Args) != 0 {
+			return nil, true, fmt.Errorf("NoWait does not accept arguments")
+		}
+		state.LockOptions = "NOWAIT"
+		queryVars[id.Name] = state
+		expr, err = gormVarLockExpr(id.Name, state.LockStrength, state.LockOptions)
+	case sel.Sel.Name == "Timeout":
+		return nil, true, fmt.Errorf("Timeout query locks are not exported yet")
 	case sel.Sel.Name == "SelectAll" || sel.Sel.Name == "AnyOwner":
 		if len(call.Args) != 0 {
 			return nil, true, fmt.Errorf("%s does not accept arguments", sel.Sel.Name)
@@ -1086,6 +1121,18 @@ func gormVarWhereExpr(varName, col, op string, args ...ast.Expr) (ast.Expr, erro
 		return nil, err
 	}
 	return parseExpr(fmt.Sprintf("%s.Where(%q, %s)", varName, col+" "+op+" ?", argStr))
+}
+
+func gormVarLockExpr(varName, strength, options string) (ast.Expr, error) {
+	if strength == "" {
+		strength = "UPDATE"
+	}
+	expr := fmt.Sprintf("%s.Clauses(clause.Locking{Strength: %q", varName, strength)
+	if options != "" {
+		expr += fmt.Sprintf(", Options: %q", options)
+	}
+	expr += "})"
+	return parseExpr(expr)
 }
 
 func (e *exporter) gormChain(q queryChain) string {

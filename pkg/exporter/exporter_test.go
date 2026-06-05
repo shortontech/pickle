@@ -1553,6 +1553,24 @@ func TestExportedContextResourceHelpersPropagateOwner(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("missing resource status = %d", resp.StatusCode)
 	}
+
+	failing := &resourceQuery{err: errors.New("database password is swordfish")}
+	resp = ctx.Resource(failing)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("failing resource status = %d", resp.StatusCode)
+	}
+	if body, ok := resp.Body.(map[string]string); !ok || body["error"] != "internal server error" {
+		t.Fatalf("failing resource body = %#v", resp.Body)
+	}
+
+	failingList := &resourceListQuery{err: errors.New("replica secret is dont-leak-me")}
+	resp = ctx.Resources(failingList)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("failing resources status = %d", resp.StatusCode)
+	}
+	if body, ok := resp.Body.(map[string]string); !ok || body["error"] != "internal server error" {
+		t.Fatalf("failing resources body = %#v", resp.Body)
+	}
 }
 
 func TestExportedRateLimitMiddlewareDeniesAfterBurst(t *testing.T) {

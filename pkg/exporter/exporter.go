@@ -5639,7 +5639,7 @@ func (c *Context) HasRole(slug string) bool { for _, role := range c.roles { if 
 func (c *Context) HasAnyRole(roles ...string) bool { for _, role := range roles { if c.HasRole(role) { return true } }; return false }
 func (c *Context) IsAdmin() bool { return c.isAdmin || (c.auth != nil && c.auth.Role == "admin") }
 func (c *Context) JSON(status int, body any) Response { return Response{Status: status, StatusCode: status, Body: body} }
-func (c *Context) Error(err error) Response { return c.JSON(500, map[string]string{"error": err.Error()}) }
+func (c *Context) Error(err error) Response { if err != nil { log.Printf("http error: %v", err) }; return c.JSON(500, map[string]string{"error": "internal server error"}) }
 func (c *Context) BadRequest(msg string) Response { return c.JSON(400, map[string]string{"error": msg}) }
 func (c *Context) Unauthorized(msg string) Response { return c.JSON(401, map[string]string{"error": msg}) }
 func (c *Context) Forbidden(msg string) Response { return c.JSON(403, map[string]string{"error": msg}) }

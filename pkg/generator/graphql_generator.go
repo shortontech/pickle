@@ -43,6 +43,7 @@ func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []S
 		modelPlans = legacyGraphQLModelPlans(exposedTables)
 	}
 	tables = exposedTables
+	relationships = graphQLRelationshipsForPlans(modelPlans, relationships)
 
 	// 1. Write tickled core (executor, batch loader, ResolveContext)
 	if !hasOverride(graphqlDir, "pickle.go") {

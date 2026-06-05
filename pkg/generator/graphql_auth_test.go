@@ -406,6 +406,32 @@ func (p *PublicAPI) Up() {
 	}
 }
 
+func TestGraphQLPolicyRelationshipsInferForeignKeysAndStayOptIn(t *testing.T) {
+	users := &schema.Table{Name: "users"}
+	users.UUID("id").PrimaryKey()
+	posts := &schema.Table{Name: "posts"}
+	posts.UUID("id").PrimaryKey()
+	posts.UUID("user_id").ForeignKey("users", "id")
+
+	optInPlans := exposedGraphQLModelPlans([]*ExposedModel{
+		{Model: "users", Table: users, Operations: []string{"list"}, Relationships: []DerivedRelationshipExposure{{Name: "posts"}}},
+		{Model: "posts", Table: posts, Operations: []string{"list"}},
+	})
+	optInSDL := BuildSDLWithPlans(optInPlans, nil, nil)
+	if !strings.Contains(optInSDL, "posts: [Post!]! @auth") {
+		t.Fatalf("policy relationship should infer FK relationship field:\n%s", optInSDL)
+	}
+
+	noRelationshipPlans := exposedGraphQLModelPlans([]*ExposedModel{
+		{Model: "users", Table: users, Operations: []string{"list"}},
+		{Model: "posts", Table: posts, Operations: []string{"list"}},
+	})
+	noRelationshipSDL := BuildSDLWithPlans(noRelationshipPlans, nil, nil)
+	if strings.Contains(noRelationshipSDL, "posts: [Post!]! @auth") {
+		t.Fatalf("FK relationship should remain opt-in under policy plans:\n%s", noRelationshipSDL)
+	}
+}
+
 func TestOwnerIDGeneration(t *testing.T) {
 	table := &schema.Table{
 		Name: "posts",

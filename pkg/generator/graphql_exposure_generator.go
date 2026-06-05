@@ -58,8 +58,7 @@ func legacyGraphQLModelPlans(tables []*schema.Table) []GraphQLModelPlan {
 	var plans []GraphQLModelPlan
 	for _, tbl := range tables {
 		plans = append(plans, GraphQLModelPlan{
-			Table:         tbl,
-			Relationships: map[string]DerivedRelationshipExposure{},
+			Table: tbl,
 			Operations: map[string]bool{
 				"list":   true,
 				"show":   true,
@@ -70,6 +69,65 @@ func legacyGraphQLModelPlans(tables []*schema.Table) []GraphQLModelPlan {
 		})
 	}
 	return plans
+}
+
+func graphQLRelationshipsForPlans(plans []GraphQLModelPlan, relationships []SchemaRelationship) []SchemaRelationship {
+	var tables []*schema.Table
+	for _, plan := range plans {
+		if plan.Table != nil {
+			tables = append(tables, plan.Table)
+		}
+	}
+	relationships = append(append([]SchemaRelationship{}, relationships...), inferGraphQLRelationshipsFromForeignKeys(tables)...)
+	exposedTables := tableSetFromPlans(plans)
+	planByTable := map[string]GraphQLModelPlan{}
+	for _, plan := range plans {
+		if plan.Table != nil {
+			planByTable[plan.Table.Name] = plan
+		}
+	}
+	seen := map[string]bool{}
+	var out []SchemaRelationship
+	for _, rel := range relationships {
+		if !exposedTables[rel.ParentTable] || !exposedTables[rel.ChildTable] {
+			continue
+		}
+		fieldName := snakeToCamel(rel.ChildTable)
+		if plan, ok := planByTable[rel.ParentTable]; ok && plan.Relationships != nil {
+			if _, ok := plan.Relationships[fieldName]; !ok {
+				continue
+			}
+		}
+		key := rel.Type + "\x00" + rel.ParentTable + "\x00" + rel.ChildTable
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, rel)
+	}
+	return out
+}
+
+func inferGraphQLRelationshipsFromForeignKeys(tables []*schema.Table) []SchemaRelationship {
+	parentTables := map[string]bool{}
+	for _, tbl := range tables {
+		parentTables[tbl.Name] = true
+	}
+	var relationships []SchemaRelationship
+	for _, child := range tables {
+		for _, col := range child.Columns {
+			if col.ForeignKeyTable == "" || !parentTables[col.ForeignKeyTable] {
+				continue
+			}
+			relationships = append(relationships, SchemaRelationship{
+				Type:        "has_many",
+				ParentTable: col.ForeignKeyTable,
+				ChildTable:  child.Name,
+				Collection:  true,
+			})
+		}
+	}
+	return relationships
 }
 
 func exposedGraphQLModelPlans(models []*ExposedModel) []GraphQLModelPlan {

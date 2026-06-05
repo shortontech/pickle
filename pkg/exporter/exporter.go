@@ -1797,7 +1797,8 @@ func (e *exporter) writeGraphQLPackage(tables []*schema.Table, views []*schema.V
 	if err := e.writeGraphQLTargetFiles(schemaSDL); err != nil {
 		return err
 	}
-	if err := e.writeGraphQLAPIResolverTarget(schemaSDL, tables); err != nil {
+	relationships := exportedGraphQLRelationships(tables)
+	if err := e.writeGraphQLAPIResolverTarget(schemaSDL, tables, relationships); err != nil {
 		return err
 	}
 	return e.writeGraphQLQuerySupport(tables, views)
@@ -1835,7 +1836,7 @@ import _ "github.com/99designs/gqlgen"
 `))
 }
 
-func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*schema.Table) error {
+func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*schema.Table, relationships []generator.SchemaRelationship) error {
 	exposed := graphQLTablesInSDL(schemaSDL, tables)
 	if len(exposed) == 0 {
 		return nil
@@ -1866,7 +1867,7 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 		b.WriteString("type mutationResolver struct{ *Resolver }\n")
 	}
 	for _, tbl := range exposed {
-		if graphQLTableNeedsObjectResolver(tbl) {
+		if graphQLTableNeedsObjectResolver(schemaSDL, tbl, relationships) {
 			fmt.Fprintf(&b, "type %sResolver struct{ *Resolver }\n", graphQLResolverTypeName(tbl))
 		}
 	}
@@ -1887,12 +1888,12 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 		if graphQLSDLHasMutationField(schemaSDL, "delete"+tableToStruct(tbl.Name)) {
 			writeGraphQLAPIDeleteResolver(&b, tbl)
 		}
-		if graphQLTableNeedsObjectResolver(tbl) {
-			writeGraphQLAPIObjectResolvers(&b, tbl)
+		if graphQLTableNeedsObjectResolver(schemaSDL, tbl, relationships) {
+			writeGraphQLAPIObjectResolvers(&b, schemaSDL, tbl, exposed, relationships)
 		}
 	}
 	for _, tbl := range exposed {
-		if graphQLTableNeedsObjectResolver(tbl) {
+		if graphQLTableNeedsObjectResolver(schemaSDL, tbl, relationships) {
 			structName := tableToStruct(tbl.Name)
 			resolverName := graphQLResolverTypeName(tbl)
 			fmt.Fprintf(&b, "func (r *Resolver) %s() generated.%sResolver { return &%sResolver{r} }\n\n", structName, structName, resolverName)
@@ -2151,13 +2152,84 @@ func graphQLResolverTypeName(tbl *schema.Table) string {
 	return strings.ToLower(structName[:1]) + structName[1:]
 }
 
-func graphQLTableNeedsObjectResolver(tbl *schema.Table) bool {
+func graphQLTableNeedsObjectResolver(schemaSDL string, tbl *schema.Table, relationships []generator.SchemaRelationship) bool {
 	for _, col := range tbl.Columns {
 		if graphQLColumnResolverReturnType(col) != "" && !isExcludedFromExportedGraphQL(tbl, col) {
 			return true
 		}
 	}
-	return false
+	return len(graphQLTableRelationshipsInSDL(schemaSDL, tbl, relationships)) > 0
+}
+
+func exportedGraphQLRelationships(tables []*schema.Table) []generator.SchemaRelationship {
+	var relationships []generator.SchemaRelationship
+	parentTables := map[string]bool{}
+	for _, tbl := range tables {
+		parentTables[tbl.Name] = true
+	}
+	for _, child := range tables {
+		for _, col := range child.Columns {
+			if col.ForeignKeyTable == "" || !parentTables[col.ForeignKeyTable] {
+				continue
+			}
+			relationships = append(relationships, generator.SchemaRelationship{
+				Type:        "has_many",
+				ParentTable: col.ForeignKeyTable,
+				ChildTable:  child.Name,
+				Collection:  true,
+			})
+		}
+	}
+	return relationships
+}
+
+func graphQLTableRelationshipsInSDL(schemaSDL string, tbl *schema.Table, relationships []generator.SchemaRelationship) []generator.SchemaRelationship {
+	var out []generator.SchemaRelationship
+	typeName := tableToStruct(tbl.Name)
+	for _, rel := range relationships {
+		if rel.ParentTable != tbl.Name {
+			continue
+		}
+		fieldName := snakeToCamel(rel.ChildTable)
+		if graphQLSDLTypeHasField(schemaSDL, typeName, fieldName) {
+			out = append(out, rel)
+		}
+	}
+	return out
+}
+
+func graphQLSDLTypeHasField(schemaSDL, typeName, fieldName string) bool {
+	block := graphQLSDLTypeBlock(schemaSDL, typeName)
+	if block == "" {
+		return false
+	}
+	return strings.Contains(block, "\n  "+fieldName+":") || strings.Contains(block, "\n  "+fieldName+"(")
+}
+
+func graphQLSDLTypeBlock(schemaSDL, typeName string) string {
+	marker := "type " + typeName + " {"
+	start := strings.Index(schemaSDL, marker)
+	if start < 0 {
+		return ""
+	}
+	brace := strings.Index(schemaSDL[start:], "{")
+	if brace < 0 {
+		return ""
+	}
+	pos := start + brace
+	depth := 0
+	for i := pos; i < len(schemaSDL); i++ {
+		switch schemaSDL[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return schemaSDL[pos+1 : i]
+			}
+		}
+	}
+	return ""
 }
 
 func isExcludedFromExportedGraphQL(tbl *schema.Table, col *schema.Column) bool {
@@ -2528,7 +2600,7 @@ func writeGraphQLAPIColumnFilter(b *strings.Builder, col *schema.Column, field s
 	}
 }
 
-func writeGraphQLAPIObjectResolvers(b *strings.Builder, tbl *schema.Table) {
+func writeGraphQLAPIObjectResolvers(b *strings.Builder, schemaSDL string, tbl *schema.Table, tables []*schema.Table, relationships []generator.SchemaRelationship) {
 	structName := tableToStruct(tbl.Name)
 	resolverType := graphQLResolverTypeName(tbl)
 	for _, col := range tbl.Columns {
@@ -2546,6 +2618,74 @@ func writeGraphQLAPIObjectResolvers(b *strings.Builder, tbl *schema.Table) {
 		writeGraphQLAPIFieldReturn(b, col, goField, returnType)
 		b.WriteString("}\n\n")
 	}
+	for _, rel := range graphQLTableRelationshipsInSDL(schemaSDL, tbl, relationships) {
+		child := graphQLTableByName(tables, rel.ChildTable)
+		if child == nil {
+			continue
+		}
+		writeGraphQLAPIRelationshipResolver(b, tbl, child, rel)
+	}
+}
+
+func writeGraphQLAPIRelationshipResolver(b *strings.Builder, parent, child *schema.Table, rel generator.SchemaRelationship) {
+	parentPK := primaryKeyColumn(parent)
+	fk := graphQLRelationshipFKColumn(parent, child)
+	if parentPK == nil || fk == nil {
+		return
+	}
+	parentStruct := tableToStruct(parent.Name)
+	childStruct := tableToStruct(child.Name)
+	resolverType := graphQLResolverTypeName(parent)
+	methodName := snakeToPascal(snakeToCamel(rel.ChildTable))
+	parentPKField := snakeToPascal(parentPK.Name)
+	fkField := snakeToPascal(fk.Name)
+	switch rel.Type {
+	case "has_one":
+		fmt.Fprintf(b, "func (r *%sResolver) %s(ctx context.Context, obj *models.%s) (*models.%s, error) {\n", resolverType, methodName, parentStruct, childStruct)
+		b.WriteString("\tif obj == nil {\n\t\treturn nil, nil\n\t}\n")
+		fmt.Fprintf(b, "\tq := models.Query%s().Where%s(obj.%s)\n", childStruct, fkField, parentPKField)
+		if exportedGraphQLTableHasVisibility(child) {
+			fmt.Fprintf(b, "\tgraphQLAPISelect%sVisibility(ctx, q)\n", childStruct)
+		}
+		b.WriteString("\trecord, err := q.First()\n\tif err != nil {\n\t\treturn nil, nil\n\t}\n\treturn record, nil\n")
+		b.WriteString("}\n\n")
+	default:
+		fmt.Fprintf(b, "func (r *%sResolver) %s(ctx context.Context, obj *models.%s) ([]*models.%s, error) {\n", resolverType, methodName, parentStruct, childStruct)
+		fmt.Fprintf(b, "\tif obj == nil {\n\t\treturn []*models.%s{}, nil\n\t}\n", childStruct)
+		fmt.Fprintf(b, "\tq := models.Query%s().Where%s(obj.%s)\n", childStruct, fkField, parentPKField)
+		if exportedGraphQLTableHasVisibility(child) {
+			fmt.Fprintf(b, "\tgraphQLAPISelect%sVisibility(ctx, q)\n", childStruct)
+		}
+		b.WriteString("\tq.Limit(maxGraphQLAPIPageSize)\n")
+		b.WriteString("\trecords, err := q.All()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n")
+		fmt.Fprintf(b, "\titems := make([]*models.%s, 0, len(records))\n", childStruct)
+		b.WriteString("\tfor i := range records {\n\t\titems = append(items, &records[i])\n\t}\n\treturn items, nil\n")
+		b.WriteString("}\n\n")
+	}
+}
+
+func graphQLTableByName(tables []*schema.Table, name string) *schema.Table {
+	for _, tbl := range tables {
+		if tbl.Name == name {
+			return tbl
+		}
+	}
+	return nil
+}
+
+func graphQLRelationshipFKColumn(parent, child *schema.Table) *schema.Column {
+	for _, col := range child.Columns {
+		if col.ForeignKeyTable == parent.Name {
+			return col
+		}
+	}
+	fallback := strings.TrimSuffix(parent.Name, "s") + "_id"
+	for _, col := range child.Columns {
+		if col.Name == fallback {
+			return col
+		}
+	}
+	return nil
 }
 
 func writeGraphQLAPIFieldReturn(b *strings.Builder, col *schema.Column, goField, returnType string) {

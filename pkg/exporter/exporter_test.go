@@ -5069,6 +5069,12 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), `panic(fmt.Errorf("not implemented`)
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "type Query")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "type User")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "posts: [Post!]! @auth")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "comments: [Comment!]! @auth")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *userResolver) Posts")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "q := models.QueryPost().WhereUserID(obj.ID)")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "q.Limit(maxGraphQLAPIPageSize)")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *postResolver) Comments")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), `mime.ParseMediaType(contentType)`)
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIRequestBodyBytes = 1 << 20")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIRequestEnvelopeFieldBytes = 32")
@@ -5204,7 +5210,7 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 	models.SetDB(db)
-	if err := db.AutoMigrate(&models.User{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.Post{}); err != nil {
 		t.Fatalf("auto migrate: %v", err)
 	}
 	createdAt := time.Now().UTC().Add(-time.Hour)
@@ -5218,6 +5224,19 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 	}
 	if err := models.QueryUser().Create(user); err != nil {
 		t.Fatalf("create user: %v", err)
+	}
+	for i := 0; i < maxGraphQLAPIPageSize+5; i++ {
+		post := &models.Post{
+			ID:        uuid.New(),
+			UserID:    user.ID,
+			Title:     "Post",
+			Body:      "Body",
+			CreatedAt: createdAt,
+			UpdatedAt: createdAt,
+		}
+		if err := models.QueryPost().Create(post); err != nil {
+			t.Fatalf("create post %d: %v", i, err)
+		}
 	}
 
 	queries := &queryResolver{Resolver: &Resolver{}}
@@ -5256,6 +5275,18 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 	badTimestamp := "not-a-timestamp"
 	if _, err := queries.Users(managerCtx, &model.UserFilter{CreatedAt: &model.DateTimeFilter{Gte: &badTimestamp}}, nil, nil); !isBadInput(err) {
 		t.Fatalf("invalid timestamp filter error = %v, want BAD_USER_INPUT", err)
+	}
+
+	userFields := &userResolver{Resolver: &Resolver{}}
+	posts, err := userFields.Posts(managerCtx, user)
+	if err != nil {
+		t.Fatalf("user posts: %v", err)
+	}
+	if len(posts) != maxGraphQLAPIPageSize {
+		t.Fatalf("relationship posts = %d, want capped %d", len(posts), maxGraphQLAPIPageSize)
+	}
+	if posts[0].UserID != user.ID {
+		t.Fatalf("relationship post user_id = %s, want %s", posts[0].UserID, user.ID)
 	}
 }
 

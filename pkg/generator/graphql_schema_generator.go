@@ -57,6 +57,7 @@ func BuildSDLWithPlans(plans []GraphQLModelPlan, relationships []SchemaRelations
 			tables = append(tables, plan.Table)
 		}
 	}
+	relationships = graphQLRelationshipsForPlans(plans, relationships)
 	exposedTables := tableSetFromPlans(plans)
 
 	// Build relationship lookup

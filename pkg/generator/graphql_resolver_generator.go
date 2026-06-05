@@ -25,6 +25,7 @@ func GenerateGraphQLResolversWithPlans(plans []GraphQLModelPlan, relationships [
 		}
 	}
 	exposedTables := tableSetFromPlans(plans)
+	relationships = graphQLRelationshipsForPlans(plans, relationships)
 
 	relByParent := map[string][]SchemaRelationship{}
 	for _, rel := range relationships {

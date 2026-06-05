@@ -68,6 +68,7 @@ func GenerateGraphQLTypesWithPlans(plans []GraphQLModelPlan, requests []RequestD
 	if len(relationships) > 0 {
 		rels = relationships[0]
 	}
+	rels = graphQLRelationshipsForPlans(plans, rels)
 	writeGraphQLFieldCostRegistration(&b, plans, rels)
 
 	// Input types

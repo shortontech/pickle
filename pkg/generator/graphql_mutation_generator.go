@@ -95,7 +95,7 @@ func GenerateGraphQLMutationsWithPlans(plans []GraphQLModelPlan, modelsImport, p
 	// Build child-to-parent map for nested mutations
 	childToParent := map[string]SchemaRelationship{}
 	if len(relationships) > 0 && relationships[0] != nil {
-		for _, rel := range relationships[0] {
+		for _, rel := range graphQLRelationshipsForPlans(plans, relationships[0]) {
 			childToParent[rel.ChildTable] = rel
 		}
 	}

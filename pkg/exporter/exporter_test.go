@@ -1624,6 +1624,18 @@ func TestExportedOnErrorReceivesRecoveredPanic(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d", rec.Code)
 	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("panic Content-Type = %q, want application/json", got)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("panic X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if strings.Contains(rec.Body.String(), "boom") {
+		t.Fatalf("panic response leaked detail: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "internal server error") {
+		t.Fatalf("panic response missing sanitized error: %s", rec.Body.String())
+	}
 	if reported == nil || reported.Error() != "boom" {
 		t.Fatalf("reported error = %v", reported)
 	}

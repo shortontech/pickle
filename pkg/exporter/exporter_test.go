@@ -1628,15 +1628,21 @@ import "testing"
 func TestExportedSplitSQLStatementsPreservesQuotedSemicolons(t *testing.T) {
 	sql := "INSERT INTO logs (message) VALUES ('hello; world');\n" +
 		"INSERT INTO logs (message) VALUES ('it''s; fine');\n" +
-		"CREATE TABLE \"semi;colon\" (id TEXT);"
+		"CREATE TABLE \"semi;colon\" (id TEXT);\n" +
+		"-- comment with ; semicolon\n" +
+		"INSERT INTO logs (message) VALUES ('after line comment');\n" +
+		"/* block comment ; still comment */\n" +
+		"INSERT INTO logs (message) VALUES ('after block comment');"
 	statements := splitSQLStatements(sql)
-	if len(statements) != 3 {
-		t.Fatalf("statements = %d, want 3: %#v", len(statements), statements)
+	if len(statements) != 5 {
+		t.Fatalf("statements = %d, want 5: %#v", len(statements), statements)
 	}
 	want := []string{
 		"INSERT INTO logs (message) VALUES ('hello; world')",
 		"INSERT INTO logs (message) VALUES ('it''s; fine')",
 		"CREATE TABLE \"semi;colon\" (id TEXT)",
+		"-- comment with ; semicolon\nINSERT INTO logs (message) VALUES ('after line comment')",
+		"/* block comment ; still comment */\nINSERT INTO logs (message) VALUES ('after block comment')",
 	}
 	for i := range want {
 		if statements[i] != want[i] {

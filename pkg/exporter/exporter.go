@@ -4050,8 +4050,40 @@ func splitSQLStatements(sql string) []string {
 	var b strings.Builder
 	inSingleQuote := false
 	inDoubleQuote := false
+	inLineComment := false
+	inBlockComment := false
 	for i := 0; i < len(sql); i++ {
 		ch := sql[i]
+		if inLineComment {
+			b.WriteByte(ch)
+			if ch == '\n' || ch == '\r' {
+				inLineComment = false
+			}
+			continue
+		}
+		if inBlockComment {
+			b.WriteByte(ch)
+			if ch == '*' && i+1 < len(sql) && sql[i+1] == '/' {
+				i++
+				b.WriteByte(sql[i])
+				inBlockComment = false
+			}
+			continue
+		}
+		if !inSingleQuote && !inDoubleQuote && ch == '-' && i+1 < len(sql) && sql[i+1] == '-' {
+			b.WriteByte(ch)
+			i++
+			b.WriteByte(sql[i])
+			inLineComment = true
+			continue
+		}
+		if !inSingleQuote && !inDoubleQuote && ch == '/' && i+1 < len(sql) && sql[i+1] == '*' {
+			b.WriteByte(ch)
+			i++
+			b.WriteByte(sql[i])
+			inBlockComment = true
+			continue
+		}
 		if ch == '\'' && !inDoubleQuote {
 			b.WriteByte(ch)
 			if inSingleQuote && i+1 < len(sql) && sql[i+1] == '\'' {

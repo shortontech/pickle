@@ -1762,6 +1762,11 @@ func TestExportedOnErrorReceivesRecoveredPanic(t *testing.T) {
 }
 
 func TestExportedContextResourceHelpersPropagateOwner(t *testing.T) {
+	var logs bytes.Buffer
+	previousLogOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousLogOutput)
+
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	ctx := httpx.NewContext(req)
 	ctx.SetAuth(&httpx.AuthInfo{UserID: "owner-1"})
@@ -1806,6 +1811,12 @@ func TestExportedContextResourceHelpersPropagateOwner(t *testing.T) {
 	}
 	if body, ok := resp.Body.(map[string]string); !ok || body["error"] != "internal server error" {
 		t.Fatalf("failing resources body = %#v", resp.Body)
+	}
+	if strings.Contains(logs.String(), "swordfish") || strings.Contains(logs.String(), "dont-leak-me") {
+		t.Fatalf("resource helper error log leaked detail: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "http error") {
+		t.Fatalf("resource helper error log missing sanitized marker: %s", logs.String())
 	}
 }
 

@@ -2221,6 +2221,7 @@ func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "pickle.")
 	writeExportedZeroGraphQLEncryptedFilterTest(t, out)
+	writeExportedZeroGraphQLHTTPMethodSafetyTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
 
@@ -2280,6 +2281,96 @@ func TestExportedGraphQLQueryFiltersDeterministicEncryptedColumns(t *testing.T) 
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_graphql_encrypted_filter_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedZeroGraphQLHTTPMethodSafetyTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package graphql_test
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"zero-graphql/app/graphql"
+	"zero-graphql/app/http/auth"
+	"zero-graphql/app/http/auth/jwt"
+	"zero-graphql/app/models"
+)
+
+func TestExportedGraphQLGETDoesNotExecuteMutations(t *testing.T) {
+	t.Setenv("APP_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef")
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	if err := db.AutoMigrate(&models.User{}, &models.JwtToken{}); err != nil {
+		t.Fatalf("auto migrate: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth.Init(func(key, fallback string) string {
+		switch key {
+		case "AUTH_DRIVER":
+			return "jwt"
+		case "DB_CONNECTION":
+			return "sqlite"
+		case "JWT_SECRET":
+			return "0123456789abcdef0123456789abcdef"
+		default:
+			return fallback
+		}
+	}, sqlDB)
+	token, err := auth.Driver("jwt").(*jwt.Driver).SignToken(jwt.Claims{
+		Subject:   uuid.New().String(),
+		Role:      "admin",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("sign jwt: %v", err)
+	}
+
+	query := ` + "`" + `mutation CreateViaGET {
+  createUser(input: { name: "GET Bad", email: "get@example.com" }) { id name }
+}` + "`" + `
+	req := httptest.NewRequest(http.MethodGet, "/graphql?query="+url.QueryEscape(query), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	graphql.Handler().ServeHTTP(rec, req)
+
+	var count int64
+	if err := db.Model(&models.User{}).Where("name = ?", "GET Bad").Count(&count).Error; err != nil {
+		t.Fatalf("count users: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("GET mutation created %d user rows; response status=%d body=%s", count, rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Data   any              ` + "`" + `json:"data"` + "`" + `
+		Errors []map[string]any ` + "`" + `json:"errors"` + "`" + `
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v\nstatus=%d body=%s", err, rec.Code, rec.Body.String())
+	}
+	if len(resp.Errors) == 0 {
+		t.Fatalf("GET mutation should return a GraphQL error, got status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "graphql", "exported_http_method_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

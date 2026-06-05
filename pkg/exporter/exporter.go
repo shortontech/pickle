@@ -508,6 +508,28 @@ func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, 
 		if len(s.Rhs) == 1 {
 			call, ok := s.Rhs[0].(*ast.CallExpr)
 			if ok {
+				if assign, ok, err := rewriteQueryVarMutation(call, queryVars); err != nil {
+					return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+				} else if ok {
+					if len(s.Lhs) != 1 {
+						return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: "query builder assignment must target one variable"}
+					}
+					lhs, lhsOK := s.Lhs[0].(*ast.Ident)
+					if !lhsOK {
+						return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: "query builder assignment must target a variable"}
+					}
+					if rhs, rhsOK := assign.(*ast.AssignStmt); rhsOK && len(rhs.Lhs) == 1 {
+						rhsID, rhsIDOK := rhs.Lhs[0].(*ast.Ident)
+						if !rhsIDOK || rhsID.Name != lhs.Name {
+							return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: "query builder assignment must target the same variable"}
+						}
+						return assign, nil
+					}
+					if _, empty := assign.(*ast.EmptyStmt); empty {
+						return assign, nil
+					}
+				}
+
 				if terminal, ok, err := parseQueryVarTerminal(call, queryVars); err != nil {
 					return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
 				} else if ok {

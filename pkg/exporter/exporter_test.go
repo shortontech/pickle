@@ -2715,6 +2715,49 @@ func Index(role string) ([]models.User, error) {
 	}
 }
 
+func TestRewriteAssignedMutableQueryVariable(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"User": true},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func Index(role string, limit int) ([]models.User, error) {
+	q := models.QueryUser()
+	q = q.WhereRole(role)
+	q = q.OrderByID("ASC")
+	q = q.Limit(limit)
+	q = q.SelectAll()
+	return q.All()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	compact := strings.Join(strings.Fields(got), " ")
+	for _, want := range []string{
+		"q := models.DB.Model(&models. User{})",
+		`q = q.Where("role = ?", role, )`,
+		`q = q.Order("id" + " " + "ASC")`,
+		"q = q.Limit(limit)",
+		"return func() ([]models.User, error)",
+	} {
+		if !strings.Contains(compact, want) {
+			t.Fatalf("rewritten source missing %q:\n%s", want, got)
+		}
+	}
+	for _, unexpected := range []string{"WhereRole", "OrderByID", "SelectAll"} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("rewritten source still contains %q:\n%s", unexpected, got)
+		}
+	}
+}
+
 func TestRewriteAliasedModelsImportQueryChain(t *testing.T) {
 	ex := &exporter{
 		sourceModule: "example.com/app",

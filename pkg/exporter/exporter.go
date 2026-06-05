@@ -1984,7 +1984,7 @@ func gqlgenPageLimit(page *model.PageInput) (int, error) {
 	limit := defaultGraphQLAPIPageSize
 	if page != nil {
 		if page.First != nil && page.Last != nil {
-			return 0, fmt.Errorf("page.first and page.last cannot both be set")
+			return 0, graphQLAPIBadInput("page.first and page.last cannot both be set")
 		}
 		if page.First != nil {
 			limit = *page.First
@@ -2453,7 +2453,7 @@ func writeGraphQLAPIColumnFilter(b *strings.Builder, col *schema.Column, field s
 	case schema.String, schema.Text:
 		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Eq != nil { q.Where%s(*filter.%s.Eq) }\n", field, field, field))
 		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Like != nil { q.Where%sLike(*filter.%s.Like) }\n", field, field, field))
-		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > maxGraphQLAPIInputListSize { return fmt.Errorf(\"%s.in exceeds maximum %%d\", maxGraphQLAPIInputListSize) }\n", field, col.Name))
+		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > maxGraphQLAPIInputListSize { return graphQLAPIBadInput(fmt.Sprintf(\"%s.in exceeds maximum %%d\", maxGraphQLAPIInputListSize)) }\n", field, col.Name))
 		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > 0 { q.Where%sIn(filter.%s.In) }\n", field, field, field))
 	case schema.Integer, schema.BigInteger:
 		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Eq != nil { q.Where%s(*filter.%s.Eq) }\n", field, field, field))
@@ -2461,7 +2461,7 @@ func writeGraphQLAPIColumnFilter(b *strings.Builder, col *schema.Column, field s
 		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Gte != nil { q.Where%sGTE(*filter.%s.Gte) }\n", field, field, field))
 		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Lt != nil { q.Where%sLT(*filter.%s.Lt) }\n", field, field, field))
 		b.WriteString(fmt.Sprintf("\t\tif filter.%s.Lte != nil { q.Where%sLTE(*filter.%s.Lte) }\n", field, field, field))
-		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > maxGraphQLAPIInputListSize { return fmt.Errorf(\"%s.in exceeds maximum %%d\", maxGraphQLAPIInputListSize) }\n", field, col.Name))
+		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > maxGraphQLAPIInputListSize { return graphQLAPIBadInput(fmt.Sprintf(\"%s.in exceeds maximum %%d\", maxGraphQLAPIInputListSize)) }\n", field, col.Name))
 		b.WriteString(fmt.Sprintf("\t\tif len(filter.%s.In) > 0 { q.Where%sIn(filter.%s.In) }\n", field, field, field))
 	case schema.Timestamp, schema.Date, schema.Time:
 		for _, op := range []struct{ gql, method string }{{"Gt", "After"}, {"Gte", "GTE"}, {"Lt", "Before"}, {"Lte", "LTE"}} {

@@ -3445,6 +3445,7 @@ func TestExportZeroGraphQLLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "generated", "generated.go"), "type ResolverRoot interface")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *Resolver) Query() generated.QueryResolver")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), "func gqlgenPageWindow")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), `graphQLAPIBadInput("page.first and page.last cannot both be set")`)
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "TotalCount: totalCount")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "TotalCount: len(edges)")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "not implemented: Users")
@@ -3682,9 +3683,19 @@ func TestExportedGQLGenTargetCRUDResolvers(t *testing.T) {
 	if _, err := queries.Posts(ctx, nil, nil, &model.PageInput{First: &tooLargePage}); !isBadInput(err) {
 		t.Fatalf("oversized page error = %v, want BAD_USER_INPUT", err)
 	}
+	if _, err := queries.Posts(ctx, nil, nil, &model.PageInput{First: intPtr(1), Last: intPtr(1)}); !isBadInput(err) {
+		t.Fatalf("first+last page error = %v, want BAD_USER_INPUT", err)
+	}
 	zeroPage := 0
 	if _, err := queries.Posts(ctx, nil, nil, &model.PageInput{First: &zeroPage}); !isBadInput(err) {
 		t.Fatalf("zero page size error = %v, want BAD_USER_INPUT", err)
+	}
+	tooManyTitles := make([]string, maxGraphQLAPIInputListSize+1)
+	for i := range tooManyTitles {
+		tooManyTitles[i] = "title"
+	}
+	if _, err := queries.Posts(ctx, &model.PostFilter{Title: &model.StringFilter{In: tooManyTitles}}, nil, nil); !isBadInput(err) {
+		t.Fatalf("oversized string filter error = %v, want BAD_USER_INPUT", err)
 	}
 	badCursor := "not-a-cursor"
 	if _, err := queries.Posts(ctx, nil, nil, &model.PageInput{After: &badCursor}); !isBadInput(err) {
@@ -4110,6 +4121,7 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "generated", "generated.go"), "type ResolverRoot interface")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *Resolver) Query() generated.QueryResolver")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), "func gqlgenPageWindow")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), `graphQLAPIBadInput("page.first and page.last cannot both be set")`)
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "TotalCount: totalCount")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "TotalCount: len(edges)")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), `panic(fmt.Errorf("not implemented`)

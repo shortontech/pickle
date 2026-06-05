@@ -327,6 +327,23 @@ func TestSchemaShow_IncludesGraphQLExposure(t *testing.T) {
 	}
 }
 
+func TestColumnVisibilityForRoleDoesNotTreatPrimaryKeysAsPublic(t *testing.T) {
+	projectDir := "../../testdata/basic-crud"
+	s, err := NewServer(projectDir)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	visibility := s.columnVisibilityForRole("viewer")
+	for _, table := range []string{"sessions", "jwt_tokens", "oauth_tokens", "accounts"} {
+		for _, col := range visibility[table] {
+			if col == "id" || col == "jti" || col == "token" {
+				t.Fatalf("%s.%s should not be role-visible just because it is a primary key", table, col)
+			}
+		}
+	}
+}
+
 // --- tool registration ---
 
 func TestRBACToolsRegistered(t *testing.T) {

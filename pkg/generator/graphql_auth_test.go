@@ -74,6 +74,31 @@ func TestGraphQLSchemaExplicitPublicPrimaryKey(t *testing.T) {
 	}
 }
 
+func TestGraphQLResolverRequiresAuthForUnannotatedPrimaryKey(t *testing.T) {
+	table := &schema.Table{
+		Name: "users",
+		Columns: []*schema.Column{
+			{Name: "id", Type: schema.UUID, IsPrimaryKey: true},
+		},
+	}
+
+	src, err := GenerateGraphQLResolversWithPlans([]GraphQLModelPlan{{
+		Table:      table,
+		Operations: map[string]bool{"show": true},
+	}}, nil, "myapp/app/models", "graphql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	if !strings.Contains(s, `case "id":`) {
+		t.Fatal("resolver should include id field")
+	}
+	idCase := s[strings.Index(s, `case "id":`):]
+	if !strings.Contains(idCase, "!ctx.IsAuthenticated()") {
+		t.Error("unannotated primary key field should require authentication")
+	}
+}
+
 func TestGraphQLSchemaExcludesAuthCredentialIdentifiers(t *testing.T) {
 	tables := []*schema.Table{
 		{

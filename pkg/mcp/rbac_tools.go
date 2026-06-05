@@ -34,9 +34,9 @@ type GraphQLAction struct {
 
 // RBACState holds the derived RBAC state for MCP tools.
 type RBACState struct {
-	Roles         []generator.DerivedRole
-	Policies      []generator.StaticPolicyOps
-	GraphQLModels []GraphQLModel
+	Roles          []generator.DerivedRole
+	Policies       []generator.StaticPolicyOps
+	GraphQLModels  []GraphQLModel
 	GraphQLActions []GraphQLAction
 }
 
@@ -304,7 +304,7 @@ func (s *Server) rolesShow(_ context.Context, _ *mcp.CallToolRequest, input role
 
 // columnVisibilityForRole returns columns visible to a role, per table.
 // For manages roles, all columns are visible. For non-manages roles,
-// only columns with VisibleTo containing the role slug (or public/PK columns) are included.
+// only columns with VisibleTo containing the role slug (or public columns) are included.
 func (s *Server) columnVisibilityForRole(slug string) map[string][]string {
 	tables, _, _, err := generator.RunSchemaInspector(s.project)
 	if err != nil {
@@ -328,7 +328,7 @@ func (s *Server) columnVisibilityForRole(slug string) map[string][]string {
 			if isManages {
 				// Manages roles see all columns
 				cols = append(cols, col.Name)
-			} else if col.IsPrimaryKey || col.IsPublic {
+			} else if col.IsPublic {
 				cols = append(cols, col.Name)
 			} else if col.VisibleTo != nil && col.VisibleTo[slug] {
 				cols = append(cols, col.Name)

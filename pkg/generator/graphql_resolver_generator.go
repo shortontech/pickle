@@ -435,7 +435,7 @@ func writeFieldResolver(b *bytes.Buffer, tbl *schema.Table, rels []SchemaRelatio
 			} else {
 				b.WriteString("\t\tif !ctx.IsAuthenticated() {\n\t\t\treturn nil, nil\n\t\t}\n")
 			}
-		} else if !col.IsPublic && !col.IsPrimaryKey {
+		} else if !col.IsPublic {
 			b.WriteString("\t\tif !ctx.IsAuthenticated() {\n\t\t\treturn nil, nil\n\t\t}\n")
 		}
 

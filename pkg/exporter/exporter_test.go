@@ -1,6 +1,7 @@
 package exporter
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -97,6 +98,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	writeExportedPolicyBehaviorTest(t, out)
 	writeExportedRouterMiddlewareBehaviorTest(t, out)
 	writeExportedRBACMiddlewareBehaviorTest(t, out)
+	writeExportedAuthPlaceholderTests(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
 
@@ -290,6 +292,43 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "http", "auth", "exported_auth_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func writeExportedAuthPlaceholderTests(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package %s
+
+import "testing"
+
+func TestBindPlaceholdersMatchesDriver(t *testing.T) {
+	query := "INSERT INTO tokens (a, b, c) VALUES (?, ?, ?)"
+	if got := bindPlaceholders("sqlite", query); got != query {
+		t.Fatalf("sqlite placeholders = %%q", got)
+	}
+	if got := bindPlaceholders("mysql", query); got != query {
+		t.Fatalf("mysql placeholders = %%q", got)
+	}
+	if got := bindPlaceholders("postgres", query); got != "INSERT INTO tokens (a, b, c) VALUES ($1, $2, $3)" {
+		t.Fatalf("postgres placeholders = %%q", got)
+	}
+	if got := bindPlaceholders("pgsql", "SELECT * FROM tokens WHERE a = ? AND b = ?"); got != "SELECT * FROM tokens WHERE a = $1 AND b = $2" {
+		t.Fatalf("pgsql placeholders = %%q", got)
+	}
+}
+`
+	for _, pkg := range []struct {
+		Dir  string
+		Name string
+	}{
+		{filepath.Join("app", "http", "auth", "jwt"), "jwt"},
+		{filepath.Join("app", "http", "auth", "oauth"), "oauth"},
+		{filepath.Join("app", "http", "auth", "session"), "session"},
+	} {
+		path := filepath.Join(out, pkg.Dir, "exported_placeholders_test.go")
+		if err := os.WriteFile(path, []byte(fmt.Sprintf(testSrc, pkg.Name)), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

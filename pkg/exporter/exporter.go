@@ -4565,17 +4565,32 @@ func (d *Driver) Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
 func (d *Driver) registerToken(claims Claims) error {
 	expiresAt := time.Unix(claims.ExpiresAt, 0)
 	query := "INSERT INTO jwt_tokens (jti, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)"
-	_, err := d.db.Exec(query, claims.JTI, claims.Subject, expiresAt, time.Now().UTC())
+	_, err := d.db.Exec(bindPlaceholders(d.driver, query), claims.JTI, claims.Subject, expiresAt, time.Now().UTC())
 	return err
 }
 
 func (d *Driver) checkAllowlist(claims Claims) error {
 	if d.db == nil { return errors.New("jwt: database not configured") }
 	var expiresAt time.Time
-	err := d.db.QueryRow("SELECT expires_at FROM jwt_tokens WHERE jti = ? AND user_id = ?", claims.JTI, claims.Subject).Scan(&expiresAt)
+	err := d.db.QueryRow(bindPlaceholders(d.driver, "SELECT expires_at FROM jwt_tokens WHERE jti = ? AND user_id = ?"), claims.JTI, claims.Subject).Scan(&expiresAt)
 	if err != nil { return err }
 	if time.Now().After(expiresAt) { return errors.New("jwt: token expired") }
 	return nil
+}
+
+func bindPlaceholders(driver, query string) string {
+	if driver != "pgsql" && driver != "postgres" { return query }
+	var b strings.Builder
+	arg := 1
+	for i := 0; i < len(query); i++ {
+		if query[i] == '?' {
+			fmt.Fprintf(&b, "$%%d", arg)
+			arg++
+			continue
+		}
+		b.WriteByte(query[i])
+	}
+	return b.String()
 }
 
 func hmacSign(data, secret []byte, alg string) ([]byte, error) {
@@ -4647,7 +4662,7 @@ func (d *Driver) ValidateToken(token string) (*httpx.AuthInfo, error) {
 	if d.db == nil { return nil, errors.New("oauth: database not configured") }
 	var clientID string
 	var expiresAt time.Time
-	err := d.db.QueryRow("SELECT client_id, expires_at FROM oauth_tokens WHERE token = ?", token).Scan(&clientID, &expiresAt)
+	err := d.db.QueryRow(bindPlaceholders(d.driver, "SELECT client_id, expires_at FROM oauth_tokens WHERE token = ?"), token).Scan(&clientID, &expiresAt)
 	if err == sql.ErrNoRows { return nil, errors.New("oauth: invalid token") }
 	if err != nil { return nil, errors.New("oauth: database error") }
 	if time.Now().After(expiresAt) { return nil, errors.New("oauth: token expired") }
@@ -4677,10 +4692,25 @@ func (d *Driver) TokenEndpoint(ctx *httpx.Context) httpx.Response {
 	token, err := generateToken()
 	if err != nil { return ctx.Error(err) }
 	expiresAt := time.Now().Add(time.Duration(d.expiry) * time.Second)
-	if _, err := d.db.Exec("INSERT INTO oauth_tokens (token, client_id, expires_at, created_at) VALUES (?, ?, ?, ?)", token, clientID, expiresAt, time.Now().UTC()); err != nil {
+	if _, err := d.db.Exec(bindPlaceholders(d.driver, "INSERT INTO oauth_tokens (token, client_id, expires_at, created_at) VALUES (?, ?, ?, ?)"), token, clientID, expiresAt, time.Now().UTC()); err != nil {
 		return ctx.Error(fmt.Errorf("oauth: failed to store token: %%w", err))
 	}
 	return ctx.JSON(200, map[string]any{"access_token": token, "token_type": "bearer", "expires_in": d.expiry})
+}
+
+func bindPlaceholders(driver, query string) string {
+	if driver != "pgsql" && driver != "postgres" { return query }
+	var b strings.Builder
+	arg := 1
+	for i := 0; i < len(query); i++ {
+		if query[i] == '?' {
+			fmt.Fprintf(&b, "$%%d", arg)
+			arg++
+			continue
+		}
+		b.WriteByte(query[i])
+	}
+	return b.String()
 }
 
 func parseBasicAuth(header string) (string, string, bool) {
@@ -4708,6 +4738,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -4753,7 +4784,7 @@ func (d *Driver) Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
 	if d.db == nil { return nil, errors.New("session: database not configured") }
 	var userID, role string
 	var expiresAt time.Time
-	err = d.db.QueryRow("SELECT user_id, role, expires_at FROM sessions WHERE id = ?", cookie.Value).Scan(&userID, &role, &expiresAt)
+	err = d.db.QueryRow(bindPlaceholders(d.driver, "SELECT user_id, role, expires_at FROM sessions WHERE id = ?"), cookie.Value).Scan(&userID, &role, &expiresAt)
 	if err == sql.ErrNoRows { return nil, errors.New("session: invalid or expired session") }
 	if err != nil { return nil, errors.New("session: database error") }
 	if time.Now().After(expiresAt) { return nil, errors.New("session: invalid or expired session") }
@@ -4772,7 +4803,7 @@ func Create(ctx *httpx.Context, userID, role string) (httpx.Response, error) {
 	d := driver()
 	sessionID := uuid.New().String()
 	expiresAt := time.Now().UTC().Add(time.Duration(d.ttl) * time.Second)
-	if _, err := d.db.Exec("INSERT INTO sessions (id, user_id, role, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", sessionID, userID, role, expiresAt, time.Now().UTC(), time.Now().UTC()); err != nil {
+	if _, err := d.db.Exec(bindPlaceholders(d.driver, "INSERT INTO sessions (id, user_id, role, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"), sessionID, userID, role, expiresAt, time.Now().UTC(), time.Now().UTC()); err != nil {
 		return httpx.Response{}, err
 	}
 	resp := ctx.JSON(200, map[string]string{"status": "ok"})
@@ -4803,6 +4834,21 @@ func sessionIDFromRequest(r *http.Request) string {
 	c, err := r.Cookie(sessionCookieName)
 	if err != nil { return "" }
 	return c.Value
+}
+
+func bindPlaceholders(driver, query string) string {
+	if driver != "pgsql" && driver != "postgres" { return query }
+	var b strings.Builder
+	arg := 1
+	for i := 0; i < len(query); i++ {
+		if query[i] == '?' {
+			fmt.Fprintf(&b, "$%%d", arg)
+			arg++
+			continue
+		}
+		b.WriteByte(query[i])
+	}
+	return b.String()
 }
 
 func newCSRFCookie(sessionID string) *http.Cookie {

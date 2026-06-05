@@ -4413,15 +4413,9 @@ func TestExportedGQLGenTargetCRUDResolvers(t *testing.T) {
 	}
 	ctx = WithGraphQLAPIAuthClaims(ctx, &GraphQLAPIAuthClaims{UserID: userID.String(), Role: "admin"})
 	badID := "not-a-uuid"
-	if _, err := mutations.CreatePost(ctx, model.CreatePostInput{
-		UserID: badID,
-		Title:  "Bad ID",
-		Body:   "GraphQL body",
-	}); !isBadInput(err) {
-		t.Fatalf("invalid create id input error = %v, want BAD_USER_INPUT", err)
-	}
+	spoofedID := uuid.New()
 	post, err := mutations.CreatePost(ctx, model.CreatePostInput{
-		UserID: userID.String(),
+		UserID: spoofedID.String(),
 		Title:  "Hello",
 		Body:   "GraphQL body",
 		Status: stringPtr("draft"),
@@ -4431,6 +4425,9 @@ func TestExportedGQLGenTargetCRUDResolvers(t *testing.T) {
 	}
 	if post.ID == uuid.Nil || post.UserID != userID || post.Title != "Hello" || post.Status != "draft" {
 		t.Fatalf("created post = %+v", post)
+	}
+	if post.UserID == spoofedID {
+		t.Fatalf("create post trusted GraphQL owner input: %+v", post)
 	}
 	if post.CreatedAt.IsZero() || post.UpdatedAt.IsZero() {
 		t.Fatalf("post timestamps were not initialized: %+v", post)
@@ -4537,16 +4534,20 @@ func TestExportedGQLGenTargetCRUDResolvers(t *testing.T) {
 	if _, err := mutations.DeletePost(ctx, badID); !isBadInput(err) {
 		t.Fatalf("invalid delete id error = %v, want BAD_USER_INPUT", err)
 	}
-	if _, err := mutations.UpdatePost(ctx, post.ID.String(), model.UpdatePostInput{UserID: &badID}); !isBadInput(err) {
-		t.Fatalf("invalid update id input error = %v, want BAD_USER_INPUT", err)
+	strangerCtx := WithGraphQLAPIAuthClaims(context.Background(), &GraphQLAPIAuthClaims{UserID: uuid.NewString(), Role: "admin"})
+	if _, err := mutations.UpdatePost(strangerCtx, post.ID.String(), model.UpdatePostInput{Title: stringPtr("Stolen")}); err == nil {
+		t.Fatal("stranger update should be owner-scoped")
+	}
+	if deleted, err := mutations.DeletePost(strangerCtx, post.ID.String()); err == nil || deleted {
+		t.Fatalf("stranger delete = %v, %v; want owner-scoped denial", deleted, err)
 	}
 
 	updated, err := mutations.UpdatePost(ctx, post.ID.String(), model.UpdatePostInput{Title: stringPtr("Updated")})
 	if err != nil {
 		t.Fatalf("update post: %v", err)
 	}
-	if updated.Title != "Updated" {
-		t.Fatalf("updated title = %q", updated.Title)
+	if updated.Title != "Updated" || updated.UserID != userID {
+		t.Fatalf("updated post = %+v", updated)
 	}
 	if updated.UpdatedAt.Before(post.UpdatedAt) {
 		t.Fatalf("updated_at moved backwards: before=%s after=%s", post.UpdatedAt.Format(time.RFC3339Nano), updated.UpdatedAt.Format(time.RFC3339Nano))
@@ -4554,7 +4555,7 @@ func TestExportedGQLGenTargetCRUDResolvers(t *testing.T) {
 
 	comment, err := mutations.CreateComment(ctx, model.CreateCommentInput{
 		PostID: post.ID.String(),
-		UserID: userID.String(),
+		UserID: spoofedID.String(),
 		Body:   "Nice post",
 	})
 	if err != nil {

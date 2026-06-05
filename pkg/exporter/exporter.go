@@ -2237,6 +2237,7 @@ func writeGraphQLAPICreateResolver(b *strings.Builder, tbl *schema.Table) {
 	writeGraphQLAPIValidateCreateInternalFields(b, tbl)
 	fmt.Fprintf(b, "\trecord := &models.%s{}\n", structName)
 	writeGraphQLAPIInitializeCreateRecord(b, tbl)
+	writeGraphQLAPIAssignOwnerFromAuth(b, tbl, "create"+structName, "nil")
 	writeGraphQLAPIAssignCreateInput(b, tbl)
 	fmt.Fprintf(b, "\tif err := models.Query%s().Create(record); err != nil {\n\t\treturn nil, err\n\t}\n", structName)
 	b.WriteString("\treturn record, nil\n")
@@ -2270,7 +2271,9 @@ func writeGraphQLAPIUpdateResolver(b *strings.Builder, tbl *schema.Table) {
 	fmt.Fprintf(b, "func (r *mutationResolver) Update%s(ctx context.Context, id string, input model.Update%sInput) (*models.%s, error) {\n", structName, structName, structName)
 	writeGraphQLAPIRequireAuth(b, "update"+structName, "nil")
 	writeGraphQLAPIPKParse(b, tbl, pk, "nil")
-	fmt.Fprintf(b, "\trecord, err := models.Query%s().Where%s(parsedID).First()\n", structName, snakeToPascal(pk.Name))
+	fmt.Fprintf(b, "\tq := models.Query%s().Where%s(parsedID)\n", structName, snakeToPascal(pk.Name))
+	writeGraphQLAPIScopeOwnerFromAuth(b, tbl, "update"+structName, "nil")
+	b.WriteString("\trecord, err := q.First()\n")
 	b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n")
 	writeGraphQLAPIAssignUpdateInput(b, tbl)
 	if graphQLTableHasColumn(tbl, "updated_at") {
@@ -2290,7 +2293,9 @@ func writeGraphQLAPIDeleteResolver(b *strings.Builder, tbl *schema.Table) {
 	fmt.Fprintf(b, "func (r *mutationResolver) Delete%s(ctx context.Context, id string) (bool, error) {\n", structName)
 	writeGraphQLAPIRequireAuth(b, "delete"+structName, "false")
 	writeGraphQLAPIPKParse(b, tbl, pk, "false")
-	fmt.Fprintf(b, "\trecord, err := models.Query%s().Where%s(parsedID).First()\n", structName, snakeToPascal(pk.Name))
+	fmt.Fprintf(b, "\tq := models.Query%s().Where%s(parsedID)\n", structName, snakeToPascal(pk.Name))
+	writeGraphQLAPIScopeOwnerFromAuth(b, tbl, "delete"+structName, "false")
+	b.WriteString("\trecord, err := q.First()\n")
 	b.WriteString("\tif err != nil {\n\t\treturn false, err\n\t}\n")
 	fmt.Fprintf(b, "\tif err := models.Query%s().Delete(record); err != nil {\n\t\treturn false, err\n\t}\n", structName)
 	b.WriteString("\treturn true, nil\n")
@@ -2339,6 +2344,44 @@ func writeGraphQLAPIInitializeCreateRecord(b *strings.Builder, tbl *schema.Table
 				fmt.Fprintf(b, "\trecord.%s = now\n", field)
 			}
 		}
+	}
+}
+
+func writeGraphQLAPIAssignOwnerFromAuth(b *strings.Builder, tbl *schema.Table, operation, failureReturn string) {
+	ownerCol := exportedGraphQLOwnerColumn(tbl)
+	if ownerCol == nil {
+		return
+	}
+	field := snakeToPascal(ownerCol.Name)
+	b.WriteString("\tauth := GraphQLAPIAuthFromContext(ctx)\n")
+	switch ownerCol.Type {
+	case schema.UUID:
+		b.WriteString("\townerID, err := uuid.Parse(auth.UserID)\n")
+		fmt.Fprintf(b, "\tif err != nil {\n\t\treturn %s, graphQLAPIBadInput(%q)\n\t}\n", failureReturn, operation+": invalid owner ID")
+		fmt.Fprintf(b, "\trecord.%s = ownerID\n", field)
+	case schema.String, schema.Text:
+		fmt.Fprintf(b, "\trecord.%s = auth.UserID\n", field)
+	default:
+		fmt.Fprintf(b, "\treturn %s, graphQLAPIBadInput(%q)\n", failureReturn, operation+": unsupported owner ID type")
+	}
+}
+
+func writeGraphQLAPIScopeOwnerFromAuth(b *strings.Builder, tbl *schema.Table, operation, failureReturn string) {
+	ownerCol := exportedGraphQLOwnerColumn(tbl)
+	if ownerCol == nil {
+		return
+	}
+	field := snakeToPascal(ownerCol.Name)
+	b.WriteString("\tauth := GraphQLAPIAuthFromContext(ctx)\n")
+	switch ownerCol.Type {
+	case schema.UUID:
+		b.WriteString("\townerID, err := uuid.Parse(auth.UserID)\n")
+		fmt.Fprintf(b, "\tif err != nil {\n\t\treturn %s, graphQLAPIBadInput(%q)\n\t}\n", failureReturn, operation+": invalid owner ID")
+		fmt.Fprintf(b, "\tq.Where%s(ownerID)\n", field)
+	case schema.String, schema.Text:
+		fmt.Fprintf(b, "\tq.Where%s(auth.UserID)\n", field)
+	default:
+		fmt.Fprintf(b, "\treturn %s, graphQLAPIBadInput(%q)\n", failureReturn, operation+": unsupported owner ID type")
 	}
 }
 
@@ -2409,14 +2452,14 @@ func writeGraphQLAPIAssignInputField(b *strings.Builder, col *schema.Column, exp
 }
 
 func graphQLAPICreateInputHasColumn(tbl *schema.Table, col *schema.Column) bool {
-	if col.IsPrimaryKey || col.Name == "created_at" || col.Name == "updated_at" || isExcludedFromExportedGraphQL(tbl, col) {
+	if col.IsPrimaryKey || col.IsOwnerColumn || col.Name == "created_at" || col.Name == "updated_at" || isExcludedFromExportedGraphQL(tbl, col) {
 		return false
 	}
 	return true
 }
 
 func graphQLAPIUpdateInputHasColumn(tbl *schema.Table, col *schema.Column) bool {
-	if col.IsPrimaryKey || col.Name == "created_at" || col.Name == "updated_at" || isExcludedFromExportedGraphQL(tbl, col) {
+	if col.IsPrimaryKey || col.IsOwnerColumn || col.Name == "created_at" || col.Name == "updated_at" || isExcludedFromExportedGraphQL(tbl, col) {
 		return false
 	}
 	return true
@@ -2544,6 +2587,18 @@ func exportedGraphQLTableHasVisibility(tbl *schema.Table) bool {
 		}
 	}
 	return false
+}
+
+func exportedGraphQLOwnerColumn(tbl *schema.Table) *schema.Column {
+	if tbl == nil {
+		return nil
+	}
+	for _, col := range tbl.Columns {
+		if col.IsOwnerColumn {
+			return col
+		}
+	}
+	return nil
 }
 
 func extractStringConstFromGoSource(src []byte, name string) (string, error) {

@@ -4850,6 +4850,7 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 		"invalid_id":       []byte(` + "`" + `{"query":"query BadID($id: ID) { posts(filter: { id: { eq: $id } }) { totalCount } }","variables":{"id":"not-a-uuid-secret"}}` + "`" + `),
 		"introspection":    []byte(` + "`" + `{"query":"{ __schema { queryType { name } } }"}` + "`" + `),
 		"alias_flood":      []byte(` + "`" + `{"query":"{ ` + "`" + ` + strings.Repeat("alias: posts { totalCount } ", 26) + ` + "`" + `}"}` + "`" + `),
+		"operation_flood":  []byte(` + "`" + `{"query":"` + "`" + ` + strings.Repeat("query TooMany { posts { totalCount } } ", 9) + ` + "`" + `"}` + "`" + `),
 		"deep_query":       []byte(` + "`" + `{"query":"{ posts { edges { node { id { a { b { c { d { e { f { g } } } } } } } } } } }"}` + "`" + `),
 		"bad_variables":    []byte(` + "`" + `{"query":"query Good($id: ID) { post(id: $id) { id } }","variables":["not","object"]}` + "`" + `),
 		"deep_variables":   []byte(` + "`" + `{"query":"query Good($v: String) { posts { totalCount } }","variables":{"deep":{"a":{"b":{"c":{"d":{"e":{"f":{"g":{"h":{"i":"too deep"}}}}}}}}}}}` + "`" + `),
@@ -5164,6 +5165,7 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIOperationNameBytes = 256")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "func validateGraphQLAPIRequestEnvelope")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIVariables = 64")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIOperations = 8")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIVariableNameBytes = 256")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "func validateGraphQLAPIVariables")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "func validateGraphQLAPIExtensions")

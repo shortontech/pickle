@@ -3088,6 +3088,7 @@ const maxGraphQLAPITokenMultiplier = 20
 const maxGraphQLAPIComplexity = 1000
 const maxGraphQLAPIDepth = 10
 const maxGraphQLAPIAliases = 25
+const maxGraphQLAPIOperations = 8
 
 type graphQLAPIRoleRow struct {
 	Slug    string
@@ -3568,15 +3569,20 @@ func validateGraphQLAPIQueryShape(query string) error {
 	}
 	seenFragments := map[string]bool{}
 	shape := graphQLAPIQueryShape{}
+	operations := 0
 	for _, operation := range doc.Operations {
 		if operation == nil {
 			continue
 		}
+		operations++
 		operationShape := graphQLAPISelectionShape(operation.SelectionSet, fragments, seenFragments, 1)
 		if operationShape.Depth > shape.Depth {
 			shape.Depth = operationShape.Depth
 		}
 		shape.Aliases += operationShape.Aliases
+	}
+	if operations > maxGraphQLAPIOperations {
+		return graphQLAPICodedError("GraphQL query operations exceed safety limit", "BAD_USER_INPUT")
 	}
 	if shape.Depth > maxGraphQLAPIDepth {
 		return graphQLAPICodedError("GraphQL query depth exceeds safety limit", "BAD_USER_INPUT")

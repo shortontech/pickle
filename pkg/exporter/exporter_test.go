@@ -54,6 +54,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.down.sql"), "DROP TABLE")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.up.sql"), "CREATE INDEX")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260228100000_create_user_post_stats_view.up.sql"), "CREATE VIEW")
+	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260228100000_create_user_post_stats_view.up.sql"), `"u"."email_encrypted" AS "email"`)
+	assertFileNotContains(t, filepath.Join(out, "database", "migrations", "20260228100000_create_user_post_stats_view.up.sql"), `"u"."email",`)
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Exported")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone JWT, OAuth client-credentials, and session auth drivers")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone RBAC and GraphQL policy state support with changelog tables")
@@ -955,6 +957,9 @@ func TestExportedMigrationsApplyToSQLite(t *testing.T) {
 		if !status.Applied {
 			t.Fatalf("migration status %#v should be applied", status)
 		}
+	}
+	if err := db.Raw("SELECT * FROM user_post_stats LIMIT 0").Error; err != nil {
+		t.Fatalf("query user_post_stats view: %v", err)
 	}
 }
 
@@ -3185,6 +3190,31 @@ func TestGenerateSQLMigrationsLowersCapturedOperations(t *testing.T) {
 		if !strings.Contains(migrations[0].Down, want) {
 			t.Fatalf("down migration missing %q:\n%s", want, migrations[0].Down)
 		}
+	}
+}
+
+func TestCreateViewSQLUsesEncryptedStorageColumns(t *testing.T) {
+	users := &schema.Table{Name: "users", Columns: []*schema.Column{
+		{Name: "id", Type: schema.UUID, IsPrimaryKey: true},
+		{Name: "email", Type: schema.String, IsEncrypted: true},
+	}}
+	view := &schema.View{Name: "user_emails"}
+	view.From("users", "u")
+	view.Column("u.id")
+	view.Column("u.email")
+	view.GroupBy("u.id", "u.email")
+
+	sql := createViewSQL(view, users)
+	for _, want := range []string{
+		`"u"."email_encrypted" AS "email"`,
+		`GROUP BY u.id, u.email_encrypted`,
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("view SQL missing %q:\n%s", want, sql)
+		}
+	}
+	if strings.Contains(sql, `"u"."email",`) {
+		t.Fatalf("view SQL retained logical encrypted column:\n%s", sql)
 	}
 }
 

@@ -3753,7 +3753,7 @@ func (e *exporter) generateSQLMigrations(tables []*schema.Table, views []*schema
 			if !ok {
 				return nil, fmt.Errorf("migration %s references unknown view %s", entry.Name(), viewName)
 			}
-			out = append(out, sqlMigration{Name: exportName, Up: createViewSQL(view) + ";\n", Down: dropViewSQL(view.Name) + ";\n"})
+			out = append(out, sqlMigration{Name: exportName, Up: createViewSQL(view, tables...) + ";\n", Down: dropViewSQL(view.Name) + ";\n"})
 		default:
 			return nil, unsupportedMigrationError(entry.Name(), operation)
 		}
@@ -3789,6 +3789,14 @@ func sqlForMigrationOps(ops []generator.MigrationOperation, tables ...*schema.Ta
 		return "", nil
 	}
 	return strings.Join(statements, ";\n") + ";\n", nil
+}
+
+func mapValues[K comparable, V any](m map[K]V) []V {
+	values := make([]V, 0, len(m))
+	for _, v := range m {
+		values = append(values, v)
+	}
+	return values
 }
 
 func sqlForMigrationOp(op generator.MigrationOperation, tableByName map[string]*schema.Table) (string, error) {
@@ -3834,7 +3842,7 @@ func sqlForMigrationOp(op generator.MigrationOperation, tableByName map[string]*
 		if op.ViewDef == nil {
 			return "", fmt.Errorf("create_view missing view definition")
 		}
-		return createViewSQL(op.ViewDef), nil
+		return createViewSQL(op.ViewDef, mapValues(tableByName)...), nil
 	case "drop_view":
 		return dropViewSQL(op.Table), nil
 	case "raw_sql":
@@ -3976,16 +3984,21 @@ func indexName(idx *schema.Index) string {
 	return kind + "_" + idx.Table + "_" + strings.Join(idx.Columns, "_")
 }
 
-func createViewSQL(view *schema.View) string {
+func createViewSQL(view *schema.View, tables ...*schema.Table) string {
+	storageColumns := viewStorageColumns(view, tables...)
 	var selectCols []string
 	for _, col := range view.Columns {
 		if col.RawExpr != "" {
 			selectCols = append(selectCols, "\t"+col.RawExpr+" AS "+quoteIdent(col.OutputName()))
 			continue
 		}
-		expr := quoteIdent(col.SourceAlias) + "." + quoteIdent(col.SourceColumn)
-		if col.OutputAlias != "" && col.OutputAlias != col.SourceColumn {
-			expr += " AS " + quoteIdent(col.OutputAlias)
+		sourceColumn := col.SourceColumn
+		if storage, ok := storageColumns[col.SourceAlias+"."+col.SourceColumn]; ok {
+			sourceColumn = storage
+		}
+		expr := quoteIdent(col.SourceAlias) + "." + quoteIdent(sourceColumn)
+		if col.OutputName() != sourceColumn {
+			expr += " AS " + quoteIdent(col.OutputName())
 		}
 		selectCols = append(selectCols, "\t"+expr)
 	}
@@ -4012,9 +4025,49 @@ func createViewSQL(view *schema.View) string {
 	b.WriteString(strings.Join(fromParts, "\n"))
 	if len(view.GroupByCols) > 0 {
 		b.WriteString("\nGROUP BY ")
-		b.WriteString(strings.Join(view.GroupByCols, ", "))
+		var groupBy []string
+		for _, col := range view.GroupByCols {
+			groupBy = append(groupBy, viewGroupByStorageColumn(col, storageColumns))
+		}
+		b.WriteString(strings.Join(groupBy, ", "))
 	}
 	return b.String()
+}
+
+func viewStorageColumns(view *schema.View, tables ...*schema.Table) map[string]string {
+	tableByName := map[string]*schema.Table{}
+	for _, table := range tables {
+		tableByName[table.Name] = table
+	}
+	aliasTable := map[string]string{}
+	for _, src := range view.Sources {
+		aliasTable[src.Alias] = src.Table
+	}
+	out := map[string]string{}
+	for alias, tableName := range aliasTable {
+		table, ok := tableByName[tableName]
+		if !ok {
+			continue
+		}
+		for _, col := range table.Columns {
+			if col.IsEncrypted || col.IsSealed {
+				out[alias+"."+col.Name] = col.Name + "_encrypted"
+			}
+		}
+	}
+	return out
+}
+
+func viewGroupByStorageColumn(col string, storageColumns map[string]string) string {
+	parts := strings.Split(col, ".")
+	if len(parts) != 2 {
+		return col
+	}
+	key := parts[0] + "." + parts[1]
+	if storage, ok := storageColumns[key]; ok {
+		return parts[0] + "." + storage
+	}
+	return col
 }
 
 func dropViewSQL(name string) string {

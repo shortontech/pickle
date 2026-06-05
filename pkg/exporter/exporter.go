@@ -5729,9 +5729,27 @@ func (d *Driver) registerToken(claims Claims) error {
 func (d *Driver) checkAllowlist(claims Claims) error {
 	if d.db == nil { return errors.New("jwt: database not configured") }
 	var expiresAt time.Time
-	err := d.db.QueryRow(bindPlaceholders(d.driver, "SELECT expires_at FROM jwt_tokens WHERE jti = ? AND user_id = ?"), claims.JTI, claims.Subject).Scan(&expiresAt)
+	var revokedAt sql.NullTime
+	err := d.db.QueryRow(bindPlaceholders(d.driver, "SELECT expires_at, revoked_at FROM jwt_tokens WHERE jti = ? AND user_id = ?"), claims.JTI, claims.Subject).Scan(&expiresAt, &revokedAt)
 	if err != nil { return err }
 	if time.Now().After(expiresAt) { return errors.New("jwt: token expired") }
+	if revokedAt.Valid { return errors.New("jwt: token revoked") }
+	return nil
+}
+
+func (d *Driver) RevokeToken(jti string) error {
+	if d.db == nil { return errors.New("jwt: database not configured") }
+	if jti == "" { return errors.New("jwt: missing jti") }
+	_, err := d.db.Exec(bindPlaceholders(d.driver, "UPDATE jwt_tokens SET revoked_at = ? WHERE jti = ?"), time.Now().UTC(), jti)
+	if err != nil { return fmt.Errorf("jwt: revoke token: %%w", err) }
+	return nil
+}
+
+func (d *Driver) RevokeAllForUser(userID string) error {
+	if d.db == nil { return errors.New("jwt: database not configured") }
+	if userID == "" { return errors.New("jwt: missing user id") }
+	_, err := d.db.Exec(bindPlaceholders(d.driver, "UPDATE jwt_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL"), time.Now().UTC(), userID)
+	if err != nil { return fmt.Errorf("jwt: revoke all for user: %%w", err) }
 	return nil
 }
 

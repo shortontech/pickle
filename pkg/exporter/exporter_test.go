@@ -203,7 +203,7 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	}
 	defer db.Close()
 	for _, stmt := range []string{
-		` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL)` + "`" + `,
+		` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, revoked_at DATETIME, created_at DATETIME NOT NULL)` + "`" + `,
 		` + "`" + `CREATE TABLE oauth_tokens (token TEXT PRIMARY KEY, client_id TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL)` + "`" + `,
 		` + "`" + `CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, role TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
 	} {
@@ -241,6 +241,35 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	if info.UserID != "user-1" || info.Role != "admin" {
 		t.Fatalf("jwt auth info = %#v", info)
 	}
+	claims, err := jwtDriver.ValidateToken(token)
+	if err != nil {
+		t.Fatalf("validate jwt: %v", err)
+	}
+	if err := jwtDriver.RevokeToken(claims.JTI); err != nil {
+		t.Fatalf("revoke jwt: %v", err)
+	}
+	if _, err := jwtDriver.Authenticate(req); err == nil {
+		t.Fatal("revoked jwt should fail validation")
+	}
+	token, err = jwtDriver.SignToken(jwt.Claims{Subject: "user-1", Role: "admin"})
+	if err != nil {
+		t.Fatalf("sign jwt after revoke: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if _, err := jwtDriver.Authenticate(req); err != nil {
+		t.Fatalf("new jwt should authenticate: %v", err)
+	}
+	if err := jwtDriver.RevokeAllForUser("user-1"); err != nil {
+		t.Fatalf("revoke all jwt: %v", err)
+	}
+	if _, err := jwtDriver.Authenticate(req); err == nil {
+		t.Fatal("user-wide revoked jwt should fail validation")
+	}
+	token, err = jwtDriver.SignToken(jwt.Claims{Subject: "user-1", Role: "admin"})
+	if err != nil {
+		t.Fatalf("sign jwt after revoke all: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
 	if _, err := db.Exec("DELETE FROM jwt_tokens"); err != nil {
 		t.Fatal(err)
 	}
@@ -2007,7 +2036,7 @@ func TestExportedGraphQLSafetyCorpus(t *testing.T) {
 		` + "`" + `CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL, password_hash TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
 		` + "`" + `CREATE TABLE posts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
 		` + "`" + `CREATE TABLE comments (id TEXT PRIMARY KEY, post_id TEXT NOT NULL, user_id TEXT NOT NULL, body TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
-		` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL)` + "`" + `,
+		` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, revoked_at DATETIME, created_at DATETIME NOT NULL)` + "`" + `,
 	} {
 		if err := db.Exec(stmt).Error; err != nil {
 			t.Fatal(err)
@@ -2238,7 +2267,7 @@ func TestExportedGraphQLRBACClaimsLoadDatabaseRoles(t *testing.T) {
 	}
 	models.SetDB(db)
 	for _, stmt := range []string{
-		` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL)` + "`" + `,
+		` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, revoked_at DATETIME, created_at DATETIME NOT NULL)` + "`" + `,
 		` + "`" + `CREATE TABLE roles (id TEXT PRIMARY KEY, slug TEXT NOT NULL, manages BOOLEAN NOT NULL)` + "`" + `,
 		` + "`" + `CREATE TABLE role_user (user_id TEXT NOT NULL, role_id TEXT NOT NULL)` + "`" + `,
 	} {
@@ -2314,7 +2343,7 @@ func TestExportedGraphQLRBACMissingTablesDoNotBreakPlainAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	models.SetDB(db)
-	if err := db.Exec(` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL)` + "`" + `).Error; err != nil {
+	if err := db.Exec(` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, revoked_at DATETIME, created_at DATETIME NOT NULL)` + "`" + `).Error; err != nil {
 		t.Fatal(err)
 	}
 	sqlDB, err := db.DB()

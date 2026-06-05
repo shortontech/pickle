@@ -3655,6 +3655,16 @@ type actionAuditActionSeed struct {
 }
 
 var actionAuditMu sync.Mutex
+var errAuditDatabase = errors.New("audit database error")
+var errAuditUserID = errors.New("audit user id")
+
+func auditDatabaseError() error {
+	return errAuditDatabase
+}
+
+func auditUserIDError() error {
+	return errAuditUserID
+}
 
 var actionAuditModelSeeds = []actionAuditModelSeed{
 `)
@@ -3677,13 +3687,13 @@ func ensureActionAuditSchema(db *gorm.DB) error {
 		` + "`" + `CREATE TABLE IF NOT EXISTS user_actions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, action_type_id INTEGER NOT NULL, resource_id TEXT NOT NULL, resource_version_id TEXT, role_id TEXT, ip_address VARCHAR(45), request_id VARCHAR(100), created_at DATETIME NOT NULL)` + "`" + `,
 	}
 	for _, stmt := range stmts {
-		if err := db.Exec(stmt).Error; err != nil { return err }
+		if err := db.Exec(stmt).Error; err != nil { return auditDatabaseError() }
 	}
 	for _, model := range actionAuditModelSeeds {
-		if err := db.Exec(actionAuditModelTypeUpsertSQL(db), model.ID, model.Name).Error; err != nil { return err }
+		if err := db.Exec(actionAuditModelTypeUpsertSQL(db), model.ID, model.Name).Error; err != nil { return auditDatabaseError() }
 	}
 	for _, action := range actionAuditActionSeeds {
-		if err := db.Exec(actionAuditActionTypeUpsertSQL(db), action.ID, action.ModelTypeID, action.Action).Error; err != nil { return err }
+		if err := db.Exec(actionAuditActionTypeUpsertSQL(db), action.ID, action.ModelTypeID, action.Action).Error; err != nil { return auditDatabaseError() }
 	}
 	return nil
 }
@@ -3735,6 +3745,7 @@ func runAuditedAction(ctx *httpx.Context, model, action string, resourceID uuid.
 	actionAuditMu.Lock()
 	defer actionAuditMu.Unlock()
 	previous := DB
+	var actionErr error
 	err := previous.Transaction(func(tx *gorm.DB) error {
 		DB = tx
 		defer func() { DB = previous }()
@@ -3743,6 +3754,7 @@ func runAuditedAction(ctx *httpx.Context, model, action string, resourceID uuid.
 		}
 		if err := fn(); err != nil {
 			AuditFailed(ctx, action, model, resourceID, err)
+			actionErr = err
 			return err
 		}
 		return recordActionPerformed(tx, ctx, actionID, resourceID, resourceVersionID, roleID)
@@ -3750,6 +3762,8 @@ func runAuditedAction(ctx *httpx.Context, model, action string, resourceID uuid.
 	DB = previous
 	if err == nil {
 		AuditPerformed(ctx, action, model, resourceID)
+	} else if actionErr == nil && !errors.Is(err, errAuditDatabase) && !errors.Is(err, errAuditUserID) {
+		return auditDatabaseError()
 	}
 	return err
 }
@@ -3781,12 +3795,15 @@ func actionVersionID(record any) *uuid.UUID {
 func recordActionPerformed(db *gorm.DB, ctx *httpx.Context, actionTypeID int, resourceID uuid.UUID, resourceVersionID *uuid.UUID, roleID *uuid.UUID) error {
 	userID, err := uuid.Parse(ctx.Auth().UserID)
 	if err != nil {
-		return fmt.Errorf("audit user id: %w", err)
+		return auditUserIDError()
 	}
 	ip := auditContextIP(ctx)
 	requestID := auditContextRequestID(ctx)
-	return db.Exec("INSERT INTO user_actions (id, user_id, action_type_id, resource_id, resource_version_id, role_id, ip_address, request_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		uuid.New().String(), userID.String(), actionTypeID, resourceID.String(), nullableUUID(resourceVersionID), nullableUUID(roleID), nullableString(ip), nullableString(requestID), time.Now().UTC()).Error
+	if err := db.Exec("INSERT INTO user_actions (id, user_id, action_type_id, resource_id, resource_version_id, role_id, ip_address, request_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		uuid.New().String(), userID.String(), actionTypeID, resourceID.String(), nullableUUID(resourceVersionID), nullableUUID(roleID), nullableString(ip), nullableString(requestID), time.Now().UTC()).Error; err != nil {
+		return auditDatabaseError()
+	}
+	return nil
 }
 
 func nullableUUID(id *uuid.UUID) any {

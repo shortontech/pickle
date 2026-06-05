@@ -134,6 +134,10 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "func (m *User) Promote")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "CanBan(ctx, m)")
 	assertFileContains(t, filepath.Join(out, "app", "models", "action_audit_support.go"), "func runAuditedAction")
+	assertFileContains(t, filepath.Join(out, "app", "models", "action_audit_support.go"), "func auditDatabaseError() error")
+	assertFileContains(t, filepath.Join(out, "app", "models", "action_audit_support.go"), "var errAuditUserID = errors.New(\"audit user id\")")
+	assertFileNotContains(t, filepath.Join(out, "app", "models", "action_audit_support.go"), "audit user id: %w")
+	assertFileNotContains(t, filepath.Join(out, "app", "models", "action_audit_support.go"), "return db.Exec(")
 	assertFileContains(t, filepath.Join(out, "app", "http", "middleware", "rbac_support.go"), "func LoadRoles")
 	assertFileContains(t, filepath.Join(out, "app", "http", "middleware", "rbac_support.go"), "func RequireRole")
 	assertFileContains(t, filepath.Join(out, "app", "http", "middleware", "rbac_support.go"), "errRoleDatabase")
@@ -1646,8 +1650,10 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 
 	badAuditCtx := httpx.NewContext(req)
 	badAuditCtx.SetAuth(&httpx.AuthInfo{UserID: "not-a-uuid", Role: "admin"})
-	if err := user.Ban(badAuditCtx, models.BanAction{Reason: "audit-fail"}); err == nil || !strings.Contains(err.Error(), "audit user id") {
-		t.Fatalf("ban with invalid audit user id error = %v, want audit user id error", err)
+	if err := user.Ban(badAuditCtx, models.BanAction{Reason: "audit-fail"}); err == nil || err.Error() != "audit user id" {
+		t.Fatalf("ban with invalid audit user id error = %v, want sanitized audit user id error", err)
+	} else if strings.Contains(err.Error(), "not-a-uuid") || strings.Contains(err.Error(), "invalid UUID") {
+		t.Fatalf("invalid audit user id error leaked detail: %v", err)
 	}
 	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
 		t.Fatal(err)
@@ -1662,6 +1668,32 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	if persistedName != "loaded-admin" {
 		t.Fatalf("user name after failed audit persistence = %q, want loaded-admin", persistedName)
 	}
+
+	closedDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(closedDB)
+	sqlDB, err := closedDB.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = user.Ban(ctx, models.BanAction{Reason: "closed-db"})
+	if err == nil {
+		t.Fatal("expected closed audit database to fail")
+	}
+	if err.Error() != "audit database error" {
+		t.Fatalf("closed audit database error = %v, want sanitized audit database error", err)
+	}
+	for _, forbidden := range []string{"sql:", "closed", "user_actions", "model_types", "INSERT", "password"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("closed audit database error leaked %q: %v", forbidden, err)
+		}
+	}
+	models.SetDB(db)
 
 	deniedCtx := httpx.NewContext(req)
 	deniedCtx.SetAuth(&httpx.AuthInfo{UserID: uuid.New().String(), Role: "viewer"})

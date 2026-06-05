@@ -3566,6 +3566,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vektah/gqlparser/v2/gqlerror"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
@@ -3628,20 +3629,23 @@ func TestExportedGQLGenTargetCRUDResolvers(t *testing.T) {
 		t.Fatal("oversized id filter should fail")
 	}
 	badID := "not-a-uuid"
-	if _, err := queries.Posts(ctx, &model.PostFilter{ID: &model.IDFilter{Eq: &badID}}, nil, nil); err == nil {
-		t.Fatal("invalid id filter should fail")
+	if _, err := queries.Posts(ctx, &model.PostFilter{ID: &model.IDFilter{Eq: &badID}}, nil, nil); !isBadInput(err) {
+		t.Fatalf("invalid id filter error = %v, want BAD_USER_INPUT", err)
+	}
+	if _, err := queries.Posts(ctx, &model.PostFilter{ID: &model.IDFilter{In: []string{uuid.NewString(), badID}}}, nil, nil); !isBadInput(err) {
+		t.Fatalf("invalid id list filter error = %v, want BAD_USER_INPUT", err)
 	}
 	tooLargePage := maxGraphQLAPIPageSize + 1
-	if _, err := queries.Posts(ctx, nil, nil, &model.PageInput{First: &tooLargePage}); err == nil {
-		t.Fatal("oversized page should fail")
+	if _, err := queries.Posts(ctx, nil, nil, &model.PageInput{First: &tooLargePage}); !isBadInput(err) {
+		t.Fatalf("oversized page error = %v, want BAD_USER_INPUT", err)
 	}
 	zeroPage := 0
-	if _, err := queries.Posts(ctx, nil, nil, &model.PageInput{First: &zeroPage}); err == nil {
-		t.Fatal("zero page size should fail")
+	if _, err := queries.Posts(ctx, nil, nil, &model.PageInput{First: &zeroPage}); !isBadInput(err) {
+		t.Fatalf("zero page size error = %v, want BAD_USER_INPUT", err)
 	}
 	badCursor := "not-a-cursor"
-	if _, err := queries.Posts(ctx, nil, nil, &model.PageInput{After: &badCursor}); err == nil {
-		t.Fatal("invalid cursor should fail")
+	if _, err := queries.Posts(ctx, nil, nil, &model.PageInput{After: &badCursor}); !isBadInput(err) {
+		t.Fatalf("invalid cursor error = %v, want BAD_USER_INPUT", err)
 	}
 
 	updated, err := mutations.UpdatePost(ctx, post.ID.String(), model.UpdatePostInput{Title: stringPtr("Updated")})
@@ -3679,6 +3683,11 @@ func TestExportedGQLGenTargetCRUDResolvers(t *testing.T) {
 func stringPtr(value string) *string { return &value }
 
 func intPtr(value int) *int { return &value }
+
+func isBadInput(err error) bool {
+	gqlErr, ok := err.(*gqlerror.Error)
+	return ok && gqlErr.Extensions["code"] == "BAD_USER_INPUT"
+}
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "resolver", "exported_target_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
@@ -3868,6 +3877,7 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 		"duplicate_field":  []byte(` + "`" + `{"query":"{ posts { totalCount } }","query":"{ comments { totalCount } }"}` + "`" + `),
 		"unsupported":      []byte(` + "`" + `{"query":"{ posts { totalCount } }","unexpected":true}` + "`" + `),
 		"invalid_op_name":  []byte(` + "`" + `{"query":"query Good { posts { totalCount } }","operationName":"1 Bad"}` + "`" + `),
+		"invalid_id":       []byte(` + "`" + `{"query":"query BadID($id: ID) { posts(filter: { id: { eq: $id } }) { totalCount } }","variables":{"id":"not-a-uuid-secret"}}` + "`" + `),
 		"introspection":    []byte(` + "`" + `{"query":"{ __schema { queryType { name } } }"}` + "`" + `),
 		"bad_variables":    []byte(` + "`" + `{"query":"query Good($id: ID) { post(id: $id) { id } }","variables":["not","object"]}` + "`" + `),
 		"deep_variables":   []byte(` + "`" + `{"query":"query Good($v: String) { posts { totalCount } }","variables":{"deep":{"a":{"b":{"c":{"d":{"e":{"f":{"g":{"h":{"i":"too deep"}}}}}}}}}}}` + "`" + `),
@@ -3881,6 +3891,9 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 			handler.ServeHTTP(rec, req)
 			if rec.Code != http.StatusOK || !responseHasErrorCode(t, rec.Body.Bytes(), "BAD_USER_INPUT") {
 				t.Fatalf("%s response status=%d body=%s", name, rec.Code, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), "not-a-uuid-secret") {
+				t.Fatalf("%s response leaked invalid ID value: %s", name, rec.Body.String())
 			}
 		})
 	}

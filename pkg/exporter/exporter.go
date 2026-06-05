@@ -1025,8 +1025,12 @@ func whereMethodColumn(method, model string) (string, string, bool) {
 		name string
 		op   string
 	}{
+		{"NotLike", "NOT LIKE"},
+		{"Like", "LIKE"},
 		{"NotIn", "NOT IN"},
 		{"In", "IN"},
+		{"After", ">"},
+		{"Before", "<"},
 		{"GTE", ">="},
 		{"GT", ">"},
 		{"LTE", "<="},

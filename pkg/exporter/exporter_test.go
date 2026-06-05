@@ -2758,6 +2758,95 @@ func Index(role string, limit int) ([]models.User, error) {
 	}
 }
 
+func TestRewriteQueryFilterOperatorSuffixes(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"Post": true},
+	}
+	src := []byte(`package controllers
+
+import (
+	"time"
+
+	"example.com/app/app/models"
+)
+
+func Search(term string, excluded string, after time.Time, before time.Time) ([]models.Post, error) {
+	return models.QueryPost().
+		WhereTitleLike(term).
+		WhereBodyNotLike(excluded).
+		WhereCreatedAtAfter(after).
+		WhereUpdatedAtBefore(before).
+		All()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	compact := strings.Join(strings.Fields(got), " ")
+	for _, want := range []string{
+		`Where("title LIKE ?", term)`,
+		`Where("body NOT LIKE ?", excluded)`,
+		`Where("created_at > ?", after)`,
+		`Where("updated_at < ?", before)`,
+	} {
+		if !strings.Contains(compact, want) {
+			t.Fatalf("rewritten source missing %q:\n%s", want, got)
+		}
+	}
+	for _, unexpected := range []string{"WhereTitleLike", "WhereBodyNotLike", "WhereCreatedAtAfter", "WhereUpdatedAtBefore"} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("rewritten source still contains %q:\n%s", unexpected, got)
+		}
+	}
+}
+
+func TestRewriteMutableQueryFilterOperatorSuffixes(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"Post": true},
+	}
+	src := []byte(`package controllers
+
+import (
+	"time"
+
+	"example.com/app/app/models"
+)
+
+func Search(term string, after time.Time) ([]models.Post, error) {
+	q := models.QueryPost()
+	q.WhereTitleLike(term)
+	q.WhereCreatedAtAfter(after)
+	return q.All()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	compact := strings.Join(strings.Fields(got), " ")
+	for _, want := range []string{
+		`q = q.Where("title LIKE ?", term`,
+		`q = q.Where("created_at > ?", after`,
+		"return func() ([]models.Post, error)",
+	} {
+		if !strings.Contains(compact, want) {
+			t.Fatalf("rewritten source missing %q:\n%s", want, got)
+		}
+	}
+	for _, unexpected := range []string{"WhereTitleLike", "WhereCreatedAtAfter"} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("rewritten source still contains %q:\n%s", unexpected, got)
+		}
+	}
+}
+
 func TestRewriteAliasedModelsImportQueryChain(t *testing.T) {
 	ex := &exporter{
 		sourceModule: "example.com/app",

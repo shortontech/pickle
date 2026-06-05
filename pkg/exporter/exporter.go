@@ -1916,6 +1916,7 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 	support.WriteString("package resolver\n\n")
 	support.WriteString("import (\n")
 	support.WriteString("\t\"context\"\n")
+	support.WriteString("\t\"errors\"\n")
 	support.WriteString("\t\"fmt\"\n")
 	support.WriteString("\t\"strings\"\n")
 	support.WriteString("\t\"time\"\n\n")
@@ -1923,6 +1924,7 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 	support.WriteString("\t\"github.com/vektah/gqlparser/v2/gqlerror\"\n")
 	fmt.Fprintf(&support, "\t\"%s/app/graphqlapi/model\"\n", e.modulePath)
 	fmt.Fprintf(&support, "\t\"%s/app/models\"\n", e.modulePath)
+	support.WriteString("\t\"gorm.io/gorm\"\n")
 	support.WriteString(")\n\n")
 	writeGraphQLAPIResolverSupport(&support)
 	for _, tbl := range exposed {
@@ -1992,6 +1994,10 @@ func graphQLAPIUnauthenticated(message string) *gqlerror.Error {
 		Message:    message,
 		Extensions: map[string]any{"code": "UNAUTHENTICATED"},
 	}
+}
+
+func graphQLAPIRecordNotFound(err error) bool {
+	return errors.Is(err, gorm.ErrRecordNotFound)
 }
 
 func gqlgenStringPtr(value string) *string {
@@ -2303,7 +2309,7 @@ func writeGraphQLAPISingleResolver(b *strings.Builder, tbl *schema.Table) {
 	if exportedGraphQLTableHasVisibility(tbl) {
 		fmt.Fprintf(b, "\tgraphQLAPISelect%sVisibility(ctx, q)\n", structName)
 	}
-	b.WriteString("\trecord, err := q.First()\n\tif err != nil {\n\t\treturn nil, nil\n\t}\n\treturn record, nil\n")
+	b.WriteString("\trecord, err := q.First()\n\tif err != nil {\n\t\tif graphQLAPIRecordNotFound(err) {\n\t\t\treturn nil, nil\n\t\t}\n\t\treturn nil, err\n\t}\n\treturn record, nil\n")
 	b.WriteString("}\n\n")
 }
 
@@ -2674,7 +2680,7 @@ func writeGraphQLAPIRelationshipResolver(b *strings.Builder, parent, child *sche
 			fmt.Fprintf(b, "\tgraphQLAPISelect%sVisibility(ctx, q)\n", childStruct)
 		}
 		writeGraphQLAPIScopeRelationshipOwnerFromAuth(b, child, strings.ToLower(methodName), "nil")
-		b.WriteString("\trecord, err := q.First()\n\tif err != nil {\n\t\treturn nil, nil\n\t}\n\treturn record, nil\n")
+		b.WriteString("\trecord, err := q.First()\n\tif err != nil {\n\t\tif graphQLAPIRecordNotFound(err) {\n\t\t\treturn nil, nil\n\t\t}\n\t\treturn nil, err\n\t}\n\treturn record, nil\n")
 		b.WriteString("}\n\n")
 	default:
 		fmt.Fprintf(b, "func (r *%sResolver) %s(ctx context.Context, obj *models.%s) ([]*models.%s, error) {\n", resolverType, methodName, parentStruct, childStruct)

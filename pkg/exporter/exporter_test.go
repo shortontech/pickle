@@ -3265,6 +3265,7 @@ func writeExportedGraphQLModelVisibilityBehaviorTest(t *testing.T, out string) {
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"gorm.io/driver/sqlite"
@@ -3286,6 +3287,35 @@ func TestExportedGraphQLVisibilitySelectsProjectedColumns(t *testing.T) {
 	}
 	if got, want := QueryPost().SelectPublic().db.Statement.Selects, []string{"id", "user_id", "title"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("Post SelectPublic columns = %#v, want %#v", got, want)
+	}
+}
+
+func TestExportedGraphQLOrderByFailsClosed(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetDB(db)
+
+	safe := QueryUser().OrderBy("created_at", " desc ")
+	if len(safe.db.Statement.Clauses) == 0 {
+		t.Fatalf("safe OrderBy did not add an order clause")
+	}
+
+	unknown := QueryUser().OrderBy("created_at; DROP TABLE users", "DESC")
+	if len(unknown.db.Statement.Clauses) != 0 {
+		t.Fatalf("unknown GraphQL order column should be ignored, got %#v", unknown.db.Statement.Clauses)
+	}
+
+	unsafeDirection := QueryUser().OrderBy("created_at", "DESC; DROP TABLE users")
+	var users []User
+	stmt := unsafeDirection.db.Session(&gorm.Session{DryRun: true}).Find(&users).Statement
+	sql := stmt.SQL.String()
+	if strings.Contains(sql, "DROP TABLE") || strings.Contains(sql, "DESC;") {
+		t.Fatalf("unsafe direction leaked into SQL: %s", sql)
+	}
+	if !strings.Contains(sql, "ASC") {
+		t.Fatalf("unsafe direction did not normalize to ASC: %s", sql)
 	}
 }
 `

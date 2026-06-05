@@ -2151,6 +2151,7 @@ func writeGraphQLAPIListResolver(b *strings.Builder, tbl *schema.Table) {
 	fmt.Fprintf(b, "\t\tif err := apply%sFilter(q, filter); err != nil {\n\t\t\treturn nil, err\n\t\t}\n", structName)
 	b.WriteString("\t}\n")
 	b.WriteString("\tif sort != nil {\n\t\tcolumn, dir := gqlgenSortParts(string(*sort))\n\t\tif column != \"\" {\n\t\t\tq.OrderBy(column, dir)\n\t\t}\n\t}\n")
+	b.WriteString("\ttotalCount64, err := q.Count()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\ttotalCount := int(totalCount64)\n")
 	b.WriteString("\tlimit, err := gqlgenPageLimit(page)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\toffset, err := gqlgenPageOffset(page)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tq.Limit(limit + 1)\n\tif offset > 0 {\n\t\tq.Offset(offset)\n\t}\n")
 	b.WriteString("\trecords, err := q.All()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n")
 	b.WriteString("\thasNext := len(records) > limit\n\tif hasNext {\n\t\trecords = records[:limit]\n\t}\n")
@@ -2158,7 +2159,7 @@ func writeGraphQLAPIListResolver(b *strings.Builder, tbl *schema.Table) {
 	b.WriteString("\tfor i := range records {\n\t\trecord := records[i]\n")
 	fmt.Fprintf(b, "\t\tedges = append(edges, &model.%sEdge{Node: &record, Cursor: gqlgenCursor(offset + i)})\n\t}\n", structName)
 	b.WriteString("\tvar startCursor *string\n\tvar endCursor *string\n\tif len(edges) > 0 {\n\t\tstartCursor = gqlgenStringPtr(edges[0].Cursor)\n\t\tendCursor = gqlgenStringPtr(edges[len(edges)-1].Cursor)\n\t}\n")
-	fmt.Fprintf(b, "\treturn &model.%sConnection{Edges: edges, PageInfo: &model.PageInfo{HasNextPage: hasNext, HasPreviousPage: offset > 0, StartCursor: startCursor, EndCursor: endCursor}, TotalCount: len(edges)}, nil\n", structName)
+	fmt.Fprintf(b, "\treturn &model.%sConnection{Edges: edges, PageInfo: &model.PageInfo{HasNextPage: hasNext, HasPreviousPage: offset > 0, StartCursor: startCursor, EndCursor: endCursor}, TotalCount: totalCount}, nil\n", structName)
 	b.WriteString("}\n\n")
 }
 

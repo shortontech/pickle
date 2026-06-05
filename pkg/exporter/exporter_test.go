@@ -3444,6 +3444,8 @@ func TestExportZeroGraphQLLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "extension.FixedComplexityLimit")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "generated", "generated.go"), "type ResolverRoot interface")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *Resolver) Query() generated.QueryResolver")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "TotalCount: totalCount")
+	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "TotalCount: len(edges)")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "not implemented: Users")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "not implemented: User")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "not implemented: Posts")
@@ -3603,6 +3605,29 @@ func TestExportedGQLGenTargetCRUDResolvers(t *testing.T) {
 	if post.CreatedAt.IsZero() || post.UpdatedAt.IsZero() {
 		t.Fatalf("post timestamps were not initialized: %+v", post)
 	}
+	for _, title := range []string{"Second", "Third"} {
+		if _, err := mutations.CreatePost(ctx, model.CreatePostInput{
+			UserID: userID.String(),
+			Title:  title,
+			Body:   "GraphQL body",
+			Status: stringPtr("draft"),
+		}); err != nil {
+			t.Fatalf("create extra post %q: %v", title, err)
+		}
+	}
+	pagedPosts, err := queries.Posts(ctx, nil, nil, &model.PageInput{First: intPtr(1)})
+	if err != nil {
+		t.Fatalf("paged posts: %v", err)
+	}
+	if len(pagedPosts.Edges) != 1 {
+		t.Fatalf("paged posts edges = %d, want 1", len(pagedPosts.Edges))
+	}
+	if pagedPosts.TotalCount != 3 {
+		t.Fatalf("paged posts totalCount = %d, want all matching rows 3", pagedPosts.TotalCount)
+	}
+	if pagedPosts.PageInfo == nil || !pagedPosts.PageInfo.HasNextPage {
+		t.Fatalf("paged posts pageInfo = %+v, want hasNextPage", pagedPosts.PageInfo)
+	}
 
 	posts, err := queries.Posts(ctx, &model.PostFilter{ID: &model.IDFilter{Eq: stringPtr(post.ID.String())}}, nil, &model.PageInput{First: intPtr(1)})
 	if err != nil {
@@ -3610,6 +3635,9 @@ func TestExportedGQLGenTargetCRUDResolvers(t *testing.T) {
 	}
 	if len(posts.Edges) != 1 || posts.Edges[0].Node.ID != post.ID {
 		t.Fatalf("posts connection = %+v", posts)
+	}
+	if posts.TotalCount != 1 {
+		t.Fatalf("filtered posts totalCount = %d, want 1", posts.TotalCount)
 	}
 	tooManyIDs := make([]string, maxGraphQLAPIInputListSize+1)
 	for i := range tooManyIDs {
@@ -4056,6 +4084,8 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "extension.FixedComplexityLimit")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "generated", "generated.go"), "type ResolverRoot interface")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *Resolver) Query() generated.QueryResolver")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "TotalCount: totalCount")
+	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "TotalCount: len(edges)")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), `panic(fmt.Errorf("not implemented`)
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "type Query")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "type User")

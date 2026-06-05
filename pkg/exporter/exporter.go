@@ -7019,7 +7019,7 @@ func (d *Driver) SignToken(claims Claims) (string, error) {
 	signingInput := header + "." + base64URLEncode(payload)
 	sig, err := hmacSign([]byte(signingInput), []byte(d.secret), alg)
 	if err != nil { return "", err }
-	if err := d.registerToken(claims); err != nil { return "", err }
+	if err := d.registerToken(claims); err != nil { return "", errors.New("jwt: database error") }
 	return signingInput + "." + base64URLEncode(sig), nil
 }
 

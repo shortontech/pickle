@@ -109,6 +109,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), `panic("csrf: failed to generate random nonce")`)
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), `panic("csrf: failed to generate random nonce: " + err.Error())`)
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), `errors.New("jwt: database error")`)
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), `return "", errors.New("jwt: database error")`)
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "jwt: revoke token: %w")
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "jwt: revoke all for user: %w")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "len(parts[0]) != 64 || len(parts[1]) != 64")
@@ -520,6 +521,9 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 		t.Fatal(err)
 	}
 	closedJWTDriver := jwt.NewDriver(env, closedJWTDB, "sqlite")
+	if _, err := closedJWTDriver.SignToken(jwt.Claims{Subject: "secret-user"}); err == nil || err.Error() != "jwt: database error" || strings.Contains(err.Error(), "sql:") || strings.Contains(err.Error(), "secret-user") {
+		t.Fatalf("closed DB sign token error = %v", err)
+	}
 	if err := closedJWTDriver.RevokeToken("secret-jti"); err == nil || err.Error() != "jwt: database error" || strings.Contains(err.Error(), "sql:") || strings.Contains(err.Error(), "secret-jti") {
 		t.Fatalf("closed DB revoke token error = %v", err)
 	}

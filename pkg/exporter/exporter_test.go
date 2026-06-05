@@ -1853,6 +1853,8 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `q.db = q.db.Select([]string{"id", "user_id", "title"})`)
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), "q.db = q.db.Order(OrderClause(column, dir))")
 	assertFileNotContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `q.db = q.db.Order(column + " " + dir)`)
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "resolver_gen.go"), "q.WhereCreatedAtGTE(t)")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "resolver_gen.go"), "q.WhereCreatedAtLTE(t)")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `mux.Handle("/graphql", graphql.Handler())`)
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "routes.API.RegisterRoutes(mux)")
 	assertCleanExportReport(t, out)

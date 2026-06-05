@@ -142,12 +142,18 @@ func TestScopeBuilderExpandedMethods(t *testing.T) {
 		t.Error("expected WhereAgeLTE on ScopeBuilder")
 	}
 
-	// Timestamp: Before, After, Between
+	// Timestamp: Before, After, inclusive bounds, Between
 	if !strings.Contains(content, "func (sb *UserScopeBuilder) WhereCreatedAtBefore(") {
 		t.Error("expected WhereCreatedAtBefore on ScopeBuilder")
 	}
 	if !strings.Contains(content, "func (sb *UserScopeBuilder) WhereCreatedAtAfter(") {
 		t.Error("expected WhereCreatedAtAfter on ScopeBuilder")
+	}
+	if !strings.Contains(content, "func (sb *UserScopeBuilder) WhereCreatedAtGTE(") {
+		t.Error("expected WhereCreatedAtGTE on ScopeBuilder")
+	}
+	if !strings.Contains(content, "func (sb *UserScopeBuilder) WhereCreatedAtLTE(") {
+		t.Error("expected WhereCreatedAtLTE on ScopeBuilder")
 	}
 	if !strings.Contains(content, "func (sb *UserScopeBuilder) WhereCreatedAtBetween(") {
 		t.Error("expected WhereCreatedAtBetween on ScopeBuilder")

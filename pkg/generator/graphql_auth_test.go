@@ -99,6 +99,32 @@ func TestGraphQLResolverRequiresAuthForUnannotatedPrimaryKey(t *testing.T) {
 	}
 }
 
+func TestGraphQLDateTimeInclusiveFiltersUseInclusiveScopes(t *testing.T) {
+	table := &schema.Table{
+		Name: "events",
+		Columns: []*schema.Column{
+			{Name: "id", Type: schema.UUID, IsPrimaryKey: true},
+			{Name: "created_at", Type: schema.Timestamp},
+		},
+	}
+
+	src, err := GenerateGraphQLResolversWithPlans([]GraphQLModelPlan{{
+		Table:      table,
+		Operations: map[string]bool{"list": true},
+	}}, nil, "myapp/app/models", "graphql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+
+	if !strings.Contains(s, `fm["gte"].(string)`) || !strings.Contains(s, "q.WhereCreatedAtGTE(t)") {
+		t.Fatalf("expected GraphQL datetime gte filter to call WhereCreatedAtGTE\n%s", s)
+	}
+	if !strings.Contains(s, `fm["lte"].(string)`) || !strings.Contains(s, "q.WhereCreatedAtLTE(t)") {
+		t.Fatalf("expected GraphQL datetime lte filter to call WhereCreatedAtLTE\n%s", s)
+	}
+}
+
 func TestGraphQLSchemaExcludesAuthCredentialIdentifiers(t *testing.T) {
 	tables := []*schema.Table{
 		{

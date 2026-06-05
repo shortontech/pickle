@@ -83,6 +83,31 @@ func TestSearchNullableTimestamp(t *testing.T) {
 	}
 }
 
+func TestSearchTimestampInclusiveFilters(t *testing.T) {
+	tbl := &schema.Table{Name: "events"}
+	tbl.UUID("id").PrimaryKey()
+	tbl.Timestamp("created_at").NotNull()
+
+	blocks := loadScopeBlocks(t)
+	out, err := GenerateQueryScopes(tbl, blocks, "models")
+	if err != nil {
+		t.Fatalf("GenerateQueryScopes: %v", err)
+	}
+
+	src := string(out)
+	fset := token.NewFileSet()
+	if _, err := parser.ParseFile(fset, "event_query.go", src, parser.AllErrors); err != nil {
+		t.Fatalf("generated code does not parse:\n%v\n%s", err, src)
+	}
+
+	if !strings.Contains(src, `case "gte":`) || !strings.Contains(src, "q.WhereCreatedAtGTE(parsed)") {
+		t.Fatalf("expected gte timestamp filters to call WhereCreatedAtGTE\n%s", src)
+	}
+	if !strings.Contains(src, `case "lte":`) || !strings.Contains(src, "q.WhereCreatedAtLTE(parsed)") {
+		t.Fatalf("expected lte timestamp filters to call WhereCreatedAtLTE\n%s", src)
+	}
+}
+
 // TestSearchNullableUUID ensures nullable UUID columns emit &parsed.
 func TestSearchNullableUUID(t *testing.T) {
 	tbl := &schema.Table{Name: "orders"}

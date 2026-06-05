@@ -900,7 +900,7 @@ func generateScopeBuilderWhereMethods(b *bytes.Buffer, table *schema.Table, scop
 			}
 		}
 
-		// Timestamp columns: Before, After, Between
+		// Timestamp columns: Before, After, inclusive bounds, Between
 		if scope == "timestamp" {
 			b.WriteString(fmt.Sprintf("func (sb *%s) Where%sBefore(val time.Time) *%s {\n", scopeBuilderType, pascal, scopeBuilderType))
 			b.WriteString(fmt.Sprintf("\tsb.whereOp(%q, \"<\", val)\n", col.Name))
@@ -908,6 +908,14 @@ func generateScopeBuilderWhereMethods(b *bytes.Buffer, table *schema.Table, scop
 
 			b.WriteString(fmt.Sprintf("func (sb *%s) Where%sAfter(val time.Time) *%s {\n", scopeBuilderType, pascal, scopeBuilderType))
 			b.WriteString(fmt.Sprintf("\tsb.whereOp(%q, \">\", val)\n", col.Name))
+			b.WriteString("\treturn sb\n}\n\n")
+
+			b.WriteString(fmt.Sprintf("func (sb *%s) Where%sGTE(val time.Time) *%s {\n", scopeBuilderType, pascal, scopeBuilderType))
+			b.WriteString(fmt.Sprintf("\tsb.whereOp(%q, \">=\", val)\n", col.Name))
+			b.WriteString("\treturn sb\n}\n\n")
+
+			b.WriteString(fmt.Sprintf("func (sb *%s) Where%sLTE(val time.Time) *%s {\n", scopeBuilderType, pascal, scopeBuilderType))
+			b.WriteString(fmt.Sprintf("\tsb.whereOp(%q, \"<=\", val)\n", col.Name))
 			b.WriteString("\treturn sb\n}\n\n")
 
 			b.WriteString(fmt.Sprintf("func (sb *%s) Where%sBetween(start, end time.Time) *%s {\n", scopeBuilderType, pascal, scopeBuilderType))

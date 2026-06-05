@@ -77,6 +77,18 @@ func (q *QueryBuilder[T]) Where__Column__After(val time.Time) *QueryBuilder[T] {
 }
 
 // pickle:scope timestamp
+func (q *QueryBuilder[T]) Where__Column__GTE(val time.Time) *QueryBuilder[T] {
+	q.whereOp("__column__", ">=", val)
+	return q
+}
+
+// pickle:scope timestamp
+func (q *QueryBuilder[T]) Where__Column__LTE(val time.Time) *QueryBuilder[T] {
+	q.whereOp("__column__", "<=", val)
+	return q
+}
+
+// pickle:scope timestamp
 func (q *QueryBuilder[T]) Where__Column__Between(start, end time.Time) *QueryBuilder[T] {
 	q.whereOp("__column__", ">=", start)
 	q.whereOp("__column__", "<=", end)

@@ -327,9 +327,9 @@ func writeFilterDateTimeOps(b *bytes.Buffer, goMethod string) {
 		goSuffix string
 	}{
 		{"gt", "After"},
-		{"gte", "After"},
+		{"gte", "GTE"},
 		{"lt", "Before"},
-		{"lte", "Before"},
+		{"lte", "LTE"},
 	} {
 		b.WriteString(fmt.Sprintf("\t\t\tif v, ok := fm[\"%s\"].(string); ok {\n", op.gqlOp))
 		b.WriteString(fmt.Sprintf("\t\t\t\tif t, err := time.Parse(time.RFC3339, v); err == nil {\n"))

@@ -195,9 +195,9 @@ func opsForType(colType schema.ColumnType) []filterOp {
 	case schema.Timestamp, schema.Date:
 		return []filterOp{
 			{"gt", "After"},
-			{"gte", "After"},
+			{"gte", "GTE"},
 			{"lt", "Before"},
-			{"lte", "Before"},
+			{"lte", "LTE"},
 		}
 	default:
 		return nil
@@ -298,7 +298,7 @@ func writeOpFilterCase(b *bytes.Buffer, col searchColumnInfo, op filterOp) {
 		b.WriteString("\t\t\t\tif err != nil {\n")
 		b.WriteString("\t\t\t\t\treturn nil, nil, fmt.Errorf(\"invalid timestamp for filter %s[%s]: %w\", fop.Column, fop.Operator, err)\n")
 		b.WriteString("\t\t\t\t}\n")
-		// Before/After/Between methods always take time.Time (value type), even for nullable columns
+		// Timestamp comparison methods always take time.Time, even for nullable columns.
 		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s%s(parsed)\n", col.PascalName, op.methodSuffix))
 	}
 }

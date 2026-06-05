@@ -874,6 +874,35 @@ func TestExportedPolicyStateSupport(t *testing.T) {
 	}
 }
 
+func TestExportedPolicyMigrateRollsBackSeedFailures(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		` + "`" + `CREATE TABLE roles (id TEXT PRIMARY KEY, slug VARCHAR(50) NOT NULL UNIQUE, name VARCHAR(100) NOT NULL, manages BOOLEAN NOT NULL DEFAULT false, is_default BOOLEAN NOT NULL DEFAULT false, birth_policy VARCHAR(100) NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
+		` + "`" + `CREATE TABLE role_actions (id TEXT PRIMARY KEY, role_slug VARCHAR(50) NOT NULL, action VARCHAR(100) NOT NULL CHECK(action <> 'users.create'), created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, UNIQUE(role_slug, action))` + "`" + `,
+		` + "`" + `CREATE TABLE role_user (user_id TEXT NOT NULL, role_id TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, PRIMARY KEY(user_id, role_id))` + "`" + `,
+		` + "`" + `CREATE TABLE rbac_changelog (id VARCHAR(255) PRIMARY KEY, batch INTEGER NOT NULL, state VARCHAR(20) NOT NULL, error TEXT, started_at DATETIME, completed_at DATETIME)` + "`" + `,
+	} {
+		if err := db.Exec(stmt).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Migrate(db, "sqlite"); err == nil {
+		t.Fatal("expected policy migrate to fail on constrained role action")
+	}
+	for _, table := range []string{"roles", "role_actions", "rbac_changelog"} {
+		var rows int64
+		if err := db.Table(table).Count(&rows).Error; err != nil {
+			t.Fatal(err)
+		}
+		if rows != 0 {
+			t.Fatalf("%s rows after failed migrate = %d, want 0", table, rows)
+		}
+	}
+}
+
 func TestExportedPolicyUpsertsMatchDialect(t *testing.T) {
 	sqliteDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {

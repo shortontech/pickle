@@ -2935,32 +2935,36 @@ var graphQLPolicyIDs = []string{
 	b.WriteString(`}
 
 func Migrate(db *gorm.DB, driver string) error {
-	if len(roleSeeds) > 0 {
-		if err := ensureRBACSchema(db); err != nil { return err }
-		if err := seedRoles(db); err != nil { return err }
-		if err := markPoliciesApplied(db, "rbac_changelog", rolePolicyIDs); err != nil { return err }
-	}
-	if len(graphQLExposureSeeds) > 0 || len(graphQLActionSeeds) > 0 {
-		if err := ensureGraphQLPolicySchema(db); err != nil { return err }
-		if err := seedGraphQLPolicies(db); err != nil { return err }
-		if err := markPoliciesApplied(db, "graphql_changelog", graphQLPolicyIDs); err != nil { return err }
-	}
-	return nil
+	return db.Transaction(func(tx *gorm.DB) error {
+		if len(roleSeeds) > 0 {
+			if err := ensureRBACSchema(tx); err != nil { return err }
+			if err := seedRoles(tx); err != nil { return err }
+			if err := markPoliciesApplied(tx, "rbac_changelog", rolePolicyIDs); err != nil { return err }
+		}
+		if len(graphQLExposureSeeds) > 0 || len(graphQLActionSeeds) > 0 {
+			if err := ensureGraphQLPolicySchema(tx); err != nil { return err }
+			if err := seedGraphQLPolicies(tx); err != nil { return err }
+			if err := markPoliciesApplied(tx, "graphql_changelog", graphQLPolicyIDs); err != nil { return err }
+		}
+		return nil
+	})
 }
 
 func Rollback(db *gorm.DB, driver string) error {
-	if len(graphQLExposureSeeds) > 0 || len(graphQLActionSeeds) > 0 {
-		if err := db.Exec("DELETE FROM graphql_actions").Error; err != nil { return err }
-		if err := db.Exec("DELETE FROM graphql_exposures").Error; err != nil { return err }
-		if err := db.Exec("DELETE FROM graphql_changelog").Error; err != nil { return err }
-	}
-	if len(roleSeeds) > 0 {
-		if err := db.Exec("DELETE FROM role_actions").Error; err != nil { return err }
-		if err := db.Exec("DELETE FROM role_user").Error; err != nil { return err }
-		if err := db.Exec("DELETE FROM roles").Error; err != nil { return err }
-		if err := db.Exec("DELETE FROM rbac_changelog").Error; err != nil { return err }
-	}
-	return nil
+	return db.Transaction(func(tx *gorm.DB) error {
+		if len(graphQLExposureSeeds) > 0 || len(graphQLActionSeeds) > 0 {
+			if err := tx.Exec("DELETE FROM graphql_actions").Error; err != nil { return err }
+			if err := tx.Exec("DELETE FROM graphql_exposures").Error; err != nil { return err }
+			if err := tx.Exec("DELETE FROM graphql_changelog").Error; err != nil { return err }
+		}
+		if len(roleSeeds) > 0 {
+			if err := tx.Exec("DELETE FROM role_actions").Error; err != nil { return err }
+			if err := tx.Exec("DELETE FROM role_user").Error; err != nil { return err }
+			if err := tx.Exec("DELETE FROM roles").Error; err != nil { return err }
+			if err := tx.Exec("DELETE FROM rbac_changelog").Error; err != nil { return err }
+		}
+		return nil
+	})
 }
 
 func Fresh(db *gorm.DB, driver string) error {

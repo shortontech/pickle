@@ -64,8 +64,10 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "type ConnectionConfig struct")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func OpenGORM(conn ConnectionConfig) *gorm.DB")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func sanitizedDatabaseStartupError")
+	assertFileContains(t, filepath.Join(out, "config", "support.go"), `log.Fatal(sanitizedDatabaseStartupError("config"))`)
 	assertFileNotContains(t, filepath.Join(out, "config", "support.go"), "failed to open database: %v")
 	assertFileNotContains(t, filepath.Join(out, "config", "support.go"), "failed to initialize database: %v")
+	assertFileNotContains(t, filepath.Join(out, "config", "support.go"), "log.Fatal(err)")
 	assertFileContains(t, filepath.Join(out, "config", "app.go"), "func app() AppConfig")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "commands.NewApp().Run(os.Args[1:])")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "func BuiltinCommands() []Command")
@@ -76,6 +78,11 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "WriteTimeout:      60 * time.Second")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "IdleTimeout:       120 * time.Second")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "MaxHeaderBytes:    1 << 20")
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "func commandFailureMessage")
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "func commandStartupFailureMessage")
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "func serverFailureMessage")
+	assertFileNotContains(t, filepath.Join(out, "app", "commands", "support.go"), "log.Fatal(err)")
+	assertFileNotContains(t, filepath.Join(out, "app", "commands", "support.go"), "failed to unwrap database handle")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "support.go"), "func (r *Runner) Migrate(entries []MigrationEntry) error")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "crypto/hmac")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "ErrInvalidToken")
@@ -1478,6 +1485,35 @@ func countWhere(t *testing.T, db *sql.DB, table, where string) int {
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "commands", "exported_command_app_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	securityTestSrc := `package commands
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestExportedCommandFatalMessagesAreSanitized(t *testing.T) {
+	for _, msg := range []string{
+		commandFailureMessage("migrate"),
+		commandStartupFailureMessage("database"),
+		serverFailureMessage(assertSecretError("listen tcp :8080: password=swordfish")),
+	} {
+		if strings.Contains(msg, "swordfish") || strings.Contains(msg, "password") || strings.Contains(msg, "listen tcp") {
+			t.Fatalf("fatal message leaked detail: %s", msg)
+		}
+		if !strings.Contains(msg, "failed") {
+			t.Fatalf("fatal message = %q, want failure context", msg)
+		}
+	}
+}
+
+type assertSecretError string
+
+func (e assertSecretError) Error() string { return string(e) }
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "commands", "exported_command_security_test.go"), []byte(securityTestSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

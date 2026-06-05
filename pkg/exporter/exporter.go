@@ -3797,11 +3797,29 @@ func (a *App) Run(args []string) {
 			log.Fatalf("unknown command: %s", args[0])
 		}
 		if err := cmd.Run(args[1:]); err != nil {
-			log.Fatal(err)
+			log.Fatal(commandFailureMessage(args[0]))
 		}
 		return
 	}
 	a.serveFn()
+}
+
+func commandFailureMessage(name string) string {
+	if name == "" {
+		return "command failed"
+	}
+	return fmt.Sprintf("command %s failed", name)
+}
+
+func commandStartupFailureMessage(component string) string {
+	if component == "" {
+		return "startup failed"
+	}
+	return fmt.Sprintf("%s startup failed", component)
+}
+
+func serverFailureMessage(_ error) string {
+	return "server failed"
 }
 
 func (a *App) PrintCommands() {
@@ -3926,7 +3944,7 @@ func NewApp() *App {
 			models.SetDBWithDriver(db, conn.Driver)
 			sqlDB, err := db.DB()
 			if err != nil {
-				log.Fatalf("commands: failed to unwrap database handle: %v", err)
+				log.Fatal(commandStartupFailureMessage("database"))
 			}
 			auth.Init(config.Env, sqlDB)
 		},
@@ -3949,7 +3967,7 @@ func NewApp() *App {
 				MaxHeaderBytes: 1 << 20,
 			}
 			if err := server.ListenAndServe(); err != nil {
-				log.Fatal(err)
+				log.Fatal(serverFailureMessage(err))
 			}
 		},
 		Commands()...,
@@ -4580,7 +4598,7 @@ func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL, hasSchedule
 	b.WriteString("\t\tMaxHeaderBytes:    1 << 20,\n")
 	b.WriteString("\t}\n")
 	b.WriteString("\tif err := server.ListenAndServe(); err != nil {\n")
-	b.WriteString("\t\tlog.Fatal(err)\n")
+	b.WriteString("\t\tlog.Fatal(\"server failed\")\n")
 	b.WriteString("\t}\n")
 	b.WriteString("}\n")
 	return format.Source([]byte(b.String()))
@@ -4649,7 +4667,7 @@ func (e *exporter) generateMultiServiceServerMain(hasDatabaseConfig, hasSchedule
 	b.WriteString("\t\tMaxHeaderBytes:    1 << 20,\n")
 	b.WriteString("\t}\n")
 	b.WriteString("\tif err := server.ListenAndServe(); err != nil {\n")
-	b.WriteString("\t\tlog.Fatal(err)\n")
+	b.WriteString("\t\tlog.Fatal(\"server failed\")\n")
 	b.WriteString("\t}\n")
 	b.WriteString("}\n")
 	return format.Source([]byte(b.String()))
@@ -5507,7 +5525,7 @@ func Init() {
 
 {{ if .HasDatabaseConfig }}func (d DatabaseConfig) Connection(name ...string) ConnectionConfig {
 	conn, err := d.TryConnection(name...)
-	if err != nil { log.Fatal(err) }
+	if err != nil { log.Fatal(sanitizedDatabaseStartupError("config")) }
 	return conn
 }
 
@@ -6790,7 +6808,7 @@ func main() {
 	routes.API.RegisterRoutes(mux)
 	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 1 << 20}
 	if err := server.ListenAndServe(); err != nil {
-		log.Fatal(err)
+		log.Fatal("server failed")
 	}
 }
 `
@@ -6830,7 +6848,7 @@ func main() {
 	routes.API.RegisterRoutes(mux)
 	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 1 << 20}
 	if err := server.ListenAndServe(); err != nil {
-		log.Fatal(err)
+		log.Fatal("server failed")
 	}
 }
 `

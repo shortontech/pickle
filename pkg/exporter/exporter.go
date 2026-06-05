@@ -1162,7 +1162,7 @@ func (e *exporter) writeGraphQLPackage(tables []*schema.Table, views []*schema.V
 
 func (e *exporter) rewriteGeneratedGraphQLSource(path string, data []byte) ([]byte, error) {
 	if filepath.Base(path) == "handler_gen.go" {
-		src := fmt.Sprintf(exportedGQLGenHandlerSource, e.modulePath)
+		src := fmt.Sprintf(exportedGQLGenHandlerSource, e.modulePath, e.modulePath)
 		formatted, err := format.Source([]byte(src))
 		if err != nil {
 			return nil, fmt.Errorf("formatting exported gqlgen handler %s: %w", path, err)
@@ -1170,11 +1170,103 @@ func (e *exporter) rewriteGeneratedGraphQLSource(path string, data []byte) ([]by
 		return formatted, nil
 	}
 	replaced := strings.ReplaceAll(string(data), e.sourceModule+"/", e.modulePath+"/")
+	if filepath.Base(path) == "pickle_gen.go" {
+		var err error
+		replaced, err = rewriteExportedGraphQLCoreSource(replaced)
+		if err != nil {
+			return nil, fmt.Errorf("rewriting exported GraphQL core %s: %w", path, err)
+		}
+	}
 	formatted, err := format.Source([]byte(replaced))
 	if err != nil {
 		return nil, fmt.Errorf("formatting exported GraphQL source %s: %w", path, err)
 	}
 	return formatted, nil
+}
+
+func rewriteExportedGraphQLCoreSource(src string) (string, error) {
+	replacements := []struct {
+		name string
+		old  string
+		new  string
+	}{
+		{
+			name: "auth claims",
+			old: `type AuthClaims struct {
+	UserID string
+	Role   string
+}`,
+			new: `type AuthClaims struct {
+	UserID  string
+	Role    string
+	Roles   []string
+	Manages bool
+}`,
+		},
+		{
+			name: "role matching",
+			old: `func (c *ResolveContext) HasRole(role string) bool {
+	if c.auth == nil {
+		return false
+	}
+	return c.auth.Role == role
+}`,
+			new: `func (c *ResolveContext) HasRole(role string) bool {
+	if c.auth == nil {
+		return false
+	}
+	for _, assigned := range c.auth.Roles {
+		if assigned == role {
+			return true
+		}
+	}
+	return c.auth.Role == role
+}`,
+		},
+		{
+			name: "owner visibility",
+			old: `func (c *ResolveContext) CanSeeOwnerFields(ownerID string) bool {
+	if c.auth == nil {
+		return false
+	}
+	return c.auth.UserID == ownerID || c.auth.Role == "admin"
+}`,
+			new: `func (c *ResolveContext) CanSeeOwnerFields(ownerID string) bool {
+	if c.auth == nil {
+		return false
+	}
+	return c.auth.UserID == ownerID || c.auth.Role == "admin" || c.auth.Manages
+}`,
+		},
+		{
+			name: "visibility tier",
+			old: `func (c *ResolveContext) Visibility() VisibilityTier {
+	if c.auth == nil {
+		return VisibilityPublic
+	}
+	if c.auth.Role == "admin" {
+		return VisibilityAll
+	}
+	return VisibilityOwner
+}`,
+			new: `func (c *ResolveContext) Visibility() VisibilityTier {
+	if c.auth == nil {
+		return VisibilityPublic
+	}
+	if c.auth.Role == "admin" || c.auth.Manages {
+		return VisibilityAll
+	}
+	return VisibilityOwner
+}`,
+		},
+	}
+	for _, replacement := range replacements {
+		if !strings.Contains(src, replacement.old) {
+			return "", fmt.Errorf("expected %s block was not found", replacement.name)
+		}
+		src = strings.Replace(src, replacement.old, replacement.new, 1)
+	}
+	return src, nil
 }
 
 func (e *exporter) writeGraphQLQuerySupport(tables []*schema.Table, views []*schema.View) error {
@@ -1249,6 +1341,7 @@ package graphql
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -1260,6 +1353,7 @@ import (
 	"github.com/vektah/gqlparser/v2/gqlerror"
 
 	appauth "%s/app/http/auth"
+	appmodels "%s/app/models"
 )
 
 // Handler returns a production GraphQL handler backed by gqlgen's parser,
@@ -1297,6 +1391,11 @@ func (w graphQLStatusWriter) WriteHeader(status int) {
 }
 
 type pickleExecutableSchema struct{}
+
+type graphQLRoleRow struct {
+	Slug    string
+	Manages bool
+}
 
 func (pickleExecutableSchema) Schema() *ast.Schema {
 	return parsedSchema
@@ -1434,7 +1533,59 @@ func extractAuthFromHeaders(headers http.Header) (*AuthClaims, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &AuthClaims{UserID: info.UserID, Role: info.Role}, nil
+	claims := &AuthClaims{UserID: info.UserID, Role: info.Role}
+	if err := loadGraphQLRBACClaims(claims); err != nil {
+		return nil, err
+	}
+	return claims, nil
+}
+
+func loadGraphQLRBACClaims(claims *AuthClaims) error {
+	if claims == nil || claims.UserID == "" || appmodels.DB == nil {
+		return nil
+	}
+	var roles []graphQLRoleRow
+	err := appmodels.DB.Raw("SELECT r.slug, r.manages FROM roles r JOIN role_user ru ON ru.role_id = r.id WHERE ru.user_id = ?", claims.UserID).Scan(&roles).Error
+	if err != nil {
+		if isMissingRBACTableError(err) {
+			return nil
+		}
+		return err
+	}
+	if len(roles) == 0 {
+		return nil
+	}
+	claims.Roles = claims.Roles[:0]
+	for _, role := range roles {
+		if role.Slug == "" {
+			continue
+		}
+		claims.Roles = append(claims.Roles, role.Slug)
+		if role.Manages {
+			claims.Manages = true
+		}
+	}
+	if claims.Role == "" && len(claims.Roles) > 0 {
+		claims.Role = claims.Roles[0]
+	}
+	return nil
+}
+
+func isMissingRBACTableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	for err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "no such table") ||
+			strings.Contains(msg, "does not exist") ||
+			strings.Contains(msg, "doesn't exist") ||
+			strings.Contains(msg, "unknown table") {
+			return true
+		}
+		err = errors.Unwrap(err)
+	}
+	return false
 }
 
 func gqlgenErrorResponse(message, code string) *gqlgen.Response {

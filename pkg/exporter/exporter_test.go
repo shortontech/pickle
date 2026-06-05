@@ -1700,6 +1700,7 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "pickle.")
 	writeExportedGraphQLSafetyBehaviorTest(t, out)
+	writeExportedGraphQLRBACBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
 
@@ -1881,6 +1882,145 @@ query Two { posts { edges { node { id } } } }` + "`" + `, true},
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphql", "exported_safety_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedGraphQLRBACBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package graphql
+
+import (
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"graphql-safety/app/http/auth"
+	"graphql-safety/app/http/auth/jwt"
+	"graphql-safety/app/models"
+)
+
+func TestExportedGraphQLRBACClaimsLoadDatabaseRoles(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	for _, stmt := range []string{
+		` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL)` + "`" + `,
+		` + "`" + `CREATE TABLE roles (id TEXT PRIMARY KEY, slug TEXT NOT NULL, manages BOOLEAN NOT NULL)` + "`" + `,
+		` + "`" + `CREATE TABLE role_user (user_id TEXT NOT NULL, role_id TEXT NOT NULL)` + "`" + `,
+	} {
+		if err := db.Exec(stmt).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	userID := uuid.New().String()
+	if err := db.Exec("INSERT INTO roles (id, slug, manages) VALUES (?, ?, ?)", "role-manager", "tenant_admin", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("INSERT INTO role_user (user_id, role_id) VALUES (?, ?)", userID, "role-manager").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth.Init(func(key, fallback string) string {
+		switch key {
+		case "AUTH_DRIVER":
+			return "jwt"
+		case "DB_CONNECTION":
+			return "sqlite"
+		case "JWT_SECRET":
+			return "0123456789abcdef0123456789abcdef"
+		default:
+			return fallback
+		}
+	}, sqlDB)
+	token, err := auth.Driver("jwt").(*jwt.Driver).SignToken(jwt.Claims{Subject: userID, Role: "viewer"})
+	if err != nil {
+		t.Fatalf("sign jwt: %v", err)
+	}
+
+	claims, err := extractAuthFromHeaders(http.Header{"Authorization": []string{"Bearer " + token}})
+	if err != nil {
+		t.Fatalf("extract auth: %v", err)
+	}
+	if claims == nil {
+		t.Fatal("expected claims")
+	}
+	if claims.UserID != userID {
+		t.Fatalf("UserID = %q, want %q", claims.UserID, userID)
+	}
+	if claims.Role != "viewer" {
+		t.Fatalf("Role = %q, want token fallback role", claims.Role)
+	}
+	if !claims.Manages {
+		t.Fatalf("expected managing role from role_user, got %+v", claims)
+	}
+	if len(claims.Roles) != 1 || claims.Roles[0] != "tenant_admin" {
+		t.Fatalf("Roles = %+v, want tenant_admin", claims.Roles)
+	}
+
+	ctx := &ResolveContext{auth: claims}
+	if !ctx.HasRole("tenant_admin") {
+		t.Fatal("HasRole did not use loaded RBAC roles")
+	}
+	if !ctx.CanSeeOwnerFields(uuid.New().String()) {
+		t.Fatal("managing RBAC role should see owner fields")
+	}
+	if got := ctx.Visibility(); got != VisibilityAll {
+		t.Fatalf("Visibility() = %v, want VisibilityAll", got)
+	}
+}
+
+func TestExportedGraphQLRBACMissingTablesDoNotBreakPlainAuth(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	if err := db.Exec(` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL)` + "`" + `).Error; err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth.Init(func(key, fallback string) string {
+		switch key {
+		case "AUTH_DRIVER":
+			return "jwt"
+		case "DB_CONNECTION":
+			return "sqlite"
+		case "JWT_SECRET":
+			return "0123456789abcdef0123456789abcdef"
+		default:
+			return fallback
+		}
+	}, sqlDB)
+	userID := uuid.New().String()
+	token, err := auth.Driver("jwt").(*jwt.Driver).SignToken(jwt.Claims{Subject: userID, Role: "editor", ExpiresAt: time.Now().Add(time.Hour).Unix()})
+	if err != nil {
+		t.Fatalf("sign jwt: %v", err)
+	}
+	claims, err := extractAuthFromHeaders(http.Header{"Authorization": []string{"Bearer " + token}})
+	if err != nil {
+		t.Fatalf("extract auth: %v", err)
+	}
+	if claims == nil || claims.UserID != userID || claims.Role != "editor" {
+		t.Fatalf("claims = %+v, want plain token claims", claims)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "graphql", "exported_rbac_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

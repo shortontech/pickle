@@ -1710,7 +1710,20 @@ func (e *exporter) writePolicySupport() error {
 	if err != nil {
 		return err
 	}
-	return e.writeFile(filepath.Join("database", "policies", "support.go"), data)
+	if err := e.writeFile(filepath.Join("database", "policies", "support.go"), data); err != nil {
+		return err
+	}
+	if e.hasRolePolicies() {
+		data := fmt.Sprintf(rbacMiddlewareSupportSource, e.modulePath, e.modulePath)
+		formatted, err := format.Source([]byte(data))
+		if err != nil {
+			return fmt.Errorf("formatting exported RBAC middleware support: %w", err)
+		}
+		if err := e.writeFile(filepath.Join("app", "http", "middleware", "rbac_support.go"), formatted); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (e *exporter) hasPolicySupport() bool {
@@ -3955,7 +3968,8 @@ import (
 type Controller struct{}
 type Response struct { Status int; StatusCode int; Body any; Headers map[string]string; Cookies []*http.Cookie }
 type AuthInfo struct { UserID string; Role string }
-type Context struct { request *http.Request; auth *AuthInfo; params map[string]string }
+type RoleInfo struct { Slug string; Manages bool }
+type Context struct { request *http.Request; auth *AuthInfo; params map[string]string; roles []string; isAdmin bool }
 
 func NewContext(r *http.Request) *Context { return &Context{request: r, params: map[string]string{}} }
 func (c *Context) Request() *http.Request { return c.request }
@@ -3965,8 +3979,12 @@ func (c *Context) BearerToken() string { h := c.request.Header.Get("Authorizatio
 func (c *Context) Auth() *AuthInfo { if c.auth == nil { return &AuthInfo{} }; return c.auth }
 func (c *Context) SetAuth(info *AuthInfo) { c.auth = info }
 func (c *Context) IsAuthenticated() bool { return c.auth != nil && c.auth.UserID != "" }
-func (c *Context) IsAdmin() bool { return c.Auth().Role == "admin" }
-func (c *Context) HasAnyRole(roles ...string) bool { current := c.Auth().Role; for _, role := range roles { if role == current { return true } }; return false }
+func (c *Context) SetRoles(roles []RoleInfo) { c.roles = make([]string, len(roles)); c.isAdmin = false; for i, role := range roles { c.roles[i] = role.Slug; if role.Manages { c.isAdmin = true } } }
+func (c *Context) Role() string { if len(c.roles) > 0 { return c.roles[0] }; if c.auth != nil { return c.auth.Role }; return "" }
+func (c *Context) Roles() []string { roles := append([]string{}, c.roles...); if len(roles) == 0 && c.auth != nil && c.auth.Role != "" { roles = append(roles, c.auth.Role) }; return roles }
+func (c *Context) HasRole(slug string) bool { for _, role := range c.roles { if role == slug { return true } }; return c.auth != nil && c.auth.Role == slug }
+func (c *Context) HasAnyRole(roles ...string) bool { for _, role := range roles { if c.HasRole(role) { return true } }; return false }
+func (c *Context) IsAdmin() bool { return c.isAdmin || (c.auth != nil && c.auth.Role == "admin") }
 func (c *Context) JSON(status int, body any) Response { return Response{Status: status, StatusCode: status, Body: body} }
 func (c *Context) Error(err error) Response { return c.JSON(500, map[string]string{"error": err.Error()}) }
 func (c *Context) BadRequest(msg string) Response { return c.JSON(400, map[string]string{"error": msg}) }
@@ -3990,6 +4008,8 @@ func (r *Router) Group(path string, args ...any) {
 		switch v := arg.(type) {
 		case MiddlewareFunc:
 			child.middleware = append(child.middleware, v)
+		case func(*Context, func() Response) Response:
+			child.middleware = append(child.middleware, MiddlewareFunc(v))
 		case func(*Router):
 			v(child)
 		}
@@ -4008,11 +4028,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		params, ok := matchPath(rt.path, req.URL.Path)
 		if rt.method != req.Method || !ok { continue }
 		ctx := NewContext(req); ctx.params = params
-		i := len(rt.middleware) - 1
-		var next func() Response
-		next = func() Response {
-			if i < 0 { return rt.handler(ctx) }
-			mw := rt.middleware[i]; i--; return mw(ctx, next)
+		next := func() Response { return rt.handler(ctx) }
+		for i := len(rt.middleware) - 1; i >= 0; i-- {
+			mw := rt.middleware[i]
+			inner := next
+			next = func() Response { return mw(ctx, inner) }
 		}
 		next().Write(w)
 		return
@@ -4029,6 +4049,58 @@ func matchPath(pattern, actual string) (map[string]string, bool) {
 	return params, true
 }
 func RateLimit(rps, burst int) MiddlewareFunc { return func(ctx *Context, next func() Response) Response { return next() } }
+`
+
+const rbacMiddlewareSupportSource = `package middleware
+
+import (
+	"errors"
+
+	"%s/app/models"
+	"%s/internal/httpx"
+)
+
+var errNoRoleDatabase = errors.New("pickle export: models.DB is not configured for RBAC role loading")
+
+type roleRow struct {
+	Slug    string
+	Manages bool
+}
+
+func LoadRoles(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
+	if !ctx.IsAuthenticated() {
+		return ctx.Unauthorized("LoadRoles requires authentication - add Auth middleware before LoadRoles")
+	}
+	if models.DB == nil {
+		return ctx.Error(errNoRoleDatabase)
+	}
+	var rows []roleRow
+	if err := models.DB.Raw("SELECT r.slug, r.manages FROM roles r JOIN role_user ru ON ru.role_id = r.id WHERE ru.user_id = ?", ctx.Auth().UserID).Scan(&rows).Error; err != nil {
+		return ctx.Error(err)
+	}
+	roles := make([]httpx.RoleInfo, len(rows))
+	for i, row := range rows {
+		roles[i] = httpx.RoleInfo{Slug: row.Slug, Manages: row.Manages}
+	}
+	ctx.SetRoles(roles)
+	return next()
+}
+
+func RequireRole(roles ...string) httpx.MiddlewareFunc {
+	return func(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
+		if !ctx.HasAnyRole(roles...) {
+			return ctx.Forbidden("insufficient role")
+		}
+		return next()
+	}
+}
+
+func RequireAdmin(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
+	if !ctx.IsAdmin() {
+		return ctx.Forbidden("admin access required")
+	}
+	return next()
+}
 `
 
 const authSupportSource = `package auth

@@ -74,6 +74,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "func (m *User) Promote")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "CanBan(ctx, m)")
 	assertFileContains(t, filepath.Join(out, "app", "models", "action_audit_support.go"), "func runAuditedAction")
+	assertFileContains(t, filepath.Join(out, "app", "http", "middleware", "rbac_support.go"), "func LoadRoles")
+	assertFileContains(t, filepath.Join(out, "app", "http", "middleware", "rbac_support.go"), "func RequireRole")
 	assertFileContains(t, filepath.Join(out, "app", "services", "action_call.go"), "models.BanAction")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "models.DB.Model(&models.User{})")
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "QueryUser")
@@ -88,6 +90,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	writeExportedActionAuditBehaviorTest(t, out)
 	writeExportedMigrationBehaviorTest(t, out)
 	writeExportedPolicyBehaviorTest(t, out)
+	writeExportedRouterMiddlewareBehaviorTest(t, out)
+	writeExportedRBACMiddlewareBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
 
@@ -395,6 +399,156 @@ func TestExportedPolicyStateSupport(t *testing.T) {
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "database", "policies", "exported_policy_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedRouterMiddlewareBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package httpx_test
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"testing"
+
+	"basic-crud/internal/httpx"
+)
+
+func TestExportedRouterRunsMiddlewareInDeclaredOrder(t *testing.T) {
+	var order []string
+	groupMiddleware := func(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
+		order = append(order, "group")
+		return next()
+	}
+	routeMiddleware := func(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
+		order = append(order, "route")
+		return next()
+	}
+	router := httpx.Routes(func(r *httpx.Router) {
+		r.Group("/api", groupMiddleware, func(r *httpx.Router) {
+			r.Get("/users/:id", func(ctx *httpx.Context) httpx.Response {
+				order = append(order, "handler:"+ctx.Param("id"))
+				return ctx.JSON(http.StatusAccepted, map[string]string{"ok": "true"})
+			}, routeMiddleware)
+		})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/users/42", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	want := []string{"group", "route", "handler:42"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("middleware order = %#v, want %#v", order, want)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "internal", "httpx", "exported_router_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedRBACMiddlewareBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package middleware_test
+
+import (
+	"net/http"
+	"testing"
+	"time"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"basic-crud/app/http/middleware"
+	"basic-crud/app/models"
+	"basic-crud/database/policies"
+	"basic-crud/internal/httpx"
+)
+
+func TestExportedRBACMiddlewareLoadsRolesAndEnforcesChecks(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	if err := policies.Migrate(db, "sqlite"); err != nil {
+		t.Fatalf("policy migrate: %v", err)
+	}
+
+	var adminID string
+	if err := db.Raw("SELECT id FROM roles WHERE slug = ?", "admin").Scan(&adminID).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := db.Exec("INSERT INTO role_user (user_id, role_id, created_at, updated_at) VALUES (?, ?, ?, ?)", "user-1", adminID, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := httpx.NewContext(newRequest())
+	ctx.SetAuth(&httpx.AuthInfo{UserID: "user-1"})
+	loaded := false
+	resp := middleware.LoadRoles(ctx, func() httpx.Response {
+		loaded = true
+		if !ctx.HasAnyRole("admin") {
+			t.Fatalf("loaded roles = %#v", ctx.Roles())
+		}
+		if !ctx.IsAdmin() {
+			t.Fatal("admin role should set admin access through manages")
+		}
+		return ctx.NoContent()
+	})
+	if resp.StatusCode != http.StatusNoContent || !loaded {
+		t.Fatalf("LoadRoles response = %#v loaded=%v", resp, loaded)
+	}
+
+	allowed := middleware.RequireRole("admin")(ctx, func() httpx.Response {
+		return ctx.JSON(http.StatusAccepted, nil)
+	})
+	if allowed.StatusCode != http.StatusAccepted {
+		t.Fatalf("RequireRole(admin) status = %d", allowed.StatusCode)
+	}
+	denied := middleware.RequireRole("editor")(ctx, func() httpx.Response {
+		t.Fatal("RequireRole(editor) should not call next")
+		return ctx.NoContent()
+	})
+	if denied.StatusCode != http.StatusForbidden {
+		t.Fatalf("RequireRole(editor) status = %d", denied.StatusCode)
+	}
+	admin := middleware.RequireAdmin(ctx, func() httpx.Response {
+		return ctx.JSON(http.StatusCreated, nil)
+	})
+	if admin.StatusCode != http.StatusCreated {
+		t.Fatalf("RequireAdmin status = %d", admin.StatusCode)
+	}
+}
+
+func TestExportedLoadRolesRequiresAuth(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	resp := middleware.LoadRoles(httpx.NewContext(newRequest()), func() httpx.Response {
+		t.Fatal("LoadRoles should not call next without auth")
+		return httpx.Response{}
+	})
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func newRequest() *http.Request {
+	req, _ := http.NewRequest(http.MethodGet, "/", nil)
+	return req
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "http", "middleware", "exported_rbac_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

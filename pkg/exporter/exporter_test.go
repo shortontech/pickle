@@ -2847,6 +2847,74 @@ func Search(term string, after time.Time) ([]models.Post, error) {
 	}
 }
 
+func TestRewriteQueryBetweenFilter(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"Post": true},
+	}
+	src := []byte(`package controllers
+
+import (
+	"time"
+
+	"example.com/app/app/models"
+)
+
+func Search(start time.Time, end time.Time) ([]models.Post, error) {
+	return models.QueryPost().
+		WhereCreatedAtBetween(start, end).
+		All()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	compact := strings.Join(strings.Fields(got), " ")
+	if !strings.Contains(compact, `Where("created_at BETWEEN ? AND ?", start, end)`) {
+		t.Fatalf("rewritten source missing BETWEEN filter:\n%s", got)
+	}
+	if strings.Contains(got, "WhereCreatedAtBetween") {
+		t.Fatalf("rewritten source still contains WhereCreatedAtBetween:\n%s", got)
+	}
+}
+
+func TestRewriteMutableQueryBetweenFilter(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"Post": true},
+	}
+	src := []byte(`package controllers
+
+import (
+	"time"
+
+	"example.com/app/app/models"
+)
+
+func Search(start time.Time, end time.Time) ([]models.Post, error) {
+	q := models.QueryPost()
+	q.WhereCreatedAtBetween(start, end)
+	return q.All()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	compact := strings.Join(strings.Fields(got), " ")
+	if !strings.Contains(compact, `q = q.Where("created_at BETWEEN ? AND ?", start, end`) {
+		t.Fatalf("rewritten source missing mutable BETWEEN filter:\n%s", got)
+	}
+	if strings.Contains(got, "WhereCreatedAtBetween") {
+		t.Fatalf("rewritten source still contains WhereCreatedAtBetween:\n%s", got)
+	}
+}
+
 func TestRewriteAliasedModelsImportQueryChain(t *testing.T) {
 	ex := &exporter{
 		sourceModule: "example.com/app",

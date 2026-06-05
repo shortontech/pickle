@@ -662,6 +662,7 @@ type queryFilter struct {
 	Column string
 	Op     string
 	Arg    ast.Expr
+	Arg2   ast.Expr
 }
 
 func parseQueryChain(call *ast.CallExpr) (queryChain, bool, error) {
@@ -734,14 +735,21 @@ func buildQueryChain(model string, methods []struct {
 				return qc, true, fmt.Errorf("SelectAll does not accept arguments")
 			}
 		case strings.HasPrefix(m.name, "Where"):
-			if len(m.args) != 1 {
-				return qc, true, fmt.Errorf("%s requires one argument", m.name)
-			}
 			col, op, ok := whereMethodColumn(m.name, model)
 			if !ok {
 				return qc, true, fmt.Errorf("unsupported query method %s", m.name)
 			}
-			qc.Filters = append(qc.Filters, queryFilter{Column: col, Op: op, Arg: m.args[0]})
+			if op == "BETWEEN" {
+				if len(m.args) != 2 {
+					return qc, true, fmt.Errorf("%s requires two arguments", m.name)
+				}
+				qc.Filters = append(qc.Filters, queryFilter{Column: col, Op: op, Arg: m.args[0], Arg2: m.args[1]})
+			} else {
+				if len(m.args) != 1 {
+					return qc, true, fmt.Errorf("%s requires one argument", m.name)
+				}
+				qc.Filters = append(qc.Filters, queryFilter{Column: col, Op: op, Arg: m.args[0]})
+			}
 		case strings.HasPrefix(m.name, "With"):
 			if len(m.args) != 0 {
 				return qc, true, fmt.Errorf("%s does not accept arguments", m.name)
@@ -814,14 +822,21 @@ func rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[string]string) (a
 	var err error
 	switch {
 	case strings.HasPrefix(sel.Sel.Name, "Where"):
-		if len(call.Args) != 1 {
-			return nil, true, fmt.Errorf("%s requires one argument", sel.Sel.Name)
-		}
 		col, op, ok := whereMethodColumn(sel.Sel.Name, model)
 		if !ok {
 			return nil, true, fmt.Errorf("unsupported query method %s", sel.Sel.Name)
 		}
-		expr, err = gormVarWhereExpr(id.Name, col, op, call.Args[0])
+		if op == "BETWEEN" {
+			if len(call.Args) != 2 {
+				return nil, true, fmt.Errorf("%s requires two arguments", sel.Sel.Name)
+			}
+			expr, err = gormVarWhereExpr(id.Name, col, op, call.Args[0], call.Args[1])
+		} else {
+			if len(call.Args) != 1 {
+				return nil, true, fmt.Errorf("%s requires one argument", sel.Sel.Name)
+			}
+			expr, err = gormVarWhereExpr(id.Name, col, op, call.Args[0])
+		}
 	case strings.HasPrefix(sel.Sel.Name, "With"):
 		if len(call.Args) != 0 {
 			return nil, true, fmt.Errorf("%s does not accept arguments", sel.Sel.Name)
@@ -963,11 +978,28 @@ func (e *exporter) gormVarTerminalExpr(q queryVarTerminal) (ast.Expr, error) {
 	}
 }
 
-func gormVarWhereExpr(varName, col, op string, arg ast.Expr) (ast.Expr, error) {
+func gormVarWhereExpr(varName, col, op string, args ...ast.Expr) (ast.Expr, error) {
 	if col == "__owner__" {
 		col = "user_id"
 	}
-	argStr, err := exprString(arg)
+	if op == "BETWEEN" {
+		if len(args) != 2 {
+			return nil, fmt.Errorf("BETWEEN requires two arguments")
+		}
+		start, err := exprString(args[0])
+		if err != nil {
+			return nil, err
+		}
+		end, err := exprString(args[1])
+		if err != nil {
+			return nil, err
+		}
+		return parseExpr(fmt.Sprintf("%s.Where(%q, %s, %s)", varName, col+" BETWEEN ? AND ?", start, end))
+	}
+	if len(args) != 1 {
+		return nil, fmt.Errorf("%s requires one argument", op)
+	}
+	argStr, err := exprString(args[0])
 	if err != nil {
 		return nil, err
 	}
@@ -986,6 +1018,11 @@ func (e *exporter) gormChain(q queryChain) string {
 			col = q.ownerColumn()
 		}
 		arg, _ := exprString(f.Arg)
+		if f.Op == "BETWEEN" {
+			arg2, _ := exprString(f.Arg2)
+			chain += fmt.Sprintf(".Where(%q, %s, %s)", col+" BETWEEN ? AND ?", arg, arg2)
+			continue
+		}
 		chain += fmt.Sprintf(".Where(%q, %s)", col+" "+f.Op+" ?", arg)
 	}
 	for _, p := range q.Preloads {
@@ -1027,6 +1064,7 @@ func whereMethodColumn(method, model string) (string, string, bool) {
 	}{
 		{"NotLike", "NOT LIKE"},
 		{"Like", "LIKE"},
+		{"Between", "BETWEEN"},
 		{"NotIn", "NOT IN"},
 		{"In", "IN"},
 		{"After", ">"},

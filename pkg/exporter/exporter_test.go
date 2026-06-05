@@ -6836,6 +6836,48 @@ func TestExportReportListsUnsupportedBoundariesOnlyWhenUnsupported(t *testing.T)
 	assertFileNotContains(t, reportPath, "## Manual Review")
 }
 
+func TestExportReportsGraphQLControllerActionsEndToEnd(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
+	policyPath := filepath.Join(projectDir, "database", "policies", "graphql", "2026_06_05_100000_actions.go")
+	if err := os.WriteFile(policyPath, []byte(`package graphql
+
+type ActionAPI_2026_06_05_100000 struct {
+	GraphQLPolicy
+}
+
+func (p *ActionAPI_2026_06_05_100000) Up() {
+	p.ControllerAction("approveTransfer", nil)
+}
+
+func (p *ActionAPI_2026_06_05_100000) Down() {
+	p.RemoveAction("approveTransfer")
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "exported")
+	res, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err != nil {
+		t.Fatalf("Export failed: %v", err)
+	}
+	if !hasFinding(res.Findings, "graphql_action_export_unsupported") {
+		t.Fatalf("expected graphql_action_export_unsupported finding, got %+v", res.Findings)
+	}
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Unsupported")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "`database/policies/graphql` `graphql_action_export_unsupported` - GraphQL controller action approveTransfer is not lowered by the standalone gqlgen export target")
+	assertFileNotContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "No unsupported export findings.")
+	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "approveTransfer")
+	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
+	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
+	runExported(t, out, "go", "test", "./...")
+}
+
 func TestExporterReportsGraphQLControllerActionsAsUnsupported(t *testing.T) {
 	dir := t.TempDir()
 	policyDir := filepath.Join(dir, "database", "policies", "graphql")

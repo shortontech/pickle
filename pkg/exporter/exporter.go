@@ -2051,15 +2051,19 @@ func documentFromOperationContext(opCtx *gqlgen.OperationContext) (*Document, er
 	if opCtx == nil || opCtx.Operation == nil {
 		return nil, BadInput("operation is required")
 	}
+	fragments := ast.FragmentDefinitionList(nil)
+	if opCtx.Doc != nil {
+		fragments = opCtx.Doc.Fragments
+	}
 	return &Document{
 		Operation: strings.ToLower(string(opCtx.Operation.Operation)),
 		Name:      opCtx.Operation.Name,
-		Fields:    convertSelectionSetWithVariables(opCtx.Operation.SelectionSet, opCtx.Variables),
+		Fields:    convertSelectionSetWithVariables(opCtx.Operation.SelectionSet, opCtx.Variables, fragments, map[string]bool{}),
 		Variables: opCtx.Variables,
 	}, nil
 }
 
-func convertSelectionSetWithVariables(ss ast.SelectionSet, variables map[string]any) []Field {
+func convertSelectionSetWithVariables(ss ast.SelectionSet, variables map[string]any, fragments ast.FragmentDefinitionList, seen map[string]bool) []Field {
 	fields := make([]Field, 0, len(ss))
 	for _, sel := range ss {
 		switch s := sel.(type) {
@@ -2069,10 +2073,21 @@ func convertSelectionSetWithVariables(ss ast.SelectionSet, variables map[string]
 				TypeName:   selectionParentType(s),
 				Alias:      s.Alias,
 				Args:       convertArgumentsWithVariables(s.Arguments, variables),
-				Selections: convertSelectionSetWithVariables(s.SelectionSet, variables),
+				Selections: convertSelectionSetWithVariables(s.SelectionSet, variables, fragments, seen),
 			})
 		case *ast.InlineFragment:
-			fields = append(fields, convertSelectionSetWithVariables(s.SelectionSet, variables)...)
+			fields = append(fields, convertSelectionSetWithVariables(s.SelectionSet, variables, fragments, seen)...)
+		case *ast.FragmentSpread:
+			def := s.Definition
+			if def == nil {
+				def = fragments.ForName(s.Name)
+			}
+			if def == nil || seen[def.Name] {
+				continue
+			}
+			seen[def.Name] = true
+			fields = append(fields, convertSelectionSetWithVariables(def.SelectionSet, variables, fragments, seen)...)
+			delete(seen, def.Name)
 		}
 	}
 	return fields

@@ -2391,6 +2391,51 @@ query Two { posts { edges { node { id } } } }` + "`" + `, nil, true},
 		})
 	}
 
+	t.Run("named_fragments_execute_and_count_selected_fields", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{"query": ` + "`" + `query FragmentedUsers {
+  users(page: { first: 25 }) {
+    edges { node { ...UserFields } }
+  }
+}
+
+fragment UserFields on User {
+  id
+  name
+}` + "`" + `})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Data struct {
+				Users struct {
+					Edges []struct {
+						Node map[string]any ` + "`" + `json:"node"` + "`" + `
+					} ` + "`" + `json:"edges"` + "`" + `
+				} ` + "`" + `json:"users"` + "`" + `
+			} ` + "`" + `json:"data"` + "`" + `
+			Errors []map[string]any ` + "`" + `json:"errors"` + "`" + `
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode response: %v\n%s", err, rec.Body.String())
+		}
+		if len(resp.Errors) != 0 {
+			t.Fatalf("unexpected GraphQL errors: %v\n%s", resp.Errors, rec.Body.String())
+		}
+		if len(resp.Data.Users.Edges) != 1 {
+			t.Fatalf("edges = %d, body = %s", len(resp.Data.Users.Edges), rec.Body.String())
+		}
+		node := resp.Data.Users.Edges[0].Node
+		if node["name"] != "Ada" {
+			t.Fatalf("fragment fields were not executed: %#v body=%s", node, rec.Body.String())
+		}
+	})
+
 	t.Run("authenticated_fields_use_exported_auth_driver", func(t *testing.T) {
 		body, err := json.Marshal(map[string]any{"query": ` + "`" + `query AuthenticatedUser($id: ID!) {
   user(id: $id) { id email name }

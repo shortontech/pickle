@@ -53,9 +53,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Exported")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone JWT, OAuth client-credentials, and session auth drivers")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone RBAC and GraphQL policy state support with changelog tables")
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Unsupported")
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "No unsupported export findings.")
-	assertFileNotContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Manual Review")
+	assertCleanExportReport(t, out)
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func Env(key, fallback string) string")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "type ConnectionConfig struct")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func OpenGORM(conn ConnectionConfig) *gorm.DB")
@@ -1721,6 +1719,7 @@ func TestExportLedgerCompiles(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "integrity_support.go"), "func VerifyTransactionChain() error")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "account_controller.go"), "models.DB.Model(&models.Account{})")
 	assertPathMissing(t, filepath.Join(out, "integrity_test.go"))
+	assertCleanExportReport(t, out)
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "QueryAccount")
 	writeExportedIntegrityBehaviorTest(t, out)
@@ -1750,6 +1749,7 @@ func TestExportEncryptionLowersGORMHooks(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "user.go"), "func (m *User) BeforeSave(tx *gorm.DB) error")
 	assertFileContains(t, filepath.Join(out, "app", "models", "encryption_support.go"), "func encryptDeterministic")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Encrypted and sealed columns with GORM encrypt/decrypt hooks")
+	assertCleanExportReport(t, out)
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	writeExportedEncryptionBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
@@ -1779,6 +1779,7 @@ func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), `mux.Handle("/graphql", graphql.Handler())`)
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "routes.API.RegisterRoutes(mux)")
 	assertFileContains(t, filepath.Join(out, "app", "http", "requests", "bindings.go"), "package requests")
+	assertCleanExportReport(t, out)
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "pickle.")
 	runExported(t, out, "go", "test", "./...")
@@ -1811,6 +1812,7 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `q.db = q.db.Select([]string{"id", "user_id", "title"})`)
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `mux.Handle("/graphql", graphql.Handler())`)
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "routes.API.RegisterRoutes(mux)")
+	assertCleanExportReport(t, out)
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "pickle.")
 	writeExportedGraphQLSafetyBehaviorTest(t, out)
@@ -2194,6 +2196,7 @@ func TestExportMonorepoCompiles(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "workerRoutes")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "apiRoutes.API.RegisterRoutes(mux)")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `http.StripPrefix("/worker", workerRoutes.API)`)
+	assertCleanExportReport(t, out)
 	assertNoGoFileContains(t, out, "QueryOrder")
 	writeExportedMonorepoServerBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
@@ -2460,7 +2463,7 @@ func TestExportCronCompilesWithSchedulerSupport(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "routes.API.RegisterRoutes(mux)")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Cron job scheduler support with exported server startup wiring")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone command dispatch with embedded SQL migration commands")
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "No unsupported export findings.")
+	assertCleanExportReport(t, out)
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	writeExportedCronBehaviorTests(t, out)
 	runExported(t, out, "go", "test", "./...")
@@ -2743,6 +2746,15 @@ func assertFileNotContains(t *testing.T, path, needle string) {
 	if strings.Contains(string(data), needle) {
 		t.Fatalf("expected %s not to contain %q", path, needle)
 	}
+}
+
+func assertCleanExportReport(t *testing.T, out string) {
+	t.Helper()
+	reportPath := filepath.Join(out, "EXPORT_REPORT.md")
+	assertFileContains(t, reportPath, "## Unsupported\n\nNo unsupported export findings.")
+	assertFileNotContains(t, reportPath, "## Partial Support")
+	assertFileNotContains(t, reportPath, "## Omitted")
+	assertFileNotContains(t, reportPath, "## Manual Review")
 }
 
 func assertNoGoFileContains(t *testing.T, root, needle string) {

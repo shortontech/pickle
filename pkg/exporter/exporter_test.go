@@ -3044,6 +3044,11 @@ func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func Handler() http.Handler")
 	assertFileContains(t, filepath.Join(out, "go.mod"), "github.com/99designs/gqlgen")
+	assertFileContains(t, filepath.Join(out, "gqlgen.yml"), "schema:")
+	assertFileContains(t, filepath.Join(out, "gqlgen.yml"), "- app/graphql/schema.graphqls")
+	assertFileContains(t, filepath.Join(out, "gqlgen.yml"), "package: graphql")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "schema.graphqls"), "type Query")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "schema.graphqls"), "type User")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "handler.New(pickleExecutableSchema{})")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "srv.AddTransport(transport.POST{})")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "srv.AddTransport(transport.GET{})")
@@ -3249,6 +3254,11 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "schema_gen.go"), "type Query")
 	assertFileContains(t, filepath.Join(out, "go.mod"), "github.com/99designs/gqlgen")
+	assertFileContains(t, filepath.Join(out, "gqlgen.yml"), "schema:")
+	assertFileContains(t, filepath.Join(out, "gqlgen.yml"), "- app/graphql/schema.graphqls")
+	assertFileContains(t, filepath.Join(out, "gqlgen.yml"), "package: graphql")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "schema.graphqls"), "type Query")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "schema.graphqls"), "type User")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "handler.New(pickleExecutableSchema{})")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "srv.AddTransport(transport.POST{})")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "srv.AddTransport(transport.GET{})")

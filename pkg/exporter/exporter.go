@@ -1736,6 +1736,7 @@ func (e *exporter) writeGraphQLPackage(tables []*schema.Table, views []*schema.V
 		}
 		return err
 	}
+	var schemaSDL string
 	if err := filepath.WalkDir(graphqlDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -1754,6 +1755,13 @@ func (e *exporter) writeGraphQLPackage(tables []*schema.Table, views []*schema.V
 		if err != nil {
 			return err
 		}
+		if filepath.Base(path) == "schema_gen.go" {
+			sdl, err := extractStringConstFromGoSource(data, "SchemaSDL")
+			if err != nil {
+				return fmt.Errorf("extracting exported GraphQL schema SDL: %w", err)
+			}
+			schemaSDL = sdl
+		}
 		rel, err := filepath.Rel(e.project.Dir, path)
 		if err != nil {
 			return err
@@ -1762,7 +1770,73 @@ func (e *exporter) writeGraphQLPackage(tables []*schema.Table, views []*schema.V
 	}); err != nil {
 		return err
 	}
+	if schemaSDL == "" {
+		return fmt.Errorf("exported GraphQL schema SDL was not found")
+	}
+	if err := e.writeGraphQLTargetFiles(schemaSDL); err != nil {
+		return err
+	}
 	return e.writeGraphQLQuerySupport(tables, views)
+}
+
+func (e *exporter) writeGraphQLTargetFiles(schemaSDL string) error {
+	schemaSDL = strings.TrimSpace(schemaSDL) + "\n"
+	if err := e.writeFile(filepath.Join("app", "graphql", "schema.graphqls"), []byte(schemaSDL)); err != nil {
+		return err
+	}
+	var b strings.Builder
+	b.WriteString("schema:\n")
+	b.WriteString("  - app/graphql/schema.graphqls\n\n")
+	b.WriteString("exec:\n")
+	b.WriteString("  filename: app/graphql/generated.go\n")
+	b.WriteString("  package: graphql\n\n")
+	b.WriteString("model:\n")
+	b.WriteString("  filename: app/graphql/model/models_gen.go\n")
+	b.WriteString("  package: model\n\n")
+	b.WriteString("resolver:\n")
+	b.WriteString("  layout: follow-schema\n")
+	b.WriteString("  dir: app/graphql\n")
+	b.WriteString("  package: graphql\n\n")
+	b.WriteString("autobind:\n")
+	fmt.Fprintf(&b, "  - %s/app/models\n", e.modulePath)
+	return e.writeFile("gqlgen.yml", []byte(b.String()))
+}
+
+func extractStringConstFromGoSource(src []byte, name string) (string, error) {
+	file, err := parser.ParseFile(token.NewFileSet(), "", src, 0)
+	if err != nil {
+		return "", err
+	}
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*ast.GenDecl)
+		if !ok || genDecl.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range genDecl.Specs {
+			valueSpec, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, ident := range valueSpec.Names {
+				if ident.Name != name {
+					continue
+				}
+				if i >= len(valueSpec.Values) {
+					return "", fmt.Errorf("const %s has no value", name)
+				}
+				lit, ok := valueSpec.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					return "", fmt.Errorf("const %s is not a string literal", name)
+				}
+				value, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					return "", err
+				}
+				return value, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("const %s was not found", name)
 }
 
 func (e *exporter) rewriteGeneratedGraphQLSource(path string, data []byte) ([]byte, error) {

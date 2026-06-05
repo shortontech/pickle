@@ -6674,14 +6674,23 @@ func runJob(entry *JobEntry) {
 		if entry.timeout > 0 {
 			ctx, cancel := context.WithTimeout(context.Background(), entry.timeout)
 			done := make(chan error, 1)
-			go func() { done <- entry.Job.Handle() }()
+			go func() { done <- safeHandleJob(entry.Job) }()
 			select { case err = <-done: case <-ctx.Done(): err = fmt.Errorf("job timed out after %s", entry.timeout) }
 			cancel()
-		} else { err = entry.Job.Handle() }
+		} else { err = safeHandleJob(entry.Job) }
 		if err == nil { return }
 		log.Printf("job %T failed (attempt %d/%d): %v", entry.Job, i+1, attempts, err)
 		if i < attempts-1 && entry.retryDelay > 0 { time.Sleep(entry.retryDelay) }
 	}
+}
+
+func safeHandleJob(job Job) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("job panic: %v", recovered)
+		}
+	}()
+	return job.Handle()
 }
 `
 

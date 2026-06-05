@@ -3395,6 +3395,7 @@ func writeExportedCronBehaviorTests(t *testing.T, out string) {
 	jobsTest := `package jobs
 
 import (
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -3418,6 +3419,15 @@ var errExportedFlaky = &exportedCronError{}
 type exportedCronError struct{}
 
 func (*exportedCronError) Error() string { return "flaky" }
+
+type exportedPanicJob struct {
+	attempts int32
+}
+
+func (j *exportedPanicJob) Handle() error {
+	atomic.AddInt32(&j.attempts, 1)
+	panic("secret job panic")
+}
 
 func TestExportedSchedulerOptionsAndRetries(t *testing.T) {
 	job := &exportedFlakyJob{failures: 2}
@@ -3448,6 +3458,44 @@ func TestExportedSchedulerOptionsAndRetries(t *testing.T) {
 	if got := atomic.LoadInt32(&job.attempts); got != 3 {
 		t.Fatalf("attempts = %d, want 3", got)
 	}
+}
+
+func TestExportedSchedulerRecoversJobPanics(t *testing.T) {
+	job := &exportedPanicJob{}
+	err := safeHandleJob(job)
+	if err == nil {
+		t.Fatal("expected recovered panic error")
+	}
+	if got := atomic.LoadInt32(&job.attempts); got != 1 {
+		t.Fatalf("attempts = %d, want 1", got)
+	}
+	if err.Error() != "job panic: secret job panic" {
+		t.Fatalf("panic error = %v", err)
+	}
+	runJob(&JobEntry{Job: job, maxRetries: 1})
+	if got := atomic.LoadInt32(&job.attempts); got != 3 {
+		t.Fatalf("panic job retry attempts = %d, want 3", got)
+	}
+}
+
+func TestExportedSchedulerRecoversTimedJobPanics(t *testing.T) {
+	job := &panicAfterErrorJob{}
+	runJob(&JobEntry{Job: job, maxRetries: 1, timeout: time.Second})
+	if got := atomic.LoadInt32(&job.attempts); got != 2 {
+		t.Fatalf("timed panic job attempts = %d, want 2", got)
+	}
+}
+
+type panicAfterErrorJob struct {
+	attempts int32
+}
+
+func (j *panicAfterErrorJob) Handle() error {
+	attempt := atomic.AddInt32(&j.attempts, 1)
+	if attempt == 1 {
+		return fmt.Errorf("first failure")
+	}
+	panic("timed panic")
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "jobs", "exported_scheduler_test.go"), []byte(jobsTest), 0o644); err != nil {

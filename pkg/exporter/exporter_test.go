@@ -3051,6 +3051,49 @@ func TestExportedPolicyStateSupport(t *testing.T) {
 	if userList != 1 {
 		t.Fatalf("graphql users.list exposures = %d, want 1", userList)
 	}
+	var rbacChangelogRows int64
+	if err := db.Table("rbac_changelog").Count(&rbacChangelogRows).Error; err != nil {
+		t.Fatal(err)
+	}
+	var graphqlChangelogRows int64
+	if err := db.Table("graphql_changelog").Count(&graphqlChangelogRows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db, "sqlite"); err != nil {
+		t.Fatalf("second policy migrate: %v", err)
+	}
+	if err := db.Table("roles").Count(&roles).Error; err != nil {
+		t.Fatal(err)
+	}
+	if roles != 3 {
+		t.Fatalf("roles after second migrate = %d, want 3", roles)
+	}
+	if err := db.Table("role_actions").Where("role_slug = ? AND action = ?", "admin", "users.create").Count(&adminCreates).Error; err != nil {
+		t.Fatal(err)
+	}
+	if adminCreates != 1 {
+		t.Fatalf("admin users.create grants after second migrate = %d, want 1", adminCreates)
+	}
+	if err := db.Table("graphql_exposures").Where("model = ? AND operation = ?", "users", "list").Count(&userList).Error; err != nil {
+		t.Fatal(err)
+	}
+	if userList != 1 {
+		t.Fatalf("graphql users.list exposures after second migrate = %d, want 1", userList)
+	}
+	var rbacChangelogRowsAfter int64
+	if err := db.Table("rbac_changelog").Count(&rbacChangelogRowsAfter).Error; err != nil {
+		t.Fatal(err)
+	}
+	if rbacChangelogRowsAfter != rbacChangelogRows {
+		t.Fatalf("rbac changelog rows after second migrate = %d, want stable %d", rbacChangelogRowsAfter, rbacChangelogRows)
+	}
+	var graphqlChangelogRowsAfter int64
+	if err := db.Table("graphql_changelog").Count(&graphqlChangelogRowsAfter).Error; err != nil {
+		t.Fatal(err)
+	}
+	if graphqlChangelogRowsAfter != graphqlChangelogRows {
+		t.Fatalf("graphql changelog rows after second migrate = %d, want stable %d", graphqlChangelogRowsAfter, graphqlChangelogRows)
+	}
 	statuses, err := Status(db, "sqlite")
 	if err != nil {
 		t.Fatalf("policy status: %v", err)

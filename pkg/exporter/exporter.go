@@ -5372,23 +5372,38 @@ func (a *App) Run(args []string) {
 	if a == nil {
 		return
 	}
+	if err := a.run(args); err != nil {
+		log.Fatal(err.Error())
+	}
+}
+
+func (a *App) run(args []string) error {
+	if a == nil {
+		return nil
+	}
 	if a.initFn != nil {
-		a.initFn()
+		if len(args) == 0 {
+			a.initFn()
+		}
 	}
 	if len(args) > 0 {
 		cmd, ok := a.commands[args[0]]
 		if !ok {
 			a.PrintCommands()
-			log.Fatal(unknownCommandMessage())
+			return fmt.Errorf("%s", unknownCommandMessage())
+		}
+		if a.initFn != nil {
+			a.initFn()
 		}
 		if err := cmd.Run(args[1:]); err != nil {
-			log.Fatal(commandFailureMessage())
+			return fmt.Errorf("%s", commandFailureMessage())
 		}
-		return
+		return nil
 	}
 	if a.serveFn != nil {
 		a.serveFn()
 	}
+	return nil
 }
 
 func commandFailureMessage() string {

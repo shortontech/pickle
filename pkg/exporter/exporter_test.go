@@ -2467,6 +2467,52 @@ func TestExportedCommandAppHandlesNilPieces(t *testing.T) {
 	}
 }
 
+func TestExportedCommandDispatchChecksUnknownCommandsBeforeStartup(t *testing.T) {
+	initialized := 0
+	app := BuildApp(func() {
+		initialized++
+	}, nil, &countingCommand{name: "known"})
+
+	err := app.run([]string{"missing-password=swordfish"})
+	if err == nil || err.Error() != "unknown command" {
+		t.Fatalf("unknown command error = %v, want sanitized unknown command", err)
+	}
+	if initialized != 0 {
+		t.Fatalf("unknown command initialized startup %d times, want 0", initialized)
+	}
+	if strings.Contains(err.Error(), "swordfish") || strings.Contains(err.Error(), "missing-password") {
+		t.Fatalf("unknown command error leaked command detail: %v", err)
+	}
+}
+
+func TestExportedCommandDispatchInitializesKnownCommandsAndServer(t *testing.T) {
+	initialized := 0
+	served := 0
+	command := &countingCommand{name: "known"}
+	app := BuildApp(func() {
+		initialized++
+	}, func() {
+		served++
+	}, command)
+
+	if err := app.run([]string{"known", "one", "two"}); err != nil {
+		t.Fatalf("known command error: %v", err)
+	}
+	if initialized != 1 || command.runs != 1 || served != 0 {
+		t.Fatalf("known command initialized/runs/served = %d/%d/%d, want 1/1/0", initialized, command.runs, served)
+	}
+	if got := strings.Join(command.args, ","); got != "one,two" {
+		t.Fatalf("known command args = %q, want one,two", got)
+	}
+
+	if err := app.run(nil); err != nil {
+		t.Fatalf("server mode error: %v", err)
+	}
+	if initialized != 2 || command.runs != 1 || served != 1 {
+		t.Fatalf("server mode initialized/runs/served = %d/%d/%d, want 2/1/1", initialized, command.runs, served)
+	}
+}
+
 type assertSecretError string
 
 func (e assertSecretError) Error() string { return string(e) }
@@ -2482,6 +2528,20 @@ type secretNameCommand struct{}
 func (secretNameCommand) Name() string { return "deploy-password=swordfish" }
 func (secretNameCommand) Description() string { return "secret name" }
 func (secretNameCommand) Run(args []string) error { return assertSecretError("password=swordfish") }
+
+type countingCommand struct {
+	name string
+	runs int
+	args []string
+}
+
+func (c *countingCommand) Name() string { return c.name }
+func (c *countingCommand) Description() string { return "counting" }
+func (c *countingCommand) Run(args []string) error {
+	c.runs++
+	c.args = append([]string{}, args...)
+	return nil
+}
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "commands", "exported_command_security_test.go"), []byte(securityTestSrc), 0o644); err != nil {
 		t.Fatal(err)

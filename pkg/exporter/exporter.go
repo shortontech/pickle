@@ -6137,6 +6137,11 @@ import (
 
 var ErrInvalidToken = errors.New("jwt: invalid token")
 
+const (
+	maxJWTTokenBytes   = 8 << 10
+	maxJWTSegmentBytes = 4 << 10
+)
+
 type Claims struct {
 	JTI       string         ` + "`" + `json:"jti,omitempty"` + "`" + `
 	Subject   string         ` + "`" + `json:"sub,omitempty"` + "`" + `
@@ -6206,7 +6211,7 @@ func (d *Driver) SignToken(claims Claims) (string, error) {
 func (d *Driver) ValidateToken(token string) (Claims, error) {
 	if d.secret == "" { return Claims{}, ErrInvalidToken }
 	parts := strings.SplitN(token, ".", 3)
-	if len(parts) != 3 { return Claims{}, ErrInvalidToken }
+	if !validJWTShape(token, parts) { return Claims{}, ErrInvalidToken }
 	headerJSON, err := base64URLDecode(parts[0])
 	if err != nil { return Claims{}, ErrInvalidToken }
 	var header struct{ Alg string ` + "`" + `json:"alg"` + "`" + ` }
@@ -6237,6 +6242,18 @@ func (d *Driver) Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
 	claims, err := d.ValidateToken(parts[1])
 	if err != nil { return nil, err }
 	return &httpx.AuthInfo{UserID: claims.Subject, Role: claims.Role, Claims: claims}, nil
+}
+
+func validJWTShape(token string, parts []string) bool {
+	if token == "" || len(token) > maxJWTTokenBytes || len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || len(part) > maxJWTSegmentBytes || strings.Contains(part, ".") {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *Driver) registerToken(claims Claims) error {

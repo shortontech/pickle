@@ -86,6 +86,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "support.go"), "func (r *Runner) Migrate(entries []MigrationEntry) error")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "crypto/hmac")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "ErrInvalidToken")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "maxJWTTokenBytes")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "validJWTShape")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "oauth.NewDriver")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "session.NewDriver")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "func DefaultAuthMiddleware")
@@ -382,6 +384,14 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 		t.Fatalf("validate jwt: %v", err)
 	}
 	_, err = jwtDriver.ValidateToken("not-a-jwt")
+	assertInvalidJWT(t, err)
+	_, err = jwtDriver.ValidateToken(strings.Repeat("a", 9000))
+	assertInvalidJWT(t, err)
+	_, err = jwtDriver.ValidateToken(strings.Repeat("a", 5000) + ".b.c")
+	assertInvalidJWT(t, err)
+	_, err = jwtDriver.ValidateToken("a..c")
+	assertInvalidJWT(t, err)
+	_, err = jwtDriver.ValidateToken("a.b.c.d")
 	assertInvalidJWT(t, err)
 	expiredToken, err := jwtDriver.SignToken(jwt.Claims{Subject: "user-expired", Role: "admin", ExpiresAt: time.Now().Add(-time.Hour).Unix()})
 	if err != nil {

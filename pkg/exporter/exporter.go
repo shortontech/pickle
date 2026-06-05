@@ -6322,6 +6322,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
 	"strings"
 	"time"
@@ -6374,7 +6375,7 @@ func (d *Driver) TokenEndpoint(ctx *httpx.Context) httpx.Response {
 	if d.clientID == "" || d.clientSecret == "" {
 		return ctx.Error(errors.New("oauth: client credentials not configured"))
 	}
-	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
+	if !isFormURLEncoded(r.Header.Get("Content-Type")) {
 		return ctx.JSON(400, map[string]string{"error": "invalid_request", "error_description": "Content-Type must be application/x-www-form-urlencoded"})
 	}
 	if r.ContentLength > maxTokenRequestBodyBytes {
@@ -6428,6 +6429,14 @@ func bindPlaceholders(driver, query string) string {
 		b.WriteByte(query[i])
 	}
 	return b.String()
+}
+
+func isFormURLEncoded(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	return mediaType == "application/x-www-form-urlencoded"
 }
 
 func parseBasicAuth(header string) (string, string, bool) {

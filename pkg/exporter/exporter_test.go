@@ -462,6 +462,20 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	if issuedInfo.UserID != "client-1" || issuedInfo.Role != "client" {
 		t.Fatalf("issued oauth auth info = %#v", issuedInfo)
 	}
+	tokenReqWithCharset, _ := http.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader("grant_type=client_credentials"))
+	tokenReqWithCharset.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+	tokenReqWithCharset.SetBasicAuth("client-1", "secret-1")
+	tokenRespWithCharset := oauthDriver.TokenEndpoint(httpx.NewContext(tokenReqWithCharset))
+	if tokenRespWithCharset.StatusCode != http.StatusOK {
+		t.Fatalf("oauth token endpoint charset status = %d body = %#v", tokenRespWithCharset.StatusCode, tokenRespWithCharset.Body)
+	}
+	badContentTypeReq, _ := http.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader("grant_type=client_credentials"))
+	badContentTypeReq.Header.Set("Content-Type", "application/x-www-form-urlencodedevil")
+	badContentTypeReq.SetBasicAuth("client-1", "secret-1")
+	badContentTypeResp := oauthDriver.TokenEndpoint(httpx.NewContext(badContentTypeReq))
+	if badContentTypeResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("oauth bad content type status = %d body = %#v", badContentTypeResp.StatusCode, badContentTypeResp.Body)
+	}
 	badTokenReq, _ := http.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader("grant_type=client_credentials"))
 	badTokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	badTokenReq.SetBasicAuth("client-1", "wrong")

@@ -7119,7 +7119,7 @@ func (d *Driver) RevokeToken(jti string) error {
 	if d.db == nil { return errors.New("jwt: database not configured") }
 	if jti == "" { return errors.New("jwt: missing jti") }
 	_, err := d.db.Exec(bindPlaceholders(d.driver, "UPDATE jwt_tokens SET revoked_at = ? WHERE jti = ?"), time.Now().UTC(), jti)
-	if err != nil { return fmt.Errorf("jwt: revoke token: %%w", err) }
+	if err != nil { return errors.New("jwt: database error") }
 	return nil
 }
 
@@ -7127,7 +7127,7 @@ func (d *Driver) RevokeAllForUser(userID string) error {
 	if d.db == nil { return errors.New("jwt: database not configured") }
 	if userID == "" { return errors.New("jwt: missing user id") }
 	_, err := d.db.Exec(bindPlaceholders(d.driver, "UPDATE jwt_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL"), time.Now().UTC(), userID)
-	if err != nil { return fmt.Errorf("jwt: revoke all for user: %%w", err) }
+	if err != nil { return errors.New("jwt: database error") }
 	return nil
 }
 

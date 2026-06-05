@@ -105,6 +105,9 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "failed to store token")
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "return ctx.Error(err)")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func CSRF")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), `errors.New("jwt: database error")`)
+	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "jwt: revoke token: %w")
+	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "jwt: revoke all for user: %w")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "len(parts[0]) != 64 || len(parts[1]) != 64")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func validSessionID")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func validCookieName")
@@ -504,6 +507,21 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	}
 	if cappedJWTClaims.ExpiresAt-cappedJWTClaims.IssuedAt != 365*24*60*60 {
 		t.Fatalf("capped jwt expiry seconds = %d, want %d", cappedJWTClaims.ExpiresAt-cappedJWTClaims.IssuedAt, 365*24*60*60)
+	}
+
+	closedJWTDB, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closedJWTDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	closedJWTDriver := jwt.NewDriver(env, closedJWTDB, "sqlite")
+	if err := closedJWTDriver.RevokeToken("secret-jti"); err == nil || err.Error() != "jwt: database error" || strings.Contains(err.Error(), "sql:") || strings.Contains(err.Error(), "secret-jti") {
+		t.Fatalf("closed DB revoke token error = %v", err)
+	}
+	if err := closedJWTDriver.RevokeAllForUser("secret-user"); err == nil || err.Error() != "jwt: database error" || strings.Contains(err.Error(), "sql:") || strings.Contains(err.Error(), "secret-user") {
+		t.Fatalf("closed DB revoke all error = %v", err)
 	}
 
 	oauthDriver := auth.Driver("oauth").(*oauth.Driver)

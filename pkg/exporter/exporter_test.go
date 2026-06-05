@@ -2774,6 +2774,28 @@ fragment UserFields on User {
 		}
 	})
 
+	t.Run("auth_failures_are_sanitized", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{"query": ` + "`" + `query AuthFailure($id: ID!) {
+  user(id: $id) { id email name }
+}` + "`" + `, "variables": map[string]any{"id": userID.String()}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer dont-leak-me")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "dont-leak-me") || strings.Contains(rec.Body.String(), "jwt:") {
+			t.Fatalf("auth failure leaked implementation details: %s", rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "unauthenticated") {
+			t.Fatalf("missing sanitized auth error: %s", rec.Body.String())
+		}
+	})
+
 	t.Run("oversized_request_body_rejected_before_parse", func(t *testing.T) {
 		body := strings.Repeat(" ", (1<<20)+1)
 		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))

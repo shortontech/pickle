@@ -1804,6 +1804,8 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "schema_gen.go"), "type Query")
 	assertFileContains(t, filepath.Join(out, "go.mod"), "github.com/99designs/gqlgen")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "handler.New(pickleExecutableSchema{})")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLRequestBodyBytes = 1 << 20")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "http.MaxBytesReader(w, r.Body, maxGraphQLRequestBodyBytes)")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "pickle_gen.go"), "maxQueryComplexity")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "pickle_gen.go"), "var allowIntrospection = false")
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), "func (q *UserQuery) WhereID")
@@ -1994,6 +1996,17 @@ query Two { posts { edges { node { id } } } }` + "`" + `, true},
 		}
 		if !strings.Contains(rec.Body.String(), userID.String()) || !strings.Contains(rec.Body.String(), "ada@example.com") {
 			t.Fatalf("authenticated GraphQL response did not include auth-only fields: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("oversized_request_body_rejected_before_parse", func(t *testing.T) {
+		body := strings.Repeat(" ", (1<<20)+1)
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
 		}
 	})
 }

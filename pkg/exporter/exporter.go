@@ -1390,6 +1390,8 @@ import (
 	appmodels "%s/app/models"
 )
 
+const maxGraphQLRequestBodyBytes = 1 << 20
+
 // Handler returns a production GraphQL handler backed by gqlgen's parser,
 // validator, transport handling, and executable schema runtime.
 func Handler() http.Handler {
@@ -1405,6 +1407,13 @@ func Handler() http.Handler {
 			w.Header().Set("Content-Type", "text/plain")
 			w.Write([]byte(SchemaSDL))
 			return
+		}
+		if r.Method == http.MethodPost {
+			if r.ContentLength > maxGraphQLRequestBodyBytes {
+				http.Error(w, "graphql request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, maxGraphQLRequestBodyBytes)
 		}
 		if r.Method == http.MethodPost && r.Header.Get("Content-Type") == "" {
 			r.Header.Set("Content-Type", "application/json")

@@ -174,6 +174,7 @@ func Export(opts Options) (*Result, error) {
 	if err := ex.tidyModule(); err != nil {
 		return nil, err
 	}
+	ex.addGraphQLActionFindings()
 	ex.addSchemaFindings(tables)
 	if err := ex.writeReport(opts.ORM); err != nil {
 		return nil, err
@@ -5890,6 +5891,20 @@ func safeImportAlias(name string) string {
 func (e *exporter) addSchemaFindings(tables []*schema.Table) {
 }
 
+func (e *exporter) addGraphQLActionFindings() {
+	if e.result == nil || !e.hasGraphQLPolicies() {
+		return
+	}
+	state := generator.DeriveGraphQLStateFromDir(filepath.Join(e.project.Dir, "database", "policies", "graphql"))
+	for _, action := range state.Actions {
+		e.result.Findings = append(e.result.Findings, Finding{
+			File:    filepath.Join("database", "policies", "graphql"),
+			Rule:    "graphql_action_export_unsupported",
+			Message: fmt.Sprintf("GraphQL controller action %s is not lowered by the standalone gqlgen export target", action.Name),
+		})
+	}
+}
+
 func (e *exporter) writeReport(orm string) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Export Report\n\n")
@@ -5990,7 +6005,8 @@ func findingCategory(rule string) string {
 	switch rule {
 	case "action_export_unsupported_signature", "action_export_unsupported_query",
 		"gate_export_unsupported_signature", "gate_export_policy_dependency",
-		"gate_export_dynamic_role", "gate_export_callsite":
+		"gate_export_dynamic_role", "gate_export_callsite",
+		"graphql_action_export_unsupported":
 		return "unsupported"
 	case "rbac_policy_export":
 		return "partial"

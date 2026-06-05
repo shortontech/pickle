@@ -6226,6 +6226,36 @@ func TestExportReportListsUnsupportedBoundariesOnlyWhenUnsupported(t *testing.T)
 	assertFileNotContains(t, reportPath, "## Manual Review")
 }
 
+func TestExporterReportsGraphQLControllerActionsAsUnsupported(t *testing.T) {
+	dir := t.TempDir()
+	policyDir := filepath.Join(dir, "database", "policies", "graphql")
+	if err := os.MkdirAll(policyDir, 0o755); err != nil {
+		t.Fatalf("mkdir policy dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(policyDir, "2026_06_05_100000_actions.go"), []byte(`package graphql
+
+func (p *API) Up() {
+	p.ControllerAction("approveTransfer", nil)
+}
+`), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	ex := &exporter{
+		project: &generator.Project{Dir: dir},
+		result:  &Result{},
+	}
+	ex.addGraphQLActionFindings()
+	if !hasFinding(ex.result.Findings, "graphql_action_export_unsupported") {
+		t.Fatalf("expected graphql_action_export_unsupported finding, got %+v", ex.result.Findings)
+	}
+	if got := ex.result.Findings[0].File; got != filepath.Join("database", "policies", "graphql") {
+		t.Fatalf("finding file = %q, want GraphQL policy directory", got)
+	}
+	if got := ex.result.Findings[0].Message; !strings.Contains(got, "approveTransfer") {
+		t.Fatalf("finding message %q does not name controller action", got)
+	}
+}
+
 func TestFindingCategoryClassifiesUnlowerableBoundariesAsUnsupported(t *testing.T) {
 	for _, rule := range []string{
 		"action_export_unsupported_signature",
@@ -6234,6 +6264,7 @@ func TestFindingCategoryClassifiesUnlowerableBoundariesAsUnsupported(t *testing.
 		"gate_export_policy_dependency",
 		"gate_export_dynamic_role",
 		"gate_export_callsite",
+		"graphql_action_export_unsupported",
 		"new_unclassified_export_boundary",
 	} {
 		if got := findingCategory(rule); got != "unsupported" {

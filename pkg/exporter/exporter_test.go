@@ -128,6 +128,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertNoGoFileContains(t, out, "RegisterPickleEndpoints")
 	assertNoGoFileContains(t, out, "/pickle/config/reload")
 	assertFileContains(t, filepath.Join(out, "go.sum"), "gorm.io/gorm")
+	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
 	writeExportedAuthBehaviorTest(t, out)
 	writeExportedSessionCSRFBehaviorTest(t, out)
 	writeExportedConfigBehaviorTest(t, out)
@@ -3119,6 +3120,7 @@ func TestExportLedgerCompiles(t *testing.T) {
 	assertCleanExportReport(t, out)
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "QueryAccount")
+	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
 	writeExportedIntegrityBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
@@ -3148,6 +3150,7 @@ func TestExportEncryptionLowersGORMHooks(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Encrypted and sealed columns with GORM encrypt/decrypt hooks")
 	assertCleanExportReport(t, out)
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
+	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
 	writeExportedEncryptionBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
@@ -3218,6 +3221,7 @@ func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 	assertCleanExportReport(t, out)
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "pickle.")
+	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
 	writeExportedZeroGraphQLEncryptedFilterTest(t, out)
 	writeExportedZeroGraphQLHTTPMethodSafetyTest(t, out)
 	writeExportedZeroGraphQLAPITargetBehaviorTest(t, out)
@@ -3897,6 +3901,7 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertCleanExportReport(t, out)
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "pickle.")
+	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
 	writeExportedGraphQLSafetyBehaviorTest(t, out)
 	writeExportedGraphQLCostBehaviorTest(t, out)
 	writeExportedGraphQLErrorBehaviorTest(t, out)
@@ -5906,6 +5911,7 @@ func TestExportCronCompilesWithSchedulerSupport(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone command dispatch with embedded SQL migration commands")
 	assertCleanExportReport(t, out)
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
+	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
 	writeExportedCronBehaviorTests(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
@@ -6151,6 +6157,7 @@ func (m *AlterWidgetsTable_2026_04_01_100001) Down() {
 	assertFileNotContains(t, filepath.Join(out, "database", "migrations", "20260320100000_create_users_table.up.sql"), `ON "users" ("email")`)
 	assertCleanExportReport(t, out)
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
+	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
 
 	behaviorTest := `package migrations
 
@@ -7237,6 +7244,21 @@ func assertNoGoFileContains(t *testing.T, root, needle string) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func assertNoGoListDependency(t *testing.T, dir, modulePath string) {
+	t.Helper()
+	cmd := exec.Command("go", "list", "-deps", "./...")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list -deps ./... failed: %v\n%s", err, out)
+	}
+	for _, dep := range strings.Fields(string(out)) {
+		if dep == modulePath || strings.HasPrefix(dep, modulePath+"/") {
+			t.Fatalf("exported module depends on %s via %s", modulePath, dep)
+		}
 	}
 }
 

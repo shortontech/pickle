@@ -2103,6 +2103,31 @@ func TestExportedResourceRoutesAndContextHelpers(t *testing.T) {
 	}
 }
 
+func TestExportedParamUUIDErrorsAreSanitized(t *testing.T) {
+	t.Setenv("RATE_LIMIT", "false")
+	router := httpx.Routes(func(r *httpx.Router) {
+		r.Get("/items/:id", func(ctx *httpx.Context) httpx.Response {
+			id, err := ctx.ParamUUID("id")
+			if err != nil {
+				return ctx.BadRequest(err.Error())
+			}
+			return ctx.JSON(http.StatusOK, map[string]string{"id": id.String()})
+		})
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/items/password=swordfish", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "password=swordfish") || strings.Contains(rec.Body.String(), "swordfish") {
+		t.Fatalf("ParamUUID response leaked route value: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid uuid parameter") {
+		t.Fatalf("ParamUUID response missing sanitized error: %s", rec.Body.String())
+	}
+}
+
 func TestExportedAllRoutesAndRegisterRoutes(t *testing.T) {
 	t.Setenv("RATE_LIMIT", "false")
 	router := httpx.Routes(func(r *httpx.Router) {

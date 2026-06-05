@@ -7317,7 +7317,7 @@ func (c *Context) Request() *http.Request { return c.request }
 func (c *Context) ResponseWriter() http.ResponseWriter { return c.response }
 func (c *Context) Param(name string) string { value, ok := c.params[name]; if !ok { panic("pickle: ctx.Param(\"" + name + "\") - no such route parameter") }; return value }
 func (c *Context) SetParam(name, value string) { c.params[name] = value }
-func (c *Context) ParamUUID(name string) (uuid.UUID, error) { return uuid.Parse(c.Param(name)) }
+func (c *Context) ParamUUID(name string) (uuid.UUID, error) { value, err := uuid.Parse(c.Param(name)); if err != nil { return uuid.Nil, fmt.Errorf("invalid uuid parameter") }; return value, nil }
 func (c *Context) Cookie(name string) (string, error) { cookie, err := c.request.Cookie(name); if err != nil { return "", err }; return cookie.Value, nil }
 func (c *Context) Query(name string) string { return c.request.URL.Query().Get(name) }
 func (c *Context) BearerToken() string { h := c.request.Header.Get("Authorization"); parts := strings.Fields(h); if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") { return parts[1] }; return "" }

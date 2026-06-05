@@ -1098,6 +1098,9 @@ func (e *exporter) writeActions() error {
 			return err
 		}
 	}
+	if err := e.writeActionAuditSupport(sets); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1269,7 +1272,6 @@ func (e *exporter) writeActionSet(set *generator.ActionSet) error {
 		if err := e.writeFile(filepath.Join("app", "models", modelFileName(set.Model)+"_actions.go"), data); err != nil {
 			return err
 		}
-		e.result.Findings = append(e.result.Findings, Finding{File: filepath.Join("database", "actions", set.Model), Rule: "actions_audit", Message: "actions are exported as plain methods; audit behavior needs manual review"})
 	}
 	return nil
 }
@@ -1416,11 +1418,15 @@ func (e *exporter) generateActionModelWiring(set *generator.ActionSet) ([]byte, 
 			b.WriteString("\t\treturn ErrUnauthorized\n")
 		}
 		b.WriteString("\t}\n")
-		b.WriteString("\t_ = roleID\n")
 		if action.HasResult {
-			b.WriteString(fmt.Sprintf("\treturn action.%s(ctx, m)\n", action.Name))
+			b.WriteString(fmt.Sprintf("\tvar result %s\n", resultType))
+			b.WriteString(fmt.Sprintf("\terr := runAuditedAction(ctx, %q, %q, m.ID, actionVersionID(m), roleID, func() error {\n", structName, action.Name))
+			b.WriteString(fmt.Sprintf("\t\tvar execErr error\n\t\tresult, execErr = action.%s(ctx, m)\n\t\treturn execErr\n\t})\n", action.Name))
+			b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n")
+			b.WriteString("\treturn result, nil\n")
 		} else {
-			b.WriteString(fmt.Sprintf("\treturn action.%s(ctx, m)\n", action.Name))
+			b.WriteString(fmt.Sprintf("\treturn runAuditedAction(ctx, %q, %q, m.ID, actionVersionID(m), roleID, func() error {\n", structName, action.Name))
+			b.WriteString(fmt.Sprintf("\t\treturn action.%s(ctx, m)\n\t})\n", action.Name))
 		}
 		b.WriteString("}\n\n")
 	}
@@ -1429,6 +1435,231 @@ func (e *exporter) generateActionModelWiring(set *generator.ActionSet) ([]byte, 
 		return []byte(b.String()), fmt.Errorf("formatting exported action wiring for %s: %w", set.Model, err)
 	}
 	return formatted, nil
+}
+
+func (e *exporter) writeActionAuditSupport(sets map[string]*generator.ActionSet) error {
+	data, err := e.generateActionAuditSupport(sets)
+	if err != nil {
+		return err
+	}
+	return e.writeFile(filepath.Join("app", "models", "action_audit_support.go"), data)
+}
+
+func (e *exporter) generateActionAuditSupport(sets map[string]*generator.ActionSet) ([]byte, error) {
+	type actionSeed struct {
+		Model       string
+		Action      string
+		ModelTypeID int
+		ActionID    int
+	}
+	var models []string
+	for model, set := range sets {
+		if len(set.Actions) > 0 {
+			models = append(models, model)
+		}
+	}
+	sort.Strings(models)
+	var seeds []actionSeed
+	modelIDs := map[string]int{}
+	nextModelID := 1
+	nextActionID := 1
+	for _, model := range models {
+		set := sets[model]
+		structName := tableToStruct(set.Model)
+		modelID := modelIDs[structName]
+		if modelID == 0 {
+			modelID = nextModelID
+			nextModelID++
+			modelIDs[structName] = modelID
+		}
+		sort.Slice(set.Actions, func(i, j int) bool { return set.Actions[i].Name < set.Actions[j].Name })
+		for _, action := range set.Actions {
+			seeds = append(seeds, actionSeed{Model: structName, Action: action.Name, ModelTypeID: modelID, ActionID: nextActionID})
+			nextActionID++
+		}
+	}
+	var modelNames []string
+	for name := range modelIDs {
+		modelNames = append(modelNames, name)
+	}
+	sort.Strings(modelNames)
+
+	var b strings.Builder
+	b.WriteString(`package models
+
+import (
+	"errors"
+	"fmt"
+	"net"
+	"reflect"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+
+	"` + e.modulePath + `/internal/httpx"
+)
+
+type actionAuditModelSeed struct {
+	ID int
+	Name string
+}
+
+type actionAuditActionSeed struct {
+	ID int
+	ModelTypeID int
+	Model string
+	Action string
+}
+
+var actionAuditMu sync.Mutex
+
+var actionAuditModelSeeds = []actionAuditModelSeed{
+`)
+	for _, name := range modelNames {
+		fmt.Fprintf(&b, "\t{ID: %d, Name: %q},\n", modelIDs[name], name)
+	}
+	b.WriteString(`}
+
+var actionAuditActionSeeds = []actionAuditActionSeed{
+`)
+	for _, seed := range seeds {
+		fmt.Fprintf(&b, "\t{ID: %d, ModelTypeID: %d, Model: %q, Action: %q},\n", seed.ActionID, seed.ModelTypeID, seed.Model, seed.Action)
+	}
+	b.WriteString(`}
+
+func ensureActionAuditSchema(db *gorm.DB) error {
+	stmts := []string{
+		` + "`" + `CREATE TABLE IF NOT EXISTS model_types (id INTEGER PRIMARY KEY, name VARCHAR(100) NOT NULL UNIQUE)` + "`" + `,
+		` + "`" + `CREATE TABLE IF NOT EXISTS action_types (id INTEGER PRIMARY KEY, model_type_id INTEGER NOT NULL, name VARCHAR(100) NOT NULL, UNIQUE(model_type_id, name))` + "`" + `,
+		` + "`" + `CREATE TABLE IF NOT EXISTS user_actions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, action_type_id INTEGER NOT NULL, resource_id TEXT NOT NULL, resource_version_id TEXT, role_id TEXT, ip_address VARCHAR(45), request_id VARCHAR(100), created_at DATETIME NOT NULL)` + "`" + `,
+	}
+	for _, stmt := range stmts {
+		if err := db.Exec(stmt).Error; err != nil { return err }
+	}
+	for _, model := range actionAuditModelSeeds {
+		if err := db.Exec("INSERT INTO model_types (id, name) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name", model.ID, model.Name).Error; err != nil { return err }
+	}
+	for _, action := range actionAuditActionSeeds {
+		if err := db.Exec("INSERT INTO action_types (id, model_type_id, name) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET model_type_id = excluded.model_type_id, name = excluded.name", action.ID, action.ModelTypeID, action.Action).Error; err != nil { return err }
+	}
+	return nil
+}
+
+func actionTypeID(model, action string) (int, bool) {
+	for _, seed := range actionAuditActionSeeds {
+		if seed.Model == model && seed.Action == action {
+			return seed.ID, true
+		}
+	}
+	return 0, false
+}
+
+func runAuditedAction(ctx *httpx.Context, model, action string, resourceID uuid.UUID, resourceVersionID *uuid.UUID, roleID *uuid.UUID, fn func() error) error {
+	if DB == nil {
+		return errors.New("models: DB is nil")
+	}
+	actionID, ok := actionTypeID(model, action)
+	if !ok {
+		return fmt.Errorf("models: missing action audit seed for %s.%s", model, action)
+	}
+	actionAuditMu.Lock()
+	defer actionAuditMu.Unlock()
+	previous := DB
+	err := previous.Transaction(func(tx *gorm.DB) error {
+		DB = tx
+		defer func() { DB = previous }()
+		if err := ensureActionAuditSchema(tx); err != nil {
+			return err
+		}
+		if err := fn(); err != nil {
+			return err
+		}
+		return recordActionPerformed(tx, ctx, actionID, resourceID, resourceVersionID, roleID)
+	})
+	DB = previous
+	return err
+}
+
+func actionVersionID(record any) *uuid.UUID {
+	if record == nil {
+		return nil
+	}
+	rv := reflect.ValueOf(record)
+	if rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return nil
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return nil
+	}
+	field := rv.FieldByName("VersionID")
+	if !field.IsValid() {
+		return nil
+	}
+	if id, ok := field.Interface().(uuid.UUID); ok && id != uuid.Nil {
+		return &id
+	}
+	return nil
+}
+
+func recordActionPerformed(db *gorm.DB, ctx *httpx.Context, actionTypeID int, resourceID uuid.UUID, resourceVersionID *uuid.UUID, roleID *uuid.UUID) error {
+	userID, err := uuid.Parse(ctx.Auth().UserID)
+	if err != nil {
+		return fmt.Errorf("audit user id: %w", err)
+	}
+	ip := auditContextIP(ctx)
+	requestID := auditContextRequestID(ctx)
+	return db.Exec("INSERT INTO user_actions (id, user_id, action_type_id, resource_id, resource_version_id, role_id, ip_address, request_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		uuid.New().String(), userID.String(), actionTypeID, resourceID.String(), nullableUUID(resourceVersionID), nullableUUID(roleID), nullableString(ip), nullableString(requestID), time.Now().UTC()).Error
+}
+
+func nullableUUID(id *uuid.UUID) any {
+	if id == nil {
+		return nil
+	}
+	return id.String()
+}
+
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func auditContextIP(ctx *httpx.Context) string {
+	if ctx == nil || ctx.Request() == nil {
+		return ""
+	}
+	req := ctx.Request()
+	if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
+		return xff
+	}
+	if xri := req.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+	host, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		return req.RemoteAddr
+	}
+	return host
+}
+
+func auditContextRequestID(ctx *httpx.Context) string {
+	if ctx == nil || ctx.Request() == nil {
+		return ""
+	}
+	if id := ctx.Request().Header.Get("X-Request-ID"); id != "" {
+		return id
+	}
+	return ctx.Request().Header.Get("X-Request-Id")
+}
+`)
+	return format.Source([]byte(b.String()))
 }
 
 func (e *exporter) writeSQLMigrations(tables []*schema.Table, views []*schema.View) error {

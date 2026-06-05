@@ -36,8 +36,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	if hasFinding(res.Findings, "generated_graphql_policies") {
 		t.Fatalf("did not expect generated_graphql_policies finding, got %+v", res.Findings)
 	}
-	if !hasFinding(res.Findings, "actions_audit") {
-		t.Fatalf("expected actions_audit finding, got %+v", res.Findings)
+	if hasFinding(res.Findings, "actions_audit") {
+		t.Fatalf("did not expect actions_audit finding, got %+v", res.Findings)
 	}
 	assertFileContains(t, filepath.Join(out, "go.mod"), "gorm.io/gorm")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user.go"), "type User struct")
@@ -73,6 +73,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "func (m *User) Ban")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "func (m *User) Promote")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "CanBan(ctx, m)")
+	assertFileContains(t, filepath.Join(out, "app", "models", "action_audit_support.go"), "func runAuditedAction")
 	assertFileContains(t, filepath.Join(out, "app", "services", "action_call.go"), "models.BanAction")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "models.DB.Model(&models.User{})")
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "QueryUser")
@@ -84,6 +85,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertNoGoFileContains(t, out, "PICKLE_")
 	assertFileContains(t, filepath.Join(out, "go.sum"), "gorm.io/gorm")
 	writeExportedAuthBehaviorTest(t, out)
+	writeExportedActionAuditBehaviorTest(t, out)
 	writeExportedMigrationBehaviorTest(t, out)
 	writeExportedPolicyBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
@@ -187,6 +189,101 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "http", "auth", "exported_auth_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedActionAuditBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package models_test
+
+import (
+	"errors"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"basic-crud/app/models"
+	"basic-crud/internal/httpx"
+)
+
+func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
+	t.Setenv("APP_ENCRYPTION_KEY", "12345678901234567890123456789012")
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	if err := db.Exec(` + "`" + `CREATE TABLE users (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		email_encrypted TEXT NOT NULL,
+		email_encrypted_v2 TEXT,
+		password_hash_encrypted TEXT NOT NULL,
+		password_hash_encrypted_v2 TEXT,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL
+	)` + "`" + `).Error; err != nil {
+		t.Fatal(err)
+	}
+	userID := uuid.New()
+	if err := db.Exec("INSERT INTO users (id, name, email_encrypted, password_hash_encrypted, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", userID.String(), "before", "email", "pw", time.Now(), time.Now()).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/users/ban", nil)
+	req.Header.Set("X-Request-ID", "req-123")
+	req.RemoteAddr = "192.0.2.10:1234"
+	ctx := httpx.NewContext(req)
+	ctx.SetAuth(&httpx.AuthInfo{UserID: uuid.New().String(), Role: "admin"})
+
+	user := &models.User{ID: userID, Name: "before"}
+	if err := user.Ban(ctx, models.BanAction{Reason: "banned"}); err != nil {
+		t.Fatalf("ban: %v", err)
+	}
+	var auditRows int64
+	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if auditRows != 1 {
+		t.Fatalf("audit rows after successful action = %d, want 1", auditRows)
+	}
+	var actionName string
+	if err := db.Raw("SELECT at.name FROM user_actions ua JOIN action_types at ON at.id = ua.action_type_id").Scan(&actionName).Error; err != nil {
+		t.Fatal(err)
+	}
+	if actionName != "Ban" {
+		t.Fatalf("audit action name = %q, want Ban", actionName)
+	}
+
+	deniedCtx := httpx.NewContext(req)
+	deniedCtx.SetAuth(&httpx.AuthInfo{UserID: uuid.New().String(), Role: "viewer"})
+	if err := user.Ban(deniedCtx, models.BanAction{Reason: "denied"}); !errors.Is(err, models.ErrUnauthorized) {
+		t.Fatalf("denied ban error = %v, want ErrUnauthorized", err)
+	}
+	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if auditRows != 1 {
+		t.Fatalf("audit rows after denied action = %d, want 1", auditRows)
+	}
+
+	if err := user.Fail(ctx, models.FailAction{}); err == nil {
+		t.Fatal("expected failed action error")
+	}
+	if err := db.Table("user_actions").Count(&auditRows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if auditRows != 1 {
+		t.Fatalf("audit rows after failed action = %d, want 1", auditRows)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_action_audit_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -339,6 +436,20 @@ func (a BanAction) Ban(ctx *pickle.Context, user *models.User) error {
 	return models.QueryUser().Update(user)
 }
 `
+	fail := `package user
+
+import (
+	"errors"
+	models "github.com/shortontech/pickle/testdata/basic-crud/app/models"
+	pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
+)
+
+type FailAction struct{}
+
+func (a FailAction) Fail(ctx *pickle.Context, user *models.User) error {
+	return errors.New("boom")
+}
+`
 	promote := `package user
 
 import (
@@ -369,8 +480,8 @@ func CanView(ctx *Context, user *User) *uuid.UUID {
 
 type GrantBan_2026_03_24_100000 struct { Policy }
 
-func (m *GrantBan_2026_03_24_100000) Up() { m.AlterRole("admin").Can("Ban", "Promote") }
-func (m *GrantBan_2026_03_24_100000) Down() { m.AlterRole("admin").RevokeCan("Ban", "Promote") }
+func (m *GrantBan_2026_03_24_100000) Up() { m.AlterRole("admin").Can("Ban", "Promote", "Fail") }
+func (m *GrantBan_2026_03_24_100000) Down() { m.AlterRole("admin").RevokeCan("Ban", "Promote", "Fail") }
 `
 	callSite := `package services
 
@@ -383,6 +494,9 @@ func NewBanAction() useractions.BanAction { return useractions.BanAction{Reason:
 func UseBanAction() models.User { return models.User{} }
 `
 	if err := os.WriteFile(filepath.Join(dir, "ban.go"), []byte(action), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fail.go"), []byte(fail), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "promote.go"), []byte(promote), 0o644); err != nil {

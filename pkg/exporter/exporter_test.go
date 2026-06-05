@@ -3113,6 +3113,7 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLOperationNameBytes = 256")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func validateGraphQLRequestEnvelope")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLVariables = 64")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLVariableNameBytes = 256")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func validateGraphQLVariables")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "http.MaxBytesReader(w, r.Body, maxGraphQLRequestBodyBytes)")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func graphQLRequestedPageLimit")
@@ -3670,6 +3671,52 @@ fragment UserFields on User {
 		}
 	})
 
+	t.Run("oversized_variable_name_rejected_before_parse", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{
+			"query":     "query AllowedUsers { users(page: { first: 1 }) { edges { node { id } } } }",
+			"variables": map[string]any{strings.Repeat("x", 257): "value"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL variable name is too large") {
+			t.Fatalf("missing variable name size error: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), strings.Repeat("x", 128)) {
+			t.Fatalf("variable name size error leaked request value: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("invalid_variable_name_rejected_before_parse", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{
+			"query":     "query AllowedUsers { users(page: { first: 1 }) { edges { node { id } } } }",
+			"variables": map[string]any{"1 invalid": "value"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL variable name is invalid") {
+			t.Fatalf("missing variable name syntax error: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "1 invalid") {
+			t.Fatalf("variable name syntax error leaked request value: %s", rec.Body.String())
+		}
+	})
+
 	t.Run("non_object_variables_rejected_before_parse", func(t *testing.T) {
 		body, err := json.Marshal(map[string]any{
 			"query":     "query AllowedUsers { users(page: { first: 1 }) { edges { node { id } } } }",
@@ -3816,6 +3863,14 @@ func TestExportedGraphQLVariableBudget(t *testing.T) {
 	}
 	if err := validateGraphQLVariables(tooMany); err == nil || !strings.Contains(err.Error(), "too many GraphQL variables") {
 		t.Fatalf("too many variables error = %v", err)
+	}
+
+	if err := validateGraphQLVariables(map[string]any{strings.Repeat("x", maxGraphQLVariableNameBytes+1): "value"}); err == nil || !strings.Contains(err.Error(), "GraphQL variable name is too large") {
+		t.Fatalf("oversized variable name error = %v", err)
+	}
+
+	if err := validateGraphQLVariables(map[string]any{"1 invalid": "value"}); err == nil || !strings.Contains(err.Error(), "GraphQL variable name is invalid") {
+		t.Fatalf("invalid variable name error = %v", err)
 	}
 
 	if err := validateGraphQLVariables(map[string]any{"s": strings.Repeat("x", maxGraphQLVariableStringBytes+1)}); err == nil || !strings.Contains(err.Error(), "GraphQL variables exceed safety limits") {

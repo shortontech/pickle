@@ -2104,6 +2104,7 @@ const maxGraphQLRequestBodyBytes = 1 << 20
 const maxGraphQLQueryBytes = 64 << 10
 const maxGraphQLOperationNameBytes = 256
 const maxGraphQLVariables = 64
+const maxGraphQLVariableNameBytes = 256
 const maxGraphQLVariableDepth = 8
 const maxGraphQLVariableCollectionItems = 256
 const maxGraphQLVariableStringBytes = 4096
@@ -2425,7 +2426,13 @@ func validateGraphQLVariables(variables map[string]any) error {
 	if len(variables) > maxGraphQLVariables {
 		return BadInput("too many GraphQL variables")
 	}
-	for _, value := range variables {
+	for name, value := range variables {
+		if len(name) > maxGraphQLVariableNameBytes {
+			return BadInput("GraphQL variable name is too large")
+		}
+		if !isGraphQLName(name) {
+			return BadInput("GraphQL variable name is invalid")
+		}
 		if !validGraphQLVariableValue(value, 0) {
 			return BadInput("GraphQL variables exceed safety limits")
 		}

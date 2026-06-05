@@ -242,6 +242,22 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	if info.UserID != "user-1" || info.Role != "admin" {
 		t.Fatalf("jwt auth info = %#v", info)
 	}
+	infoClaims, ok := info.Claims.(jwt.Claims)
+	if !ok {
+		t.Fatalf("jwt auth claims type = %T", info.Claims)
+	}
+	if infoClaims.Subject != "user-1" || infoClaims.Role != "admin" || infoClaims.JTI == "" {
+		t.Fatalf("jwt auth claims = %#v", infoClaims)
+	}
+	ctxWithClaims := httpx.NewContext(req)
+	ctxWithClaims.SetAuth(info)
+	contextClaims, ok := ctxWithClaims.Auth().Claims.(jwt.Claims)
+	if !ok {
+		t.Fatalf("ctx auth claims type = %T", ctxWithClaims.Auth().Claims)
+	}
+	if contextClaims.JTI != infoClaims.JTI {
+		t.Fatalf("ctx auth claims JTI = %q, want %q", contextClaims.JTI, infoClaims.JTI)
+	}
 	claims, err := jwtDriver.ValidateToken(token)
 	if err != nil {
 		t.Fatalf("validate jwt: %v", err)

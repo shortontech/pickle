@@ -5223,7 +5223,7 @@ import (
 
 type Controller struct{}
 type Response struct { Status int; StatusCode int; Body any; Headers map[string]string; Cookies []*http.Cookie }
-type AuthInfo struct { UserID string; Role string }
+type AuthInfo struct { UserID string; Role string; Claims any }
 type RoleInfo struct { Slug string; Manages bool }
 type Context struct { request *http.Request; response http.ResponseWriter; auth *AuthInfo; params map[string]string; roles []string; isAdmin bool }
 
@@ -5716,7 +5716,7 @@ func (d *Driver) Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") { return nil, errors.New("invalid authorization header") }
 	claims, err := d.ValidateToken(parts[1])
 	if err != nil { return nil, err }
-	return &httpx.AuthInfo{UserID: claims.Subject, Role: claims.Role}, nil
+	return &httpx.AuthInfo{UserID: claims.Subject, Role: claims.Role, Claims: claims}, nil
 }
 
 func (d *Driver) registerToken(claims Claims) error {

@@ -2455,7 +2455,7 @@ func NewApp() *App {
 		b.WriteString("\t\t\tgo schedule.Schedule.Start(ctx)\n")
 	}
 	b.WriteString(`			mux := http.NewServeMux()
-			mux.Handle("/", routes.API)
+			routes.API.RegisterRoutes(mux)
 `)
 	if hasGraphQL {
 		b.WriteString("\t\t\tmux.Handle(\"/graphql\", graphql.Handler())\n")
@@ -2990,7 +2990,7 @@ func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL, hasSchedule
 		b.WriteString("\tgo schedule.Schedule.Start(ctx)\n")
 	}
 	b.WriteString("\tmux := http.NewServeMux()\n")
-	b.WriteString("\tmux.Handle(\"/\", routes.API)\n")
+	b.WriteString("\troutes.API.RegisterRoutes(mux)\n")
 	if hasGraphQL {
 		b.WriteString("\tmux.Handle(\"/graphql\", graphql.Handler())\n")
 		b.WriteString("\tmux.Handle(\"/graphql/playground\", graphql.PlaygroundHandler(\"/graphql\"))\n")

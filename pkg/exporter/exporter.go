@@ -6700,6 +6700,7 @@ type Driver struct {
 
 const maxTokenRequestBodyBytes = 8 << 10
 const maxOAuthTokenExpirySeconds = 365 * 24 * 60 * 60
+const maxOAuthBearerTokenBytes = 8 << 10
 
 func NewDriver(env func(string, string) string, db *sql.DB, driver string) *Driver {
 	expiry := 3600
@@ -6715,6 +6716,9 @@ func (d *Driver) Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
 
 func (d *Driver) ValidateToken(token string) (*httpx.AuthInfo, error) {
 	if d.db == nil { return nil, errors.New("oauth: database not configured") }
+	if token == "" || len(token) > maxOAuthBearerTokenBytes {
+		return nil, errors.New("oauth: invalid token")
+	}
 	var clientID string
 	var expiresAt time.Time
 	err := d.db.QueryRow(bindPlaceholders(d.driver, "SELECT client_id, expires_at FROM oauth_tokens WHERE token = ?"), token).Scan(&clientID, &expiresAt)

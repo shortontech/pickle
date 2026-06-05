@@ -97,6 +97,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "auth.go"), "const maxAuthorizationHeaderBytes = 12 << 10")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "func (d *Driver) TokenEndpoint")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "maxOAuthTokenExpirySeconds")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "maxOAuthBearerTokenBytes")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "boundedPositiveSeconds")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func CSRF")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "len(parts[0]) != 64 || len(parts[1]) != 64")
@@ -511,6 +512,12 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	}
 	if issuedInfo.UserID != "client-1" || issuedInfo.Role != "client" {
 		t.Fatalf("issued oauth auth info = %#v", issuedInfo)
+	}
+	if _, err := oauthDriver.ValidateToken(""); err == nil || err.Error() != "oauth: invalid token" {
+		t.Fatalf("empty oauth bearer token error = %v, want sanitized invalid token", err)
+	}
+	if _, err := oauthDriver.ValidateToken(strings.Repeat("x", 9<<10)); err == nil || err.Error() != "oauth: invalid token" || strings.Contains(err.Error(), strings.Repeat("x", 128)) {
+		t.Fatalf("oversized oauth bearer token error = %v, want sanitized invalid token", err)
 	}
 	tokenReqWithCharset, _ := http.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader("grant_type=client_credentials"))
 	tokenReqWithCharset.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")

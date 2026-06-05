@@ -1707,6 +1707,7 @@ func writeExportedActionAuditBehaviorTest(t *testing.T, out string) {
 
 import (
 	"bytes"
+	"database/sql"
 	"errors"
 	"log"
 	"net/http/httptest"
@@ -1751,7 +1752,8 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	req.Header.Set("X-Forwarded-For", "198.51.100.200")
 	req.RemoteAddr = "192.0.2.10:1234"
 	ctx := httpx.NewContext(req)
-	ctx.SetAuth(&httpx.AuthInfo{UserID: uuid.New().String(), Role: "admin"})
+	auditActorID := uuid.New().String()
+	ctx.SetAuth(&httpx.AuthInfo{UserID: auditActorID, Role: "admin"})
 
 	var performed, denied, failed int
 	var deniedReason, failedError string
@@ -1805,6 +1807,23 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	}
 	if auditIP != "192.0.2.10" {
 		t.Fatalf("audit ip = %q, want unspoofed remote address", auditIP)
+	}
+	var auditUserID, auditResourceID, auditRequestID string
+	var auditRoleID sql.NullString
+	if err := db.Raw("SELECT user_id, resource_id, role_id, request_id FROM user_actions LIMIT 1").Row().Scan(&auditUserID, &auditResourceID, &auditRoleID, &auditRequestID); err != nil {
+		t.Fatal(err)
+	}
+	if auditUserID != auditActorID {
+		t.Fatalf("audit user_id = %q, want authenticated actor %q", auditUserID, auditActorID)
+	}
+	if auditResourceID != userID.String() {
+		t.Fatalf("audit resource_id = %q, want %q", auditResourceID, userID.String())
+	}
+	if !auditRoleID.Valid || auditRoleID.String == "" {
+		t.Fatalf("audit role_id = %#v, want gate role id", auditRoleID)
+	}
+	if auditRequestID != "req-123" {
+		t.Fatalf("audit request_id = %q, want req-123", auditRequestID)
 	}
 
 	result, err := user.Promote(ctx, models.PromoteAction{Level: "gold"})

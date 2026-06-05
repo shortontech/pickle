@@ -968,6 +968,21 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	if okResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("successful middleware status = %d, want %d", okResp.StatusCode, http.StatusNoContent)
 	}
+
+	logs.Reset()
+	nilNextReq, _ := http.NewRequest("GET", "/", nil)
+	nilNextReq.Header.Set("Authorization", "Bearer "+token)
+	nilNextCtx := httpx.NewContext(nilNextReq)
+	nilNextResp := auth.DefaultAuthMiddleware(nilNextCtx, nil)
+	if nilNextResp.Status != http.StatusInternalServerError {
+		t.Fatalf("nil next middleware status = %d, want 500", nilNextResp.Status)
+	}
+	if body := fmt.Sprint(nilNextResp.Body); strings.Contains(body, "user-4") || strings.Contains(body, token) || strings.Contains(body, "panic") {
+		t.Fatalf("nil next middleware response leaked detail: %#v", nilNextResp.Body)
+	}
+	if strings.Contains(logs.String(), "user-4") || strings.Contains(logs.String(), token) || strings.Contains(logs.String(), "panic") {
+		t.Fatalf("nil next middleware log leaked detail: %s", logs.String())
+	}
 }
 
 func TestExportedAuthInitOnlyRequiresActiveDriverConfig(t *testing.T) {

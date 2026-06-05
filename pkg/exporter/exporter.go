@@ -7134,6 +7134,10 @@ func DefaultAuthMiddleware(ctx *httpx.Context, next func() httpx.Response) httpx
 		return ctx.Unauthorized("unauthorized")
 	}
 	ctx.SetAuth(info)
+	if next == nil {
+		log.Printf("auth middleware failed")
+		return ctx.Error(errors.New("auth middleware failed"))
+	}
 	return next()
 }
 

@@ -657,6 +657,39 @@ func TestExportedAuthInitOnlyRequiresActiveDriverConfig(t *testing.T) {
 	}
 }
 
+func TestExportedAuthInitSanitizesActiveDriverFailures(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			t.Fatal("auth.Init should panic for misconfigured active jwt driver")
+		}
+		msg := fmt.Sprint(recovered)
+		if msg != "auth: active driver initialization failed" {
+			t.Fatalf("panic = %q, want sanitized active-driver failure", msg)
+		}
+		if strings.Contains(msg, "JWT_SECRET") || strings.Contains(msg, "required") {
+			t.Fatalf("active-driver panic leaked config detail: %q", msg)
+		}
+	}()
+
+	auth.Init(func(key, fallback string) string {
+		switch key {
+		case "AUTH_DRIVER":
+			return "jwt"
+		case "JWT_SECRET":
+			return ""
+		default:
+			return fallback
+		}
+	}, db)
+}
+
 func assertPanicsWith(t *testing.T, want string, fn func()) {
 	t.Helper()
 	defer func() {

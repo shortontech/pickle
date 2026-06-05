@@ -6035,7 +6035,7 @@ func Init(env func(string, string) string, db *sql.DB) {
 	}
 	if _, ok := factories[activeDriverName()]; ok {
 		if _, err := TryActiveDriver(); err != nil {
-			panic(err.Error())
+			panic("auth: active driver initialization failed")
 		}
 	}
 }

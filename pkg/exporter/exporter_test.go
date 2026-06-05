@@ -136,6 +136,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "middleware", "rbac_support.go"), "func RequireRole")
 	assertFileContains(t, filepath.Join(out, "app", "http", "middleware", "rbac_support.go"), "errRoleDatabase")
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "middleware", "rbac_support.go"), "return ctx.Error(err)")
+	assertFileContains(t, filepath.Join(out, "database", "policies", "support.go"), `return fmt.Errorf("policy fresh drop %s", table)`)
+	assertFileNotContains(t, filepath.Join(out, "database", "policies", "support.go"), `_ = db.Exec("DROP TABLE IF EXISTS roles").Error`)
 	assertFileContains(t, filepath.Join(out, "app", "services", "action_call.go"), "models.BanAction")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "models.DB.Model(&models.User{})")
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "QueryUser")
@@ -2212,6 +2214,33 @@ func TestExportedPolicyMigrateRollsBackSeedFailures(t *testing.T) {
 		if rows != 0 {
 			t.Fatalf("%s rows after failed migrate = %d, want 0", table, rows)
 		}
+	}
+}
+
+func TestExportedPolicyFreshFailsClosedOnDropErrors(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db, "sqlite"); err != nil {
+		t.Fatalf("policy migrate: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = Fresh(db, "sqlite")
+	if err == nil {
+		t.Fatal("expected policy fresh to fail on closed database")
+	}
+	if !strings.Contains(err.Error(), "policy fresh drop") {
+		t.Fatalf("policy fresh error = %v, want drop context", err)
+	}
+	if strings.Contains(err.Error(), "sql:") || strings.Contains(err.Error(), "closed") || strings.Contains(err.Error(), "DROP TABLE") {
+		t.Fatalf("policy fresh error leaked detail: %v", err)
 	}
 }
 

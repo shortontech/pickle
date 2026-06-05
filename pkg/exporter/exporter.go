@@ -3938,6 +3938,7 @@ func (e *exporter) generatePolicySupport() ([]byte, error) {
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -4044,13 +4045,19 @@ func Rollback(db *gorm.DB, driver string) error {
 }
 
 func Fresh(db *gorm.DB, driver string) error {
-	_ = db.Exec("DROP TABLE IF EXISTS graphql_actions").Error
-	_ = db.Exec("DROP TABLE IF EXISTS graphql_exposures").Error
-	_ = db.Exec("DROP TABLE IF EXISTS graphql_changelog").Error
-	_ = db.Exec("DROP TABLE IF EXISTS role_actions").Error
-	_ = db.Exec("DROP TABLE IF EXISTS role_user").Error
-	_ = db.Exec("DROP TABLE IF EXISTS roles").Error
-	_ = db.Exec("DROP TABLE IF EXISTS rbac_changelog").Error
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		for _, table := range []string{"graphql_actions", "graphql_exposures", "graphql_changelog", "role_actions", "role_user", "roles", "rbac_changelog"} {
+			if err := tx.Exec("DROP TABLE IF EXISTS " + table).Error; err != nil {
+				return fmt.Errorf("policy fresh drop %s", table)
+			}
+		}
+		return nil
+	}); err != nil {
+		if strings.HasPrefix(err.Error(), "policy fresh drop ") {
+			return err
+		}
+		return fmt.Errorf("policy fresh drop")
+	}
 	return Migrate(db, driver)
 }
 

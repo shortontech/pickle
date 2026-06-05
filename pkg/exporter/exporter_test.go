@@ -1661,6 +1661,8 @@ func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 	}
 
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func Handler() http.Handler")
+	assertFileContains(t, filepath.Join(out, "go.mod"), "github.com/99designs/gqlgen")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "handler.New(pickleExecutableSchema{})")
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), "func QueryUser() *UserQuery")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "commands.NewApp().Run(os.Args[1:])")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), `mux.Handle("/graphql", graphql.Handler())`)
@@ -1688,6 +1690,8 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	}
 
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "schema_gen.go"), "type Query")
+	assertFileContains(t, filepath.Join(out, "go.mod"), "github.com/99designs/gqlgen")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "handler.New(pickleExecutableSchema{})")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "pickle_gen.go"), "maxQueryComplexity")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "pickle_gen.go"), "var allowIntrospection = false")
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), "func (q *UserQuery) WhereID")

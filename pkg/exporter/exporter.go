@@ -1999,7 +1999,7 @@ func (e *exporter) writeGraphQLAPIComplexityTarget(schemaSDL string, tables []*s
 			budget := relationshipBudgets[tbl.Name+"."+relationshipField]
 			cost := budget.Cost
 			if cost <= 0 {
-				cost = 10
+				cost = defaultExportedGraphQLRelationshipCost
 			}
 			limit := budget.MaxPageSize
 			if limit <= 0 {
@@ -2278,6 +2278,7 @@ func exportedGraphQLRelationships(tables []*schema.Table) []generator.SchemaRela
 }
 
 const maxExportedGraphQLRelationshipPageSize = 100
+const defaultExportedGraphQLRelationshipCost = 1
 
 type exportedGraphQLRelationshipBudget struct {
 	Cost        int

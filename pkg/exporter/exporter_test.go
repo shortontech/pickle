@@ -5141,6 +5141,10 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "generated.NewExecutableSchema")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "Auth:        graphQLAPIAuthDirective")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "extension.FixedComplexityLimit")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "Complexity: graphQLAPIComplexityRoot()")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "complexity_gen.go"), "root.User.Posts = func(childComplexity int) int")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "complexity_gen.go"), "graphQLAPIListComplexity(childComplexity, 10, min(50, maxGraphQLAPIComplexityPageSize))")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "complexity_gen.go"), "root.Post.Comments = func(childComplexity int) int")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "generated", "generated.go"), "type ResolverRoot interface")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *Resolver) Query() generated.QueryResolver")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), "func gqlgenPageWindow")
@@ -5204,6 +5208,7 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	writeExportedGraphQLModelVisibilityBehaviorTest(t, out)
 	writeExportedGraphQLAPITargetVisibilityBehaviorTest(t, out)
 	writeExportedGraphQLAPIHandlerRBACBehaviorTest(t, out)
+	writeExportedGraphQLAPIComplexityBehaviorTest(t, out)
 	runExported(t, out, "go", "run", "github.com/99designs/gqlgen", "generate", "--config", "gqlgen.yml")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "generated", "generated.go"), "type ResolverRoot interface")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *Resolver) Query() generated.QueryResolver")
@@ -5684,6 +5689,59 @@ func TestExportedGQLGenTargetAuthRBACFallbackOnlyWhenSchemaMissing(t *testing.T)
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "exported_rbac_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedGraphQLAPIComplexityBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package graphqlapi
+
+import (
+	"testing"
+
+	"graphql-safety/app/graphqlapi/model"
+)
+
+func TestExportedGQLGenTargetRelationshipComplexityUsesPolicyBudget(t *testing.T) {
+	root := graphQLAPIComplexityRoot()
+
+	if root.User.Posts == nil {
+		t.Fatal("User.posts complexity hook was not generated")
+	}
+	if root.Post.Comments == nil {
+		t.Fatal("Post.comments complexity hook was not generated")
+	}
+
+	if got, want := root.User.Posts(1), 550; got != want {
+		t.Fatalf("User.posts complexity = %d, want %d", got, want)
+	}
+	if got, want := root.Post.Comments(1), 550; got != want {
+		t.Fatalf("Post.comments complexity = %d, want %d", got, want)
+	}
+	if got := root.User.Posts(91); got <= maxGraphQLAPIComplexity {
+		t.Fatalf("User.posts high child complexity = %d, want above max %d", got, maxGraphQLAPIComplexity)
+	}
+}
+
+func TestExportedGQLGenTargetTopLevelComplexityValidatesPageInput(t *testing.T) {
+	root := graphQLAPIComplexityRoot()
+	if root.Query.Users == nil {
+		t.Fatal("Query.users complexity hook was not generated")
+	}
+
+	first := 10
+	if got, want := root.Query.Users(1, nil, nil, &model.PageInput{First: &first}), 20; got != want {
+		t.Fatalf("Query.users complexity = %d, want %d", got, want)
+	}
+
+	first = 101
+	if got := root.Query.Users(0, nil, nil, &model.PageInput{First: &first}); got <= maxGraphQLAPIComplexity {
+		t.Fatalf("oversized Query.users page complexity = %d, want above max %d", got, maxGraphQLAPIComplexity)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "exported_complexity_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

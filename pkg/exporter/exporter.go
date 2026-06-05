@@ -1798,8 +1798,8 @@ func (e *exporter) writeGraphQLPackage(tables []*schema.Table, views []*schema.V
 		return err
 	}
 	relationships := exportedGraphQLRelationships(tables)
-	relationshipLimits := e.exportedGraphQLRelationshipPageLimits()
-	if err := e.writeGraphQLAPIResolverTarget(schemaSDL, tables, relationships, relationshipLimits); err != nil {
+	relationshipBudgets := e.exportedGraphQLRelationshipBudgets()
+	if err := e.writeGraphQLAPIResolverTarget(schemaSDL, tables, relationships, relationshipBudgets); err != nil {
 		return err
 	}
 	return e.writeGraphQLQuerySupport(tables, views)
@@ -1837,12 +1837,15 @@ import _ "github.com/99designs/gqlgen"
 `))
 }
 
-func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*schema.Table, relationships []generator.SchemaRelationship, relationshipLimits map[string]int) error {
+func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*schema.Table, relationships []generator.SchemaRelationship, relationshipBudgets map[string]exportedGraphQLRelationshipBudget) error {
 	exposed := graphQLTablesInSDL(schemaSDL, tables)
 	if len(exposed) == 0 {
 		return nil
 	}
 	if err := e.writeGraphQLAPIHandlerTarget(); err != nil {
+		return err
+	}
+	if err := e.writeGraphQLAPIComplexityTarget(schemaSDL, exposed, relationships, relationshipBudgets); err != nil {
 		return err
 	}
 	if err := e.writeFile(filepath.Join("app", "graphqlapi", "resolver", "resolver.go"), []byte("package resolver\n\ntype Resolver struct{}\n")); err != nil {
@@ -1890,7 +1893,7 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 			writeGraphQLAPIDeleteResolver(&b, tbl)
 		}
 		if graphQLTableNeedsObjectResolver(schemaSDL, tbl, relationships) {
-			writeGraphQLAPIObjectResolvers(&b, schemaSDL, tbl, exposed, relationships, relationshipLimits)
+			writeGraphQLAPIObjectResolvers(&b, schemaSDL, tbl, exposed, relationships, relationshipBudgets)
 		}
 	}
 	for _, tbl := range exposed {
@@ -1947,6 +1950,86 @@ func (e *exporter) writeGraphQLAPIHandlerTarget() error {
 		return fmt.Errorf("formatting exported gqlgen API handler: %w", err)
 	}
 	return e.writeFile(filepath.Join("app", "graphqlapi", "handler_gen.go"), formatted)
+}
+
+func (e *exporter) writeGraphQLAPIComplexityTarget(schemaSDL string, tables []*schema.Table, relationships []generator.SchemaRelationship, relationshipBudgets map[string]exportedGraphQLRelationshipBudget) error {
+	usesModel := false
+	for _, tbl := range tables {
+		if graphQLSDLHasQueryField(schemaSDL, graphQLListFieldName(tbl)) {
+			usesModel = true
+			break
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("package graphqlapi\n\n")
+	b.WriteString("import (\n")
+	fmt.Fprintf(&b, "\t\"%s/app/graphqlapi/generated\"\n", e.modulePath)
+	if usesModel {
+		fmt.Fprintf(&b, "\t\"%s/app/graphqlapi/model\"\n", e.modulePath)
+	}
+	b.WriteString(")\n\n")
+	b.WriteString("const defaultGraphQLAPIComplexityPageSize = 25\n")
+	b.WriteString("const maxGraphQLAPIComplexityPageSize = 100\n\n")
+	b.WriteString("func graphQLAPIComplexityRoot() generated.ComplexityRoot {\n")
+	b.WriteString("\tvar root generated.ComplexityRoot\n")
+	for _, tbl := range tables {
+		structName := tableToStruct(tbl.Name)
+		if graphQLSDLHasQueryField(schemaSDL, graphQLListFieldName(tbl)) {
+			fieldName := snakeToPascal(graphQLListFieldName(tbl))
+			fmt.Fprintf(&b, "\troot.Query.%s = func(childComplexity int, _ *model.%sFilter, _ *model.%sSort, page *model.PageInput) int {\n", fieldName, structName, structName)
+			b.WriteString("\t\treturn graphQLAPIListComplexity(childComplexity, 1, graphQLAPIPageInputLimit(page, maxGraphQLAPIComplexityPageSize))\n")
+			b.WriteString("\t}\n")
+		}
+		if graphQLSDLHasQueryField(schemaSDL, graphQLSingleFieldName(tbl)) {
+			fieldName := snakeToPascal(graphQLSingleFieldName(tbl))
+			fmt.Fprintf(&b, "\troot.Query.%s = func(childComplexity int, _ string) int {\n", fieldName)
+			b.WriteString("\t\treturn 1 + childComplexity\n")
+			b.WriteString("\t}\n")
+		}
+	}
+	for _, tbl := range tables {
+		parentStruct := tableToStruct(tbl.Name)
+		for _, rel := range graphQLTableRelationshipsInSDL(schemaSDL, tbl, relationships) {
+			if rel.Type != "has_many" {
+				continue
+			}
+			fieldName := snakeToPascal(snakeToCamel(rel.ChildTable))
+			relationshipField := snakeToCamel(rel.ChildTable)
+			budget := relationshipBudgets[tbl.Name+"."+relationshipField]
+			cost := budget.Cost
+			if cost <= 0 {
+				cost = 10
+			}
+			limit := budget.MaxPageSize
+			if limit <= 0 {
+				limit = maxExportedGraphQLRelationshipPageSize
+			}
+			fmt.Fprintf(&b, "\troot.%s.%s = func(childComplexity int) int {\n", parentStruct, fieldName)
+			fmt.Fprintf(&b, "\t\treturn graphQLAPIListComplexity(childComplexity, %d, min(%d, maxGraphQLAPIComplexityPageSize))\n", cost, limit)
+			b.WriteString("\t}\n")
+		}
+	}
+	b.WriteString("\treturn root\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func graphQLAPIPageInputLimit(page *model.PageInput, maxLimit int) int {\n")
+	b.WriteString("\tlimit := defaultGraphQLAPIComplexityPageSize\n")
+	b.WriteString("\tif page != nil {\n")
+	b.WriteString("\t\tif page.First != nil {\n\t\t\tlimit = *page.First\n\t\t} else if page.Last != nil {\n\t\t\tlimit = *page.Last\n\t\t}\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tif limit <= 0 || limit > maxLimit {\n\t\treturn maxGraphQLAPIComplexity + 1\n\t}\n")
+	b.WriteString("\treturn limit\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func graphQLAPIListComplexity(childComplexity, baseCost, limit int) int {\n")
+	b.WriteString("\tif baseCost <= 0 {\n\t\tbaseCost = 1\n\t}\n")
+	b.WriteString("\tif limit <= 0 {\n\t\treturn maxGraphQLAPIComplexity + 1\n\t}\n")
+	b.WriteString("\treturn (baseCost + childComplexity) * limit\n")
+	b.WriteString("}\n")
+	formatted, err := format.Source([]byte(b.String()))
+	if err != nil {
+		return fmt.Errorf("formatting exported gqlgen complexity target: %w", err)
+	}
+	return e.writeFile(filepath.Join("app", "graphqlapi", "complexity_gen.go"), formatted)
 }
 
 func writeGraphQLAPIResolverSupport(b *strings.Builder) {
@@ -2194,7 +2277,14 @@ func exportedGraphQLRelationships(tables []*schema.Table) []generator.SchemaRela
 	return relationships
 }
 
-func (e *exporter) exportedGraphQLRelationshipPageLimits() map[string]int {
+const maxExportedGraphQLRelationshipPageSize = 100
+
+type exportedGraphQLRelationshipBudget struct {
+	Cost        int
+	MaxPageSize int
+}
+
+func (e *exporter) exportedGraphQLRelationshipBudgets() map[string]exportedGraphQLRelationshipBudget {
 	if e == nil || e.project == nil {
 		return nil
 	}
@@ -2202,19 +2292,22 @@ func (e *exporter) exportedGraphQLRelationshipPageLimits() map[string]int {
 	if len(state.Exposures) == 0 {
 		return nil
 	}
-	limits := map[string]int{}
+	budgets := map[string]exportedGraphQLRelationshipBudget{}
 	for _, exposure := range state.Exposures {
 		for _, rel := range exposure.Relationships {
-			if rel.Name == "" || rel.MaxPageSize <= 0 {
+			if rel.Name == "" || (rel.Cost <= 0 && rel.MaxPageSize <= 0) {
 				continue
 			}
-			limits[exposure.Model+"."+rel.Name] = rel.MaxPageSize
+			budgets[exposure.Model+"."+rel.Name] = exportedGraphQLRelationshipBudget{
+				Cost:        rel.Cost,
+				MaxPageSize: rel.MaxPageSize,
+			}
 		}
 	}
-	if len(limits) == 0 {
+	if len(budgets) == 0 {
 		return nil
 	}
-	return limits
+	return budgets
 }
 
 func graphQLTableRelationshipsInSDL(schemaSDL string, tbl *schema.Table, relationships []generator.SchemaRelationship) []generator.SchemaRelationship {
@@ -2678,7 +2771,7 @@ func writeGraphQLAPIColumnFilter(b *strings.Builder, col *schema.Column, field s
 	}
 }
 
-func writeGraphQLAPIObjectResolvers(b *strings.Builder, schemaSDL string, tbl *schema.Table, tables []*schema.Table, relationships []generator.SchemaRelationship, relationshipLimits map[string]int) {
+func writeGraphQLAPIObjectResolvers(b *strings.Builder, schemaSDL string, tbl *schema.Table, tables []*schema.Table, relationships []generator.SchemaRelationship, relationshipBudgets map[string]exportedGraphQLRelationshipBudget) {
 	structName := tableToStruct(tbl.Name)
 	resolverType := graphQLResolverTypeName(tbl)
 	for _, col := range tbl.Columns {
@@ -2701,11 +2794,11 @@ func writeGraphQLAPIObjectResolvers(b *strings.Builder, schemaSDL string, tbl *s
 		if child == nil {
 			continue
 		}
-		writeGraphQLAPIRelationshipResolver(b, tbl, child, rel, relationshipLimits)
+		writeGraphQLAPIRelationshipResolver(b, tbl, child, rel, relationshipBudgets)
 	}
 }
 
-func writeGraphQLAPIRelationshipResolver(b *strings.Builder, parent, child *schema.Table, rel generator.SchemaRelationship, relationshipLimits map[string]int) {
+func writeGraphQLAPIRelationshipResolver(b *strings.Builder, parent, child *schema.Table, rel generator.SchemaRelationship, relationshipBudgets map[string]exportedGraphQLRelationshipBudget) {
 	parentPK := primaryKeyColumn(parent)
 	fk := graphQLRelationshipFKColumn(parent, child)
 	if parentPK == nil || fk == nil {
@@ -2719,8 +2812,8 @@ func writeGraphQLAPIRelationshipResolver(b *strings.Builder, parent, child *sche
 	fkField := snakeToPascal(fk.Name)
 	relationshipField := snakeToCamel(rel.ChildTable)
 	limitExpr := "maxGraphQLAPIPageSize"
-	if limit, ok := relationshipLimits[parent.Name+"."+relationshipField]; ok && limit > 0 {
-		limitExpr = fmt.Sprintf("min(%d, maxGraphQLAPIPageSize)", limit)
+	if budget, ok := relationshipBudgets[parent.Name+"."+relationshipField]; ok && budget.MaxPageSize > 0 {
+		limitExpr = fmt.Sprintf("min(%d, maxGraphQLAPIPageSize)", budget.MaxPageSize)
 	}
 	switch rel.Type {
 	case "has_one":
@@ -3135,6 +3228,7 @@ func PlaygroundHandler(endpoint string) http.Handler {
 func Handler() http.Handler {
 	srv := handler.New(generated.NewExecutableSchema(generated.Config{
 		Resolvers: &resolver.Resolver{},
+		Complexity: graphQLAPIComplexityRoot(),
 		Directives: generated.DirectiveRoot{
 			Auth:        graphQLAPIAuthDirective,
 			Public:      graphQLAPIPublicDirective,

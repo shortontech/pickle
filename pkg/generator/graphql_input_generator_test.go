@@ -184,6 +184,30 @@ func TestGraphQLSchemaWithEnums(t *testing.T) {
 	}
 }
 
+func TestGraphQLSchemaOmitsEncryptedAndSealedSortValues(t *testing.T) {
+	tables := []*schema.Table{
+		{
+			Name: "users",
+			Columns: []*schema.Column{
+				{Name: "id", Type: schema.UUID, IsPrimaryKey: true},
+				{Name: "name", Type: schema.String},
+				{Name: "email", Type: schema.String, IsEncrypted: true},
+				{Name: "private_key", Type: schema.String, IsSealed: true},
+			},
+		},
+	}
+
+	sdl := BuildSDL(tables, nil, nil)
+	if !strings.Contains(sdl, "NAME_ASC") || !strings.Contains(sdl, "NAME_DESC") {
+		t.Fatalf("plaintext sort values missing from SDL:\n%s", sdl)
+	}
+	for _, unexpected := range []string{"EMAIL_ASC", "EMAIL_DESC", "PRIVATE_KEY_ASC", "PRIVATE_KEY_DESC"} {
+		if strings.Contains(sdl, unexpected) {
+			t.Fatalf("encrypted/sealed sort value %s should not be exposed:\n%s", unexpected, sdl)
+		}
+	}
+}
+
 func TestGraphQLTypesRegistersFieldCosts(t *testing.T) {
 	tables := []*schema.Table{
 		{

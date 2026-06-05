@@ -1928,6 +1928,9 @@ func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns
 	b.WriteString("\tif dir != \"DESC\" { dir = \"ASC\" }\n")
 	b.WriteString("\tswitch column {\n")
 	for _, col := range columns {
+		if !graphQLSortableColumn(col) {
+			continue
+		}
 		b.WriteString(fmt.Sprintf("\tcase %q:\n", col.Name))
 		if storage := graphQLSelectColumnName(col); storage != col.Name {
 			b.WriteString(fmt.Sprintf("\t\tcolumn = %q\n", storage))
@@ -1964,6 +1967,13 @@ func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns
 		b.WriteString(fmt.Sprintf("func (q *%s) Delete(record *%s) error { return DB.Delete(record).Error }\n", queryName, structName))
 	}
 	b.WriteByte('\n')
+}
+
+func graphQLSortableColumn(col *schema.Column) bool {
+	if col == nil {
+		return false
+	}
+	return !col.IsEncrypted && !col.IsSealed
 }
 
 func graphQLVisibilitySelectColumns(columns []*schema.Column, visible func(*schema.Column) bool) []string {

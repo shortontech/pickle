@@ -2213,6 +2213,10 @@ func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "go.mod"), "github.com/99designs/gqlgen")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "handler.New(pickleExecutableSchema{})")
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), "func QueryUser() *UserQuery")
+	assertFileNotContains(t, filepath.Join(out, "app", "graphql", "schema_gen.go"), "EMAIL_ASC")
+	assertFileNotContains(t, filepath.Join(out, "app", "graphql", "schema_gen.go"), "EMAIL_DESC")
+	assertFileNotContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `case "email":`)
+	assertFileNotContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), `column = "email_encrypted"`)
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "commands.NewApp().Run(os.Args[1:])")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), `mux.Handle("/graphql", graphql.Handler())`)
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "routes.API.RegisterRoutes(mux)")
@@ -3380,14 +3384,26 @@ func TestGraphQLQuerySupportUsesEncryptedStorageAndFailsClosed(t *testing.T) {
 	src := b.String()
 	for _, want := range []string{
 		`WhereEmail(value any) *UserQuery { q.db = graphQLEncryptedWhere(q.db, "email_encrypted", "=", value); return q }`,
-		`case "email":`,
-		`column = "email_encrypted"`,
 		`encrypted column email does not support Like filters`,
 		`sealed column private_key cannot be filtered`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("GraphQL query support missing %q:\n%s", want, src)
 		}
+	}
+	for _, unexpected := range []string{
+		`q.db.Where("email = ?`,
+		`q.db.Where("private_key_encrypted = ?`,
+		`case "email":`,
+		`case "private_key":`,
+		`column = "email_encrypted"`,
+	} {
+		if strings.Contains(src, unexpected) {
+			t.Fatalf("GraphQL query support retained unsafe encrypted/sealed behavior %q:\n%s", unexpected, src)
+		}
+	}
+	if !strings.Contains(src, "\tdefault:\n\t\treturn q\n") {
+		t.Fatalf("GraphQL query support should ignore unsupported sort columns:\n%s", src)
 	}
 	if strings.Contains(src, `q.db.Where("email = ?`) || strings.Contains(src, `q.db.Where("private_key_encrypted = ?`) {
 		t.Fatalf("GraphQL query support retained unsafe encrypted/sealed predicates:\n%s", src)

@@ -214,7 +214,7 @@ func writeSortEnum(b *strings.Builder, tbl *schema.Table) {
 	structName := tableToStructName(tbl.Name)
 	b.WriteString(fmt.Sprintf("enum %sSort {\n", structName))
 	for _, col := range tbl.Columns {
-		if isExcludedFromGraphQL(tbl, col) {
+		if isExcludedFromGraphQL(tbl, col) || !isSortableGraphQLColumn(col) {
 			continue
 		}
 		gqlType := graphqlType(col)
@@ -226,6 +226,13 @@ func writeSortEnum(b *strings.Builder, tbl *schema.Table) {
 		b.WriteString(fmt.Sprintf("  %s_DESC\n", upper))
 	}
 	b.WriteString("}\n\n")
+}
+
+func isSortableGraphQLColumn(col *schema.Column) bool {
+	if col == nil {
+		return false
+	}
+	return !col.IsEncrypted && !col.IsSealed
 }
 
 func writeSharedFilterTypes(b *strings.Builder) {

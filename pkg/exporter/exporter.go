@@ -2176,12 +2176,31 @@ func writeGraphQLAPISingleResolver(b *strings.Builder, tbl *schema.Table) {
 func writeGraphQLAPICreateResolver(b *strings.Builder, tbl *schema.Table) {
 	structName := tableToStruct(tbl.Name)
 	fmt.Fprintf(b, "func (r *mutationResolver) Create%s(ctx context.Context, input model.Create%sInput) (*models.%s, error) {\n", structName, structName, structName)
+	writeGraphQLAPIValidateCreateInternalFields(b, tbl)
 	fmt.Fprintf(b, "\trecord := &models.%s{}\n", structName)
 	writeGraphQLAPIInitializeCreateRecord(b, tbl)
 	writeGraphQLAPIAssignCreateInput(b, tbl)
 	fmt.Fprintf(b, "\tif err := models.Query%s().Create(record); err != nil {\n\t\treturn nil, err\n\t}\n", structName)
 	b.WriteString("\treturn record, nil\n")
 	b.WriteString("}\n\n")
+}
+
+func writeGraphQLAPIValidateCreateInternalFields(b *strings.Builder, tbl *schema.Table) {
+	structName := tableToStruct(tbl.Name)
+	for _, col := range tbl.Columns {
+		if graphQLAPICreateInputHasColumn(tbl, col) || !graphQLAPIRequiredInternalCreateColumn(tbl, col) {
+			continue
+		}
+		fmt.Fprintf(b, "\treturn nil, fmt.Errorf(%q)\n", "create"+structName+": required internal field "+col.Name+" cannot be populated by GraphQL")
+		return
+	}
+}
+
+func graphQLAPIRequiredInternalCreateColumn(tbl *schema.Table, col *schema.Column) bool {
+	if col == nil || col.IsPrimaryKey || col.IsNullable || col.HasDefault || col.Name == "created_at" || col.Name == "updated_at" {
+		return false
+	}
+	return isExcludedFromExportedGraphQL(tbl, col)
 }
 
 func writeGraphQLAPIUpdateResolver(b *strings.Builder, tbl *schema.Table) {

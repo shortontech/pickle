@@ -3550,6 +3550,61 @@ func TestExportedGQLGenTargetHandlerEnforcesAuthDirective(t *testing.T) {
 	}
 }
 
+func TestExportedGQLGenTargetCreateUserRequiresInternalFields(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	if err := db.AutoMigrate(&models.User{}, &models.JwtToken{}); err != nil {
+		t.Fatalf("auto migrate: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth.Init(func(key, fallback string) string {
+		switch key {
+		case "AUTH_DRIVER":
+			return "jwt"
+		case "DB_CONNECTION":
+			return "sqlite"
+		case "JWT_SECRET":
+			return "0123456789abcdef0123456789abcdef"
+		default:
+			return fallback
+		}
+	}, sqlDB)
+	token, err := auth.Driver("jwt").(*jwt.Driver).SignToken(jwt.Claims{
+		Subject:   uuid.NewString(),
+		Role:      "admin",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("sign jwt: %v", err)
+	}
+
+	body := []byte(` + "`" + `{"query":"mutation { createUser(input: { name: \"Ada\", email: \"ada@example.com\" }) { id name } }"}` + "`" + `)
+	req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	graphqlapi.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "required internal field") {
+		t.Fatalf("createUser should fail closed for required internal fields: %s", rec.Body.String())
+	}
+	var count int64
+	if err := db.Model(&models.User{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("createUser inserted %d users with missing password hash", count)
+	}
+}
+
 func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 	handler := graphqlapi.Handler()
 	req := httptest.NewRequest(http.MethodGet, "/graphql?query={posts{totalCount}}", nil)

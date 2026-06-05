@@ -5653,7 +5653,7 @@ func (c *Context) Resources(q ResourceListQuery) Response { ownerID := ""; if c.
 
 func (r Response) WithCookie(cookie *http.Cookie) Response { r.Cookies = append(r.Cookies, cookie); return r }
 
-func (r Response) Write(w http.ResponseWriter) { for k, v := range r.Headers { w.Header().Set(k, v) }; for _, cookie := range r.Cookies { http.SetCookie(w, cookie) }; status := r.Status; if status == 0 { status = r.StatusCode }; if status == 0 { status = 200 }; w.WriteHeader(status); if r.Body != nil { _ = json.NewEncoder(w).Encode(r.Body) } }
+func (r Response) Write(w http.ResponseWriter) { for k, v := range r.Headers { w.Header().Set(k, v) }; if r.Body != nil { if w.Header().Get("Content-Type") == "" { w.Header().Set("Content-Type", "application/json") }; if w.Header().Get("X-Content-Type-Options") == "" { w.Header().Set("X-Content-Type-Options", "nosniff") } }; for _, cookie := range r.Cookies { http.SetCookie(w, cookie) }; status := r.Status; if status == 0 { status = r.StatusCode }; if status == 0 { status = 200 }; w.WriteHeader(status); if r.Body != nil { _ = json.NewEncoder(w).Encode(r.Body) } }
 
 type HandlerFunc func(*Context) Response
 type MiddlewareFunc func(*Context, func() Response) Response

@@ -1573,6 +1573,39 @@ func TestExportedContextResourceHelpersPropagateOwner(t *testing.T) {
 	}
 }
 
+func TestExportedResponseWriteSetsSecureJSONHeaders(t *testing.T) {
+	rec := httptest.NewRecorder()
+	httpx.Response{StatusCode: http.StatusAccepted, Body: map[string]string{"ok": "true"}}.Write(rec)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+
+	rec = httptest.NewRecorder()
+	httpx.Response{
+		StatusCode: http.StatusOK,
+		Body:       "plain",
+		Headers:    map[string]string{"Content-Type": "text/plain"},
+	}.Write(rec)
+	if got := rec.Header().Get("Content-Type"); got != "text/plain" {
+		t.Fatalf("explicit Content-Type = %q, want text/plain", got)
+	}
+
+	rec = httptest.NewRecorder()
+	httpx.Response{StatusCode: http.StatusNoContent}.Write(rec)
+	if got := rec.Header().Get("Content-Type"); got != "" {
+		t.Fatalf("no-content Content-Type = %q, want empty", got)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "" {
+		t.Fatalf("no-content X-Content-Type-Options = %q, want empty", got)
+	}
+}
+
 func TestExportedRateLimitMiddlewareDeniesAfterBurst(t *testing.T) {
 	t.Setenv("RATE_LIMIT", "false")
 	router := httpx.Routes(func(r *httpx.Router) {

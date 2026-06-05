@@ -833,7 +833,7 @@ func queryRootDB(root string) (string, bool) {
 		return "models.DB", true
 	}
 	lower := strings.ToLower(root)
-	if lower == "tx" || lower == "txn" || strings.HasSuffix(root, "Tx") || strings.HasSuffix(root, "TX") {
+	if lower == "tx" || lower == "txn" || lower == "transaction" || strings.HasSuffix(root, "Tx") || strings.HasSuffix(root, "TX") {
 		return root + ".DB", true
 	}
 	return "", false

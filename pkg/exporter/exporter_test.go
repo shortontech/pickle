@@ -3167,6 +3167,48 @@ func ReadOne(id string) error {
 	}
 }
 
+func TestRewriteQueryWithDescriptiveTransactionName(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"Job": true},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func Claim(status string) error {
+	return models.WithTransaction(func(transaction *models.Tx) error {
+		jobs, err := transaction.QueryJob().
+			WhereStatus(status).
+			Lock().
+			All()
+		_ = jobs
+		return err
+	})
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	compact := strings.Join(strings.Fields(got), " ")
+	assertContainsAll(t, compact,
+		`"gorm.io/gorm/clause"`,
+		`models.WithTransaction(func(transaction *models.Tx) error`,
+		`transaction.DB.Model(&models.`,
+		`Job{})`,
+		`Clauses(clause.Locking{Strength: "UPDATE"`,
+		`Where("status = ?", status)`,
+	)
+	for _, unexpected := range []string{"QueryJob", ".Lock()"} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("rewritten source retained %q:\n%s", unexpected, got)
+		}
+	}
+}
+
 func TestRewriteQueryLockOutsideTransactionReturnsPickleEquivalentError(t *testing.T) {
 	ex := &exporter{
 		sourceModule: "example.com/app",

@@ -2077,13 +2077,13 @@ func TestExportedSplitSQLStatementsPreservesQuotedSemicolons(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, src := range map[string]string{
-		"99990101000000_atomic_failure.up.sql":    "CREATE TABLE atomic_failure (id TEXT PRIMARY KEY);\nSELECT * FROM definitely_missing_table;\n",
-		"99990101000000_atomic_failure.down.sql":  "DROP TABLE IF EXISTS atomic_failure;\n",
-		"99990101000001_atomic_rollback.up.sql":   "CREATE TABLE atomic_rollback (id TEXT PRIMARY KEY);\n",
-		"99990101000001_atomic_rollback.down.sql": "DROP TABLE atomic_rollback;\nSELECT * FROM definitely_missing_table;\n",
-		"99990101000002_secret_failure.up.sql":    "SELECT 'password=swordfish' FROM definitely_missing_table;\n",
-		"99990101000002_secret_failure.down.sql":  "SELECT 1;\n",
-		"99990101000003_fresh_down_failure.up.sql": "CREATE TABLE fresh_down_failure (id TEXT PRIMARY KEY);\n",
+		"99990101000000_atomic_failure.up.sql":       "CREATE TABLE atomic_failure (id TEXT PRIMARY KEY);\nSELECT * FROM definitely_missing_table;\n",
+		"99990101000000_atomic_failure.down.sql":     "DROP TABLE IF EXISTS atomic_failure;\n",
+		"99990101000001_atomic_rollback.up.sql":      "CREATE TABLE atomic_rollback (id TEXT PRIMARY KEY);\n",
+		"99990101000001_atomic_rollback.down.sql":    "DROP TABLE atomic_rollback;\nSELECT * FROM definitely_missing_table;\n",
+		"99990101000002_secret_failure.up.sql":       "SELECT 'password=swordfish' FROM definitely_missing_table;\n",
+		"99990101000002_secret_failure.down.sql":     "SELECT 1;\n",
+		"99990101000003_fresh_down_failure.up.sql":   "CREATE TABLE fresh_down_failure (id TEXT PRIMARY KEY);\n",
 		"99990101000003_fresh_down_failure.down.sql": "SELECT 'password=swordfish' FROM definitely_missing_table;\nDROP TABLE fresh_down_failure;\n",
 	} {
 		if err := os.WriteFile(filepath.Join(out, "database", "migrations", name), []byte(src), 0o644); err != nil {
@@ -2970,6 +2970,60 @@ func TestExportedContextClientIPIgnoresSpoofedProxyHeadersByDefault(t *testing.T
 	ctx := NewContext(requestFrom("10.0.0.1:1234", "198.51.100.77"))
 	if got := ctx.ClientIP(); got != "10.0.0.1" {
 		t.Fatalf("ClientIP = %q, want remote address without trusting X-Forwarded-For", got)
+	}
+}
+
+func TestExportedContextHelpersHandleNilRequest(t *testing.T) {
+	ctx := NewContext(nil)
+	if got := ctx.Query("secret"); got != "" {
+		t.Fatalf("Query on nil request = %q, want empty", got)
+	}
+	if got := ctx.BearerToken(); got != "" {
+		t.Fatalf("BearerToken on nil request = %q, want empty", got)
+	}
+	if got := ctx.ClientIP(); got != "" {
+		t.Fatalf("ClientIP on nil request = %q, want empty", got)
+	}
+	if _, err := ctx.Cookie("session_id"); err != http.ErrNoCookie {
+		t.Fatalf("Cookie on nil request err = %v, want http.ErrNoCookie", err)
+	}
+
+	var nilCtx *Context
+	if got := nilCtx.Query("secret"); got != "" {
+		t.Fatalf("Query on nil context = %q, want empty", got)
+	}
+	if got := nilCtx.BearerToken(); got != "" {
+		t.Fatalf("BearerToken on nil context = %q, want empty", got)
+	}
+	if got := nilCtx.ClientIP(); got != "" {
+		t.Fatalf("ClientIP on nil context = %q, want empty", got)
+	}
+	if _, err := nilCtx.Cookie("session_id"); err != http.ErrNoCookie {
+		t.Fatalf("Cookie on nil context err = %v, want http.ErrNoCookie", err)
+	}
+}
+
+func TestExportedRateLimitEventsHandleNilRequestContext(t *testing.T) {
+	resetTrustedProxyStateForTest()
+	previous := rateLimitCallback
+	defer func() { rateLimitCallback = previous }()
+
+	var events []RateLimitEvent
+	rateLimitCallback = func(ctx *Context, event RateLimitEvent) {
+		events = append(events, event)
+	}
+	limiter := RateLimit(1, 1)
+	resp := limiter(NewContext(nil), func() Response {
+		return Response{StatusCode: http.StatusNoContent}
+	})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("rate limit response status = %d", resp.StatusCode)
+	}
+	if len(events) != 1 {
+		t.Fatalf("rate limit events = %d, want 1", len(events))
+	}
+	if events[0].Path != "" || events[0].Key != "" {
+		t.Fatalf("nil request event = %#v, want empty path and key", events[0])
 	}
 }
 

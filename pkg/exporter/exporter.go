@@ -6632,9 +6632,9 @@ func (c *Context) ResponseWriter() http.ResponseWriter { return c.response }
 func (c *Context) Param(name string) string { value, ok := c.params[name]; if !ok { panic("pickle: ctx.Param(\"" + name + "\") - no such route parameter") }; return value }
 func (c *Context) SetParam(name, value string) { c.params[name] = value }
 func (c *Context) ParamUUID(name string) (uuid.UUID, error) { value, err := uuid.Parse(c.Param(name)); if err != nil { return uuid.Nil, fmt.Errorf("invalid uuid parameter") }; return value, nil }
-func (c *Context) Cookie(name string) (string, error) { cookie, err := c.request.Cookie(name); if err != nil { return "", err }; return cookie.Value, nil }
-func (c *Context) Query(name string) string { return c.request.URL.Query().Get(name) }
-func (c *Context) BearerToken() string { h := c.request.Header.Get("Authorization"); parts := strings.Fields(h); if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") { return parts[1] }; return "" }
+func (c *Context) Cookie(name string) (string, error) { if c == nil || c.request == nil { return "", http.ErrNoCookie }; cookie, err := c.request.Cookie(name); if err != nil { return "", err }; return cookie.Value, nil }
+func (c *Context) Query(name string) string { if c == nil || c.request == nil || c.request.URL == nil { return "" }; return c.request.URL.Query().Get(name) }
+func (c *Context) BearerToken() string { if c == nil || c.request == nil { return "" }; h := c.request.Header.Get("Authorization"); parts := strings.Fields(h); if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") { return parts[1] }; return "" }
 func (c *Context) ClientIP() string { if c == nil || c.request == nil { return "" }; return clientIP(c.request) }
 func (c *Context) Auth() *AuthInfo { if c.auth == nil { return &AuthInfo{} }; return c.auth }
 func (c *Context) SetAuth(claims any) { switch v := claims.(type) { case *AuthInfo: c.auth = v; default: panic(fmt.Sprintf("pickle: SetAuth() requires *AuthInfo, got %T", claims)) } }
@@ -6795,7 +6795,7 @@ func checkRateLimit(r *http.Request) (*Response, map[string]string) {
 	key := clientIP(r)
 	bucket, ok := globalLimiter.allow(key)
 	remaining := bucketRemaining(bucket)
-	if rateLimitCallback != nil { rateLimitCallback(NewContext(r), RateLimitEvent{Key: key, Layer: "ip", Path: r.URL.Path, RPS: globalLimiter.rps, Burst: globalLimiter.burst, Remaining: remaining, Allowed: ok}) }
+	if rateLimitCallback != nil { rateLimitCallback(NewContext(r), RateLimitEvent{Key: key, Layer: "ip", Path: requestPath(r), RPS: globalLimiter.rps, Burst: globalLimiter.burst, Remaining: remaining, Allowed: ok}) }
 	if ok { return nil, rateLimitHeaders(globalLimiter.rps, globalLimiter.burst, remaining) }
 	return rateLimitExceeded(bucket, globalLimiter.rps, globalLimiter.burst), nil
 }
@@ -6808,7 +6808,7 @@ func RateLimit(rps, burst int) MiddlewareFunc {
 		key := clientIP(ctx.Request())
 		bucket, ok := store.allow(key)
 		remaining := bucketRemaining(bucket)
-		if rateLimitCallback != nil { rateLimitCallback(ctx, RateLimitEvent{Key: key, Layer: "ip", Path: ctx.Request().URL.Path, RPS: store.rps, Burst: store.burst, Remaining: remaining, Allowed: ok}) }
+		if rateLimitCallback != nil { rateLimitCallback(ctx, RateLimitEvent{Key: key, Layer: "ip", Path: contextPath(ctx), RPS: store.rps, Burst: store.burst, Remaining: remaining, Allowed: ok}) }
 		if ok {
 			resp := next()
 			for k, v := range rateLimitHeaders(store.rps, store.burst, remaining) { if resp.Headers == nil { resp.Headers = map[string]string{} }; resp.Headers[k] = v }
@@ -6835,7 +6835,7 @@ func (c *AuthRateLimitConfig) Middleware() MiddlewareFunc {
 		if role := ctx.Role(); role != "" && c.tiers != nil { if tier, ok := c.tiers[role]; ok { rps = tier.RPS; burst = tier.Burst; key = role + ":" + key } }
 		bucket, ok := c.store.allowWithParams(key, rps, burst)
 		remaining := bucketRemaining(bucket)
-		if rateLimitCallback != nil { rateLimitCallback(ctx, RateLimitEvent{Key: key, Layer: "auth", Path: ctx.Request().URL.Path, RPS: rps, Burst: burst, Remaining: remaining, Allowed: ok}) }
+		if rateLimitCallback != nil { rateLimitCallback(ctx, RateLimitEvent{Key: key, Layer: "auth", Path: contextPath(ctx), RPS: rps, Burst: burst, Remaining: remaining, Allowed: ok}) }
 		if ok {
 			resp := next()
 			for k, v := range rateLimitHeaders(rps, burst, remaining) { if resp.Headers == nil { resp.Headers = map[string]string{} }; resp.Headers[k] = v }
@@ -6854,7 +6854,9 @@ func initTrustedProxies() { trustedProxiesOnce.Do(func() { raw := strings.TrimSp
 func proxyHeadersTrusted(remote string) bool { initTrustedProxies(); if trustedProxiesAll { return true }; ip := net.ParseIP(remote); if ip == nil { return false }; for _, cidr := range trustedProxies { if cidr.Contains(ip) { return true } }; return false }
 func firstUntrustedIP(xff string) string { parts := strings.Split(xff, ","); for i := len(parts) - 1; i >= 0; i-- { ip := strings.TrimSpace(parts[i]); if ip != "" && !proxyHeadersTrusted(ip) { return ip } }; return strings.TrimSpace(parts[0]) }
 func stripPort(addr string) string { if host, _, err := net.SplitHostPort(addr); err == nil { return host }; return addr }
-func clientIP(r *http.Request) string { remote := stripPort(r.RemoteAddr); if !proxyHeadersTrusted(remote) { return remote }; if xff := r.Header.Get("X-Forwarded-For"); xff != "" { return firstUntrustedIP(xff) }; if xri := r.Header.Get("X-Real-IP"); xri != "" { return strings.TrimSpace(xri) }; return remote }
+func contextPath(ctx *Context) string { if ctx == nil { return "" }; return requestPath(ctx.Request()) }
+func requestPath(r *http.Request) string { if r == nil || r.URL == nil { return "" }; return r.URL.Path }
+func clientIP(r *http.Request) string { if r == nil { return "" }; remote := stripPort(r.RemoteAddr); if !proxyHeadersTrusted(remote) { return remote }; if xff := r.Header.Get("X-Forwarded-For"); xff != "" { return firstUntrustedIP(xff) }; if xri := r.Header.Get("X-Real-IP"); xri != "" { return strings.TrimSpace(xri) }; return remote }
 `
 
 const rbacMiddlewareSupportSource = `package middleware

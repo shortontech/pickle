@@ -6489,20 +6489,60 @@ func writeExportedMonorepoServerBehaviorTest(t *testing.T, out string) {
 	testSrc := `package main
 
 import (
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"monorepo/app/models"
 	apiRoutes "monorepo/services/api/routes"
 	workerRoutes "monorepo/services/worker/routes"
 )
 
 func TestExportedMultiServiceServerMountsServiceLocalRoutes(t *testing.T) {
 	t.Setenv("RATE_LIMIT", "false")
+	t.Setenv("APP_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	if err := db.AutoMigrate(&models.User{}); err != nil {
+		t.Fatal(err)
+	}
+	user := &models.User{
+		ID:           uuid.New(),
+		Name:         "Ada",
+		Email:        "ada@example.com",
+		PasswordHash: "hash",
+	}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatalf("seed exported monorepo user: %v", err)
+	}
+
 	mux := http.NewServeMux()
 	apiRoutes.API.RegisterRoutes(mux)
 	mux.Handle("/worker/", http.StripPrefix("/worker", workerRoutes.API))
 	mux.HandleFunc("/", exportedNotFound)
+
+	usersRec := httptest.NewRecorder()
+	mux.ServeHTTP(usersRec, httptest.NewRequest(http.MethodGet, "/api/users", nil))
+	if usersRec.Code != http.StatusOK {
+		t.Fatalf("api users status = %d body=%s", usersRec.Code, usersRec.Body.String())
+	}
+	if !strings.Contains(usersRec.Body.String(), "\"name\":\"Ada\"") {
+		t.Fatalf("api users response missing seeded user: %s", usersRec.Body.String())
+	}
+	for _, leak := range []string{"password", "password_hash", "hash"} {
+		if strings.Contains(usersRec.Body.String(), leak) {
+			t.Fatalf("api users response leaked %q: %s", leak, usersRec.Body.String())
+		}
+	}
 
 	apiRec := httptest.NewRecorder()
 	mux.ServeHTTP(apiRec, httptest.NewRequest(http.MethodGet, "/api/orders", nil))

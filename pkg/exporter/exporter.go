@@ -2837,7 +2837,14 @@ import (
 )
 
 const maxGraphQLAPIRequestBodyBytes = 1 << 20
+const maxGraphQLAPIRequestEnvelopeFieldBytes = 32
 const maxGraphQLAPIQueryBytes = 64 << 10
+const maxGraphQLAPIOperationNameBytes = 256
+const maxGraphQLAPIVariables = 64
+const maxGraphQLAPIVariableNameBytes = 256
+const maxGraphQLAPIVariableDepth = 8
+const maxGraphQLAPIVariableCollectionItems = 256
+const maxGraphQLAPIVariableStringBytes = 4096
 const maxGraphQLAPITokenMultiplier = 20
 const maxGraphQLAPIComplexity = 1000
 
@@ -3033,8 +3040,20 @@ func prepareGraphQLAPIPostBody(w http.ResponseWriter, r *http.Request) bool {
 		writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
 		return false
 	}
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
+		return false
+	}
+	if trimmed[0] == '[' {
+		writeGraphQLAPIHTTPError(w, "batched GraphQL requests are not supported", "BAD_USER_INPUT")
+		return false
+	}
+	if !validateGraphQLAPIRequestEnvelopeFieldUniqueness(w, trimmed) {
+		return false
+	}
 	var raw map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(bytes.TrimSpace(body)))
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
 	decoder.UseNumber()
 	if err := decoder.Decode(&raw); err != nil {
 		writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
@@ -3042,6 +3061,55 @@ func prepareGraphQLAPIPostBody(w http.ResponseWriter, r *http.Request) bool {
 	}
 	if decoder.Decode(&struct{}{}) != io.EOF {
 		writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
+		return false
+	}
+	if !validateGraphQLAPIRequestEnvelope(w, raw) {
+		return false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return true
+}
+
+func validateGraphQLAPIRequestEnvelopeFieldUniqueness(w http.ResponseWriter, body []byte) bool {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	token, err := decoder.Token()
+	if err != nil {
+		writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
+		return false
+	}
+	if delim, ok := token.(json.Delim); !ok || delim != '{' {
+		writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
+		return false
+	}
+	seen := map[string]bool{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
+			return false
+		}
+		field, ok := token.(string)
+		if !ok {
+			writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
+			return false
+		}
+		if seen[field] {
+			writeGraphQLAPIHTTPError(w, "GraphQL request contains duplicate field", "BAD_USER_INPUT")
+			return false
+		}
+		seen[field] = true
+		var discard any
+		if err := decoder.Decode(&discard); err != nil {
+			writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
+			return false
+		}
+	}
+	return true
+}
+
+func validateGraphQLAPIRequestEnvelope(w http.ResponseWriter, raw map[string]any) bool {
+	if !validateGraphQLAPIRequestEnvelopeFields(w, raw) {
 		return false
 	}
 	query, ok := raw["query"].(string)
@@ -3053,8 +3121,142 @@ func prepareGraphQLAPIPostBody(w http.ResponseWriter, r *http.Request) bool {
 		writeGraphQLAPIHTTPError(w, "GraphQL query is too large", "BAD_USER_INPUT")
 		return false
 	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
+	if operationName, ok := raw["operationName"]; ok {
+		name, ok := operationName.(string)
+		if operationName != nil && !ok {
+			writeGraphQLAPIHTTPError(w, "GraphQL operationName must be a string", "BAD_USER_INPUT")
+			return false
+		}
+		if len(name) > maxGraphQLAPIOperationNameBytes {
+			writeGraphQLAPIHTTPError(w, "GraphQL operationName is too large", "BAD_USER_INPUT")
+			return false
+		}
+		if name != "" && !isGraphQLAPIName(name) {
+			writeGraphQLAPIHTTPError(w, "GraphQL operationName is invalid", "BAD_USER_INPUT")
+			return false
+		}
+	}
+	if variables, ok := raw["variables"]; ok && variables != nil {
+		values, ok := variables.(map[string]any)
+		if !ok {
+			writeGraphQLAPIHTTPError(w, "GraphQL variables must be an object", "BAD_USER_INPUT")
+			return false
+		}
+		if err := validateGraphQLAPIVariables(values); err != nil {
+			writeGraphQLAPIHTTPError(w, err.Error(), "BAD_USER_INPUT")
+			return false
+		}
+	}
+	if extensions, ok := raw["extensions"]; ok && extensions != nil {
+		values, ok := extensions.(map[string]any)
+		if !ok {
+			writeGraphQLAPIHTTPError(w, "GraphQL extensions must be an object", "BAD_USER_INPUT")
+			return false
+		}
+		if err := validateGraphQLAPIExtensions(values); err != nil {
+			writeGraphQLAPIHTTPError(w, err.Error(), "BAD_USER_INPUT")
+			return false
+		}
+	}
 	return true
+}
+
+func validateGraphQLAPIRequestEnvelopeFields(w http.ResponseWriter, raw map[string]any) bool {
+	for field := range raw {
+		if len(field) > maxGraphQLAPIRequestEnvelopeFieldBytes {
+			writeGraphQLAPIHTTPError(w, "GraphQL request field is too large", "BAD_USER_INPUT")
+			return false
+		}
+		switch field {
+		case "query", "operationName", "variables", "extensions":
+			continue
+		default:
+			writeGraphQLAPIHTTPError(w, "GraphQL request contains unsupported field", "BAD_USER_INPUT")
+			return false
+		}
+	}
+	return true
+}
+
+func validateGraphQLAPIVariables(variables map[string]any) error {
+	if len(variables) > maxGraphQLAPIVariables {
+		return graphQLAPICodedError("too many GraphQL variables", "BAD_USER_INPUT")
+	}
+	for name, value := range variables {
+		if len(name) > maxGraphQLAPIVariableNameBytes {
+			return graphQLAPICodedError("GraphQL variable name is too large", "BAD_USER_INPUT")
+		}
+		if !isGraphQLAPIName(name) {
+			return graphQLAPICodedError("GraphQL variable name is invalid", "BAD_USER_INPUT")
+		}
+		if !validGraphQLAPIVariableValue(value, 0) {
+			return graphQLAPICodedError("GraphQL variables exceed safety limits", "BAD_USER_INPUT")
+		}
+	}
+	return nil
+}
+
+func validateGraphQLAPIExtensions(extensions map[string]any) error {
+	if len(extensions) > maxGraphQLAPIVariableCollectionItems {
+		return graphQLAPICodedError("GraphQL extensions exceed safety limits", "BAD_USER_INPUT")
+	}
+	for name, value := range extensions {
+		if len(name) > maxGraphQLAPIVariableNameBytes {
+			return graphQLAPICodedError("GraphQL extension name is too large", "BAD_USER_INPUT")
+		}
+		if !validGraphQLAPIVariableValue(value, 0) {
+			return graphQLAPICodedError("GraphQL extensions exceed safety limits", "BAD_USER_INPUT")
+		}
+	}
+	return nil
+}
+
+func validGraphQLAPIVariableValue(value any, depth int) bool {
+	if depth > maxGraphQLAPIVariableDepth {
+		return false
+	}
+	switch v := value.(type) {
+	case string:
+		return len(v) <= maxGraphQLAPIVariableStringBytes
+	case []any:
+		if len(v) > maxGraphQLAPIVariableCollectionItems {
+			return false
+		}
+		for _, item := range v {
+			if !validGraphQLAPIVariableValue(item, depth+1) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		if len(v) > maxGraphQLAPIVariableCollectionItems {
+			return false
+		}
+		for _, item := range v {
+			if !validGraphQLAPIVariableValue(item, depth+1) {
+				return false
+			}
+		}
+		return true
+	default:
+		return true
+	}
+}
+
+func isGraphQLAPIName(name string) bool {
+	for i, r := range name {
+		if i == 0 {
+			if r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				continue
+			}
+			return false
+		}
+		if r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		return false
+	}
+	return name != ""
 }
 
 func isGraphQLAPIJSONContentType(contentType string) bool {

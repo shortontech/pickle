@@ -3452,6 +3452,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -3563,6 +3564,27 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !responseHasErrorCode(t, rec.Body.Bytes(), "BAD_USER_INPUT") {
 		t.Fatalf("bad query response status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	for name, body := range map[string][]byte{
+		"batched":          []byte(` + "`" + `[{"query":"{ posts { totalCount } }"}]` + "`" + `),
+		"duplicate_field":  []byte(` + "`" + `{"query":"{ posts { totalCount } }","query":"{ comments { totalCount } }"}` + "`" + `),
+		"unsupported":      []byte(` + "`" + `{"query":"{ posts { totalCount } }","unexpected":true}` + "`" + `),
+		"invalid_op_name":  []byte(` + "`" + `{"query":"query Good { posts { totalCount } }","operationName":"1 Bad"}` + "`" + `),
+		"bad_variables":    []byte(` + "`" + `{"query":"query Good($id: ID) { post(id: $id) { id } }","variables":["not","object"]}` + "`" + `),
+		"deep_variables":   []byte(` + "`" + `{"query":"query Good($v: String) { posts { totalCount } }","variables":{"deep":{"a":{"b":{"c":{"d":{"e":{"f":{"g":{"h":{"i":"too deep"}}}}}}}}}}}` + "`" + `),
+		"bad_extensions":   []byte(` + "`" + `{"query":"{ posts { totalCount } }","extensions":["not","object"]}` + "`" + `),
+		"large_extensions": []byte(` + "`" + `{"query":"{ posts { totalCount } }","extensions":{"trace":"` + "`" + ` + strings.Repeat("x", 4097) + ` + "`" + `"}}` + "`" + `),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK || !responseHasErrorCode(t, rec.Body.Bytes(), "BAD_USER_INPUT") {
+				t.Fatalf("%s response status=%d body=%s", name, rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

@@ -3988,6 +3988,7 @@ func writeExportedCronBehaviorTests(t *testing.T, out string) {
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -4063,6 +4064,26 @@ func TestExportedSchedulerOptionsAndRetries(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "job failed") {
 		t.Fatalf("scheduler retry log missing sanitized marker: %s", logs.String())
+	}
+}
+
+func TestExportedSchedulerRejectsInvalidSchedulesWithoutLeakingSpec(t *testing.T) {
+	var logs bytes.Buffer
+	previousLogOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousLogOutput)
+
+	scheduler := Cron(func(s *Scheduler) {
+		s.Job("password=swordfish", &exportedFlakyJob{})
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	scheduler.Start(ctx)
+	if strings.Contains(logs.String(), "swordfish") || strings.Contains(logs.String(), "password=") || strings.Contains(logs.String(), "expected exactly") {
+		t.Fatalf("invalid schedule log leaked detail: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "schedule rejected") {
+		t.Fatalf("invalid schedule log missing sanitized marker: %s", logs.String())
 	}
 }
 

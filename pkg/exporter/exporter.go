@@ -6771,7 +6771,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 			}
 			runJob(entry)
 		})
-		if err != nil { log.Printf("job %T schedule %q rejected: %v", entry.Job, entry.Schedule, err) }
+		if err != nil { log.Printf("job %T schedule rejected", entry.Job) }
 	}
 	c.Start()
 	<-ctx.Done()

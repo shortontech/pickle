@@ -3703,11 +3703,11 @@ func (e *exporter) generateSQLMigrations(tables []*schema.Table, views []*schema
 	if len(e.migrations) > 0 {
 		var out []sqlMigration
 		for _, migration := range e.migrations {
-			up, err := sqlForMigrationOps(migration.Up)
+			up, err := sqlForMigrationOps(migration.Up, tables...)
 			if err != nil {
 				return nil, fmt.Errorf("unsupported migration export for %s: %w", migration.Name, err)
 			}
-			down, err := sqlForMigrationOps(migration.Down)
+			down, err := sqlForMigrationOps(migration.Down, tables...)
 			if err != nil {
 				return nil, fmt.Errorf("unsupported migration export for %s: %w", migration.Name, err)
 			}
@@ -3770,10 +3770,14 @@ func migrationHasRawSQL(migration generator.MigrationOps) bool {
 	return false
 }
 
-func sqlForMigrationOps(ops []generator.MigrationOperation) (string, error) {
+func sqlForMigrationOps(ops []generator.MigrationOperation, tables ...*schema.Table) (string, error) {
+	tableByName := map[string]*schema.Table{}
+	for _, table := range tables {
+		tableByName[table.Name] = table
+	}
 	var statements []string
 	for _, op := range ops {
-		sql, err := sqlForMigrationOp(op)
+		sql, err := sqlForMigrationOp(op, tableByName)
 		if err != nil {
 			return "", err
 		}
@@ -3787,12 +3791,13 @@ func sqlForMigrationOps(ops []generator.MigrationOperation) (string, error) {
 	return strings.Join(statements, ";\n") + ";\n", nil
 }
 
-func sqlForMigrationOp(op generator.MigrationOperation) (string, error) {
+func sqlForMigrationOp(op generator.MigrationOperation, tableByName map[string]*schema.Table) (string, error) {
 	switch op.Type {
 	case "create_table":
 		if op.TableDef == nil {
 			return "", fmt.Errorf("create_table missing table definition")
 		}
+		tableByName[op.TableDef.Name] = op.TableDef
 		return createTableSQL(op.TableDef) + tableIndexesSQL(op.TableDef), nil
 	case "drop_table_if_exists":
 		return dropTableSQL(op.Table), nil
@@ -3820,6 +3825,9 @@ func sqlForMigrationOp(op generator.MigrationOperation) (string, error) {
 		idx := *op.Index
 		if idx.Table == "" {
 			idx.Table = op.Table
+		}
+		if table, ok := tableByName[idx.Table]; ok {
+			idx = *indexForTableStorage(table, &idx)
 		}
 		return createIndexSQL(&idx), nil
 	case "create_view":
@@ -3924,9 +3932,28 @@ func tableIndexesSQL(table *schema.Table) string {
 	}
 	var parts []string
 	for _, idx := range table.Indexes {
-		parts = append(parts, createIndexSQL(idx))
+		parts = append(parts, createIndexSQL(indexForTableStorage(table, idx)))
 	}
 	return ";\n" + strings.Join(parts, ";\n")
+}
+
+func indexForTableStorage(table *schema.Table, idx *schema.Index) *schema.Index {
+	out := *idx
+	out.Columns = make([]string, 0, len(idx.Columns))
+	storageColumns := map[string]string{}
+	for _, col := range table.Columns {
+		if col.IsEncrypted || col.IsSealed {
+			storageColumns[col.Name] = col.Name + "_encrypted"
+		}
+	}
+	for _, col := range idx.Columns {
+		if storage, ok := storageColumns[col]; ok {
+			out.Columns = append(out.Columns, storage)
+			continue
+		}
+		out.Columns = append(out.Columns, col)
+	}
+	return &out
 }
 
 func createIndexSQL(idx *schema.Index) string {

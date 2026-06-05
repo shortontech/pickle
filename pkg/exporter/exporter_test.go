@@ -3188,6 +3188,134 @@ func TestGenerateSQLMigrationsLowersCapturedOperations(t *testing.T) {
 	}
 }
 
+func TestExportCapturedAlterMigrationsRunInSQLite(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "zero-graphql"))
+	migrationsDir := filepath.Join(projectDir, "database", "migrations")
+	createWidget := `package migrations
+
+type CreateWidgetsTable_2026_04_01_100000 struct {
+	Migration
+}
+
+func (m *CreateWidgetsTable_2026_04_01_100000) Up() {
+	m.CreateTable("widgets", func(t *Table) {
+		t.UUID("id").PrimaryKey().Default("gen_random_uuid()")
+		t.String("name", 255).NotNull()
+	})
+}
+
+func (m *CreateWidgetsTable_2026_04_01_100000) Down() {
+	m.DropTableIfExists("widgets")
+}
+`
+	alterWidget := `package migrations
+
+type AlterWidgetsTable_2026_04_01_100001 struct {
+	Migration
+}
+
+func (m *AlterWidgetsTable_2026_04_01_100001) Up() {
+	m.RenameColumn("widgets", "name", "label")
+	m.AlterTable("widgets", func(t *Table) {
+		t.String("slug", 255).Nullable()
+	})
+}
+
+func (m *AlterWidgetsTable_2026_04_01_100001) Down() {
+	m.DropColumn("widgets", "slug")
+	m.RenameColumn("widgets", "label", "name")
+}
+`
+	if err := os.WriteFile(filepath.Join(migrationsDir, "2026_04_01_100000_create_widgets_table.go"), []byte(createWidget), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(migrationsDir, "2026_04_01_100001_alter_widgets_table.go"), []byte(alterWidget), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "exported")
+	if _, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	}); err != nil {
+		t.Fatalf("Export failed: %v", err)
+	}
+
+	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260401100001_alter_widgets_table.up.sql"), `ALTER TABLE "widgets" RENAME COLUMN "name" TO "label"`)
+	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260401100001_alter_widgets_table.up.sql"), `ALTER TABLE "widgets" ADD COLUMN "slug" VARCHAR(255)`)
+	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260320100000_create_users_table.up.sql"), `ON "users" ("email_encrypted")`)
+	assertFileNotContains(t, filepath.Join(out, "database", "migrations", "20260320100000_create_users_table.up.sql"), `ON "users" ("email")`)
+	assertCleanExportReport(t, out)
+	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
+
+	behaviorTest := `package migrations
+
+import (
+	"testing"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+func TestExportedAlterMigrationsRunAndRollback(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := NewRunner(db, "sqlite")
+	if err := runner.Migrate(Registry); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	cols := columnSet(t, db, "widgets")
+	for _, want := range []string{"id", "label", "slug"} {
+		if !cols[want] {
+			t.Fatalf("widgets missing column %q after migrate: %#v", want, cols)
+		}
+	}
+	if cols["name"] {
+		t.Fatalf("widgets retained renamed column name after migrate: %#v", cols)
+	}
+	if err := runner.Rollback(Registry); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if db.Migrator().HasTable("widgets") {
+		t.Fatalf("widgets table should be removed after full batch rollback")
+	}
+}
+
+func columnSet(t *testing.T, db *gorm.DB, table string) map[string]bool {
+	t.Helper()
+	rows, err := db.Raw("PRAGMA table_info(" + table + ")").Rows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	cols := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dflt interface{}
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatal(err)
+		}
+		cols[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return cols
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "database", "migrations", "exported_alter_behavior_test.go"), []byte(behaviorTest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runExported(t, out, "go", "test", "./database/migrations")
+}
+
 func TestGenerateSQLMigrationsLowersRawSQLWithFinding(t *testing.T) {
 	ex := &exporter{result: &Result{}, migrations: []generator.MigrationOps{
 		{

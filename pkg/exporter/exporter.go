@@ -2295,12 +2295,12 @@ func writeGraphQLAPIPKParse(b *strings.Builder, tbl *schema.Table, pk *schema.Co
 	switch pk.Type {
 	case schema.UUID:
 		b.WriteString("\tparsedID, err := uuid.Parse(id)\n\tif err != nil {\n")
-		fmt.Fprintf(b, "\t\treturn %s, fmt.Errorf(%q)\n", failureReturn, graphQLSingleFieldName(tbl)+": invalid id")
+		fmt.Fprintf(b, "\t\treturn %s, graphQLAPIBadInput(%q)\n", failureReturn, graphQLSingleFieldName(tbl)+": invalid id")
 		b.WriteString("\t}\n")
 	case schema.Integer:
-		fmt.Fprintf(b, "\tvar parsedID int\n\tif _, err := fmt.Sscanf(id, \"%%d\", &parsedID); err != nil {\n\t\treturn %s, fmt.Errorf(\"invalid id\")\n\t}\n", failureReturn)
+		fmt.Fprintf(b, "\tvar parsedID int\n\tif _, err := fmt.Sscanf(id, \"%%d\", &parsedID); err != nil {\n\t\treturn %s, graphQLAPIBadInput(\"invalid id\")\n\t}\n", failureReturn)
 	case schema.BigInteger:
-		fmt.Fprintf(b, "\tvar parsedID int64\n\tif _, err := fmt.Sscanf(id, \"%%d\", &parsedID); err != nil {\n\t\treturn %s, fmt.Errorf(\"invalid id\")\n\t}\n", failureReturn)
+		fmt.Fprintf(b, "\tvar parsedID int64\n\tif _, err := fmt.Sscanf(id, \"%%d\", &parsedID); err != nil {\n\t\treturn %s, graphQLAPIBadInput(\"invalid id\")\n\t}\n", failureReturn)
 	default:
 		b.WriteString("\tparsedID := id\n")
 	}

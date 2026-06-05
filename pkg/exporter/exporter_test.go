@@ -3446,6 +3446,7 @@ func TestExportZeroGraphQLLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *Resolver) Query() generated.QueryResolver")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), "func gqlgenPageWindow")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), `graphQLAPIBadInput("page.first and page.last cannot both be set")`)
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), `graphQLAPIBadInput("post: invalid id")`)
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "TotalCount: totalCount")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "TotalCount: len(edges)")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "not implemented: Users")
@@ -3700,6 +3701,15 @@ func TestExportedGQLGenTargetCRUDResolvers(t *testing.T) {
 	badCursor := "not-a-cursor"
 	if _, err := queries.Posts(ctx, nil, nil, &model.PageInput{After: &badCursor}); !isBadInput(err) {
 		t.Fatalf("invalid cursor error = %v, want BAD_USER_INPUT", err)
+	}
+	if _, err := queries.Post(ctx, badID); !isBadInput(err) {
+		t.Fatalf("invalid single id error = %v, want BAD_USER_INPUT", err)
+	}
+	if _, err := mutations.UpdatePost(ctx, badID, model.UpdatePostInput{Title: stringPtr("Bad ID")}); !isBadInput(err) {
+		t.Fatalf("invalid update id error = %v, want BAD_USER_INPUT", err)
+	}
+	if _, err := mutations.DeletePost(ctx, badID); !isBadInput(err) {
+		t.Fatalf("invalid delete id error = %v, want BAD_USER_INPUT", err)
 	}
 
 	updated, err := mutations.UpdatePost(ctx, post.ID.String(), model.UpdatePostInput{Title: stringPtr("Updated")})

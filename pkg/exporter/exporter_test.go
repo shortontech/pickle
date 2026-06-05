@@ -3147,6 +3147,7 @@ func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 	assertNoGoFileContains(t, out, "pickle.")
 	writeExportedZeroGraphQLEncryptedFilterTest(t, out)
 	writeExportedZeroGraphQLHTTPMethodSafetyTest(t, out)
+	writeExportedZeroGraphQLAPITargetBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
 
@@ -3312,6 +3313,104 @@ func TestExportedGraphQLGETDoesNotExecuteMutations(t *testing.T) {
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphql", "exported_http_method_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedZeroGraphQLAPITargetBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package resolver
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"zero-graphql/app/graphqlapi/model"
+	"zero-graphql/app/models"
+)
+
+func TestExportedGQLGenTargetCRUDResolvers(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	if err := db.AutoMigrate(&models.Post{}, &models.Comment{}); err != nil {
+		t.Fatalf("auto migrate: %v", err)
+	}
+
+	ctx := context.Background()
+	resolver := &Resolver{}
+	mutations := &mutationResolver{Resolver: resolver}
+	queries := &queryResolver{Resolver: resolver}
+
+	userID := uuid.New()
+	post, err := mutations.CreatePost(ctx, model.CreatePostInput{
+		UserID: userID.String(),
+		Title:  "Hello",
+		Body:   "GraphQL body",
+		Status: stringPtr("draft"),
+	})
+	if err != nil {
+		t.Fatalf("create post: %v", err)
+	}
+	if post.ID == uuid.Nil || post.UserID != userID || post.Title != "Hello" || post.Status != "draft" {
+		t.Fatalf("created post = %+v", post)
+	}
+	if post.CreatedAt.IsZero() || post.UpdatedAt.IsZero() {
+		t.Fatalf("post timestamps were not initialized: %+v", post)
+	}
+
+	posts, err := queries.Posts(ctx, &model.PostFilter{ID: &model.IDFilter{Eq: stringPtr(post.ID.String())}}, nil, &model.PageInput{First: intPtr(1)})
+	if err != nil {
+		t.Fatalf("query posts: %v", err)
+	}
+	if len(posts.Edges) != 1 || posts.Edges[0].Node.ID != post.ID {
+		t.Fatalf("posts connection = %+v", posts)
+	}
+
+	updated, err := mutations.UpdatePost(ctx, post.ID.String(), model.UpdatePostInput{Title: stringPtr("Updated")})
+	if err != nil {
+		t.Fatalf("update post: %v", err)
+	}
+	if updated.Title != "Updated" {
+		t.Fatalf("updated title = %q", updated.Title)
+	}
+	if updated.UpdatedAt.Before(post.UpdatedAt) {
+		t.Fatalf("updated_at moved backwards: before=%s after=%s", post.UpdatedAt.Format(time.RFC3339Nano), updated.UpdatedAt.Format(time.RFC3339Nano))
+	}
+
+	comment, err := mutations.CreateComment(ctx, model.CreateCommentInput{
+		PostID: post.ID.String(),
+		UserID: userID.String(),
+		Body:   "Nice post",
+	})
+	if err != nil {
+		t.Fatalf("create comment: %v", err)
+	}
+	if comment.ID == uuid.Nil || comment.PostID != post.ID || comment.UserID != userID {
+		t.Fatalf("created comment = %+v", comment)
+	}
+	deletedComment, err := mutations.DeleteComment(ctx, comment.ID.String())
+	if err != nil || !deletedComment {
+		t.Fatalf("delete comment = %v, %v", deletedComment, err)
+	}
+	deletedPost, err := mutations.DeletePost(ctx, post.ID.String())
+	if err != nil || !deletedPost {
+		t.Fatalf("delete post = %v, %v", deletedPost, err)
+	}
+}
+
+func stringPtr(value string) *string { return &value }
+
+func intPtr(value int) *int { return &value }
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "resolver", "exported_target_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

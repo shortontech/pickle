@@ -3444,6 +3444,7 @@ func TestExportZeroGraphQLLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "extension.FixedComplexityLimit")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "generated", "generated.go"), "type ResolverRoot interface")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *Resolver) Query() generated.QueryResolver")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), "func gqlgenPageWindow")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "TotalCount: totalCount")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "TotalCount: len(edges)")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "not implemented: Users")
@@ -3627,6 +3628,30 @@ func TestExportedGQLGenTargetCRUDResolvers(t *testing.T) {
 	}
 	if pagedPosts.PageInfo == nil || !pagedPosts.PageInfo.HasNextPage {
 		t.Fatalf("paged posts pageInfo = %+v, want hasNextPage", pagedPosts.PageInfo)
+	}
+	if pagedPosts.PageInfo.EndCursor == nil || *pagedPosts.PageInfo.EndCursor != "cursor:0" {
+		t.Fatalf("paged posts endCursor = %v, want cursor:0", pagedPosts.PageInfo.EndCursor)
+	}
+	afterPosts, err := queries.Posts(ctx, nil, nil, &model.PageInput{First: intPtr(1), After: pagedPosts.PageInfo.EndCursor})
+	if err != nil {
+		t.Fatalf("after posts: %v", err)
+	}
+	if len(afterPosts.Edges) != 1 || afterPosts.Edges[0].Cursor != "cursor:1" {
+		t.Fatalf("after posts edges = %+v, want first edge cursor:1", afterPosts.Edges)
+	}
+	if afterPosts.PageInfo == nil || !afterPosts.PageInfo.HasPreviousPage || !afterPosts.PageInfo.HasNextPage {
+		t.Fatalf("after posts pageInfo = %+v, want previous and next page", afterPosts.PageInfo)
+	}
+	beforeThird := "cursor:2"
+	backwardPosts, err := queries.Posts(ctx, nil, nil, &model.PageInput{Last: intPtr(1), Before: &beforeThird})
+	if err != nil {
+		t.Fatalf("backward posts: %v", err)
+	}
+	if len(backwardPosts.Edges) != 1 || backwardPosts.Edges[0].Cursor != "cursor:1" {
+		t.Fatalf("backward posts edges = %+v, want cursor:1", backwardPosts.Edges)
+	}
+	if backwardPosts.PageInfo == nil || !backwardPosts.PageInfo.HasPreviousPage || !backwardPosts.PageInfo.HasNextPage {
+		t.Fatalf("backward posts pageInfo = %+v, want previous and next page", backwardPosts.PageInfo)
 	}
 
 	posts, err := queries.Posts(ctx, &model.PostFilter{ID: &model.IDFilter{Eq: stringPtr(post.ID.String())}}, nil, &model.PageInput{First: intPtr(1)})
@@ -4084,6 +4109,7 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "extension.FixedComplexityLimit")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "generated", "generated.go"), "type ResolverRoot interface")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *Resolver) Query() generated.QueryResolver")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), "func gqlgenPageWindow")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "TotalCount: totalCount")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "TotalCount: len(edges)")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), `panic(fmt.Errorf("not implemented`)

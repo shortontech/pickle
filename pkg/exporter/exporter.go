@@ -2020,6 +2020,46 @@ func gqlgenPageOffset(page *model.PageInput) (int, error) {
 	return offset, nil
 }
 
+func gqlgenPageWindow(page *model.PageInput, totalCount, limit int) (int, int, bool, bool, error) {
+	start := 0
+	end := totalCount
+	if page != nil {
+		if page.After != nil {
+			after, err := gqlgenParseCursor(*page.After)
+			if err != nil {
+				return 0, 0, false, false, graphQLAPIBadInput("page.after is invalid")
+			}
+			start = after + 1
+		}
+		if page.Before != nil {
+			before, err := gqlgenParseCursor(*page.Before)
+			if err != nil {
+				return 0, 0, false, false, graphQLAPIBadInput("page.before is invalid")
+			}
+			if before < end {
+				end = before
+			}
+		}
+	}
+	if start > totalCount {
+		start = totalCount
+	}
+	if end > totalCount {
+		end = totalCount
+	}
+	if start > end {
+		start = end
+	}
+	if page != nil && page.Last != nil {
+		if end-start > limit {
+			start = end - limit
+		}
+	} else if end-start > limit {
+		end = start + limit
+	}
+	return start, end - start, start > 0, end < totalCount, nil
+}
+
 func gqlgenParseCursor(cursor string) (int, error) {
 	if !strings.HasPrefix(cursor, "cursor:") {
 		return 0, fmt.Errorf("invalid cursor")
@@ -2152,14 +2192,13 @@ func writeGraphQLAPIListResolver(b *strings.Builder, tbl *schema.Table) {
 	b.WriteString("\t}\n")
 	b.WriteString("\tif sort != nil {\n\t\tcolumn, dir := gqlgenSortParts(string(*sort))\n\t\tif column != \"\" {\n\t\t\tq.OrderBy(column, dir)\n\t\t}\n\t}\n")
 	b.WriteString("\ttotalCount64, err := q.Count()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\ttotalCount := int(totalCount64)\n")
-	b.WriteString("\tlimit, err := gqlgenPageLimit(page)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\toffset, err := gqlgenPageOffset(page)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tq.Limit(limit + 1)\n\tif offset > 0 {\n\t\tq.Offset(offset)\n\t}\n")
+	b.WriteString("\tlimit, err := gqlgenPageLimit(page)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\toffset, fetchLimit, hasPrevious, hasNext, err := gqlgenPageWindow(page, totalCount, limit)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tq.Limit(fetchLimit)\n\tif offset > 0 {\n\t\tq.Offset(offset)\n\t}\n")
 	b.WriteString("\trecords, err := q.All()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n")
-	b.WriteString("\thasNext := len(records) > limit\n\tif hasNext {\n\t\trecords = records[:limit]\n\t}\n")
 	fmt.Fprintf(b, "\tedges := make([]*model.%sEdge, 0, len(records))\n", structName)
 	b.WriteString("\tfor i := range records {\n\t\trecord := records[i]\n")
 	fmt.Fprintf(b, "\t\tedges = append(edges, &model.%sEdge{Node: &record, Cursor: gqlgenCursor(offset + i)})\n\t}\n", structName)
 	b.WriteString("\tvar startCursor *string\n\tvar endCursor *string\n\tif len(edges) > 0 {\n\t\tstartCursor = gqlgenStringPtr(edges[0].Cursor)\n\t\tendCursor = gqlgenStringPtr(edges[len(edges)-1].Cursor)\n\t}\n")
-	fmt.Fprintf(b, "\treturn &model.%sConnection{Edges: edges, PageInfo: &model.PageInfo{HasNextPage: hasNext, HasPreviousPage: offset > 0, StartCursor: startCursor, EndCursor: endCursor}, TotalCount: totalCount}, nil\n", structName)
+	fmt.Fprintf(b, "\treturn &model.%sConnection{Edges: edges, PageInfo: &model.PageInfo{HasNextPage: hasNext, HasPreviousPage: hasPrevious, StartCursor: startCursor, EndCursor: endCursor}, TotalCount: totalCount}, nil\n", structName)
 	b.WriteString("}\n\n")
 }
 

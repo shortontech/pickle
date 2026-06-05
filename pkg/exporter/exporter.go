@@ -5607,7 +5607,7 @@ func (e *exporter) writeReport(orm string) error {
 	b.WriteString("- SQL migrations for supported schema operations\n")
 	b.WriteString("- HTTP routing, request binding, auth, config, and server support\n")
 	if e.hasGraphQLPackage() {
-		b.WriteString("- Exported app gqlgen GraphQL API target with standalone GORM query support and /graphql server mount\n")
+		b.WriteString("- Standalone emitted Go GraphQL target backed by gqlgen, with GORM query support and /graphql server mount\n")
 	}
 	if e.hasEncryptedColumns {
 		b.WriteString("- Encrypted and sealed columns with GORM encrypt/decrypt hooks\n")

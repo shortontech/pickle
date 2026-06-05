@@ -2870,6 +2870,7 @@ import (
 	"github.com/99designs/gqlgen/graphql/playground"
 	"github.com/vektah/gqlparser/v2/ast"
 	"github.com/vektah/gqlparser/v2/gqlerror"
+	"github.com/vektah/gqlparser/v2/parser"
 
 	"%s/app/graphqlapi/generated"
 	"%s/app/graphqlapi/resolver"
@@ -2888,6 +2889,8 @@ const maxGraphQLAPIVariableCollectionItems = 256
 const maxGraphQLAPIVariableStringBytes = 4096
 const maxGraphQLAPITokenMultiplier = 20
 const maxGraphQLAPIComplexity = 1000
+const maxGraphQLAPIDepth = 10
+const maxGraphQLAPIAliases = 25
 
 type graphQLAPIRoleRow struct {
 	Slug    string
@@ -3251,6 +3254,10 @@ func validateGraphQLAPIRequestEnvelope(w http.ResponseWriter, raw map[string]any
 		writeGraphQLAPIHTTPError(w, "GraphQL introspection is disabled", "BAD_USER_INPUT")
 		return false
 	}
+	if err := validateGraphQLAPIQueryShape(query); err != nil {
+		writeGraphQLAPIHTTPError(w, err.Error(), "BAD_USER_INPUT")
+		return false
+	}
 	if operationName, ok := raw["operationName"]; ok {
 		name, ok := operationName.(string)
 		if operationName != nil && !ok {
@@ -3310,6 +3317,88 @@ func validateGraphQLAPIRequestEnvelopeFields(w http.ResponseWriter, raw map[stri
 
 func graphQLAPIQueryRequestsIntrospection(query string) bool {
 	return strings.Contains(query, "__schema") || strings.Contains(query, "__type")
+}
+
+type graphQLAPIQueryShape struct {
+	Depth   int
+	Aliases int
+}
+
+func validateGraphQLAPIQueryShape(query string) error {
+	doc, err := parser.ParseQuery(&ast.Source{Input: query})
+	if err != nil {
+		return graphQLAPICodedError("invalid GraphQL query", "BAD_USER_INPUT")
+	}
+	fragments := map[string]*ast.FragmentDefinition{}
+	for _, fragment := range doc.Fragments {
+		if fragment != nil {
+			fragments[fragment.Name] = fragment
+		}
+	}
+	seenFragments := map[string]bool{}
+	shape := graphQLAPIQueryShape{}
+	for _, operation := range doc.Operations {
+		if operation == nil {
+			continue
+		}
+		operationShape := graphQLAPISelectionShape(operation.SelectionSet, fragments, seenFragments, 1)
+		if operationShape.Depth > shape.Depth {
+			shape.Depth = operationShape.Depth
+		}
+		shape.Aliases += operationShape.Aliases
+	}
+	if shape.Depth > maxGraphQLAPIDepth {
+		return graphQLAPICodedError("GraphQL query depth exceeds safety limit", "BAD_USER_INPUT")
+	}
+	if shape.Aliases > maxGraphQLAPIAliases {
+		return graphQLAPICodedError("GraphQL query aliases exceed safety limit", "BAD_USER_INPUT")
+	}
+	return nil
+}
+
+func graphQLAPISelectionShape(selections ast.SelectionSet, fragments map[string]*ast.FragmentDefinition, seenFragments map[string]bool, depth int) graphQLAPIQueryShape {
+	shape := graphQLAPIQueryShape{Depth: depth}
+	for _, selection := range selections {
+		switch sel := selection.(type) {
+		case *ast.Field:
+			if sel == nil {
+				continue
+			}
+			if sel.Alias != "" && sel.Alias != sel.Name {
+				shape.Aliases++
+			}
+			child := graphQLAPISelectionShape(sel.SelectionSet, fragments, seenFragments, depth+1)
+			if child.Depth > shape.Depth {
+				shape.Depth = child.Depth
+			}
+			shape.Aliases += child.Aliases
+		case *ast.InlineFragment:
+			if sel == nil {
+				continue
+			}
+			child := graphQLAPISelectionShape(sel.SelectionSet, fragments, seenFragments, depth)
+			if child.Depth > shape.Depth {
+				shape.Depth = child.Depth
+			}
+			shape.Aliases += child.Aliases
+		case *ast.FragmentSpread:
+			if sel == nil || seenFragments[sel.Name] {
+				continue
+			}
+			fragment := fragments[sel.Name]
+			if fragment == nil {
+				continue
+			}
+			seenFragments[sel.Name] = true
+			child := graphQLAPISelectionShape(fragment.SelectionSet, fragments, seenFragments, depth)
+			delete(seenFragments, sel.Name)
+			if child.Depth > shape.Depth {
+				shape.Depth = child.Depth
+			}
+			shape.Aliases += child.Aliases
+		}
+	}
+	return shape
 }
 
 func validateGraphQLAPIVariables(variables map[string]any) error {

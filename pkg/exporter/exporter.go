@@ -5448,6 +5448,7 @@ func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL, hasSchedule
 		b.WriteString("\tmux.Handle(\"/graphql\", graphqlapi.Handler())\n")
 		b.WriteString("\tmux.Handle(\"/graphql/playground\", graphqlapi.PlaygroundHandler(\"/graphql\"))\n")
 	}
+	b.WriteString("\tmux.HandleFunc(\"/\", exportedNotFound)\n")
 	b.WriteString("\taddr := \":\" + config.App.Port\n")
 	b.WriteString("\tlog.Printf(\"listening on %s\", addr)\n")
 	b.WriteString("\tserver := &http.Server{\n")
@@ -5463,6 +5464,7 @@ func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL, hasSchedule
 	b.WriteString("\t\tlog.Fatal(\"server failed\")\n")
 	b.WriteString("\t}\n")
 	b.WriteString("}\n")
+	writeExportedNotFoundFunc(&b)
 	return format.Source([]byte(b.String()))
 }
 
@@ -5517,6 +5519,7 @@ func (e *exporter) generateMultiServiceServerMain(hasDatabaseConfig, hasSchedule
 		stripPrefix := strings.TrimSuffix(prefix, "/")
 		b.WriteString(fmt.Sprintf("\tmux.Handle(%q, http.StripPrefix(%q, %sRoutes.API))\n", prefix, stripPrefix, safeImportAlias(svc.Name)))
 	}
+	b.WriteString("\tmux.HandleFunc(\"/\", exportedNotFound)\n")
 	b.WriteString("\taddr := \":\" + config.App.Port\n")
 	b.WriteString("\tlog.Printf(\"listening on %s\", addr)\n")
 	b.WriteString("\tserver := &http.Server{\n")
@@ -5532,7 +5535,21 @@ func (e *exporter) generateMultiServiceServerMain(hasDatabaseConfig, hasSchedule
 	b.WriteString("\t\tlog.Fatal(\"server failed\")\n")
 	b.WriteString("\t}\n")
 	b.WriteString("}\n")
+	writeExportedNotFoundFunc(&b)
 	return format.Source([]byte(b.String()))
+}
+
+func writeExportedNotFoundFunc(b *strings.Builder) {
+	b.WriteString(`
+
+func exportedNotFound(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte(` + "`" + `{"error":"not found"}
+` + "`" + `))
+}
+`)
 }
 
 func safeImportAlias(name string) string {

@@ -4206,6 +4206,8 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), `graphQLAPIBadInput("invalid GraphQL timestamp filter")`)
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `mux.Handle("/graphql", graphqlapi.Handler())`)
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "routes.API.RegisterRoutes(mux)")
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `mux.HandleFunc("/", exportedNotFound)`)
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "func exportedNotFound")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "gqlgen-backed GraphQL API export target")
 	assertFileNotContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Generated GraphQL package")
 	assertCleanExportReport(t, out)
@@ -4489,6 +4491,8 @@ func TestExportMonorepoCompiles(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "workerRoutes")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "apiRoutes.API.RegisterRoutes(mux)")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `http.StripPrefix("/worker", workerRoutes.API)`)
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `mux.HandleFunc("/", exportedNotFound)`)
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "func exportedNotFound")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "ReadHeaderTimeout: 10 * time.Second")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "ReadTimeout:       30 * time.Second")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "WriteTimeout:      60 * time.Second")
@@ -4524,6 +4528,7 @@ func TestExportedMultiServiceServerMountsServiceLocalRoutes(t *testing.T) {
 	mux := http.NewServeMux()
 	apiRoutes.API.RegisterRoutes(mux)
 	mux.Handle("/worker/", http.StripPrefix("/worker", workerRoutes.API))
+	mux.HandleFunc("/", exportedNotFound)
 
 	apiRec := httptest.NewRecorder()
 	mux.ServeHTTP(apiRec, httptest.NewRequest(http.MethodGet, "/api/orders", nil))
@@ -4535,6 +4540,18 @@ func TestExportedMultiServiceServerMountsServiceLocalRoutes(t *testing.T) {
 	mux.ServeHTTP(workerRec, httptest.NewRequest(http.MethodGet, "/worker/api/jobs", nil))
 	if workerRec.Code != http.StatusUnauthorized {
 		t.Fatalf("worker service status = %d body=%s", workerRec.Code, workerRec.Body.String())
+	}
+
+	missingRec := httptest.NewRecorder()
+	mux.ServeHTTP(missingRec, httptest.NewRequest(http.MethodGet, "/pickle/health", nil))
+	if missingRec.Code != http.StatusNotFound {
+		t.Fatalf("missing route status = %d body=%s", missingRec.Code, missingRec.Body.String())
+	}
+	if got := missingRec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("missing route Content-Type = %q, want application/json", got)
+	}
+	if got := missingRec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("missing route X-Content-Type-Options = %q, want nosniff", got)
 	}
 }
 `

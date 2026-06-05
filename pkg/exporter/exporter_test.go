@@ -2023,7 +2023,9 @@ func writeExportedRouterMiddlewareBehaviorTest(t *testing.T, out string) {
 
 import (
 	"bytes"
+	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -2032,6 +2034,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 
 	"basic-crud/internal/httpx"
 )
@@ -2291,10 +2294,21 @@ func TestExportedContextResourceHelpersPropagateOwner(t *testing.T) {
 		t.Fatalf("resources owner = %q", list.ownerID)
 	}
 
-	missing := &resourceQuery{err: errors.New("sql: no rows in result set")}
-	resp = ctx.Resource(missing)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("missing resource status = %d", resp.StatusCode)
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "sql err no rows", err: sql.ErrNoRows},
+		{name: "wrapped sql err no rows", err: fmt.Errorf("lookup failed: %w", sql.ErrNoRows)},
+		{name: "gorm record not found", err: gorm.ErrRecordNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			missing := &resourceQuery{err: tc.err}
+			resp = ctx.Resource(missing)
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("missing resource status = %d", resp.StatusCode)
+			}
+		})
 	}
 
 	failing := &resourceQuery{err: errors.New("database password is swordfish")}

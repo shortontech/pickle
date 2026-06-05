@@ -7289,7 +7289,9 @@ func shouldInsertSnakeBoundary(runes []rune, i int) bool {
 const httpxSource = `package httpx
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -7304,6 +7306,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 type Controller struct{}
@@ -7340,7 +7343,8 @@ func (c *Context) NoContent() Response { return Response{Status: 204, StatusCode
 
 type ResourceQuery interface { FetchResource(ownerID string) (any, error) }
 type ResourceListQuery interface { FetchResources(ownerID string) (any, error) }
-func (c *Context) Resource(q ResourceQuery) Response { ownerID := ""; if c.auth != nil { ownerID = c.auth.UserID }; result, err := q.FetchResource(ownerID); if err != nil { if err.Error() == "sql: no rows in result set" { return c.NotFound("not found") }; return c.Error(err) }; return c.JSON(http.StatusOK, result) }
+func isResourceNotFound(err error) bool { return errors.Is(err, sql.ErrNoRows) || errors.Is(err, gorm.ErrRecordNotFound) }
+func (c *Context) Resource(q ResourceQuery) Response { ownerID := ""; if c.auth != nil { ownerID = c.auth.UserID }; result, err := q.FetchResource(ownerID); if err != nil { if isResourceNotFound(err) { return c.NotFound("not found") }; return c.Error(err) }; return c.JSON(http.StatusOK, result) }
 func (c *Context) Resources(q ResourceListQuery) Response { ownerID := ""; if c.auth != nil { ownerID = c.auth.UserID }; result, err := q.FetchResources(ownerID); if err != nil { return c.Error(err) }; return c.JSON(http.StatusOK, result) }
 
 func (r Response) WithCookie(cookie *http.Cookie) Response { r.Cookies = append(r.Cookies, cookie); return r }

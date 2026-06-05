@@ -233,6 +233,7 @@ func writeExportedAuthBehaviorTest(t *testing.T, out string) {
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -334,11 +335,21 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validate jwt: %v", err)
 	}
+	_, err = jwtDriver.ValidateToken("not-a-jwt")
+	assertInvalidJWT(t, err)
+	expiredToken, err := jwtDriver.SignToken(jwt.Claims{Subject: "user-expired", Role: "admin", ExpiresAt: time.Now().Add(-time.Hour).Unix()})
+	if err != nil {
+		t.Fatalf("sign expired jwt: %v", err)
+	}
+	_, err = jwtDriver.ValidateToken(expiredToken)
+	assertInvalidJWT(t, err)
 	if err := jwtDriver.RevokeToken(claims.JTI); err != nil {
 		t.Fatalf("revoke jwt: %v", err)
 	}
 	if _, err := jwtDriver.Authenticate(req); err == nil {
 		t.Fatal("revoked jwt should fail validation")
+	} else if !errors.Is(err, jwt.ErrInvalidToken) {
+		t.Fatalf("revoked jwt error = %v, want ErrInvalidToken", err)
 	}
 	token, err = jwtDriver.SignToken(jwt.Claims{Subject: "user-1", Role: "admin"})
 	if err != nil {
@@ -353,6 +364,8 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	}
 	if _, err := jwtDriver.Authenticate(req); err == nil {
 		t.Fatal("user-wide revoked jwt should fail validation")
+	} else if !errors.Is(err, jwt.ErrInvalidToken) {
+		t.Fatalf("user-wide revoked jwt error = %v, want ErrInvalidToken", err)
 	}
 	token, err = jwtDriver.SignToken(jwt.Claims{Subject: "user-1", Role: "admin"})
 	if err != nil {
@@ -364,6 +377,8 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	}
 	if _, err := jwtDriver.Authenticate(req); err == nil {
 		t.Fatal("revoked jwt should fail allowlist validation")
+	} else if !errors.Is(err, jwt.ErrInvalidToken) {
+		t.Fatalf("missing allowlist jwt error = %v, want ErrInvalidToken", err)
 	}
 
 	oauthDriver := auth.Driver("oauth").(*oauth.Driver)
@@ -544,6 +559,13 @@ func assertPanicsWith(t *testing.T, want string, fn func()) {
 		}
 	}()
 	fn()
+}
+
+func assertInvalidJWT(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, jwt.ErrInvalidToken) {
+		t.Fatalf("jwt error = %v, want ErrInvalidToken", err)
+	}
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "http", "auth", "exported_auth_test.go"), []byte(testSrc), 0o644); err != nil {

@@ -3001,6 +3001,27 @@ func TestExportedContextHelpersHandleNilRequest(t *testing.T) {
 	if _, err := nilCtx.Cookie("session_id"); err != http.ErrNoCookie {
 		t.Fatalf("Cookie on nil context err = %v, want http.ErrNoCookie", err)
 	}
+	if nilCtx.Request() != nil {
+		t.Fatal("Request on nil context should return nil")
+	}
+	if nilCtx.ResponseWriter() != nil {
+		t.Fatal("ResponseWriter on nil context should return nil")
+	}
+	if nilCtx.Auth().UserID != "" {
+		t.Fatalf("Auth on nil context = %#v, want empty auth info", nilCtx.Auth())
+	}
+	if nilCtx.IsAuthenticated() {
+		t.Fatal("nil context should not be authenticated")
+	}
+	if got := nilCtx.Role(); got != "" {
+		t.Fatalf("Role on nil context = %q, want empty", got)
+	}
+	if got := nilCtx.Roles(); got != nil {
+		t.Fatalf("Roles on nil context = %#v, want nil", got)
+	}
+	if nilCtx.HasRole("admin") || nilCtx.HasAnyRole("admin", "editor") || nilCtx.IsAdmin() {
+		t.Fatal("nil context role checks should fail closed")
+	}
 }
 
 func TestExportedRateLimitEventsHandleNilRequestContext(t *testing.T) {
@@ -3024,6 +3045,45 @@ func TestExportedRateLimitEventsHandleNilRequestContext(t *testing.T) {
 	}
 	if events[0].Path != "" || events[0].Key != "" {
 		t.Fatalf("nil request event = %#v, want empty path and key", events[0])
+	}
+
+	events = nil
+	nilContextLimiter := RateLimit(1, 1)
+	resp = nilContextLimiter(nil, func() Response {
+		return Response{StatusCode: http.StatusAccepted}
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("nil context rate limit response status = %d", resp.StatusCode)
+	}
+	if len(events) != 1 {
+		t.Fatalf("nil context rate limit events = %d, want 1", len(events))
+	}
+	if events[0].Path != "" || events[0].Key != "" {
+		t.Fatalf("nil context event = %#v, want empty path and key", events[0])
+	}
+}
+
+func TestExportedAuthRateLimitHandlesNilContext(t *testing.T) {
+	resetTrustedProxyStateForTest()
+	previous := rateLimitCallback
+	defer func() { rateLimitCallback = previous }()
+
+	var events []RateLimitEvent
+	rateLimitCallback = func(ctx *Context, event RateLimitEvent) {
+		events = append(events, event)
+	}
+	limiter := AuthRateLimit().RPS(1).Burst(1)
+	resp := limiter.Middleware()(nil, func() Response {
+		return Response{StatusCode: http.StatusNoContent}
+	})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("auth rate limit response status = %d", resp.StatusCode)
+	}
+	if len(events) != 1 {
+		t.Fatalf("auth rate limit events = %d, want 1", len(events))
+	}
+	if events[0].Layer != "auth" || events[0].Path != "" || events[0].Key != "" {
+		t.Fatalf("nil context auth rate limit event = %#v", events[0])
 	}
 }
 

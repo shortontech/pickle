@@ -6627,8 +6627,8 @@ type RoleInfo struct { Slug string; Manages bool }
 type Context struct { request *http.Request; response http.ResponseWriter; auth *AuthInfo; params map[string]string; roles []string; rolesLoaded bool; isAdmin bool }
 
 func NewContext(r *http.Request) *Context { return &Context{request: r, params: map[string]string{}} }
-func (c *Context) Request() *http.Request { return c.request }
-func (c *Context) ResponseWriter() http.ResponseWriter { return c.response }
+func (c *Context) Request() *http.Request { if c == nil { return nil }; return c.request }
+func (c *Context) ResponseWriter() http.ResponseWriter { if c == nil { return nil }; return c.response }
 func (c *Context) Param(name string) string { value, ok := c.params[name]; if !ok { panic("pickle: ctx.Param(\"" + name + "\") - no such route parameter") }; return value }
 func (c *Context) SetParam(name, value string) { c.params[name] = value }
 func (c *Context) ParamUUID(name string) (uuid.UUID, error) { value, err := uuid.Parse(c.Param(name)); if err != nil { return uuid.Nil, fmt.Errorf("invalid uuid parameter") }; return value, nil }
@@ -6636,15 +6636,15 @@ func (c *Context) Cookie(name string) (string, error) { if c == nil || c.request
 func (c *Context) Query(name string) string { if c == nil || c.request == nil || c.request.URL == nil { return "" }; return c.request.URL.Query().Get(name) }
 func (c *Context) BearerToken() string { if c == nil || c.request == nil { return "" }; h := c.request.Header.Get("Authorization"); parts := strings.Fields(h); if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") { return parts[1] }; return "" }
 func (c *Context) ClientIP() string { if c == nil || c.request == nil { return "" }; return clientIP(c.request) }
-func (c *Context) Auth() *AuthInfo { if c.auth == nil { return &AuthInfo{} }; return c.auth }
+func (c *Context) Auth() *AuthInfo { if c == nil || c.auth == nil { return &AuthInfo{} }; return c.auth }
 func (c *Context) SetAuth(claims any) { switch v := claims.(type) { case *AuthInfo: c.auth = v; default: panic(fmt.Sprintf("pickle: SetAuth() requires *AuthInfo, got %T", claims)) } }
-func (c *Context) IsAuthenticated() bool { return c.auth != nil && c.auth.UserID != "" }
+func (c *Context) IsAuthenticated() bool { return c != nil && c.auth != nil && c.auth.UserID != "" }
 func (c *Context) SetRoles(roles []RoleInfo) { c.rolesLoaded = true; c.roles = make([]string, len(roles)); c.isAdmin = false; for i, role := range roles { c.roles[i] = role.Slug; if role.Manages { c.isAdmin = true } } }
-func (c *Context) Role() string { if len(c.roles) > 0 { return c.roles[0] }; if !c.rolesLoaded && c.auth != nil { return c.auth.Role }; return "" }
-func (c *Context) Roles() []string { roles := append([]string{}, c.roles...); if !c.rolesLoaded && len(roles) == 0 && c.auth != nil && c.auth.Role != "" { roles = append(roles, c.auth.Role) }; return roles }
-func (c *Context) HasRole(slug string) bool { for _, role := range c.roles { if role == slug { return true } }; return !c.rolesLoaded && c.auth != nil && c.auth.Role == slug }
+func (c *Context) Role() string { if c == nil { return "" }; if len(c.roles) > 0 { return c.roles[0] }; if !c.rolesLoaded && c.auth != nil { return c.auth.Role }; return "" }
+func (c *Context) Roles() []string { if c == nil { return nil }; roles := append([]string{}, c.roles...); if !c.rolesLoaded && len(roles) == 0 && c.auth != nil && c.auth.Role != "" { roles = append(roles, c.auth.Role) }; return roles }
+func (c *Context) HasRole(slug string) bool { if c == nil { return false }; for _, role := range c.roles { if role == slug { return true } }; return !c.rolesLoaded && c.auth != nil && c.auth.Role == slug }
 func (c *Context) HasAnyRole(roles ...string) bool { for _, role := range roles { if c.HasRole(role) { return true } }; return false }
-func (c *Context) IsAdmin() bool { return c.isAdmin || (!c.rolesLoaded && c.auth != nil && c.auth.Role == "admin") }
+func (c *Context) IsAdmin() bool { return c != nil && (c.isAdmin || (!c.rolesLoaded && c.auth != nil && c.auth.Role == "admin")) }
 func (c *Context) JSON(status int, body any) Response { return Response{Status: status, StatusCode: status, Body: body} }
 func (c *Context) Error(err error) Response { if err != nil { log.Printf("http error") }; return c.JSON(500, map[string]string{"error": "internal server error"}) }
 func (c *Context) BadRequest(msg string) Response { return c.JSON(400, map[string]string{"error": msg}) }
@@ -6828,7 +6828,7 @@ func (c *AuthRateLimitConfig) Tiers(tiers map[string]RateTier) *AuthRateLimitCon
 func (c *AuthRateLimitConfig) Middleware() MiddlewareFunc {
 	return func(ctx *Context, next func() Response) Response {
 		key := ""
-		if ctx.auth != nil { key = ctx.auth.UserID }
+		if ctx.Auth().UserID != "" { key = ctx.Auth().UserID }
 		if key == "" && c.keyFunc != nil { key = c.keyFunc(ctx) }
 		if key == "" { key = clientIP(ctx.Request()) }
 		rps, burst := c.rps, c.burst

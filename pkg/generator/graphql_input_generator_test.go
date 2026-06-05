@@ -90,6 +90,27 @@ func TestEnumFieldMap(t *testing.T) {
 	}
 }
 
+func TestBuildSDLWithReadOnlyPlansOmitsEmptyMutationRoot(t *testing.T) {
+	users := &schema.Table{Name: "users"}
+	users.UUID("id").PrimaryKey().Public()
+	users.String("name", 255).NotNull().Public()
+
+	sdl := BuildSDLWithPlans([]GraphQLModelPlan{{
+		Table:      users,
+		Operations: map[string]bool{"list": true, "show": true},
+	}}, nil, nil)
+
+	if strings.Contains(sdl, "type Mutation {\n}") {
+		t.Fatalf("read-only plans should not emit an empty mutation root:\n%s", sdl)
+	}
+	if strings.Contains(sdl, "type Mutation") {
+		t.Fatalf("read-only plans should not emit a mutation root:\n%s", sdl)
+	}
+	if !strings.Contains(sdl, "type Query") {
+		t.Fatalf("expected query root:\n%s", sdl)
+	}
+}
+
 func TestGraphQLTypesWithValidation(t *testing.T) {
 	tables := []*schema.Table{
 		{

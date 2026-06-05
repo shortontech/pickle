@@ -782,8 +782,9 @@ func queryDepth(fields []Field) int {
 // --- Introspection Control ---
 
 // allowIntrospection controls whether __schema and __type queries are allowed.
-// Set to false in production to prevent schema leakage.
-var allowIntrospection = true
+// Disabled by default to prevent schema leakage in production. Enable
+// explicitly in local tooling with SetIntrospection(true).
+var allowIntrospection = false
 
 // SetIntrospection enables or disables GraphQL introspection queries.
 func SetIntrospection(allow bool) {

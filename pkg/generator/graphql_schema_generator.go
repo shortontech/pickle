@@ -325,7 +325,7 @@ func writeMutationType(b *strings.Builder, tables []*schema.Table) {
 }
 
 func writeMutationTypeWithPlans(b *strings.Builder, plans []GraphQLModelPlan) {
-	b.WriteString("type Mutation {\n")
+	var fields strings.Builder
 	for _, plan := range plans {
 		tbl := plan.Table
 		if tbl == nil {
@@ -335,16 +335,21 @@ func writeMutationTypeWithPlans(b *strings.Builder, plans []GraphQLModelPlan) {
 
 		if !tbl.IsImmutable {
 			if operationAllowed(plan, "create") {
-				b.WriteString(fmt.Sprintf("  create%s(input: Create%sInput!): %s! @auth\n", structName, structName, structName))
+				fields.WriteString(fmt.Sprintf("  create%s(input: Create%sInput!): %s! @auth\n", structName, structName, structName))
 			}
 			if operationAllowed(plan, "update") && !tbl.IsAppendOnly {
-				b.WriteString(fmt.Sprintf("  update%s(id: ID!, input: Update%sInput!): %s! @auth\n", structName, structName, structName))
+				fields.WriteString(fmt.Sprintf("  update%s(id: ID!, input: Update%sInput!): %s! @auth\n", structName, structName, structName))
 			}
 			if operationAllowed(plan, "delete") {
-				b.WriteString(fmt.Sprintf("  delete%s(id: ID!): Boolean! @auth\n", structName))
+				fields.WriteString(fmt.Sprintf("  delete%s(id: ID!): Boolean! @auth\n", structName))
 			}
 		}
 	}
+	if fields.Len() == 0 {
+		return
+	}
+	b.WriteString("type Mutation {\n")
+	b.WriteString(fields.String())
 	b.WriteString("}\n\n")
 }
 
@@ -360,7 +365,7 @@ func writeMutationTypeWithNestingAndPlans(b *strings.Builder, plans []GraphQLMod
 		childToParent[rel.ChildTable] = rel
 	}
 
-	b.WriteString("type Mutation {\n")
+	var fields strings.Builder
 	for _, plan := range plans {
 		tbl := plan.Table
 		if tbl == nil {
@@ -370,13 +375,13 @@ func writeMutationTypeWithNestingAndPlans(b *strings.Builder, plans []GraphQLMod
 
 		if !tbl.IsImmutable {
 			if operationAllowed(plan, "create") {
-				b.WriteString(fmt.Sprintf("  create%s(input: Create%sInput!): %s! @auth\n", structName, structName, structName))
+				fields.WriteString(fmt.Sprintf("  create%s(input: Create%sInput!): %s! @auth\n", structName, structName, structName))
 			}
 			if operationAllowed(plan, "update") && !tbl.IsAppendOnly {
-				b.WriteString(fmt.Sprintf("  update%s(id: ID!, input: Update%sInput!): %s! @auth\n", structName, structName, structName))
+				fields.WriteString(fmt.Sprintf("  update%s(id: ID!, input: Update%sInput!): %s! @auth\n", structName, structName, structName))
 			}
 			if operationAllowed(plan, "delete") {
-				b.WriteString(fmt.Sprintf("  delete%s(id: ID!): Boolean! @auth\n", structName))
+				fields.WriteString(fmt.Sprintf("  delete%s(id: ID!): Boolean! @auth\n", structName))
 			}
 
 			// Nested create mutation if this table is a child
@@ -387,11 +392,16 @@ func writeMutationTypeWithNestingAndPlans(b *strings.Builder, plans []GraphQLMod
 				}
 				parentSingular := strings.TrimSuffix(rel.ParentTable, "s")
 				parentArgName := snakeToCamel(parentSingular) + "Id"
-				b.WriteString(fmt.Sprintf("  createNested%s(%s: ID!, input: Create%sInput!): %s! @auth\n",
+				fields.WriteString(fmt.Sprintf("  createNested%s(%s: ID!, input: Create%sInput!): %s! @auth\n",
 					structName, parentArgName, structName, structName))
 			}
 		}
 	}
+	if fields.Len() == 0 {
+		return
+	}
+	b.WriteString("type Mutation {\n")
+	b.WriteString(fields.String())
 	b.WriteString("}\n\n")
 }
 

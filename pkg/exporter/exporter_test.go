@@ -800,11 +800,149 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "schema_gen.go"), "type Query")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "pickle_gen.go"), "maxQueryComplexity")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "pickle_gen.go"), "var allowIntrospection = false")
 	assertFileContains(t, filepath.Join(out, "app", "models", "graphql_query_support.go"), "func (q *UserQuery) WhereID")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `mux.Handle("/graphql", graphql.Handler())`)
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "pickle.")
+	writeExportedGraphQLSafetyBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
+}
+
+func writeExportedGraphQLSafetyBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package graphql_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"graphql-safety/app/graphql"
+	"graphql-safety/app/models"
+)
+
+func TestExportedGraphQLSafetyCorpus(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	for _, stmt := range []string{
+		` + "`" + `CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL, password_hash TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
+		` + "`" + `CREATE TABLE posts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
+		` + "`" + `CREATE TABLE comments (id TEXT PRIMARY KEY, post_id TEXT NOT NULL, user_id TEXT NOT NULL, body TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
+	} {
+		if err := db.Exec(stmt).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC()
+	userID := uuid.New()
+	if err := db.Exec("INSERT INTO users (id, name, email, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", userID.String(), "Ada", "ada@example.com", "hash", now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name      string
+		query     string
+		wantError bool
+	}{
+		{"allowed", ` + "`" + `query AllowedUsers {
+  users(page: { first: 25 }) {
+    edges { node { id name } }
+    pageInfo { hasNextPage }
+  }
+}` + "`" + `, false},
+		{"huge_first", ` + "`" + `query HugeFirst {
+  users(page: { first: 101 }) { edges { node { id } } }
+}` + "`" + `, true},
+		{"introspection_disabled", ` + "`" + `query IntrospectionDisabled {
+  __schema { queryType { name } }
+}` + "`" + `, true},
+		{"multi_operation", ` + "`" + `query One { users { edges { node { id } } } }
+query Two { posts { edges { node { id } } } }` + "`" + `, true},
+		{"repeated_aliases", ` + "`" + `query RepeatedAliases {
+  a1: users { edges { node { id } } }
+  a2: users { edges { node { id } } }
+  a3: users { edges { node { id } } }
+  a4: users { edges { node { id } } }
+  a5: users { edges { node { id } } }
+  a6: users { edges { node { id } } }
+  a7: users { edges { node { id } } }
+  a8: users { edges { node { id } } }
+  a9: users { edges { node { id } } }
+  a10: users { edges { node { id } } }
+  a11: users { edges { node { id } } }
+  a12: users { edges { node { id } } }
+  a13: users { edges { node { id } } }
+  a14: users { edges { node { id } } }
+  a15: users { edges { node { id } } }
+  a16: users { edges { node { id } } }
+  a17: users { edges { node { id } } }
+  a18: users { edges { node { id } } }
+  a19: users { edges { node { id } } }
+  a20: users { edges { node { id } } }
+  a21: users { edges { node { id } } }
+  a22: users { edges { node { id } } }
+  a23: users { edges { node { id } } }
+  a24: users { edges { node { id } } }
+  a25: users { edges { node { id } } }
+  a26: users { edges { node { id } } }
+}` + "`" + `, true},
+		{"unexposed_create", ` + "`" + `mutation UnexposedCreate {
+  createUser(input: { name: "bad", email: "bad@example.com" }) { id }
+}` + "`" + `, true},
+		{"unexposed_delete", ` + "`" + `mutation UnexposedDelete {
+  deleteUser(id: "00000000-0000-0000-0000-000000000001")
+}` + "`" + `, true},
+		{"relationship_fanout", ` + "`" + `query RelationshipFanout {
+  users(page: { first: 100 }) {
+    edges { node { posts { comments { body } } } }
+  }
+}` + "`" + `, true},
+	}
+
+	handler := graphql.Handler()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{"query": tc.query})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			var resp struct {
+				Data   any              ` + "`" + `json:"data"` + "`" + `
+				Errors []map[string]any ` + "`" + `json:"errors"` + "`" + `
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode response: %v\n%s", err, rec.Body.String())
+			}
+			if tc.wantError && len(resp.Errors) == 0 {
+				t.Fatalf("expected GraphQL errors, got body %s", rec.Body.String())
+			}
+			if !tc.wantError && len(resp.Errors) != 0 {
+				t.Fatalf("unexpected GraphQL errors: %v\n%s", resp.Errors, rec.Body.String())
+			}
+		})
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "graphql", "exported_safety_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestExportMonorepoCompiles(t *testing.T) {

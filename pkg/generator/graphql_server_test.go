@@ -38,6 +38,13 @@ func TestHandlerGeneratorIncludesIntrospectionControl(t *testing.T) {
 	}
 }
 
+func TestCoreGraphQLDisablesIntrospectionByDefault(t *testing.T) {
+	src := GenerateCoreGraphQL("graphql")
+	if !strings.Contains(string(src), "var allowIntrospection = false") {
+		t.Error("introspection should be disabled by default")
+	}
+}
+
 func TestHandlerGeneratorIncludesValidation(t *testing.T) {
 	src, err := GenerateGraphQLHandler("graphql")
 	if err != nil {

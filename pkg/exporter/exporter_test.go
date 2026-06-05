@@ -523,6 +523,63 @@ func TestExportedAuthRateLimitProviderSupportsTiers(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(out, "internal", "httpx", "exported_router_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	proxyTestSrc := `package httpx
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"testing"
+)
+
+func TestExportedRateLimitIgnoresSpoofedProxyHeadersByDefault(t *testing.T) {
+	resetTrustedProxyStateForTest()
+	t.Setenv("TRUSTED_PROXIES", "")
+	limiter := RateLimit(1, 1)
+	handler := func() Response { return Response{StatusCode: http.StatusNoContent} }
+
+	first := NewContext(requestFrom("10.0.0.1:1234", "198.51.100.1"))
+	if resp := limiter(first, handler); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("first status = %d", resp.StatusCode)
+	}
+	second := NewContext(requestFrom("10.0.0.1:1234", "198.51.100.2"))
+	if resp := limiter(second, handler); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("spoofed X-Forwarded-For should still share the remote bucket, got %d", resp.StatusCode)
+	}
+}
+
+func TestExportedRateLimitHonorsTrustedProxyHeaders(t *testing.T) {
+	resetTrustedProxyStateForTest()
+	t.Setenv("TRUSTED_PROXIES", "10.0.0.0/8")
+	limiter := RateLimit(1, 1)
+	handler := func() Response { return Response{StatusCode: http.StatusNoContent} }
+
+	first := NewContext(requestFrom("10.0.0.1:1234", "198.51.100.1"))
+	if resp := limiter(first, handler); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("first status = %d", resp.StatusCode)
+	}
+	second := NewContext(requestFrom("10.0.0.1:1234", "198.51.100.2"))
+	if resp := limiter(second, handler); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("trusted proxy should key by client IP, got %d", resp.StatusCode)
+	}
+}
+
+func requestFrom(remote, xff string) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = remote
+	req.Header.Set("X-Forwarded-For", xff)
+	return req
+}
+
+func resetTrustedProxyStateForTest() {
+	trustedProxies = nil
+	trustedProxiesAll = false
+	trustedProxiesOnce = sync.Once{}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "internal", "httpx", "exported_proxy_test.go"), []byte(proxyTestSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeExportedRBACMiddlewareBehaviorTest(t *testing.T, out string) {

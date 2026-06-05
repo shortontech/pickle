@@ -4078,6 +4078,9 @@ func (s *rateLimiterStore) cleanup() { cutoff := time.Now().Add(-10 * time.Minut
 
 var globalLimiterOnce sync.Once
 var globalLimiter *rateLimiterStore
+var trustedProxies []net.IPNet
+var trustedProxiesAll bool
+var trustedProxiesOnce sync.Once
 
 func checkRateLimit(r *http.Request) (*Response, map[string]string) {
 	globalLimiterOnce.Do(func() {
@@ -4140,7 +4143,11 @@ func bucketRemaining(bucket *rateBucket) float64 { if bucket == nil { return 0 }
 func rateLimitExceeded(bucket *rateBucket, rps float64, burst int) *Response { resp := Response{StatusCode: http.StatusTooManyRequests, Body: map[string]string{"error": "rate limit exceeded"}, Headers: map[string]string{"Content-Type": "application/json", "Retry-After": strconv.Itoa(bucket.retryAfter(rps))}}; for k, v := range rateLimitHeaders(rps, burst, 0) { resp.Headers[k] = v }; return &resp }
 func rateLimitHeaders(rps float64, burst int, remaining float64) map[string]string { if remaining < 0 { remaining = 0 }; reset := time.Now(); if rps > 0 { deficit := float64(burst) - remaining; if deficit > 0 { reset = reset.Add(time.Duration((deficit / rps) * float64(time.Second))) } }; return map[string]string{"X-RateLimit-Limit": strconv.Itoa(int(rps)), "X-RateLimit-Remaining": strconv.Itoa(int(remaining)), "X-RateLimit-Reset": strconv.FormatInt(reset.Unix(), 10)} }
 func env(key, fallback string) string { if value := os.Getenv(key); value != "" { return value }; return fallback }
-func clientIP(r *http.Request) string { if xff := r.Header.Get("X-Forwarded-For"); xff != "" { parts := strings.Split(xff, ","); return strings.TrimSpace(parts[0]) }; if xri := r.Header.Get("X-Real-IP"); xri != "" { return xri }; if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil { return host }; return r.RemoteAddr }
+func initTrustedProxies() { trustedProxiesOnce.Do(func() { raw := strings.TrimSpace(env("TRUSTED_PROXIES", "")); if raw == "" { return }; if raw == "all" { trustedProxiesAll = true; return }; for _, entry := range strings.Split(raw, ",") { entry = strings.TrimSpace(entry); if entry == "" { continue }; if !strings.Contains(entry, "/") { ip := net.ParseIP(entry); if ip == nil { continue }; if ip.To4() != nil { entry += "/32" } else { entry += "/128" } }; _, cidr, err := net.ParseCIDR(entry); if err == nil { trustedProxies = append(trustedProxies, *cidr) } } }) }
+func proxyHeadersTrusted(remote string) bool { initTrustedProxies(); if trustedProxiesAll { return true }; ip := net.ParseIP(remote); if ip == nil { return false }; for _, cidr := range trustedProxies { if cidr.Contains(ip) { return true } }; return false }
+func firstUntrustedIP(xff string) string { parts := strings.Split(xff, ","); for i := len(parts) - 1; i >= 0; i-- { ip := strings.TrimSpace(parts[i]); if ip != "" && !proxyHeadersTrusted(ip) { return ip } }; return strings.TrimSpace(parts[0]) }
+func stripPort(addr string) string { if host, _, err := net.SplitHostPort(addr); err == nil { return host }; return addr }
+func clientIP(r *http.Request) string { remote := stripPort(r.RemoteAddr); if !proxyHeadersTrusted(remote) { return remote }; if xff := r.Header.Get("X-Forwarded-For"); xff != "" { return firstUntrustedIP(xff) }; if xri := r.Header.Get("X-Real-IP"); xri != "" { return strings.TrimSpace(xri) }; return remote }
 `
 
 const rbacMiddlewareSupportSource = `package middleware

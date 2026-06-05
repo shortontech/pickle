@@ -6033,10 +6033,8 @@ func Init(env func(string, string) string, db *sql.DB) {
 		"oauth": func() AuthDriver { return oauth.NewDriver(envFunc, db, driver) },
 		"session": func() AuthDriver { return session.NewDriver(envFunc, db, driver) },
 	}
-	if _, ok := factories[activeDriverName()]; ok {
-		if _, err := TryActiveDriver(); err != nil {
-			panic("auth: active driver initialization failed")
-		}
+	if _, err := TryActiveDriver(); err != nil {
+		panic("auth: active driver initialization failed")
 	}
 }
 

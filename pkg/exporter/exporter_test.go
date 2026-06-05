@@ -564,7 +564,9 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 		}
 		return env(key, fallback)
 	}
-	auth.Init(badEnv, db)
+	assertSanitizedAuthInitPanic(t, "bogus", func() {
+		auth.Init(badEnv, db)
+	})
 	if _, err := auth.TryActiveDriver(); err == nil {
 		t.Fatal("TryActiveDriver should reject unknown AUTH_DRIVER")
 	}
@@ -688,6 +690,24 @@ func TestExportedAuthInitSanitizesActiveDriverFailures(t *testing.T) {
 			return fallback
 		}
 	}, db)
+}
+
+func assertSanitizedAuthInitPanic(t *testing.T, forbidden string, fn func()) {
+	t.Helper()
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			t.Fatal("auth.Init should panic for invalid active auth driver")
+		}
+		msg := fmt.Sprint(recovered)
+		if msg != "auth: active driver initialization failed" {
+			t.Fatalf("panic = %q, want sanitized active-driver failure", msg)
+		}
+		if forbidden != "" && strings.Contains(msg, forbidden) {
+			t.Fatalf("active-driver panic leaked detail %q in %q", forbidden, msg)
+		}
+	}()
+	fn()
 }
 
 func assertPanicsWith(t *testing.T, want string, fn func()) {

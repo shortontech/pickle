@@ -506,6 +506,31 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	if resp.Status != 401 {
 		t.Fatalf("middleware status = %d, want 401", resp.Status)
 	}
+	body, ok := resp.Body.(map[string]string)
+	if !ok {
+		t.Fatalf("middleware body type = %T", resp.Body)
+	}
+	if body["error"] != "unauthorized" || strings.Contains(body["error"], "bogus") {
+		t.Fatalf("middleware error body = %#v, want sanitized unauthorized", body)
+	}
+
+	auth.Init(env, db)
+	token, err = jwtDriver.SignToken(jwt.Claims{Subject: "user-4", Role: "editor"})
+	if err != nil {
+		t.Fatalf("sign jwt for middleware: %v", err)
+	}
+	okReq, _ := http.NewRequest("GET", "/", nil)
+	okReq.Header.Set("Authorization", "Bearer "+token)
+	okCtx := httpx.NewContext(okReq)
+	okResp := auth.DefaultAuthMiddleware(okCtx, func() httpx.Response {
+		if okCtx.Auth() == nil || okCtx.Auth().UserID != "user-4" || okCtx.Auth().Role != "editor" {
+			t.Fatalf("middleware auth info = %#v", okCtx.Auth())
+		}
+		return okCtx.NoContent()
+	})
+	if okResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("successful middleware status = %d, want %d", okResp.StatusCode, http.StatusNoContent)
+	}
 }
 
 func TestExportedAuthInitOnlyRequiresActiveDriverConfig(t *testing.T) {

@@ -4630,6 +4630,52 @@ func TestExportedEncryptedFilterErrorsAreSanitized(t *testing.T) {
 	}
 }
 
+func TestExportedEncryptedColumnsFailClosedWithoutValidKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  string
+	}{
+		{name: "missing", key: ""},
+		{name: "too short", key: "short-secret-key"},
+		{name: "bad base64 length", key: base64.StdEncoding.EncodeToString([]byte("too-short"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("APP_ENCRYPTION_KEY", tc.key)
+			db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			models.SetDB(db)
+			if err := db.AutoMigrate(&models.User{}); err != nil {
+				t.Fatal(err)
+			}
+			user := &models.User{
+				ID:         uuid.New(),
+				Name:       "Ada",
+				Email:      "ada@example.com",
+				ApiKey:     "api-secret",
+				PrivateKey: "private-secret",
+			}
+			err = db.Create(user).Error
+			if err == nil {
+				t.Fatal("create with invalid encryption key should fail")
+			}
+			for _, leak := range []string{tc.key, "ada@example.com", "api-secret", "private-secret"} {
+				if leak != "" && strings.Contains(err.Error(), leak) {
+					t.Fatalf("invalid key error leaked %q: %v", leak, err)
+				}
+			}
+			var rows int64
+			if err := db.Model(&models.User{}).Count(&rows).Error; err != nil {
+				t.Fatal(err)
+			}
+			if rows != 0 {
+				t.Fatalf("rows after invalid encryption key create = %d, want 0", rows)
+			}
+		})
+	}
+}
+
 type secretFilterValue struct{}
 	`
 	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_encryption_test.go"), []byte(testSrc), 0o644); err != nil {

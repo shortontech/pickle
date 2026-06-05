@@ -5634,7 +5634,7 @@ type Controller struct{}
 type Response struct { Status int; StatusCode int; Body any; Headers map[string]string; Cookies []*http.Cookie }
 type AuthInfo struct { UserID string; Role string; Claims any }
 type RoleInfo struct { Slug string; Manages bool }
-type Context struct { request *http.Request; response http.ResponseWriter; auth *AuthInfo; params map[string]string; roles []string; isAdmin bool }
+type Context struct { request *http.Request; response http.ResponseWriter; auth *AuthInfo; params map[string]string; roles []string; rolesLoaded bool; isAdmin bool }
 
 func NewContext(r *http.Request) *Context { return &Context{request: r, params: map[string]string{}} }
 func (c *Context) Request() *http.Request { return c.request }
@@ -5648,12 +5648,12 @@ func (c *Context) BearerToken() string { h := c.request.Header.Get("Authorizatio
 func (c *Context) Auth() *AuthInfo { if c.auth == nil { return &AuthInfo{} }; return c.auth }
 func (c *Context) SetAuth(claims any) { switch v := claims.(type) { case *AuthInfo: c.auth = v; default: panic(fmt.Sprintf("pickle: SetAuth() requires *AuthInfo, got %T", claims)) } }
 func (c *Context) IsAuthenticated() bool { return c.auth != nil && c.auth.UserID != "" }
-func (c *Context) SetRoles(roles []RoleInfo) { c.roles = make([]string, len(roles)); c.isAdmin = false; for i, role := range roles { c.roles[i] = role.Slug; if role.Manages { c.isAdmin = true } } }
-func (c *Context) Role() string { if len(c.roles) > 0 { return c.roles[0] }; if c.auth != nil { return c.auth.Role }; return "" }
-func (c *Context) Roles() []string { roles := append([]string{}, c.roles...); if len(roles) == 0 && c.auth != nil && c.auth.Role != "" { roles = append(roles, c.auth.Role) }; return roles }
-func (c *Context) HasRole(slug string) bool { for _, role := range c.roles { if role == slug { return true } }; return c.auth != nil && c.auth.Role == slug }
+func (c *Context) SetRoles(roles []RoleInfo) { c.rolesLoaded = true; c.roles = make([]string, len(roles)); c.isAdmin = false; for i, role := range roles { c.roles[i] = role.Slug; if role.Manages { c.isAdmin = true } } }
+func (c *Context) Role() string { if len(c.roles) > 0 { return c.roles[0] }; if !c.rolesLoaded && c.auth != nil { return c.auth.Role }; return "" }
+func (c *Context) Roles() []string { roles := append([]string{}, c.roles...); if !c.rolesLoaded && len(roles) == 0 && c.auth != nil && c.auth.Role != "" { roles = append(roles, c.auth.Role) }; return roles }
+func (c *Context) HasRole(slug string) bool { for _, role := range c.roles { if role == slug { return true } }; return !c.rolesLoaded && c.auth != nil && c.auth.Role == slug }
 func (c *Context) HasAnyRole(roles ...string) bool { for _, role := range roles { if c.HasRole(role) { return true } }; return false }
-func (c *Context) IsAdmin() bool { return c.isAdmin || (c.auth != nil && c.auth.Role == "admin") }
+func (c *Context) IsAdmin() bool { return c.isAdmin || (!c.rolesLoaded && c.auth != nil && c.auth.Role == "admin") }
 func (c *Context) JSON(status int, body any) Response { return Response{Status: status, StatusCode: status, Body: body} }
 func (c *Context) Error(err error) Response { if err != nil { log.Printf("http error: %v", err) }; return c.JSON(500, map[string]string{"error": "internal server error"}) }
 func (c *Context) BadRequest(msg string) Response { return c.JSON(400, map[string]string{"error": msg}) }

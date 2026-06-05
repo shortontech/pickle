@@ -2115,6 +2115,49 @@ func TestExportedRBACMiddlewareLoadsRolesAndEnforcesChecks(t *testing.T) {
 	}
 }
 
+func TestExportedLoadRolesOverridesTokenRoleFallback(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	if err := policies.Migrate(db, "sqlite"); err != nil {
+		t.Fatalf("policy migrate: %v", err)
+	}
+
+	ctx := httpx.NewContext(newRequest())
+	ctx.SetAuth(&httpx.AuthInfo{UserID: "user-without-roles", Role: "admin"})
+	resp := middleware.LoadRoles(ctx, func() httpx.Response {
+		if got := ctx.Roles(); len(got) != 0 {
+			t.Fatalf("loaded roles = %#v, want DB roles only", got)
+		}
+		if ctx.HasRole("admin") {
+			t.Fatal("loaded empty DB roles should override token role fallback")
+		}
+		if ctx.IsAdmin() {
+			t.Fatal("loaded empty DB roles should clear token admin fallback")
+		}
+		return ctx.NoContent()
+	})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("LoadRoles response = %#v", resp)
+	}
+	deniedRole := middleware.RequireRole("admin")(ctx, func() httpx.Response {
+		t.Fatal("RequireRole should not use stale token role after LoadRoles")
+		return ctx.NoContent()
+	})
+	if deniedRole.StatusCode != http.StatusForbidden {
+		t.Fatalf("RequireRole after empty DB roles status = %d", deniedRole.StatusCode)
+	}
+	deniedAdmin := middleware.RequireAdmin(ctx, func() httpx.Response {
+		t.Fatal("RequireAdmin should not use stale token role after LoadRoles")
+		return ctx.NoContent()
+	})
+	if deniedAdmin.StatusCode != http.StatusForbidden {
+		t.Fatalf("RequireAdmin after empty DB roles status = %d", deniedAdmin.StatusCode)
+	}
+}
+
 func TestExportedLoadRolesRequiresAuth(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {

@@ -2771,6 +2771,49 @@ func TestExportedServerBinaryServesMigratedRoutes(t *testing.T) {
 		t.Fatalf("login response missing token: %s", loginRespBody)
 	}
 
+	protectedURL := "http://127.0.0.1:" + port + "/api/users"
+	protectedResp, err := http.Get(protectedURL)
+	if err != nil {
+		t.Fatalf("exported server binary did not serve protected users route: %v\n%s", err, server.output.String())
+	}
+	defer protectedResp.Body.Close()
+	protectedRespBody, err := io.ReadAll(protectedResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if protectedResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated protected users status = %d body=%s", protectedResp.StatusCode, protectedRespBody)
+	}
+
+	protectedReq, err := http.NewRequest(http.MethodGet, protectedURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	protectedReq.Header.Set("Authorization", "Bearer "+loginPayload.Token)
+	authProtectedResp, err := http.DefaultClient.Do(protectedReq)
+	if err != nil {
+		t.Fatalf("authenticated protected users route failed: %v\n%s", err, server.output.String())
+	}
+	defer authProtectedResp.Body.Close()
+	authProtectedRespBody, err := io.ReadAll(authProtectedResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authProtectedResp.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated protected users status = %d body=%s output=%s", authProtectedResp.StatusCode, authProtectedRespBody, server.output.String())
+	}
+	authProtectedText := string(authProtectedRespBody)
+	for _, want := range []string{` + "`" + `"name":"Ada"` + "`" + `, ` + "`" + `"email":"ada@example.com"` + "`" + `} {
+		if !strings.Contains(authProtectedText, want) {
+			t.Fatalf("authenticated protected users response missing %s: %s", want, authProtectedText)
+		}
+	}
+	for _, leak := range []string{"password", "passwordHash", "password_hash", "correct horse"} {
+		if strings.Contains(authProtectedText, leak) {
+			t.Fatalf("authenticated protected users response leaked %q: %s", leak, authProtectedText)
+		}
+	}
+
 	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+port+"/graphql", strings.NewReader(usersBody))
 	if err != nil {
 		t.Fatal(err)

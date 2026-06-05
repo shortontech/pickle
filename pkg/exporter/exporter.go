@@ -2432,6 +2432,9 @@ func isMissingRBACTableError(err error) bool {
 }
 
 func gqlgenErrorResponse(message, code string) *gqlgen.Response {
+	if code == CodeInternalServerError {
+		message = "internal server error"
+	}
 	return &gqlgen.Response{
 		Data: json.RawMessage("null"),
 		Errors: gqlerror.List{

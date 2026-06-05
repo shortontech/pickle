@@ -3136,6 +3136,19 @@ func TestExportedGraphQLInternalErrorsAreSanitized(t *testing.T) {
 	}
 }
 
+func TestExportedGraphQLGQLGenInternalResponsesAreSanitized(t *testing.T) {
+	resp := gqlgenErrorResponse("secret marshal detail", CodeInternalServerError)
+	if len(resp.Errors) != 1 {
+		t.Fatalf("errors = %#v", resp.Errors)
+	}
+	if resp.Errors[0].Message != "internal server error" {
+		t.Fatalf("gqlgen internal message = %q", resp.Errors[0].Message)
+	}
+	if strings.Contains(fmt.Sprint(resp.Errors[0]), "secret marshal detail") {
+		t.Fatalf("gqlgen internal response leaked detail: %#v", resp.Errors[0])
+	}
+}
+
 type panicRoot struct{}
 
 func (panicRoot) resolveQuery(ctx *ResolveContext, field Field) (any, error) {

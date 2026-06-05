@@ -3962,10 +3962,13 @@ const httpxSource = `package httpx
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"net"
 	"net/http"
 	"os"
+	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -4019,9 +4022,12 @@ type HandlerFunc func(*Context) Response
 type MiddlewareFunc func(*Context, func() Response) Response
 type MiddlewareProvider interface { Middleware() MiddlewareFunc }
 type ResourceController interface { Index(*Context) Response; Show(*Context) Response; Store(*Context) Response; Update(*Context) Response; Destroy(*Context) Response }
-type route struct { method string; path string; handler HandlerFunc; middleware []MiddlewareFunc }
-type Router struct{ prefix string; middleware []MiddlewareFunc; routes []route }
+type ErrorReporter func(*Context, error)
+type Route struct { Method string; Path string; Handler HandlerFunc; Middleware []MiddlewareFunc }
+type Router struct{ prefix string; middleware []MiddlewareFunc; routes []Route; onError ErrorReporter }
 func Routes(fn func(*Router)) *Router { r := &Router{}; fn(r); return r }
+func (r *Router) OnError(fn ErrorReporter) { r.onError = fn }
+func (r *Router) OnRateLimit(fn func(*Context, RateLimitEvent)) { rateLimitCallback = fn }
 func (r *Router) Group(path string, args ...any) {
 	child := &Router{prefix: joinPath(r.prefix, path), middleware: append([]MiddlewareFunc{}, r.middleware...)}
 	var bodies []func(*Router)
@@ -4045,23 +4051,25 @@ func (r *Router) Post(path string, handler HandlerFunc, middleware ...any) { r.a
 func (r *Router) Put(path string, handler HandlerFunc, middleware ...any) { r.add("PUT", path, handler, middleware...) }
 func (r *Router) Patch(path string, handler HandlerFunc, middleware ...any) { r.add("PATCH", path, handler, middleware...) }
 func (r *Router) Delete(path string, handler HandlerFunc, middleware ...any) { r.add("DELETE", path, handler, middleware...) }
-func (r *Router) add(method, path string, handler HandlerFunc, middleware ...any) { r.routes = append(r.routes, route{method: method, path: joinPath(r.prefix, path), handler: handler, middleware: append(append([]MiddlewareFunc{}, r.middleware...), resolveMiddleware(middleware)...)} ) }
+func (r *Router) add(method, path string, handler HandlerFunc, middleware ...any) { r.routes = append(r.routes, Route{Method: method, Path: joinPath(r.prefix, path), Handler: handler, Middleware: append(append([]MiddlewareFunc{}, r.middleware...), resolveMiddleware(middleware)...)} ) }
 func (r *Router) Resource(prefix string, c ResourceController, middleware ...any) { r.Get(prefix, c.Index, middleware...); r.Get(prefix + "/:id", c.Show, middleware...); r.Post(prefix, c.Store, middleware...); r.Put(prefix + "/:id", c.Update, middleware...); r.Delete(prefix + "/:id", c.Destroy, middleware...) }
 func resolveMiddleware(middleware []any) []MiddlewareFunc { resolved := make([]MiddlewareFunc, 0, len(middleware)); for _, mw := range middleware { switch v := mw.(type) { case MiddlewareFunc: resolved = append(resolved, v); case func(*Context, func() Response) Response: resolved = append(resolved, MiddlewareFunc(v)); case MiddlewareProvider: resolved = append(resolved, v.Middleware()); default: panic("pickle export: invalid middleware type") } }; return resolved }
+func (r *Router) AllRoutes() []Route { routes := make([]Route, len(r.routes)); copy(routes, r.routes); return routes }
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	defer func() { if recovered := recover(); recovered != nil { http.Error(w, "internal server error", http.StatusInternalServerError) } }()
+	var ctx *Context
+	defer func() { if recovered := recover(); recovered != nil { err, ok := recovered.(error); if !ok { err = fmt.Errorf("%v", recovered) }; log.Printf("panic: %v\n%s", err, debug.Stack()); if r.onError != nil { r.onError(ctx, err) }; http.Error(w, "internal server error", http.StatusInternalServerError) } }()
 	rateLimitResp, rateLimitHeaders := checkRateLimit(req)
 	if rateLimitResp != nil {
 		rateLimitResp.Write(w)
 		return
 	}
 	for _, rt := range r.routes {
-		params, ok := matchPath(rt.path, req.URL.Path)
-		if rt.method != req.Method || !ok { continue }
-		ctx := NewContext(req); ctx.response = w; ctx.params = params
-		next := func() Response { return rt.handler(ctx) }
-		for i := len(rt.middleware) - 1; i >= 0; i-- {
-			mw := rt.middleware[i]
+		params, ok := matchPath(rt.Path, req.URL.Path)
+		if rt.Method != req.Method || !ok { continue }
+		ctx = NewContext(req); ctx.response = w; ctx.params = params
+		next := func() Response { return rt.Handler(ctx) }
+		for i := len(rt.Middleware) - 1; i >= 0; i-- {
+			mw := rt.Middleware[i]
 			inner := next
 			next = func() Response { return mw(ctx, inner) }
 		}
@@ -4071,6 +4079,32 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	http.NotFound(w, req)
+}
+var paramPattern = regexp.MustCompile(` + "`" + `:(\w+)` + "`" + `)
+func (r *Router) RegisterRoutes(mux *http.ServeMux) {
+	registered := map[string]bool{}
+	for _, route := range r.AllRoutes() {
+		goPath := paramPattern.ReplaceAllString(route.Path, "{$1}")
+		pattern := route.Method + " " + goPath
+		if registered[pattern] { panic("pickle: duplicate route registered: " + pattern) }
+		registered[pattern] = true
+		mux.HandleFunc(pattern, r.ServeHTTP)
+		if !strings.HasSuffix(goPath, "}") {
+			alt := ""
+			if strings.HasSuffix(goPath, "/") {
+				if trimmed := strings.TrimRight(goPath, "/"); trimmed != "" { alt = route.Method + " " + trimmed }
+			} else {
+				alt = route.Method + " " + goPath + "/"
+			}
+			if alt != "" && !registered[alt] { registered[alt] = true; mux.HandleFunc(alt, r.ServeHTTP) }
+		}
+	}
+}
+func (r *Router) ListenAndServe(addr string) error {
+	mux := http.NewServeMux()
+	r.RegisterRoutes(mux)
+	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second}
+	return server.ListenAndServe()
 }
 func joinPath(prefix, path string) string { if path == "/" { path = "" }; out := "/" + strings.Trim(strings.TrimRight(prefix, "/") + "/" + strings.Trim(path, "/"), "/"); if out == "/" { return "/" }; return out }
 func matchPath(pattern, actual string) (map[string]string, bool) {
@@ -4094,6 +4128,8 @@ func (s *rateLimiterStore) cleanup() { cutoff := time.Now().Add(-10 * time.Minut
 
 var globalLimiterOnce sync.Once
 var globalLimiter *rateLimiterStore
+type RateLimitEvent struct { Key string; Layer string; Path string; RPS float64; Burst int; Remaining float64; Allowed bool }
+var rateLimitCallback func(*Context, RateLimitEvent)
 var trustedProxies []net.IPNet
 var trustedProxiesAll bool
 var trustedProxiesOnce sync.Once
@@ -4108,8 +4144,10 @@ func checkRateLimit(r *http.Request) (*Response, map[string]string) {
 		go cleanupRateLimiter(globalLimiter)
 	})
 	if globalLimiter == nil || !globalLimiter.enabled { return nil, nil }
-	bucket, ok := globalLimiter.allow(clientIP(r))
+	key := clientIP(r)
+	bucket, ok := globalLimiter.allow(key)
 	remaining := bucketRemaining(bucket)
+	if rateLimitCallback != nil { rateLimitCallback(NewContext(r), RateLimitEvent{Key: key, Layer: "ip", Path: r.URL.Path, RPS: globalLimiter.rps, Burst: globalLimiter.burst, Remaining: remaining, Allowed: ok}) }
 	if ok { return nil, rateLimitHeaders(globalLimiter.rps, globalLimiter.burst, remaining) }
 	return rateLimitExceeded(bucket, globalLimiter.rps, globalLimiter.burst), nil
 }
@@ -4119,10 +4157,13 @@ func RateLimit(rps, burst int) MiddlewareFunc {
 	go cleanupRateLimiter(store)
 	return func(ctx *Context, next func() Response) Response {
 		if !store.enabled { return next() }
-		bucket, ok := store.allow(clientIP(ctx.Request()))
+		key := clientIP(ctx.Request())
+		bucket, ok := store.allow(key)
+		remaining := bucketRemaining(bucket)
+		if rateLimitCallback != nil { rateLimitCallback(ctx, RateLimitEvent{Key: key, Layer: "ip", Path: ctx.Request().URL.Path, RPS: store.rps, Burst: store.burst, Remaining: remaining, Allowed: ok}) }
 		if ok {
 			resp := next()
-			for k, v := range rateLimitHeaders(store.rps, store.burst, bucketRemaining(bucket)) { if resp.Headers == nil { resp.Headers = map[string]string{} }; resp.Headers[k] = v }
+			for k, v := range rateLimitHeaders(store.rps, store.burst, remaining) { if resp.Headers == nil { resp.Headers = map[string]string{} }; resp.Headers[k] = v }
 			return resp
 		}
 		return *rateLimitExceeded(bucket, store.rps, store.burst)
@@ -4145,9 +4186,11 @@ func (c *AuthRateLimitConfig) Middleware() MiddlewareFunc {
 		rps, burst := c.rps, c.burst
 		if role := ctx.Role(); role != "" && c.tiers != nil { if tier, ok := c.tiers[role]; ok { rps = tier.RPS; burst = tier.Burst; key = role + ":" + key } }
 		bucket, ok := c.store.allowWithParams(key, rps, burst)
+		remaining := bucketRemaining(bucket)
+		if rateLimitCallback != nil { rateLimitCallback(ctx, RateLimitEvent{Key: key, Layer: "auth", Path: ctx.Request().URL.Path, RPS: rps, Burst: burst, Remaining: remaining, Allowed: ok}) }
 		if ok {
 			resp := next()
-			for k, v := range rateLimitHeaders(rps, burst, bucketRemaining(bucket)) { if resp.Headers == nil { resp.Headers = map[string]string{} }; resp.Headers[k] = v }
+			for k, v := range rateLimitHeaders(rps, burst, remaining) { if resp.Headers == nil { resp.Headers = map[string]string{} }; resp.Headers[k] = v }
 			return resp
 		}
 		return *rateLimitExceeded(bucket, rps, burst)

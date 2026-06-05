@@ -553,6 +553,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -662,6 +663,80 @@ func TestExportedResourceRoutesAndContextHelpers(t *testing.T) {
 	}
 }
 
+func TestExportedAllRoutesAndRegisterRoutes(t *testing.T) {
+	t.Setenv("RATE_LIMIT", "false")
+	router := httpx.Routes(func(r *httpx.Router) {
+		r.Group("/api", func(r *httpx.Router) {
+			r.Get("/health", func(ctx *httpx.Context) httpx.Response {
+				return ctx.JSON(http.StatusOK, map[string]string{"status": "ok"})
+			})
+			r.Get("/users/:id", func(ctx *httpx.Context) httpx.Response {
+				return ctx.JSON(http.StatusOK, map[string]string{"id": ctx.Param("id")})
+			})
+		})
+	})
+	routes := router.AllRoutes()
+	if len(routes) != 2 {
+		t.Fatalf("routes = %d, want 2", len(routes))
+	}
+	if routes[0].Method != http.MethodGet || routes[0].Path != "/api/health" {
+		t.Fatalf("route[0] = %#v", routes[0])
+	}
+
+	mux := http.NewServeMux()
+	router.RegisterRoutes(mux)
+	for _, path := range []string{"/api/health", "/api/health/"} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d body=%s", path, rec.Code, rec.Body.String())
+		}
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/users/42", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "42") {
+		t.Fatalf("param route status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestExportedRegisterRoutesDuplicatePanics(t *testing.T) {
+	router := httpx.Routes(func(r *httpx.Router) {
+		r.Get("/dup", func(ctx *httpx.Context) httpx.Response { return ctx.NoContent() })
+		r.Get("/dup", func(ctx *httpx.Context) httpx.Response { return ctx.NoContent() })
+	})
+	defer func() {
+		if recovered := recover(); recovered == nil {
+			t.Fatal("duplicate route registration should panic")
+		}
+	}()
+	router.RegisterRoutes(http.NewServeMux())
+}
+
+func TestExportedOnErrorReceivesRecoveredPanic(t *testing.T) {
+	t.Setenv("RATE_LIMIT", "false")
+	var reported error
+	router := httpx.Routes(func(r *httpx.Router) {
+		r.OnError(func(ctx *httpx.Context, err error) {
+			reported = err
+			if ctx == nil || ctx.Param("id") != "123" {
+				t.Fatalf("reported context = %#v", ctx)
+			}
+		})
+		r.Get("/panic/:id", func(ctx *httpx.Context) httpx.Response {
+			panic("boom")
+		})
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/panic/123", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if reported == nil || reported.Error() != "boom" {
+		t.Fatalf("reported error = %v", reported)
+	}
+}
+
 func TestExportedContextResourceHelpersPropagateOwner(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	ctx := httpx.NewContext(req)
@@ -725,11 +800,15 @@ func TestExportedRateLimitMiddlewareDeniesAfterBurst(t *testing.T) {
 
 func TestExportedAuthRateLimitProviderSupportsTiers(t *testing.T) {
 	t.Setenv("RATE_LIMIT", "false")
+	var events []httpx.RateLimitEvent
 	limiter := httpx.AuthRateLimit().RPS(100).Burst(10).Tiers(map[string]httpx.RateTier{
 		"free":  {RPS: 100, Burst: 1},
 		"admin": {RPS: 100, Burst: 2},
 	})
 	router := httpx.Routes(func(r *httpx.Router) {
+		r.OnRateLimit(func(ctx *httpx.Context, event httpx.RateLimitEvent) {
+			events = append(events, event)
+		})
 		r.Get("/identity", func(ctx *httpx.Context) httpx.Response {
 			return ctx.NoContent()
 		}, func(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
@@ -760,6 +839,18 @@ func TestExportedAuthRateLimitProviderSupportsTiers(t *testing.T) {
 	router.ServeHTTP(adminRec, admin)
 	if adminRec.Code != http.StatusNoContent {
 		t.Fatalf("admin tier should use a separate bucket, got %d", adminRec.Code)
+	}
+	if len(events) != 3 {
+		t.Fatalf("rate limit events = %d, want 3: %#v", len(events), events)
+	}
+	if events[0].Layer != "auth" || events[0].Key != "free:user-1" || !events[0].Allowed {
+		t.Fatalf("event[0] = %#v", events[0])
+	}
+	if events[1].Layer != "auth" || events[1].Key != "free:user-1" || events[1].Allowed {
+		t.Fatalf("event[1] = %#v", events[1])
+	}
+	if events[2].Layer != "auth" || events[2].Key != "admin:user-1" || !events[2].Allowed {
+		t.Fatalf("event[2] = %#v", events[2])
 	}
 }
 

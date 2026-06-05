@@ -2449,6 +2449,8 @@ func TestExportedPolicyMigrateRollsBackSeedFailures(t *testing.T) {
 	}
 	if err := Migrate(db, "sqlite"); err == nil {
 		t.Fatal("expected policy migrate to fail on constrained role action")
+	} else if err.Error() != "policy database error" {
+		t.Fatalf("policy migrate seed failure error = %v, want sanitized policy database error", err)
 	}
 	for _, table := range []string{"roles", "role_actions", "rbac_changelog"} {
 		var rows int64
@@ -2458,6 +2460,61 @@ func TestExportedPolicyMigrateRollsBackSeedFailures(t *testing.T) {
 		if rows != 0 {
 			t.Fatalf("%s rows after failed migrate = %d, want 0", table, rows)
 		}
+	}
+}
+
+func TestExportedPolicyOperationsRejectNilDBWithoutPanic(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func() error
+	}{
+		{name: "migrate", run: func() error { return Migrate(nil, "sqlite") }},
+		{name: "rollback", run: func() error { return Rollback(nil, "sqlite") }},
+		{name: "fresh", run: func() error { return Fresh(nil, "sqlite") }},
+		{name: "status", run: func() error { _, err := Status(nil, "sqlite"); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.run(); err == nil || err.Error() != "policies: DB is nil" {
+				t.Fatalf("%s error = %v, want policies: DB is nil", tc.name, err)
+			}
+		})
+	}
+}
+
+func TestExportedPolicyDatabaseErrorsAreSanitized(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(*gorm.DB) error
+	}{
+		{name: "migrate", run: func(db *gorm.DB) error { return Migrate(db, "sqlite") }},
+		{name: "rollback", run: func(db *gorm.DB) error { return Rollback(db, "sqlite") }},
+		{name: "status", run: func(db *gorm.DB) error { _, err := Status(db, "sqlite"); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sqlDB, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sqlDB.Close(); err != nil {
+				t.Fatal(err)
+			}
+			err = tc.run(db)
+			if err == nil {
+				t.Fatalf("%s should fail on closed database", tc.name)
+			}
+			if err.Error() != "policy database error" {
+				t.Fatalf("%s error = %v, want sanitized policy database error", tc.name, err)
+			}
+			for _, forbidden := range []string{"sql:", "closed", "SELECT", "CREATE TABLE", "roles", "graphql"} {
+				if strings.Contains(err.Error(), forbidden) {
+					t.Fatalf("%s policy database error leaked %q: %v", tc.name, forbidden, err)
+				}
+			}
+		})
 	}
 }
 

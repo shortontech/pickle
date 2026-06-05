@@ -3957,6 +3957,7 @@ func (e *exporter) generatePolicySupport() ([]byte, error) {
 	b.WriteString(`package policies
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -3971,6 +3972,19 @@ type PolicyStatus struct {
 	Batch int
 	State string
 	Applied bool
+}
+
+var errPolicyDatabase = errors.New("policy database error")
+
+func policyDatabaseError() error {
+	return errPolicyDatabase
+}
+
+func ensurePolicyDB(db *gorm.DB) error {
+	if db == nil {
+		return errors.New("policies: DB is nil")
+	}
+	return nil
 }
 
 type roleSeed struct {
@@ -4033,7 +4047,8 @@ var graphQLPolicyIDs = []string{
 	b.WriteString(`}
 
 func Migrate(db *gorm.DB, driver string) error {
-	return db.Transaction(func(tx *gorm.DB) error {
+	if err := ensurePolicyDB(db); err != nil { return err }
+	if err := db.Transaction(func(tx *gorm.DB) error {
 		if len(roleSeeds) > 0 {
 			if err := ensureRBACSchema(tx); err != nil { return err }
 			if err := seedRoles(tx); err != nil { return err }
@@ -4045,27 +4060,41 @@ func Migrate(db *gorm.DB, driver string) error {
 			if err := markPoliciesApplied(tx, "graphql_changelog", graphQLPolicyIDs); err != nil { return err }
 		}
 		return nil
-	})
+	}); err != nil {
+		if errors.Is(err, errPolicyDatabase) {
+			return err
+		}
+		return policyDatabaseError()
+	}
+	return nil
 }
 
 func Rollback(db *gorm.DB, driver string) error {
-	return db.Transaction(func(tx *gorm.DB) error {
+	if err := ensurePolicyDB(db); err != nil { return err }
+	if err := db.Transaction(func(tx *gorm.DB) error {
 		if len(graphQLExposureSeeds) > 0 || len(graphQLActionSeeds) > 0 {
-			if err := tx.Exec("DELETE FROM graphql_actions").Error; err != nil { return err }
-			if err := tx.Exec("DELETE FROM graphql_exposures").Error; err != nil { return err }
-			if err := tx.Exec("DELETE FROM graphql_changelog").Error; err != nil { return err }
+			if err := tx.Exec("DELETE FROM graphql_actions").Error; err != nil { return policyDatabaseError() }
+			if err := tx.Exec("DELETE FROM graphql_exposures").Error; err != nil { return policyDatabaseError() }
+			if err := tx.Exec("DELETE FROM graphql_changelog").Error; err != nil { return policyDatabaseError() }
 		}
 		if len(roleSeeds) > 0 {
-			if err := tx.Exec("DELETE FROM role_actions").Error; err != nil { return err }
-			if err := tx.Exec("DELETE FROM role_user").Error; err != nil { return err }
-			if err := tx.Exec("DELETE FROM roles").Error; err != nil { return err }
-			if err := tx.Exec("DELETE FROM rbac_changelog").Error; err != nil { return err }
+			if err := tx.Exec("DELETE FROM role_actions").Error; err != nil { return policyDatabaseError() }
+			if err := tx.Exec("DELETE FROM role_user").Error; err != nil { return policyDatabaseError() }
+			if err := tx.Exec("DELETE FROM roles").Error; err != nil { return policyDatabaseError() }
+			if err := tx.Exec("DELETE FROM rbac_changelog").Error; err != nil { return policyDatabaseError() }
 		}
 		return nil
-	})
+	}); err != nil {
+		if errors.Is(err, errPolicyDatabase) {
+			return err
+		}
+		return policyDatabaseError()
+	}
+	return nil
 }
 
 func Fresh(db *gorm.DB, driver string) error {
+	if err := ensurePolicyDB(db); err != nil { return err }
 	if err := db.Transaction(func(tx *gorm.DB) error {
 		for _, table := range []string{"graphql_actions", "graphql_exposures", "graphql_changelog", "role_actions", "role_user", "roles", "rbac_changelog"} {
 			if err := tx.Exec("DROP TABLE IF EXISTS " + table).Error; err != nil {
@@ -4083,6 +4112,7 @@ func Fresh(db *gorm.DB, driver string) error {
 }
 
 func Status(db *gorm.DB, driver string) ([]PolicyStatus, error) {
+	if err := ensurePolicyDB(db); err != nil { return nil, err }
 	var statuses []PolicyStatus
 	if len(roleSeeds) > 0 {
 		if err := ensureRBACSchema(db); err != nil { return nil, err }
@@ -4132,7 +4162,7 @@ func ensureRBACSchema(db *gorm.DB) error {
 		` + "`" + `CREATE TABLE IF NOT EXISTS rbac_changelog (id VARCHAR(255) PRIMARY KEY, batch INTEGER NOT NULL, state VARCHAR(20) NOT NULL, error TEXT, started_at DATETIME, completed_at DATETIME)` + "`" + `,
 	}
 	for _, stmt := range stmts {
-		if err := db.Exec(stmt).Error; err != nil { return err }
+		if err := db.Exec(stmt).Error; err != nil { return policyDatabaseError() }
 	}
 	return nil
 }
@@ -4144,7 +4174,7 @@ func ensureGraphQLPolicySchema(db *gorm.DB) error {
 		` + "`" + `CREATE TABLE IF NOT EXISTS graphql_actions (id TEXT PRIMARY KEY, name VARCHAR(100) NOT NULL UNIQUE, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
 	}
 	for _, stmt := range stmts {
-		if err := db.Exec(stmt).Error; err != nil { return err }
+		if err := db.Exec(stmt).Error; err != nil { return policyDatabaseError() }
 	}
 	return nil
 }
@@ -4152,10 +4182,10 @@ func ensureGraphQLPolicySchema(db *gorm.DB) error {
 func seedRoles(db *gorm.DB) error {
 	now := time.Now().UTC()
 	for _, role := range roleSeeds {
-		if err := db.Exec(roleUpsertSQL(db), uuid.New().String(), role.Slug, role.Name, role.Manages, role.Default, role.BirthPolicy, now, now).Error; err != nil { return err }
-		if err := db.Exec("DELETE FROM role_actions WHERE role_slug = ?", role.Slug).Error; err != nil { return err }
+		if err := db.Exec(roleUpsertSQL(db), uuid.New().String(), role.Slug, role.Name, role.Manages, role.Default, role.BirthPolicy, now, now).Error; err != nil { return policyDatabaseError() }
+		if err := db.Exec("DELETE FROM role_actions WHERE role_slug = ?", role.Slug).Error; err != nil { return policyDatabaseError() }
 		for _, action := range role.Actions {
-			if err := db.Exec("INSERT INTO role_actions (id, role_slug, action, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", uuid.New().String(), role.Slug, action, now, now).Error; err != nil { return err }
+			if err := db.Exec("INSERT INTO role_actions (id, role_slug, action, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", uuid.New().String(), role.Slug, action, now, now).Error; err != nil { return policyDatabaseError() }
 		}
 	}
 	return nil
@@ -4174,13 +4204,13 @@ func roleUpsertSQLForDialect(dialect string) string {
 
 func seedGraphQLPolicies(db *gorm.DB) error {
 	now := time.Now().UTC()
-	if err := db.Exec("DELETE FROM graphql_exposures").Error; err != nil { return err }
+	if err := db.Exec("DELETE FROM graphql_exposures").Error; err != nil { return policyDatabaseError() }
 	for _, exposure := range graphQLExposureSeeds {
-		if err := db.Exec("INSERT INTO graphql_exposures (id, model, operation, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", uuid.New().String(), exposure.Model, exposure.Operation, now, now).Error; err != nil { return err }
+		if err := db.Exec("INSERT INTO graphql_exposures (id, model, operation, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", uuid.New().String(), exposure.Model, exposure.Operation, now, now).Error; err != nil { return policyDatabaseError() }
 	}
-	if err := db.Exec("DELETE FROM graphql_actions").Error; err != nil { return err }
+	if err := db.Exec("DELETE FROM graphql_actions").Error; err != nil { return policyDatabaseError() }
 	for _, action := range graphQLActionSeeds {
-		if err := db.Exec("INSERT INTO graphql_actions (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)", uuid.New().String(), action.Name, now, now).Error; err != nil { return err }
+		if err := db.Exec("INSERT INTO graphql_actions (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)", uuid.New().String(), action.Name, now, now).Error; err != nil { return policyDatabaseError() }
 	}
 	return nil
 }
@@ -4188,7 +4218,7 @@ func seedGraphQLPolicies(db *gorm.DB) error {
 func markPoliciesApplied(db *gorm.DB, table string, ids []string) error {
 	now := time.Now().UTC()
 	for _, id := range ids {
-		if err := db.Exec(policyAppliedUpsertSQL(db, table), id, 1, "applied", now, now).Error; err != nil { return err }
+		if err := db.Exec(policyAppliedUpsertSQL(db, table), id, 1, "applied", now, now).Error; err != nil { return policyDatabaseError() }
 	}
 	return nil
 }
@@ -4211,16 +4241,17 @@ func gormDialectName(db *gorm.DB) string {
 
 func appliedPolicyRows(db *gorm.DB, table string) (map[string]int, error) {
 	rows, err := db.Raw("SELECT id, batch FROM " + table + " WHERE state = 'applied'").Rows()
-	if err != nil { return nil, err }
+	if err != nil { return nil, policyDatabaseError() }
 	defer rows.Close()
 	out := map[string]int{}
 	for rows.Next() {
 		var id string
 		var batch int
-		if err := rows.Scan(&id, &batch); err != nil { return nil, err }
+		if err := rows.Scan(&id, &batch); err != nil { return nil, policyDatabaseError() }
 		out[id] = batch
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil { return nil, policyDatabaseError() }
+	return out, nil
 }
 `)
 	return format.Source([]byte(b.String()))

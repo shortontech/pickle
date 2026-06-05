@@ -1,6 +1,7 @@
 package cooked
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -259,6 +260,20 @@ func TestIsIntrospectionField(t *testing.T) {
 		if got := isIntrospectionField(tt.name); got != tt.want {
 			t.Errorf("isIntrospectionField(%q) = %v, want %v", tt.name, got, tt.want)
 		}
+	}
+}
+
+func TestToGraphQLErrorSanitizesPlainErrors(t *testing.T) {
+	err := toGraphQLError(errors.New("database password is swordfish"), []string{"users"})
+	if err["message"] != "internal server error" {
+		t.Fatalf("message = %#v, want sanitized internal server error", err["message"])
+	}
+	extensions, ok := err["extensions"].(map[string]any)
+	if !ok || extensions["code"] != CodeInternalServerError {
+		t.Fatalf("extensions = %#v, want internal server error code", err["extensions"])
+	}
+	if strings.Contains(err["message"].(string), "swordfish") {
+		t.Fatalf("plain error leaked detail: %#v", err)
 	}
 }
 

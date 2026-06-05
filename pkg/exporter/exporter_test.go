@@ -3285,6 +3285,7 @@ func writeExportedGraphQLErrorBehaviorTest(t *testing.T, out string) {
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -3364,6 +3365,18 @@ func TestExportedGraphQLInternalErrorsAreSanitized(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprint(err), "secret database detail") {
 		t.Fatalf("internal error leaked detail: %#v", err)
+	}
+
+	plain := toGraphQLError(errors.New("database password is swordfish"), []string{"users"})
+	if plain["message"] != "internal server error" {
+		t.Fatalf("plain error message = %#v, want sanitized internal server error", plain["message"])
+	}
+	plainExtensions, ok := plain["extensions"].(map[string]any)
+	if !ok || plainExtensions["code"] != CodeInternalServerError {
+		t.Fatalf("plain error extensions = %#v", plain["extensions"])
+	}
+	if strings.Contains(fmt.Sprint(plain), "swordfish") {
+		t.Fatalf("plain internal error leaked detail: %#v", plain)
 	}
 }
 

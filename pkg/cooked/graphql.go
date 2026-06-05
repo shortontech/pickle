@@ -783,11 +783,12 @@ func InternalError(msg string) *GraphQLError {
 // Otherwise it's treated as an internal error.
 func toGraphQLError(err error, path []string) map[string]any {
 	gqlErr := map[string]any{
-		"message": err.Error(),
+		"message": "internal server error",
 		"path":    path,
 	}
 
 	if ge, ok := err.(*GraphQLError); ok {
+		gqlErr["message"] = ge.Message
 		if ge.Code == CodeInternalServerError {
 			gqlErr["message"] = "internal server error"
 		}
@@ -800,6 +801,7 @@ func toGraphQLError(err error, path []string) map[string]any {
 		}
 		gqlErr["extensions"] = ext
 	} else if ve, ok := err.(*ValidationError); ok {
+		gqlErr["message"] = err.Error()
 		gqlErr["extensions"] = map[string]any{
 			"code":   CodeBadUserInput,
 			"fields": ve.Fields,

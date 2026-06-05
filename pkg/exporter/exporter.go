@@ -7549,7 +7549,7 @@ func Init(env func(string, string) string, db *sql.DB) {
 func Driver(name string) AuthDriver {
 	d, err := TryDriver(name)
 	if err != nil {
-		panic(err.Error())
+		panic("auth: driver unavailable")
 	}
 	return d
 }

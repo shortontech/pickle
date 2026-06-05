@@ -840,6 +840,9 @@ func TestExportedAuthInitOnlyRequiresActiveDriverConfig(t *testing.T) {
 	if _, err := auth.TryDriver("jwt"); err == nil || !strings.Contains(err.Error(), "JWT_SECRET is required") {
 		t.Fatalf("TryDriver(jwt) error = %v, want JWT_SECRET configuration error", err)
 	}
+	assertPanicsExactly(t, "auth: driver unavailable", func() {
+		auth.Driver("jwt")
+	})
 }
 
 func TestExportedAuthInitSanitizesActiveDriverFailures(t *testing.T) {
@@ -902,6 +905,20 @@ func assertPanicsWith(t *testing.T, want string, fn func()) {
 		}
 		if !strings.Contains(fmt.Sprint(got), want) {
 			t.Fatalf("panic = %q, want containing %q", got, want)
+		}
+	}()
+	fn()
+}
+
+func assertPanicsExactly(t *testing.T, want string, fn func()) {
+	t.Helper()
+	defer func() {
+		got := recover()
+		if got == nil {
+			t.Fatalf("expected panic %q", want)
+		}
+		if fmt.Sprint(got) != want {
+			t.Fatalf("panic = %q, want %q", got, want)
 		}
 	}()
 	fn()

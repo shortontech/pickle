@@ -4047,11 +4047,44 @@ func normalizeSQLForMySQL(sql string) string {
 
 func splitSQLStatements(sql string) []string {
 	var statements []string
-	for _, part := range strings.Split(sql, ";") {
-		stmt := strings.TrimSpace(part)
-		if stmt != "" {
-			statements = append(statements, stmt)
+	var b strings.Builder
+	inSingleQuote := false
+	inDoubleQuote := false
+	for i := 0; i < len(sql); i++ {
+		ch := sql[i]
+		if ch == '\'' && !inDoubleQuote {
+			b.WriteByte(ch)
+			if inSingleQuote && i+1 < len(sql) && sql[i+1] == '\'' {
+				i++
+				b.WriteByte(sql[i])
+				continue
+			}
+			inSingleQuote = !inSingleQuote
+			continue
 		}
+		if ch == '"' && !inSingleQuote {
+			b.WriteByte(ch)
+			if inDoubleQuote && i+1 < len(sql) && sql[i+1] == '"' {
+				i++
+				b.WriteByte(sql[i])
+				continue
+			}
+			inDoubleQuote = !inDoubleQuote
+			continue
+		}
+		if ch == ';' && !inSingleQuote && !inDoubleQuote {
+			stmt := strings.TrimSpace(b.String())
+			if stmt != "" {
+				statements = append(statements, stmt)
+			}
+			b.Reset()
+			continue
+		}
+		b.WriteByte(ch)
+	}
+	stmt := strings.TrimSpace(b.String())
+	if stmt != "" {
+		statements = append(statements, stmt)
 	}
 	return statements
 }

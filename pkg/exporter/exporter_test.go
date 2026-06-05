@@ -1621,6 +1621,33 @@ func assertMigrationRowCount(t *testing.T, db *gorm.DB, id string, want int64) {
 	if err := os.WriteFile(filepath.Join(out, "database", "migrations", "exported_migration_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	internalTestSrc := `package migrations
+
+import "testing"
+
+func TestExportedSplitSQLStatementsPreservesQuotedSemicolons(t *testing.T) {
+	sql := "INSERT INTO logs (message) VALUES ('hello; world');\n" +
+		"INSERT INTO logs (message) VALUES ('it''s; fine');\n" +
+		"CREATE TABLE \"semi;colon\" (id TEXT);"
+	statements := splitSQLStatements(sql)
+	if len(statements) != 3 {
+		t.Fatalf("statements = %d, want 3: %#v", len(statements), statements)
+	}
+	want := []string{
+		"INSERT INTO logs (message) VALUES ('hello; world')",
+		"INSERT INTO logs (message) VALUES ('it''s; fine')",
+		"CREATE TABLE \"semi;colon\" (id TEXT)",
+	}
+	for i := range want {
+		if statements[i] != want[i] {
+			t.Fatalf("statement %d = %q, want %q", i, statements[i], want[i])
+		}
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "database", "migrations", "exported_migration_internal_test.go"), []byte(internalTestSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	for name, src := range map[string]string{
 		"99990101000000_atomic_failure.up.sql":    "CREATE TABLE atomic_failure (id TEXT PRIMARY KEY);\nSELECT * FROM definitely_missing_table;\n",
 		"99990101000000_atomic_failure.down.sql":  "DROP TABLE IF EXISTS atomic_failure;\n",

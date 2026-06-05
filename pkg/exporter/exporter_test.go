@@ -1725,11 +1725,91 @@ func TestExportedRateLimitHonorsTrustedProxyHeaders(t *testing.T) {
 	}
 }
 
+func TestExportedGlobalRateLimitRunsBeforeMiddlewareAndHandler(t *testing.T) {
+	resetGlobalRateLimitStateForTest()
+	resetTrustedProxyStateForTest()
+	t.Setenv("RATE_LIMIT", "true")
+	t.Setenv("RATE_LIMIT_RPS", "1")
+	t.Setenv("RATE_LIMIT_BURST", "1")
+
+	var middlewareHits int
+	var handlerHits int
+	router := Routes(func(r *Router) {
+		r.Get("/limited", func(ctx *Context) Response {
+			handlerHits++
+			return ctx.NoContent()
+		}, func(ctx *Context, next func() Response) Response {
+			middlewareHits++
+			return next()
+		})
+	})
+
+	first := httptest.NewRequest(http.MethodGet, "/limited", nil)
+	first.RemoteAddr = "192.0.2.10:1234"
+	firstRec := httptest.NewRecorder()
+	router.ServeHTTP(firstRec, first)
+	if firstRec.Code != http.StatusNoContent {
+		t.Fatalf("first status = %d, body = %s", firstRec.Code, firstRec.Body.String())
+	}
+	if firstRec.Header().Get("X-RateLimit-Limit") == "" {
+		t.Fatal("expected global rate limit headers on allowed response")
+	}
+
+	second := httptest.NewRequest(http.MethodGet, "/limited", nil)
+	second.RemoteAddr = "192.0.2.10:1234"
+	secondRec := httptest.NewRecorder()
+	router.ServeHTTP(secondRec, second)
+	if secondRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, body = %s", secondRec.Code, secondRec.Body.String())
+	}
+	if secondRec.Header().Get("Retry-After") == "" {
+		t.Fatal("expected Retry-After header on denied response")
+	}
+	if middlewareHits != 1 || handlerHits != 1 {
+		t.Fatalf("global limiter should stop before middleware/handler; middleware=%d handler=%d", middlewareHits, handlerHits)
+	}
+}
+
+func TestExportedGlobalRateLimitCanBeDisabled(t *testing.T) {
+	resetGlobalRateLimitStateForTest()
+	resetTrustedProxyStateForTest()
+	t.Setenv("RATE_LIMIT", "false")
+	t.Setenv("RATE_LIMIT_RPS", "1")
+	t.Setenv("RATE_LIMIT_BURST", "1")
+
+	var handlerHits int
+	router := Routes(func(r *Router) {
+		r.Get("/limited", func(ctx *Context) Response {
+			handlerHits++
+			return ctx.NoContent()
+		})
+	})
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/limited", nil)
+		req.RemoteAddr = "192.0.2.20:1234"
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("request %d status = %d, body = %s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	if handlerHits != 3 {
+		t.Fatalf("handler hits = %d, want 3", handlerHits)
+	}
+}
+
 func requestFrom(remote, xff string) *http.Request {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = remote
 	req.Header.Set("X-Forwarded-For", xff)
 	return req
+}
+
+func resetGlobalRateLimitStateForTest() {
+	globalLimiter = nil
+	globalLimiterOnce = sync.Once{}
+	rateLimitCallback = nil
 }
 
 func resetTrustedProxyStateForTest() {

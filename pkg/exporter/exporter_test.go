@@ -2782,6 +2782,52 @@ fragment UserFields on User {
 		}
 	})
 
+	t.Run("unknown_length_oversized_request_body_rejected_before_parse", func(t *testing.T) {
+		body := strings.Repeat(" ", (1<<20)+1)
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
+		req.ContentLength = -1
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
+		}
+	})
+
+	t.Run("malformed_request_body_does_not_echo_body", func(t *testing.T) {
+		body := ` + "`" + `{"query": "{ users { edges { node { id } } }", "secret": "dont-leak-me"` + "`" + `
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "dont-leak-me") || strings.Contains(rec.Body.String(), body) {
+			t.Fatalf("malformed body leaked in response: %s", rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "invalid GraphQL request body") {
+			t.Fatalf("missing sanitized body error: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("batched_json_requests_are_rejected", func(t *testing.T) {
+		body := ` + "`" + `[
+  { "query": "{ users { edges { node { id } } } }" },
+  { "query": "{ posts { edges { node { id } } } }" }
+]` + "`" + `
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "batched GraphQL requests are not supported") {
+			t.Fatalf("missing batch rejection: %s", rec.Body.String())
+		}
+	})
+
 	t.Run("sdl_endpoint_follows_introspection_gate", func(t *testing.T) {
 		graphql.SetIntrospection(false)
 		req := httptest.NewRequest(http.MethodGet, "/graphql?sdl=1", nil)

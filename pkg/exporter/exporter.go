@@ -7527,6 +7527,9 @@ func driver() *Driver {
 func Create(ctx *httpx.Context, userID, role string) (*SessionCookies, error) {
 	_ = ctx
 	d := driver()
+	if d.db == nil {
+		return nil, errors.New("session: database not configured")
+	}
 	sessionID := uuid.New().String()
 	expiresAt := time.Now().UTC().Add(time.Duration(d.ttl) * time.Second)
 	if _, err := d.db.Exec(bindPlaceholders(d.driver, "INSERT INTO sessions (id, user_id, role, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"), sessionID, userID, role, expiresAt, time.Now().UTC(), time.Now().UTC()); err != nil {
@@ -7559,6 +7562,9 @@ func (sc *SessionCookies) Apply(resp httpx.Response) httpx.Response {
 
 func Destroy(ctx *httpx.Context) (httpx.Response, error) {
 	d := driver()
+	if d.db == nil {
+		return httpx.Response{}, errors.New("session: database not configured")
+	}
 	sessionID, err := ctx.Cookie(d.cookieName)
 	if err != nil {
 		return httpx.Response{}, errors.New("session: no session cookie")
@@ -7578,6 +7584,9 @@ func Destroy(ctx *httpx.Context) (httpx.Response, error) {
 
 func Get(ctx *httpx.Context, key string) (string, error) {
 	d := driver()
+	if d.db == nil {
+		return "", errors.New("session: database not configured")
+	}
 	sessionID, err := ctx.Cookie(d.cookieName)
 	if err != nil {
 		return "", errors.New("session: no session cookie")
@@ -7620,6 +7629,9 @@ func Get(ctx *httpx.Context, key string) (string, error) {
 
 func Put(ctx *httpx.Context, key string, value any) error {
 	d := driver()
+	if d.db == nil {
+		return errors.New("session: database not configured")
+	}
 	if key == "" {
 		return errors.New("session: key must not be empty")
 	}

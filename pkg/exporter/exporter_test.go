@@ -126,6 +126,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "maxSessionTTLSeconds")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "boundedPositiveSeconds")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), `errors.New("session: invalid session value")`)
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), `errors.New("session: database not configured")`)
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "session: put: %w")
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "session: get: %w")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_ban.go"), "DB.Save(user).Error")
@@ -1507,6 +1508,40 @@ func TestExportedSessionCreateDestroyDatabaseErrorsAreSanitized(t *testing.T) {
 	if _, err := Destroy(ctx); err == nil || err.Error() != "session: database error" || strings.Contains(err.Error(), "sql:") {
 		t.Fatalf("Destroy closed DB error = %v, want sanitized database error", err)
 	}
+}
+
+func TestExportedSessionHelpersRejectMissingDatabaseWithoutPanic(t *testing.T) {
+	NewDriver(func(key, fallback string) string {
+		if key == "SESSION_SECRET" {
+			return "session-secret"
+		}
+		return fallback
+	}, nil, "sqlite")
+	ctx := httpx.NewContext(requestWithSession(http.MethodPost, "11111111-1111-4111-8111-111111111111"))
+
+	check := func(name string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("%s should fail without database", name)
+		}
+		if err.Error() != "session: database not configured" {
+			t.Fatalf("%s error = %v, want sanitized database-not-configured", name, err)
+		}
+		for _, forbidden := range []string{"panic", "nil pointer", "sessions", "SELECT", "INSERT", "DELETE"} {
+			if strings.Contains(err.Error(), forbidden) {
+				t.Fatalf("%s error leaked %q: %v", name, forbidden, err)
+			}
+		}
+	}
+
+	_, err := Create(ctx, "user-1", "member")
+	check("Create", err)
+	_, err = Destroy(ctx)
+	check("Destroy", err)
+	_, err = Get(ctx, "secret")
+	check("Get", err)
+	err = Put(ctx, "secret", "value")
+	check("Put", err)
 }
 
 func requestWithSession(method, sessionID string) *http.Request {

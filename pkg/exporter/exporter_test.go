@@ -3887,6 +3887,39 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 	}
 }
 
+func TestExportedGQLGenTargetHandlerSanitizesResolverDatabaseErrors(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	if err := db.AutoMigrate(&models.Post{}); err != nil {
+		t.Fatalf("auto migrate: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(` + "`" + `{"query":"{ posts { totalCount } }"}` + "`" + `)
+	req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	graphqlapi.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("closed DB resolver status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !responseHasErrorCode(t, rec.Body.Bytes(), "INTERNAL_SERVER_ERROR") {
+		t.Fatalf("closed DB resolver should return INTERNAL_SERVER_ERROR, body=%s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "sql:") || strings.Contains(rec.Body.String(), "closed") || strings.Contains(rec.Body.String(), "database") {
+		t.Fatalf("closed DB resolver response leaked detail: %s", rec.Body.String())
+	}
+}
+
 func responseHasErrorCode(t *testing.T, body []byte, code string) bool {
 	t.Helper()
 	var resp struct {

@@ -4916,8 +4916,15 @@ import (
 	"strings"
 	"testing"
 
+	"zero-graphql/app/graphqlapi/resolver"
+
 	"github.com/vektah/gqlparser/v2/gqlerror"
 )
+
+type exportedOwnerOnlyRecord struct {
+	UserID string
+	Secret string
+}
 
 func TestExportedGQLGenTargetErrorPresenterSanitizesUncodedErrors(t *testing.T) {
 	presented := graphQLAPIErrorPresenter(context.Background(), errors.New("database password is swordfish"))
@@ -4962,6 +4969,55 @@ func TestExportedGQLGenTargetRecoverLogsSanitizedMarker(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "graphqlapi panic recovered") {
 		t.Fatalf("recover log missing sanitized marker: %s", logs.String())
+	}
+}
+
+func TestExportedGQLGenTargetOwnerOnlyDirectiveChecksOwner(t *testing.T) {
+	called := false
+	record := &exportedOwnerOnlyRecord{UserID: "owner-1", Secret: "private"}
+
+	strangerCtx := resolver.WithGraphQLAPIAuthClaims(context.Background(), &resolver.GraphQLAPIAuthClaims{UserID: "stranger", Role: "viewer"})
+	got, err := graphQLAPIOwnerOnlyDirective(strangerCtx, record, func(context.Context) (any, error) {
+		called = true
+		return record.Secret, nil
+	})
+	if err != nil || got != nil || called {
+		t.Fatalf("stranger ownerOnly got=%v err=%v called=%v", got, err, called)
+	}
+
+	ownerCtx := resolver.WithGraphQLAPIAuthClaims(context.Background(), &resolver.GraphQLAPIAuthClaims{UserID: "owner-1", Role: "viewer"})
+	got, err = graphQLAPIOwnerOnlyDirective(ownerCtx, record, func(context.Context) (any, error) {
+		called = true
+		return record.Secret, nil
+	})
+	if err != nil || got != "private" || !called {
+		t.Fatalf("owner ownerOnly got=%v err=%v called=%v", got, err, called)
+	}
+
+	called = false
+	managerCtx := resolver.WithGraphQLAPIAuthClaims(context.Background(), &resolver.GraphQLAPIAuthClaims{UserID: "manager", Role: "viewer", Manages: true, RBACLoaded: true})
+	got, err = graphQLAPIOwnerOnlyDirective(managerCtx, record, func(context.Context) (any, error) {
+		called = true
+		return record.Secret, nil
+	})
+	if err != nil || got != "private" || !called {
+		t.Fatalf("manager ownerOnly got=%v err=%v called=%v", got, err, called)
+	}
+
+	got, err = graphQLAPIOwnerOnlyDirective(context.Background(), record, func(context.Context) (any, error) {
+		t.Fatal("unauthenticated ownerOnly should not call next")
+		return nil, nil
+	})
+	if err == nil || got != nil {
+		t.Fatalf("unauthenticated ownerOnly got=%v err=%v", got, err)
+	}
+
+	got, err = graphQLAPIOwnerOnlyDirective(nil, record, func(context.Context) (any, error) {
+		t.Fatal("nil-context ownerOnly should not call next")
+		return nil, nil
+	})
+	if err == nil || got != nil {
+		t.Fatalf("nil-context ownerOnly got=%v err=%v", got, err)
 	}
 }
 `

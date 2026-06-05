@@ -1960,10 +1960,16 @@ type GraphQLAPIAuthClaims struct {
 }
 
 func WithGraphQLAPIAuthClaims(ctx context.Context, claims *GraphQLAPIAuthClaims) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return context.WithValue(ctx, graphQLAPIAuthContextKey{}, claims)
 }
 
 func GraphQLAPIAuthFromContext(ctx context.Context) *GraphQLAPIAuthClaims {
+	if ctx == nil {
+		return nil
+	}
 	claims, _ := ctx.Value(graphQLAPIAuthContextKey{}).(*GraphQLAPIAuthClaims)
 	return claims
 }
@@ -2793,10 +2799,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"mime"
 	"net/http"
+	"reflect"
 	"strings"
 
 	gqlgen "github.com/99designs/gqlgen/graphql"
@@ -2883,16 +2891,29 @@ func graphQLAPIAuthDirective(ctx context.Context, obj any, next gqlgen.Resolver)
 	if resolver.GraphQLAPIAuthFromContext(ctx) == nil {
 		return nil, graphQLAPICodedError("unauthenticated", "UNAUTHENTICATED")
 	}
+	if next == nil {
+		return nil, graphQLAPICodedError("internal server error", "INTERNAL_SERVER_ERROR")
+	}
 	return next(ctx)
 }
 
 func graphQLAPIPublicDirective(ctx context.Context, obj any, next gqlgen.Resolver) (any, error) {
+	if next == nil {
+		return nil, graphQLAPICodedError("internal server error", "INTERNAL_SERVER_ERROR")
+	}
 	return next(ctx)
 }
 
 func graphQLAPIOwnerOnlyDirective(ctx context.Context, obj any, next gqlgen.Resolver) (any, error) {
-	if resolver.GraphQLAPIAuthFromContext(ctx) == nil {
+	auth := resolver.GraphQLAPIAuthFromContext(ctx)
+	if auth == nil {
 		return nil, graphQLAPICodedError("unauthenticated", "UNAUTHENTICATED")
+	}
+	if !graphQLAPICanSeeOwnerObject(auth, obj) {
+		return nil, nil
+	}
+	if next == nil {
+		return nil, graphQLAPICodedError("internal server error", "INTERNAL_SERVER_ERROR")
 	}
 	return next(ctx)
 }
@@ -2904,10 +2925,74 @@ func graphQLAPIRequireRoleDirective(ctx context.Context, obj any, next gqlgen.Re
 	}
 	for _, role := range roles {
 		if graphQLAPIHasRole(auth, role) {
+			if next == nil {
+				return nil, graphQLAPICodedError("internal server error", "INTERNAL_SERVER_ERROR")
+			}
 			return next(ctx)
 		}
 	}
 	return nil, graphQLAPICodedError("forbidden", "FORBIDDEN")
+}
+
+func graphQLAPICanSeeOwnerObject(auth *resolver.GraphQLAPIAuthClaims, obj any) bool {
+	if auth == nil {
+		return false
+	}
+	if auth.Manages || (!auth.RBACLoaded && auth.Role == "admin") {
+		return true
+	}
+	ownerID, ok := graphQLAPIOwnerID(obj)
+	if !ok {
+		return true
+	}
+	return ownerID != "" && auth.UserID != "" && ownerID == auth.UserID
+}
+
+func graphQLAPIOwnerID(obj any) (string, bool) {
+	value := reflect.ValueOf(obj)
+	for value.IsValid() && (value.Kind() == reflect.Pointer || value.Kind() == reflect.Interface) {
+		if value.IsNil() {
+			return "", false
+		}
+		value = value.Elem()
+	}
+	if !value.IsValid() || value.Kind() != reflect.Struct {
+		return "", false
+	}
+	for _, fieldName := range []string{"UserID", "OwnerID"} {
+		field := value.FieldByName(fieldName)
+		if !field.IsValid() {
+			continue
+		}
+		return graphQLAPIFieldString(field), true
+	}
+	return "", false
+}
+
+func graphQLAPIFieldString(value reflect.Value) string {
+	if !value.IsValid() {
+		return ""
+	}
+	if value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return ""
+		}
+		value = value.Elem()
+	}
+	if value.CanInterface() {
+		if stringer, ok := value.Interface().(fmt.Stringer); ok {
+			return stringer.String()
+		}
+	}
+	switch value.Kind() {
+	case reflect.String:
+		return value.String()
+	default:
+		if value.CanInterface() {
+			return fmt.Sprint(value.Interface())
+		}
+		return ""
+	}
 }
 
 func extractGraphQLAPIAuth(r *http.Request) (*resolver.GraphQLAPIAuthClaims, error) {

@@ -6489,9 +6489,13 @@ func Get(ctx *httpx.Context, key string) (string, error) {
 		return "", errors.New("session: no session cookie")
 	}
 	var payloadRaw sql.NullString
-	err = d.db.QueryRow(bindPlaceholders(d.driver, "SELECT payload FROM sessions WHERE id = ?"), sessionID).Scan(&payloadRaw)
+	var expiresAt time.Time
+	err = d.db.QueryRow(bindPlaceholders(d.driver, "SELECT payload, expires_at FROM sessions WHERE id = ?"), sessionID).Scan(&payloadRaw, &expiresAt)
 	if err != nil {
 		return "", fmt.Errorf("session: get: %%w", err)
+	}
+	if time.Now().After(expiresAt) {
+		return "", errors.New("session: expired session")
 	}
 	if !payloadRaw.Valid || payloadRaw.String == "" {
 		return "", nil
@@ -6524,9 +6528,13 @@ func Put(ctx *httpx.Context, key string, value any) error {
 		return errors.New("session: no session cookie")
 	}
 	var payloadRaw sql.NullString
-	err = d.db.QueryRow(bindPlaceholders(d.driver, "SELECT payload FROM sessions WHERE id = ?"), sessionID).Scan(&payloadRaw)
+	var expiresAt time.Time
+	err = d.db.QueryRow(bindPlaceholders(d.driver, "SELECT payload, expires_at FROM sessions WHERE id = ?"), sessionID).Scan(&payloadRaw, &expiresAt)
 	if err != nil {
 		return fmt.Errorf("session: put: %%w", err)
+	}
+	if time.Now().After(expiresAt) {
+		return errors.New("session: expired session")
 	}
 	payload := map[string]any{}
 	if payloadRaw.Valid && payloadRaw.String != "" {
@@ -6539,8 +6547,12 @@ func Put(ctx *httpx.Context, key string, value any) error {
 	if err != nil {
 		return fmt.Errorf("session: put: %%w", err)
 	}
-	if _, err := d.db.Exec(bindPlaceholders(d.driver, "UPDATE sessions SET payload = ?, updated_at = ? WHERE id = ?"), string(data), time.Now().UTC(), sessionID); err != nil {
+	res, err := d.db.Exec(bindPlaceholders(d.driver, "UPDATE sessions SET payload = ?, updated_at = ? WHERE id = ?"), string(data), time.Now().UTC(), sessionID)
+	if err != nil {
 		return fmt.Errorf("session: put: %%w", err)
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return errors.New("session: invalid or expired session")
 	}
 	return nil
 }

@@ -521,6 +521,18 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	if _, err := sessionDriver.Authenticate(sessionReq); err == nil {
 		t.Fatal("destroyed session should fail authentication")
 	}
+	if _, err := db.Exec("INSERT INTO sessions (id, user_id, role, payload, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", "sess-expired", "user-2", "viewer", ` + "`" + `{"stale":"secret"}` + "`" + `, time.Now().Add(-time.Hour), time.Now().Add(-2*time.Hour), time.Now().Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	expiredReq, _ := http.NewRequest("GET", "/", nil)
+	expiredReq.AddCookie(&http.Cookie{Name: sessionDriver.CookieName(), Value: "sess-expired"})
+	expiredCtx := httpx.NewContext(expiredReq)
+	if _, err := session.Get(expiredCtx, "stale"); err == nil {
+		t.Fatal("expired session get should fail")
+	}
+	if err := session.Put(expiredCtx, "stale", "updated"); err == nil {
+		t.Fatal("expired session put should fail")
+	}
 
 	badEnv := func(key, fallback string) string {
 		if key == "AUTH_DRIVER" {

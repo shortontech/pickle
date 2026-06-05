@@ -2986,6 +2986,7 @@ func writeExportedGraphQLSafetyBehaviorTest(t *testing.T, out string) {
 import (
 	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -3208,6 +3209,11 @@ fragment UserFields on User {
 	})
 
 	t.Run("auth_failures_are_sanitized", func(t *testing.T) {
+		var logs bytes.Buffer
+		previousLogOutput := log.Writer()
+		log.SetOutput(&logs)
+		defer log.SetOutput(previousLogOutput)
+
 		body, err := json.Marshal(map[string]any{"query": ` + "`" + `query AuthFailure($id: ID!) {
   user(id: $id) { id email name }
 }` + "`" + `, "variables": map[string]any{"id": userID.String()}})
@@ -3226,6 +3232,12 @@ fragment UserFields on User {
 		}
 		if !strings.Contains(rec.Body.String(), "unauthenticated") {
 			t.Fatalf("missing sanitized auth error: %s", rec.Body.String())
+		}
+		if strings.Contains(logs.String(), "dont-leak-me") || strings.Contains(logs.String(), "jwt:") {
+			t.Fatalf("auth failure leaked implementation details in logs: %s", logs.String())
+		}
+		if !strings.Contains(logs.String(), "graphql auth failed") {
+			t.Fatalf("auth failure log missing sanitized marker: %s", logs.String())
 		}
 	})
 

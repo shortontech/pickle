@@ -2280,7 +2280,7 @@ func execGQLGenOperation(ctx context.Context) *gqlgen.Response {
 	}
 	auth, err := extractAuthFromHeaders(opCtx.Headers)
 	if err != nil {
-		log.Printf("graphql auth failed: %%v", err)
+		log.Printf("graphql auth failed")
 		return gqlgenErrorResponse("unauthenticated", CodeUnauthenticated)
 	}
 	resolveCtx := &ResolveContext{

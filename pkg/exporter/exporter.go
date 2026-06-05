@@ -3242,11 +3242,16 @@ func (r *Runner) Migrate(entries []MigrationEntry) error {
 			continue
 		}
 		fmt.Printf("  migrating: %s\n", entry.ID)
-		if err := r.execMigrationFile(entry.UpFile); err != nil {
-			return fmt.Errorf("migrating %s: %w", entry.ID, err)
-		}
-		if err := r.DB.Exec("INSERT INTO migrations (migration, batch) VALUES (?, ?)", entry.ID, batch).Error; err != nil {
-			return fmt.Errorf("recording %s: %w", entry.ID, err)
+		if err := r.DB.Transaction(func(tx *gorm.DB) error {
+			if err := r.execMigrationFileOn(tx, entry.UpFile); err != nil {
+				return fmt.Errorf("migrating %s: %w", entry.ID, err)
+			}
+			if err := tx.Exec("INSERT INTO migrations (migration, batch) VALUES (?, ?)", entry.ID, batch).Error; err != nil {
+				return fmt.Errorf("recording %s: %w", entry.ID, err)
+			}
+			return nil
+		}); err != nil {
+			return err
 		}
 		fmt.Printf("  migrated:  %s\n", entry.ID)
 		ran++
@@ -3279,11 +3284,16 @@ func (r *Runner) Rollback(entries []MigrationEntry) error {
 			continue
 		}
 		fmt.Printf("  rolling back: %s\n", entry.ID)
-		if err := r.execMigrationFile(entry.DownFile); err != nil {
-			return fmt.Errorf("rolling back %s: %w", entry.ID, err)
-		}
-		if err := r.DB.Exec("DELETE FROM migrations WHERE migration = ?", entry.ID).Error; err != nil {
-			return fmt.Errorf("removing %s: %w", entry.ID, err)
+		if err := r.DB.Transaction(func(tx *gorm.DB) error {
+			if err := r.execMigrationFileOn(tx, entry.DownFile); err != nil {
+				return fmt.Errorf("rolling back %s: %w", entry.ID, err)
+			}
+			if err := tx.Exec("DELETE FROM migrations WHERE migration = ?", entry.ID).Error; err != nil {
+				return fmt.Errorf("removing %s: %w", entry.ID, err)
+			}
+			return nil
+		}); err != nil {
+			return err
 		}
 		fmt.Printf("  rolled back: %s\n", entry.ID)
 	}
@@ -3329,13 +3339,17 @@ func PrintStatus(statuses []MigrationStatus) {
 }
 
 func (r *Runner) execMigrationFile(name string) error {
+	return r.execMigrationFileOn(r.DB, name)
+}
+
+func (r *Runner) execMigrationFileOn(db *gorm.DB, name string) error {
 	data, err := migrationFiles.ReadFile(name)
 	if err != nil {
 		return err
 	}
 	sql := normalizeSQLForDriver(string(data), r.Driver)
 	for _, statement := range splitSQLStatements(sql) {
-		if err := r.DB.Exec(statement).Error; err != nil {
+		if err := db.Exec(statement).Error; err != nil {
 			return fmt.Errorf("executing %q: %w", statement, err)
 		}
 	}

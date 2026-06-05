@@ -696,9 +696,86 @@ func TestExportedMigrationsApplyToSQLite(t *testing.T) {
 		}
 	}
 }
+
+func TestExportedMigrationFailuresAreAtomic(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := migrations.NewRunner(db, "sqlite")
+	failingMigrate := migrations.MigrationEntry{
+		ID:       "99990101000000_atomic_failure",
+		UpFile:   "99990101000000_atomic_failure.up.sql",
+		DownFile: "99990101000000_atomic_failure.down.sql",
+	}
+	if err := runner.Migrate([]migrations.MigrationEntry{failingMigrate}); err == nil {
+		t.Fatal("expected failing migration")
+	}
+	assertSQLiteTableMissing(t, db, "atomic_failure")
+	assertMigrationRowCount(t, db, failingMigrate.ID, 0)
+
+	successThenFailingRollback := migrations.MigrationEntry{
+		ID:       "99990101000001_atomic_rollback",
+		UpFile:   "99990101000001_atomic_rollback.up.sql",
+		DownFile: "99990101000001_atomic_rollback.down.sql",
+	}
+	if err := runner.Migrate([]migrations.MigrationEntry{successThenFailingRollback}); err != nil {
+		t.Fatalf("setup migration: %v", err)
+	}
+	assertSQLiteTableExists(t, db, "atomic_rollback")
+	assertMigrationRowCount(t, db, successThenFailingRollback.ID, 1)
+	if err := runner.Rollback([]migrations.MigrationEntry{successThenFailingRollback}); err == nil {
+		t.Fatal("expected failing rollback")
+	}
+	assertSQLiteTableExists(t, db, "atomic_rollback")
+	assertMigrationRowCount(t, db, successThenFailingRollback.ID, 1)
+}
+
+func assertSQLiteTableExists(t *testing.T, db *gorm.DB, table string) {
+	t.Helper()
+	var count int64
+	if err := db.Raw("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("table %s exists = %d, want 1", table, count)
+	}
+}
+
+func assertSQLiteTableMissing(t *testing.T, db *gorm.DB, table string) {
+	t.Helper()
+	var count int64
+	if err := db.Raw("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("table %s exists = %d, want 0", table, count)
+	}
+}
+
+func assertMigrationRowCount(t *testing.T, db *gorm.DB, id string, want int64) {
+	t.Helper()
+	var count int64
+	if err := db.Table("migrations").Where("migration = ?", id).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != want {
+		t.Fatalf("migration rows for %s = %d, want %d", id, count, want)
+	}
+}
 `
 	if err := os.WriteFile(filepath.Join(out, "database", "migrations", "exported_migration_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	for name, src := range map[string]string{
+		"99990101000000_atomic_failure.up.sql":    "CREATE TABLE atomic_failure (id TEXT PRIMARY KEY);\nSELECT * FROM definitely_missing_table;\n",
+		"99990101000000_atomic_failure.down.sql":  "DROP TABLE IF EXISTS atomic_failure;\n",
+		"99990101000001_atomic_rollback.up.sql":   "CREATE TABLE atomic_rollback (id TEXT PRIMARY KEY);\n",
+		"99990101000001_atomic_rollback.down.sql": "DROP TABLE atomic_rollback;\nSELECT * FROM definitely_missing_table;\n",
+	} {
+		if err := os.WriteFile(filepath.Join(out, "database", "migrations", name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

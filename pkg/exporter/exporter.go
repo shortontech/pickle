@@ -2167,12 +2167,45 @@ func convertGraphQLErrors(in []map[string]any) gqlerror.List {
 		if msg, ok := item["message"].(string); ok {
 			err.Message = msg
 		}
+		if path, ok := item["path"]; ok {
+			err.Path = graphQLErrorPath(path)
+		}
 		if extensions, ok := item["extensions"].(map[string]any); ok {
 			err.Extensions = extensions
 		}
 		out = append(out, err)
 	}
 	return out
+}
+
+func graphQLErrorPath(path any) ast.Path {
+	switch p := path.(type) {
+	case ast.Path:
+		return p
+	case []string:
+		out := make(ast.Path, 0, len(p))
+		for _, part := range p {
+			out = append(out, ast.PathName(part))
+		}
+		return out
+	case []any:
+		out := make(ast.Path, 0, len(p))
+		for _, part := range p {
+			switch v := part.(type) {
+			case string:
+				out = append(out, ast.PathName(v))
+			case int:
+				out = append(out, ast.PathIndex(v))
+			case int64:
+				out = append(out, ast.PathIndex(int(v)))
+			case float64:
+				out = append(out, ast.PathIndex(int(v)))
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 `
 

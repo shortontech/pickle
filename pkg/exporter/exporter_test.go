@@ -1843,6 +1843,7 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "schema_gen.go"), "type Query")
 	assertFileContains(t, filepath.Join(out, "go.mod"), "github.com/99designs/gqlgen")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "handler.New(pickleExecutableSchema{})")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "err.Path = graphQLErrorPath(path)")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLRequestBodyBytes = 1 << 20")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "http.MaxBytesReader(w, r.Body, maxGraphQLRequestBodyBytes)")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "pickle_gen.go"), "maxQueryComplexity")
@@ -1861,6 +1862,7 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "pickle.")
 	writeExportedGraphQLSafetyBehaviorTest(t, out)
+	writeExportedGraphQLErrorBehaviorTest(t, out)
 	writeExportedGraphQLRBACBehaviorTest(t, out)
 	writeExportedGraphQLModelVisibilityBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
@@ -2059,6 +2061,48 @@ query Two { posts { edges { node { id } } } }` + "`" + `, nil, true},
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphql", "exported_safety_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedGraphQLErrorBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package graphql
+
+import "testing"
+
+func TestExportedGraphQLErrorsPreservePath(t *testing.T) {
+	errs := convertGraphQLErrors([]map[string]any{
+		{
+			"message": "user not found",
+			"path":    []string{"user"},
+			"extensions": map[string]any{
+				"code": "NOT_FOUND",
+			},
+		},
+		{
+			"message": "nested field denied",
+			"path":    []any{"users", 0, "email"},
+		},
+	})
+	if len(errs) != 2 {
+		t.Fatalf("len(errs) = %d, want 2", len(errs))
+	}
+	if errs[0].Message != "user not found" {
+		t.Fatalf("message = %q", errs[0].Message)
+	}
+	if errs[0].Path.String() != "user" {
+		t.Fatalf("path = %q, want user", errs[0].Path.String())
+	}
+	if errs[0].Extensions["code"] != "NOT_FOUND" {
+		t.Fatalf("extensions = %#v", errs[0].Extensions)
+	}
+	if errs[1].Path.String() != "users[0].email" {
+		t.Fatalf("nested path = %q, want users[0].email", errs[1].Path.String())
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "graphql", "exported_error_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

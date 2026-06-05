@@ -8056,7 +8056,7 @@ func (d *Driver) TokenEndpoint(ctx *httpx.Context) httpx.Response {
 	if err != nil { return ctx.Error(err) }
 	expiresAt := time.Now().Add(time.Duration(d.expiry) * time.Second)
 	if _, err := d.db.Exec(bindPlaceholders(d.driver, "INSERT INTO oauth_tokens (token, client_id, expires_at, created_at) VALUES (?, ?, ?, ?)"), token, clientID, expiresAt, time.Now().UTC()); err != nil {
-		return ctx.Error(fmt.Errorf("oauth: failed to store token: %%w", err))
+		return ctx.Error(errors.New("oauth: database error"))
 	}
 	resp := ctx.JSON(200, map[string]any{"access_token": token, "token_type": "bearer", "expires_in": d.expiry})
 	if resp.Headers == nil { resp.Headers = map[string]string{} }

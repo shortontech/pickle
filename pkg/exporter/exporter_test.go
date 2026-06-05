@@ -100,6 +100,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "maxOAuthBearerTokenBytes")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "maxOAuthAuthorizationHeaderBytes")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "boundedPositiveSeconds")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), `errors.New("oauth: database error")`)
+	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "failed to store token")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func CSRF")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "len(parts[0]) != 64 || len(parts[1]) != 64")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func validSessionID")
@@ -594,6 +596,36 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	misconfiguredResp := misconfigured.TokenEndpoint(httpx.NewContext(misconfiguredReq))
 	if misconfiguredResp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("misconfigured oauth status = %d body = %#v", misconfiguredResp.StatusCode, misconfiguredResp.Body)
+	}
+	closedOAuthDB, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := closedOAuthDB.Exec(` + "`" + `CREATE TABLE oauth_tokens (token TEXT PRIMARY KEY, client_id TEXT NOT NULL, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL)` + "`" + `); err != nil {
+		t.Fatal(err)
+	}
+	if err := closedOAuthDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	closedOAuthDriver := oauth.NewDriver(func(key, fallback string) string {
+		switch key {
+		case "OAUTH_CLIENT_ID":
+			return "client-1"
+		case "OAUTH_CLIENT_SECRET":
+			return "secret-1"
+		default:
+			return fallback
+		}
+	}, closedOAuthDB, "sqlite")
+	closedTokenReq, _ := http.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader("grant_type=client_credentials"))
+	closedTokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	closedTokenReq.SetBasicAuth("client-1", "secret-1")
+	closedTokenResp := closedOAuthDriver.TokenEndpoint(httpx.NewContext(closedTokenReq))
+	if closedTokenResp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("closed oauth DB status = %d body = %#v", closedTokenResp.StatusCode, closedTokenResp.Body)
+	}
+	if strings.Contains(fmt.Sprint(closedTokenResp.Body), "sql:") || strings.Contains(fmt.Sprint(closedTokenResp.Body), "closed") {
+		t.Fatalf("closed oauth DB response leaked detail: %#v", closedTokenResp.Body)
 	}
 	cappedOAuthDriver := oauth.NewDriver(func(key, fallback string) string {
 		switch key {

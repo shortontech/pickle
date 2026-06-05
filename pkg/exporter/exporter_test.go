@@ -45,6 +45,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_post_stat.go"), "type UserPostStat struct")
 	assertFileContains(t, filepath.Join(out, "app", "models", "db.go"), "var DB *gorm.DB")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.up.sql"), "CREATE TABLE")
+	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.up.sql"), "email_encrypted")
+	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.up.sql"), "password_hash_encrypted")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.down.sql"), "DROP TABLE")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260221100000_create_users_table.up.sql"), "CREATE INDEX")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260228100000_create_user_post_stats_view.up.sql"), "CREATE VIEW")
@@ -60,6 +62,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "config", "app.go"), "func app() AppConfig")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "commands.NewApp().Run(os.Args[1:])")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "func BuiltinCommands() []Command")
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "func HTTPHandler() http.Handler")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "routes.API.RegisterRoutes(mux)")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "support.go"), "func (r *Runner) Migrate(entries []MigrationEntry) error")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "crypto/hmac")
@@ -702,8 +705,12 @@ func writeExportedCommandAppBehaviorTest(t *testing.T, out string) {
 	testSrc := `package commands_test
 
 import (
+	"bytes"
 	"database/sql"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -747,6 +754,17 @@ func TestExportedCommandAppRunsMigrations(t *testing.T) {
 	}
 	if exposures != 1 {
 		t.Fatalf("graphql user list exposures = %d, want 1", exposures)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/users", bytes.NewBufferString(` + "`" + `{"name":"Ada","email":"ada@example.com","password":"correct horse"}` + "`" + `))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	commands.HTTPHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create user status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Ada") {
+		t.Fatalf("create user response = %s, want Ada", rec.Body.String())
 	}
 }
 `

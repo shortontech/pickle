@@ -3008,6 +3008,17 @@ func Commands() []Command {
 	return append(BuiltinCommands(), UserCommands()...)
 }
 
+func HTTPHandler() http.Handler {
+	mux := http.NewServeMux()
+	routes.API.RegisterRoutes(mux)
+`)
+	if hasGraphQL {
+		b.WriteString("\tmux.Handle(\"/graphql\", graphql.Handler())\n")
+		b.WriteString("\tmux.Handle(\"/graphql/playground\", graphql.PlaygroundHandler(\"/graphql\"))\n")
+	}
+	b.WriteString(`	return mux
+}
+
 func NewApp() *App {
 	return BuildApp(
 		func() {
@@ -3027,18 +3038,11 @@ func NewApp() *App {
 		b.WriteString("\t\t\tdefer stop()\n")
 		b.WriteString("\t\t\tgo schedule.Schedule.Start(ctx)\n")
 	}
-	b.WriteString(`			mux := http.NewServeMux()
-			routes.API.RegisterRoutes(mux)
-`)
-	if hasGraphQL {
-		b.WriteString("\t\t\tmux.Handle(\"/graphql\", graphql.Handler())\n")
-		b.WriteString("\t\t\tmux.Handle(\"/graphql/playground\", graphql.PlaygroundHandler(\"/graphql\"))\n")
-	}
 	b.WriteString(`			addr := ":" + config.App.Port
 			log.Printf("listening on %s", addr)
 			server := &http.Server{
 				Addr: addr,
-				Handler: mux,
+				Handler: HTTPHandler(),
 				ReadHeaderTimeout: 10 * time.Second,
 				ReadTimeout: 30 * time.Second,
 				WriteTimeout: 60 * time.Second,
@@ -3160,7 +3164,9 @@ func sqlForMigrationOp(op generator.MigrationOperation) (string, error) {
 		}
 		var statements []string
 		for _, col := range op.Columns {
-			statements = append(statements, "ALTER TABLE "+quoteIdent(op.Table)+" ADD COLUMN "+columnSQL(col, false))
+			for _, storageCol := range sqlStorageColumns(col) {
+				statements = append(statements, "ALTER TABLE "+quoteIdent(op.Table)+" ADD COLUMN "+columnSQL(storageCol, false))
+			}
 		}
 		return strings.Join(statements, ";\n"), nil
 	case "drop_column":
@@ -3248,12 +3254,24 @@ func createTableSQL(table *schema.Table) string {
 	}
 	compositePrimaryKey := len(pk) > 1
 	for _, col := range table.Columns {
-		cols = append(cols, "\t"+columnSQL(col, compositePrimaryKey))
+		for _, storageCol := range sqlStorageColumns(col) {
+			cols = append(cols, "\t"+columnSQL(storageCol, compositePrimaryKey))
+		}
 	}
 	if len(pk) > 1 {
 		cols = append(cols, "\tPRIMARY KEY ("+strings.Join(pk, ", ")+")")
 	}
 	return "CREATE TABLE " + quoteIdent(table.Name) + " (\n" + strings.Join(cols, ",\n") + "\n)"
+}
+
+func sqlStorageColumns(col *schema.Column) []*schema.Column {
+	if col.IsEncrypted || col.IsSealed {
+		return []*schema.Column{
+			encryptedStorageColumn(col, col.Name+"_encrypted", col.IsNullable),
+			encryptedStorageColumn(col, col.Name+"_encrypted_v2", true),
+		}
+	}
+	return []*schema.Column{col}
 }
 
 func dropTableSQL(name string) string {

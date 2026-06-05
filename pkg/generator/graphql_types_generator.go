@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"go/format"
+	"strings"
 
 	"github.com/shortontech/pickle/pkg/schema"
 )
@@ -150,6 +151,14 @@ func writeGraphQLFieldCostRegistration(b *bytes.Buffer, plans []GraphQLModelPlan
 	b.WriteString("\tregisterGraphQLFieldCosts(map[string]FieldCost{\n")
 	for _, tbl := range tables {
 		structName := tableToStructName(tbl.Name)
+		if operationAllowed(planByTable[tbl.Name], "list") {
+			fieldName := snakeToCamel(tbl.Name)
+			b.WriteString(fmt.Sprintf("\t\t%q: {TypeName: \"Query\", FieldName: %q, BaseCost: 1, IsList: true, DefaultLimit: defaultGraphQLPageSize, MaxLimit: maxGraphQLPageSize},\n", "Query."+fieldName, fieldName))
+		}
+		if operationAllowed(planByTable[tbl.Name], "show") {
+			fieldName := snakeToCamel(strings.TrimSuffix(tbl.Name, "s"))
+			b.WriteString(fmt.Sprintf("\t\t%q: {TypeName: \"Query\", FieldName: %q, BaseCost: 1},\n", "Query."+fieldName, fieldName))
+		}
 		for _, col := range tbl.Columns {
 			if isExcludedFromGraphQL(tbl, col) || graphqlGoSerType(col) == "" {
 				continue

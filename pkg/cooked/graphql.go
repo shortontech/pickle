@@ -90,6 +90,7 @@ type Document struct {
 // Field represents a selected field with arguments and sub-selections.
 type Field struct {
 	Name       string
+	TypeName   string // parent GraphQL type name, when known
 	Alias      string // empty if no alias
 	Args       map[string]any
 	Selections []Field // nested selections
@@ -215,6 +216,7 @@ func convertSelectionSet(ss ast.SelectionSet) []Field {
 		case *ast.Field:
 			f := Field{
 				Name:       s.Name,
+				TypeName:   selectionParentType(s),
 				Alias:      s.Alias,
 				Args:       convertArguments(s.Arguments),
 				Selections: convertSelectionSet(s.SelectionSet),
@@ -227,6 +229,13 @@ func convertSelectionSet(ss ast.SelectionSet) []Field {
 		}
 	}
 	return fields
+}
+
+func selectionParentType(field *ast.Field) string {
+	if field != nil && field.ObjectDefinition != nil {
+		return field.ObjectDefinition.Name
+	}
+	return ""
 }
 
 func convertArguments(args ast.ArgumentList) map[string]any {
@@ -427,7 +436,10 @@ func decodeCursor(cursor string) (int, error) {
 }
 
 func enforceQueryBudget(doc *Document, budget QueryBudget) (*QueryStats, error) {
-	stats := measureQueryStats(doc.Fields, 1, 0)
+	stats, err := measureQueryStats(doc.Fields, 1, 0)
+	if err != nil {
+		return stats, err
+	}
 	if stats.Depth > budget.MaxDepth {
 		return stats, fmt.Errorf("query depth %d exceeds maximum %d", stats.Depth, budget.MaxDepth)
 	}
@@ -449,7 +461,7 @@ func enforceQueryBudget(doc *Document, budget QueryBudget) (*QueryStats, error) 
 	return stats, nil
 }
 
-func measureQueryStats(fields []Field, depth, relationshipDepth int) *QueryStats {
+func measureQueryStats(fields []Field, depth, relationshipDepth int) (*QueryStats, error) {
 	stats := &QueryStats{Depth: 0}
 	for _, f := range fields {
 		cost := graphQLFieldCost(f)
@@ -462,14 +474,21 @@ func measureQueryStats(fields []Field, depth, relationshipDepth int) *QueryStats
 			stats.Aliases++
 		}
 		stats.InputNodes += countInputNodes(f.Args)
-		stats.Complexity += fieldComplexity(f, cost)
+		complexity, err := fieldComplexity(f, cost)
+		if err != nil {
+			return stats, err
+		}
+		stats.Complexity += complexity
 		if depth > stats.Depth {
 			stats.Depth = depth
 		}
 		if relDepth > stats.RelationshipDepth {
 			stats.RelationshipDepth = relDepth
 		}
-		child := measureQueryStats(f.Selections, depth+1, relDepth)
+		child, err := measureQueryStats(f.Selections, depth+1, relDepth)
+		if err != nil {
+			return stats, err
+		}
 		stats.Fields += child.Fields
 		stats.Aliases += child.Aliases
 		stats.InputNodes += child.InputNodes
@@ -481,10 +500,15 @@ func measureQueryStats(fields []Field, depth, relationshipDepth int) *QueryStats
 			stats.RelationshipDepth = child.RelationshipDepth
 		}
 	}
-	return stats
+	return stats, nil
 }
 
 func graphQLFieldCost(field Field) FieldCost {
+	if field.TypeName != "" {
+		if cost, ok := generatedFieldCosts[field.TypeName+"."+field.Name]; ok {
+			return cost
+		}
+	}
 	for _, cost := range generatedFieldCosts {
 		if cost.FieldName == field.Name {
 			return cost
@@ -493,7 +517,7 @@ func graphQLFieldCost(field Field) FieldCost {
 	return FieldCost{FieldName: field.Name, BaseCost: 1}
 }
 
-func fieldComplexity(field Field, cost FieldCost) int {
+func fieldComplexity(field Field, cost FieldCost) (int, error) {
 	base := cost.BaseCost
 	if base <= 0 {
 		base = 1
@@ -502,14 +526,23 @@ func fieldComplexity(field Field, cost FieldCost) int {
 		limit := defaultGraphQLPageSize
 		if pageArg, ok := field.Args["page"].(map[string]any); ok {
 			if pageArg["first"] != nil {
-				if n, err := parsePositivePageInt(pageArg["first"]); err == nil {
-					limit = n
+				n, err := parsePositivePageInt(pageArg["first"])
+				if err != nil {
+					return 0, fmt.Errorf("field %s page.first: %w", field.Name, err)
 				}
+				limit = n
 			}
 		}
-		return base * limit
+		maxLimit := cost.MaxLimit
+		if maxLimit <= 0 {
+			maxLimit = maxGraphQLPageSize
+		}
+		if limit > maxLimit {
+			return 0, fmt.Errorf("field %s page.first %d exceeds maximum %d", field.Name, limit, maxLimit)
+		}
+		return base * limit, nil
 	}
-	return base
+	return base, nil
 }
 
 func countInputNodes(v any) int {

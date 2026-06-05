@@ -1965,9 +1965,16 @@ func (pickleExecutableSchema) Complexity(ctx context.Context, typeName, fieldNam
 	if cost.IsList {
 		limit := defaultGraphQLPageSize
 		if pageArg, ok := args["page"].(map[string]any); ok {
-			if n, ok := pageArg["first"].(int); ok && n > 0 {
+			if n, err := parsePositivePageInt(pageArg["first"]); err == nil {
 				limit = n
 			}
+		}
+		maxLimit := cost.MaxLimit
+		if maxLimit <= 0 {
+			maxLimit = maxGraphQLPageSize
+		}
+		if limit > maxLimit {
+			limit = maxLimit
 		}
 		base *= limit
 	}
@@ -2030,6 +2037,7 @@ func convertSelectionSetWithVariables(ss ast.SelectionSet, variables map[string]
 		case *ast.Field:
 			fields = append(fields, Field{
 				Name:       s.Name,
+				TypeName:   selectionParentType(s),
 				Alias:      s.Alias,
 				Args:       convertArgumentsWithVariables(s.Arguments, variables),
 				Selections: convertSelectionSetWithVariables(s.SelectionSet, variables),

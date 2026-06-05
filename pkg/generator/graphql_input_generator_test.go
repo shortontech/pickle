@@ -220,6 +220,9 @@ func TestGraphQLTypesRegistersFieldCosts(t *testing.T) {
 	if !strings.Contains(s, `"User.posts"`) {
 		t.Error("types should include relationship field cost metadata")
 	}
+	if !strings.Contains(s, `"Query.users"`) || !strings.Contains(s, `"Query.posts"`) {
+		t.Error("types should include root query list cost metadata")
+	}
 	if !strings.Contains(s, "IsRelation: true") || !strings.Contains(s, "IsList: true") {
 		t.Error("has_many relationship cost should be relation list metadata")
 	}

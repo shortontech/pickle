@@ -168,6 +168,53 @@ func TestEnforceQueryBudgetUsesNumericPageVariables(t *testing.T) {
 	}
 }
 
+func TestEnforceQueryBudgetUsesRootListCosts(t *testing.T) {
+	registerGraphQLFieldCosts(map[string]FieldCost{
+		"Query.users": {TypeName: "Query", FieldName: "users", BaseCost: 20, IsList: true},
+	})
+	defer func() { generatedFieldCosts = map[string]FieldCost{} }()
+
+	_, err := enforceQueryBudget(&Document{Fields: []Field{
+		{Name: "users", TypeName: "Query", Args: map[string]any{"page": map[string]any{"first": 100}}},
+	}}, defaultQueryBudget())
+	if err == nil {
+		t.Fatal("expected budget error")
+	}
+	if !strings.Contains(err.Error(), "complexity") {
+		t.Errorf("error = %q", err.Error())
+	}
+}
+
+func TestEnforceQueryBudgetRejectsFieldMaxLimit(t *testing.T) {
+	registerGraphQLFieldCosts(map[string]FieldCost{
+		"Query.users": {TypeName: "Query", FieldName: "users", BaseCost: 1, IsList: true, MaxLimit: 10},
+	})
+	defer func() { generatedFieldCosts = map[string]FieldCost{} }()
+
+	_, err := enforceQueryBudget(&Document{Fields: []Field{
+		{Name: "users", TypeName: "Query", Args: map[string]any{"page": map[string]any{"first": 11}}},
+	}}, defaultQueryBudget())
+	if err == nil {
+		t.Fatal("expected max limit error")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum 10") {
+		t.Errorf("error = %q", err.Error())
+	}
+}
+
+func TestGraphQLFieldCostUsesParentType(t *testing.T) {
+	registerGraphQLFieldCosts(map[string]FieldCost{
+		"Query.posts": {TypeName: "Query", FieldName: "posts", BaseCost: 1, IsList: true},
+		"User.posts":  {TypeName: "User", FieldName: "posts", BaseCost: 7, IsList: true, IsRelation: true},
+	})
+	defer func() { generatedFieldCosts = map[string]FieldCost{} }()
+
+	cost := graphQLFieldCost(Field{Name: "posts", TypeName: "User"})
+	if !cost.IsRelation || cost.BaseCost != 7 {
+		t.Fatalf("expected User.posts relationship cost, got %+v", cost)
+	}
+}
+
 func TestEnforceQueryBudgetRejectsRelationshipDepth(t *testing.T) {
 	registerGraphQLFieldCosts(map[string]FieldCost{
 		"A.bs": {FieldName: "bs", BaseCost: 1, IsRelation: true},

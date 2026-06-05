@@ -4723,7 +4723,7 @@ func NewDriver(env func(string, string) string, db *sql.DB, driver string) *Driv
 	cookieName := env("SESSION_COOKIE", "session_id")
 	sessionCookieName = cookieName
 	csrfConfig.cookieName = env("CSRF_COOKIE", "csrf_token")
-	if secret := env("SESSION_SECRET", ""); secret != "" { csrfConfig.secret = []byte(secret) }
+	if secret := env("SESSION_SECRET", ""); secret != "" { csrfConfig.secret = []byte(secret) } else { csrfConfig.secret = nil }
 	d := &Driver{db: db, driver: driver, cookieName: cookieName, ttl: ttl}
 	activeDriver = d
 	return d
@@ -4766,7 +4766,7 @@ func Create(ctx *httpx.Context, userID, role string) (httpx.Response, error) {
 }
 
 func CSRF(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
-	if len(csrfConfig.secret) == 0 { panic("session: CSRF middleware requires SESSION_SECRET to be set") }
+	if len(csrfConfig.secret) == 0 { return ctx.Forbidden("CSRF secret not configured") }
 	if strings.HasPrefix(ctx.Request().Header.Get("Authorization"), "Bearer ") { return next() }
 	sessionID := sessionIDFromRequest(ctx.Request())
 	method := ctx.Request().Method

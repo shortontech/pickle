@@ -388,6 +388,31 @@ func TestExportedSessionCreateSetsSessionAndCSRFCookies(t *testing.T) {
 	}
 }
 
+func TestExportedCSRFRequiresConfiguredSecretWithoutPanic(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	NewDriver(func(key, fallback string) string {
+		if key == "SESSION_SECRET" {
+			return ""
+		}
+		return fallback
+	}, db, "sqlite")
+	if len(csrfConfig.secret) != 0 {
+		t.Fatal("missing SESSION_SECRET should clear CSRF secret")
+	}
+	ctx := httpx.NewContext(requestWithSession(http.MethodPost, "sess-1"))
+	resp := CSRF(ctx, func() httpx.Response {
+		t.Fatal("CSRF should not call next when secret is missing")
+		return httpx.Response{}
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing secret status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+}
+
 func requestWithSession(method, sessionID string) *http.Request {
 	req := httptest.NewRequest(method, "/", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sessionID})

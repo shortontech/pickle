@@ -3910,16 +3910,34 @@ func Init() {
 }
 
 {{ if .HasDatabaseConfig }}func (d DatabaseConfig) Connection(name ...string) ConnectionConfig {
+	conn, err := d.TryConnection(name...)
+	if err != nil { log.Fatal(err) }
+	return conn
+}
+
+func (d DatabaseConfig) TryConnection(name ...string) (ConnectionConfig, error) {
 	key := d.Default
 	if len(name) > 0 && name[0] != "" { key = name[0] }
 	conn, ok := d.Connections[key]
-	if !ok { log.Fatalf("config: unknown database connection: %s", key) }
-	return conn
+	if !ok { return ConnectionConfig{}, fmt.Errorf("config: unknown database connection: %s", key) }
+	return conn, nil
 }
 
 func (d DatabaseConfig) Open(name ...string) *sql.DB { return OpenDB(d.Connection(name...)) }
 
+func (d DatabaseConfig) TryOpen(name ...string) (*sql.DB, error) {
+	conn, err := d.TryConnection(name...)
+	if err != nil { return nil, err }
+	return TryOpenDB(conn)
+}
+
 func (d DatabaseConfig) OpenGORM(name ...string) *gorm.DB { return OpenGORM(d.Connection(name...)) }
+
+func (d DatabaseConfig) TryOpenGORM(name ...string) (*gorm.DB, error) {
+	conn, err := d.TryConnection(name...)
+	if err != nil { return nil, err }
+	return TryOpenGORM(conn)
+}
 {{ end }}
 `))
 

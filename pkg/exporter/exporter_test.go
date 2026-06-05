@@ -138,6 +138,31 @@ func TestConnectionConfigTryOpenGORM(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDatabaseConfigRejectsUnknownConnectionsWithoutFatal(t *testing.T) {
+	cfg := DatabaseConfig{
+		Default: "sqlite",
+		Connections: map[string]ConnectionConfig{
+			"sqlite": {Driver: "sqlite", Name: ":memory:"},
+		},
+	}
+	conn, err := cfg.TryConnection()
+	if err != nil {
+		t.Fatalf("TryConnection(default): %v", err)
+	}
+	if conn.Driver != "sqlite" {
+		t.Fatalf("default connection = %#v", conn)
+	}
+	if _, err := cfg.TryConnection("missing"); err == nil || !strings.Contains(err.Error(), "unknown database connection: missing") {
+		t.Fatalf("TryConnection(missing) error = %v, want unknown connection", err)
+	}
+	if _, err := cfg.TryOpen("missing"); err == nil || !strings.Contains(err.Error(), "unknown database connection: missing") {
+		t.Fatalf("TryOpen(missing) error = %v, want unknown connection", err)
+	}
+	if _, err := cfg.TryOpenGORM("missing"); err == nil || !strings.Contains(err.Error(), "unknown database connection: missing") {
+		t.Fatalf("TryOpenGORM(missing) error = %v, want unknown connection", err)
+	}
+}
 `
 	if err := os.WriteFile(filepath.Join(out, "config", "exported_config_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)

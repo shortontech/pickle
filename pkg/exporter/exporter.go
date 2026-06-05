@@ -1768,29 +1768,19 @@ func (e *exporter) writeGraphQLPackage(tables []*schema.Table, views []*schema.V
 		if d.IsDir() {
 			return nil
 		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+		if filepath.Base(path) != "schema_gen.go" {
 			return nil
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		data, err = e.rewriteGeneratedGraphQLSource(path, data)
+		sdl, err := extractStringConstFromGoSource(data, "SchemaSDL")
 		if err != nil {
-			return err
+			return fmt.Errorf("extracting exported GraphQL schema SDL: %w", err)
 		}
-		if filepath.Base(path) == "schema_gen.go" {
-			sdl, err := extractStringConstFromGoSource(data, "SchemaSDL")
-			if err != nil {
-				return fmt.Errorf("extracting exported GraphQL schema SDL: %w", err)
-			}
-			schemaSDL = sdl
-		}
-		rel, err := filepath.Rel(e.project.Dir, path)
-		if err != nil {
-			return err
-		}
-		return e.writeFile(rel, data)
+		schemaSDL = sdl
+		return nil
 	}); err != nil {
 		return err
 	}
@@ -1808,12 +1798,12 @@ func (e *exporter) writeGraphQLPackage(tables []*schema.Table, views []*schema.V
 
 func (e *exporter) writeGraphQLTargetFiles(schemaSDL string) error {
 	schemaSDL = strings.TrimSpace(schemaSDL) + "\n"
-	if err := e.writeFile(filepath.Join("app", "graphql", "schema.graphqls"), []byte(schemaSDL)); err != nil {
+	if err := e.writeFile(filepath.Join("app", "graphqlapi", "schema.graphqls"), []byte(schemaSDL)); err != nil {
 		return err
 	}
 	var b strings.Builder
 	b.WriteString("schema:\n")
-	b.WriteString("  - app/graphql/schema.graphqls\n\n")
+	b.WriteString("  - app/graphqlapi/schema.graphqls\n\n")
 	b.WriteString("exec:\n")
 	b.WriteString("  filename: app/graphqlapi/generated/generated.go\n")
 	b.WriteString("  package: generated\n\n")
@@ -2541,116 +2531,6 @@ func extractStringConstFromGoSource(src []byte, name string) (string, error) {
 	return "", fmt.Errorf("const %s was not found", name)
 }
 
-func (e *exporter) rewriteGeneratedGraphQLSource(path string, data []byte) ([]byte, error) {
-	if filepath.Base(path) == "handler_gen.go" {
-		src := fmt.Sprintf(exportedGQLGenHandlerSource, e.modulePath, e.modulePath)
-		formatted, err := format.Source([]byte(src))
-		if err != nil {
-			return nil, fmt.Errorf("formatting exported gqlgen handler %s: %w", path, err)
-		}
-		return formatted, nil
-	}
-	replaced := strings.ReplaceAll(string(data), e.sourceModule+"/", e.modulePath+"/")
-	if filepath.Base(path) == "pickle_gen.go" {
-		var err error
-		replaced, err = rewriteExportedGraphQLCoreSource(replaced)
-		if err != nil {
-			return nil, fmt.Errorf("rewriting exported GraphQL core %s: %w", path, err)
-		}
-	}
-	formatted, err := format.Source([]byte(replaced))
-	if err != nil {
-		return nil, fmt.Errorf("formatting exported GraphQL source %s: %w", path, err)
-	}
-	return formatted, nil
-}
-
-func rewriteExportedGraphQLCoreSource(src string) (string, error) {
-	replacements := []struct {
-		name string
-		old  string
-		new  string
-	}{
-		{
-			name: "auth claims",
-			old: `type AuthClaims struct {
-	UserID string
-	Role   string
-}`,
-			new: `type AuthClaims struct {
-	UserID     string
-	Role       string
-	Roles      []string
-	Manages    bool
-	RBACLoaded bool
-}`,
-		},
-		{
-			name: "role matching",
-			old: `func (c *ResolveContext) HasRole(role string) bool {
-	if c.auth == nil {
-		return false
-	}
-	return c.auth.Role == role
-}`,
-			new: `func (c *ResolveContext) HasRole(role string) bool {
-	if c.auth == nil {
-		return false
-	}
-	for _, assigned := range c.auth.Roles {
-		if assigned == role {
-			return true
-		}
-	}
-	return !c.auth.RBACLoaded && c.auth.Role == role
-}`,
-		},
-		{
-			name: "owner visibility",
-			old: `func (c *ResolveContext) CanSeeOwnerFields(ownerID string) bool {
-	if c.auth == nil {
-		return false
-	}
-	return c.auth.UserID == ownerID || c.auth.Role == "admin"
-}`,
-			new: `func (c *ResolveContext) CanSeeOwnerFields(ownerID string) bool {
-	if c.auth == nil {
-		return false
-	}
-	return c.auth.UserID == ownerID || c.auth.Manages || (!c.auth.RBACLoaded && c.auth.Role == "admin")
-}`,
-		},
-		{
-			name: "visibility tier",
-			old: `func (c *ResolveContext) Visibility() VisibilityTier {
-	if c.auth == nil {
-		return VisibilityPublic
-	}
-	if c.auth.Role == "admin" {
-		return VisibilityAll
-	}
-	return VisibilityOwner
-}`,
-			new: `func (c *ResolveContext) Visibility() VisibilityTier {
-	if c.auth == nil {
-		return VisibilityPublic
-	}
-	if c.auth.Manages || (!c.auth.RBACLoaded && c.auth.Role == "admin") {
-		return VisibilityAll
-	}
-	return VisibilityOwner
-}`,
-		},
-	}
-	for _, replacement := range replacements {
-		if !strings.Contains(src, replacement.old) {
-			return "", fmt.Errorf("expected %s block was not found", replacement.name)
-		}
-		src = strings.Replace(src, replacement.old, replacement.new, 1)
-	}
-	return src, nil
-}
-
 func (e *exporter) writeGraphQLQuerySupport(tables []*schema.Table, views []*schema.View) error {
 	hasEncrypted := tablesHaveEncryptedColumns(tables)
 	var b strings.Builder
@@ -2870,6 +2750,7 @@ import (
 	"github.com/99designs/gqlgen/graphql/handler/extension"
 	"github.com/99designs/gqlgen/graphql/handler/lru"
 	"github.com/99designs/gqlgen/graphql/handler/transport"
+	"github.com/99designs/gqlgen/graphql/playground"
 	"github.com/vektah/gqlparser/v2/ast"
 	"github.com/vektah/gqlparser/v2/gqlerror"
 
@@ -2894,6 +2775,10 @@ const maxGraphQLAPIComplexity = 1000
 type graphQLAPIRoleRow struct {
 	Slug    string
 	Manages bool
+}
+
+func PlaygroundHandler(endpoint string) http.Handler {
+	return playground.Handler("GraphQL", endpoint)
 }
 
 func Handler() http.Handler {
@@ -5359,7 +5244,6 @@ func (e *exporter) generateCommandsSupport() ([]byte, error) {
 	}
 	b.WriteString("\t\"time\"\n\n")
 	if hasGraphQL {
-		b.WriteString(fmt.Sprintf("\t\"%s/app/graphql\"\n", e.modulePath))
 		b.WriteString(fmt.Sprintf("\t\"%s/app/graphqlapi\"\n", e.modulePath))
 	}
 	b.WriteString(fmt.Sprintf("\t\"%s/app/http/auth\"\n", e.modulePath))
@@ -5540,7 +5424,7 @@ func HTTPHandler() http.Handler {
 `)
 	if hasGraphQL {
 		b.WriteString("\tmux.Handle(\"/graphql\", graphqlapi.Handler())\n")
-		b.WriteString("\tmux.Handle(\"/graphql/playground\", graphql.PlaygroundHandler(\"/graphql\"))\n")
+		b.WriteString("\tmux.Handle(\"/graphql/playground\", graphqlapi.PlaygroundHandler(\"/graphql\"))\n")
 	}
 	b.WriteString(`	return mux
 }
@@ -6168,7 +6052,6 @@ func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL, hasSchedule
 	}
 	b.WriteString("\n")
 	if hasGraphQL {
-		b.WriteString(fmt.Sprintf("\t\"%s/app/graphql\"\n", e.modulePath))
 		b.WriteString(fmt.Sprintf("\t\"%s/app/graphqlapi\"\n", e.modulePath))
 	}
 	if hasDatabaseConfig {
@@ -6195,7 +6078,7 @@ func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL, hasSchedule
 	b.WriteString("\troutes.API.RegisterRoutes(mux)\n")
 	if hasGraphQL {
 		b.WriteString("\tmux.Handle(\"/graphql\", graphqlapi.Handler())\n")
-		b.WriteString("\tmux.Handle(\"/graphql/playground\", graphql.PlaygroundHandler(\"/graphql\"))\n")
+		b.WriteString("\tmux.Handle(\"/graphql/playground\", graphqlapi.PlaygroundHandler(\"/graphql\"))\n")
 	}
 	b.WriteString("\taddr := \":\" + config.App.Port\n")
 	b.WriteString("\tlog.Printf(\"listening on %s\", addr)\n")

@@ -1922,6 +1922,7 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 	support.WriteString("\t\"strings\"\n")
 	support.WriteString("\t\"time\"\n\n")
 	support.WriteString("\t\"github.com/google/uuid\"\n")
+	support.WriteString("\t\"github.com/vektah/gqlparser/v2/gqlerror\"\n")
 	fmt.Fprintf(&support, "\t\"%s/app/graphqlapi/model\"\n", e.modulePath)
 	fmt.Fprintf(&support, "\t\"%s/app/models\"\n", e.modulePath)
 	support.WriteString(")\n\n")
@@ -1969,6 +1970,20 @@ func WithGraphQLAPIAuthClaims(ctx context.Context, claims *GraphQLAPIAuthClaims)
 func GraphQLAPIAuthFromContext(ctx context.Context) *GraphQLAPIAuthClaims {
 	claims, _ := ctx.Value(graphQLAPIAuthContextKey{}).(*GraphQLAPIAuthClaims)
 	return claims
+}
+
+func graphQLAPIBadInput(message string) *gqlerror.Error {
+	return &gqlerror.Error{
+		Message:    message,
+		Extensions: map[string]any{"code": "BAD_USER_INPUT"},
+	}
+}
+
+func graphQLAPIUnauthenticated(message string) *gqlerror.Error {
+	return &gqlerror.Error{
+		Message:    message,
+		Extensions: map[string]any{"code": "UNAUTHENTICATED"},
+	}
 }
 
 func gqlgenStringPtr(value string) *string {
@@ -2192,7 +2207,7 @@ func writeGraphQLAPIValidateCreateInternalFields(b *strings.Builder, tbl *schema
 		if graphQLAPICreateInputHasColumn(tbl, col) || !graphQLAPIRequiredInternalCreateColumn(tbl, col) {
 			continue
 		}
-		fmt.Fprintf(b, "\treturn nil, fmt.Errorf(%q)\n", "create"+structName+": required internal field "+col.Name+" cannot be populated by GraphQL")
+		fmt.Fprintf(b, "\treturn nil, graphQLAPIBadInput(%q)\n", "create"+structName+": required internal field "+col.Name+" cannot be populated by GraphQL")
 		return
 	}
 }
@@ -2242,7 +2257,7 @@ func writeGraphQLAPIDeleteResolver(b *strings.Builder, tbl *schema.Table) {
 
 func writeGraphQLAPIRequireAuth(b *strings.Builder, operation, failureReturn string) {
 	b.WriteString("\tif GraphQLAPIAuthFromContext(ctx) == nil {\n")
-	fmt.Fprintf(b, "\t\treturn %s, fmt.Errorf(%q)\n", failureReturn, operation+": authentication required")
+	fmt.Fprintf(b, "\t\treturn %s, graphQLAPIUnauthenticated(%q)\n", failureReturn, operation+": authentication required")
 	b.WriteString("\t}\n")
 }
 
@@ -3038,11 +3053,11 @@ func graphQLAPIErrorPresenter(ctx context.Context, err error) *gqlerror.Error {
 	if presented == nil {
 		return nil
 	}
-	if presented.Message == "internal server error" || (presented.Extensions != nil && presented.Extensions["code"] == "INTERNAL_SERVER_ERROR") {
+	if presented.Extensions == nil || presented.Extensions["code"] == nil {
+		return graphQLAPICodedError("internal server error", "INTERNAL_SERVER_ERROR")
+	}
+	if presented.Message == "internal server error" || presented.Extensions["code"] == "INTERNAL_SERVER_ERROR" {
 		presented.Message = "internal server error"
-		if presented.Extensions == nil {
-			presented.Extensions = map[string]any{}
-		}
 		presented.Extensions["code"] = "INTERNAL_SERVER_ERROR"
 	}
 	return presented

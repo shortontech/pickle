@@ -3153,6 +3153,7 @@ func TestExportZeroGraphQLLowersGraphQLPackage(t *testing.T) {
 	writeExportedZeroGraphQLHTTPMethodSafetyTest(t, out)
 	writeExportedZeroGraphQLAPITargetBehaviorTest(t, out)
 	writeExportedZeroGraphQLAPIHTTPBehaviorTest(t, out)
+	writeExportedZeroGraphQLAPIErrorBehaviorTest(t, out)
 	writeExportedZeroGraphQLRouteTargetBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
@@ -3713,6 +3714,43 @@ func TestExportedGraphQLRouteUsesHardenedGQLGenTarget(t *testing.T) {
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "commands", "exported_graphql_route_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedZeroGraphQLAPIErrorBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package graphqlapi
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+)
+
+func TestExportedGQLGenTargetErrorPresenterSanitizesUncodedErrors(t *testing.T) {
+	presented := graphQLAPIErrorPresenter(context.Background(), errors.New("database password is swordfish"))
+	if presented == nil {
+		t.Fatal("presenter returned nil")
+	}
+	if presented.Message != "internal server error" {
+		t.Fatalf("presented message = %q", presented.Message)
+	}
+	if presented.Extensions["code"] != "INTERNAL_SERVER_ERROR" {
+		t.Fatalf("presented extensions = %#v", presented.Extensions)
+	}
+	if strings.Contains(presented.Error(), "swordfish") || strings.Contains(presented.Error(), "password") {
+		t.Fatalf("presenter leaked internal detail: %#v", presented)
+	}
+
+	coded := graphQLAPIErrorPresenter(context.Background(), graphQLAPICodedError("bad request shape", "BAD_USER_INPUT"))
+	if coded == nil || coded.Message != "bad request shape" || coded.Extensions["code"] != "BAD_USER_INPUT" {
+		t.Fatalf("coded error was not preserved: %#v", coded)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "exported_error_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -1884,9 +1884,11 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	sqlTestSrc := `package models
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -1904,6 +1906,24 @@ func TestActionAuditUpsertsMatchDialect(t *testing.T) {
 	}
 	if got := actionAuditActionTypeUpsertSQLForDialect("mysql"); !strings.Contains(got, "VALUES(model_type_id)") || strings.Contains(got, "excluded.") {
 		t.Fatalf("mysql action type upsert = %q", got)
+	}
+}
+
+func TestRunAuditedActionSanitizesMissingAuditSeed(t *testing.T) {
+	sqliteDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetDB(sqliteDB)
+	err = runAuditedAction(nil, "SecretModel", "PasswordReset", uuid.New(), nil, nil, func() error {
+		t.Fatal("action body should not run without an audit seed")
+		return nil
+	})
+	if !errors.Is(err, errAuditSeed) || err.Error() != "audit seed error" {
+		t.Fatalf("missing audit seed error = %v, want sanitized audit seed error", err)
+	}
+	if strings.Contains(err.Error(), "SecretModel") || strings.Contains(err.Error(), "PasswordReset") {
+		t.Fatalf("missing audit seed error leaked model/action detail: %v", err)
 	}
 }
 `

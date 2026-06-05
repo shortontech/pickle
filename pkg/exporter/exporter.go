@@ -3631,7 +3631,6 @@ func (e *exporter) generateActionAuditSupport(sets map[string]*generator.ActionS
 
 import (
 	"errors"
-	"fmt"
 	"reflect"
 	"sync"
 	"time"
@@ -3657,6 +3656,7 @@ type actionAuditActionSeed struct {
 var actionAuditMu sync.Mutex
 var errAuditDatabase = errors.New("audit database error")
 var errAuditUserID = errors.New("audit user id")
+var errAuditSeed = errors.New("audit seed error")
 
 func auditDatabaseError() error {
 	return errAuditDatabase
@@ -3664,6 +3664,10 @@ func auditDatabaseError() error {
 
 func auditUserIDError() error {
 	return errAuditUserID
+}
+
+func auditSeedError() error {
+	return errAuditSeed
 }
 
 var actionAuditModelSeeds = []actionAuditModelSeed{
@@ -3740,7 +3744,7 @@ func runAuditedAction(ctx *httpx.Context, model, action string, resourceID uuid.
 	}
 	actionID, ok := actionTypeID(model, action)
 	if !ok {
-		return fmt.Errorf("models: missing action audit seed for %s.%s", model, action)
+		return auditSeedError()
 	}
 	actionAuditMu.Lock()
 	defer actionAuditMu.Unlock()

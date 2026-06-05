@@ -3567,6 +3567,29 @@ fragment UserFields on User {
 		}
 	})
 
+	t.Run("invalid_operation_name_rejected_before_parse", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{
+			"query":         "query AllowedUsers { users(page: { first: 1 }) { edges { node { id } } } }",
+			"operationName": "1 invalid",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL operationName is invalid") {
+			t.Fatalf("missing operationName syntax error: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "1 invalid") {
+			t.Fatalf("operationName syntax error leaked request value: %s", rec.Body.String())
+		}
+	})
+
 	t.Run("malformed_request_body_does_not_echo_body", func(t *testing.T) {
 		body := ` + "`" + `{"query": "{ users { edges { node { id } } }", "secret": "dont-leak-me"` + "`" + `
 		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
@@ -3810,6 +3833,19 @@ func TestExportedGraphQLVariableBudget(t *testing.T) {
 	}
 	if err := validateGraphQLVariables(map[string]any{"deep": deep}); err == nil || !strings.Contains(err.Error(), "GraphQL variables exceed safety limits") {
 		t.Fatalf("deep variable error = %v", err)
+	}
+}
+
+func TestExportedGraphQLOperationNameSyntax(t *testing.T) {
+	for _, name := range []string{"AllowedUsers", "_AllowedUsers", "Allowed_Users1"} {
+		if !isGraphQLName(name) {
+			t.Fatalf("isGraphQLName(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"", "1AllowedUsers", "Allowed Users", "Allowed-Users", "Allowed.Users"} {
+		if isGraphQLName(name) {
+			t.Fatalf("isGraphQLName(%q) = true, want false", name)
+		}
 	}
 }
 `

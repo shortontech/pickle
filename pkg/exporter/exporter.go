@@ -2244,6 +2244,10 @@ func validateGraphQLRequestEnvelope(w http.ResponseWriter, raw map[string]any) b
 			writeGraphQLHTTPError(w, "GraphQL operationName is too large", CodeBadUserInput)
 			return false
 		}
+		if name != "" && !isGraphQLName(name) {
+			writeGraphQLHTTPError(w, "GraphQL operationName is invalid", CodeBadUserInput)
+			return false
+		}
 	}
 	if variables, ok := raw["variables"]; ok && variables != nil {
 		values, ok := variables.(map[string]any)
@@ -2257,6 +2261,22 @@ func validateGraphQLRequestEnvelope(w http.ResponseWriter, raw map[string]any) b
 		}
 	}
 	return true
+}
+
+func isGraphQLName(name string) bool {
+	for i, r := range name {
+		if i == 0 {
+			if r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				continue
+			}
+			return false
+		}
+		if r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		return false
+	}
+	return name != ""
 }
 
 func isGraphQLJSONContentType(contentType string) bool {

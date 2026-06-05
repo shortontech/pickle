@@ -3883,6 +3883,23 @@ fragment UserFields on User {
 		}
 	})
 
+	t.Run("trailing_json_rejected_before_parse", func(t *testing.T) {
+		body := ` + "`" + `{"query":"{ users(page: { first: 1 }) { edges { node { id } } } }"} {"secret":"dont-leak-me"}` + "`" + `
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "invalid GraphQL request body") {
+			t.Fatalf("missing sanitized trailing JSON error: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "dont-leak-me") || strings.Contains(rec.Body.String(), body) {
+			t.Fatalf("trailing JSON leaked in response: %s", rec.Body.String())
+		}
+	})
+
 	t.Run("json_content_type_with_charset_is_accepted", func(t *testing.T) {
 		body, err := json.Marshal(map[string]any{"query": ` + "`" + `query CharsetJSON {
   users(page: { first: 1 }) { edges { node { id } } }

@@ -3108,6 +3108,8 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), `mime.ParseMediaType(contentType)`)
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "err.Path = graphQLErrorPath(path)")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLRequestBodyBytes = 1 << 20")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLQueryBytes = 64 << 10")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func validateGraphQLRequestEnvelope")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLVariables = 64")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func validateGraphQLVariables")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "http.MaxBytesReader(w, r.Body, maxGraphQLRequestBodyBytes)")
@@ -3437,6 +3439,29 @@ fragment UserFields on User {
 		}
 		if !strings.Contains(rec.Body.String(), "graphql request body too large") {
 			t.Fatalf("streaming oversized body missing sanitized error: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("oversized_query_string_rejected_before_parse", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{"query": "query TooLarge { " + strings.Repeat("x", 64<<10) + " }"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(body) >= 1<<20 {
+			t.Fatalf("test body should stay below request cap, got %d bytes", len(body))
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL query is too large") {
+			t.Fatalf("missing query size error: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), strings.Repeat("x", 128)) {
+			t.Fatalf("query size error leaked oversized query: %s", rec.Body.String())
 		}
 	})
 

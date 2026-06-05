@@ -2101,6 +2101,7 @@ import (
 )
 
 const maxGraphQLRequestBodyBytes = 1 << 20
+const maxGraphQLQueryBytes = 64 << 10
 const maxGraphQLVariables = 64
 const maxGraphQLVariableDepth = 8
 const maxGraphQLVariableCollectionItems = 256
@@ -2210,7 +2211,22 @@ func prepareGraphQLPostBody(w http.ResponseWriter, r *http.Request) bool {
 		writeGraphQLHTTPError(w, "invalid GraphQL request body", CodeBadUserInput)
 		return false
 	}
+	if !validateGraphQLRequestEnvelope(w, raw) {
+		return false
+	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
+	return true
+}
+
+func validateGraphQLRequestEnvelope(w http.ResponseWriter, raw map[string]any) bool {
+	query, ok := raw["query"].(string)
+	if !ok {
+		return true
+	}
+	if len(query) > maxGraphQLQueryBytes {
+		writeGraphQLHTTPError(w, "GraphQL query is too large", CodeBadUserInput)
+		return false
+	}
 	return true
 }
 

@@ -4119,7 +4119,7 @@ func (a *App) Run(args []string) {
 		cmd, ok := a.commands[args[0]]
 		if !ok {
 			a.PrintCommands()
-			log.Fatalf("unknown command: %s", args[0])
+			log.Fatal(unknownCommandMessage())
 		}
 		if err := cmd.Run(args[1:]); err != nil {
 			log.Fatal(commandFailureMessage(args[0]))
@@ -4134,6 +4134,10 @@ func commandFailureMessage(name string) string {
 		return "command failed"
 	}
 	return fmt.Sprintf("command %s failed", name)
+}
+
+func unknownCommandMessage() string {
+	return "unknown command"
 }
 
 func commandStartupFailureMessage(component string) string {

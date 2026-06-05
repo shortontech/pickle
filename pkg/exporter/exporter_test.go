@@ -1755,6 +1755,12 @@ func TestExportedCommandFatalMessagesAreSanitized(t *testing.T) {
 			t.Fatalf("fatal message = %q, want failure context", msg)
 		}
 	}
+	if msg := unknownCommandMessage(); msg != "unknown command" {
+		t.Fatalf("unknown command message = %q, want sanitized fixed message", msg)
+	}
+	if strings.Contains(unknownCommandMessage(), "token=secret") || strings.Contains(unknownCommandMessage(), "password") {
+		t.Fatalf("unknown command message leaked detail: %s", unknownCommandMessage())
+	}
 }
 
 type assertSecretError string

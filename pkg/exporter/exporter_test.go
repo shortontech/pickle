@@ -172,18 +172,24 @@ import (
 )
 
 func TestConnectionConfigRejectsUnsupportedDriversWithoutPanic(t *testing.T) {
-	conn := ConnectionConfig{Driver: "oracle", Name: "ignored"}
-	if err := conn.Validate(); err == nil || !strings.Contains(err.Error(), "unsupported database driver: oracle") {
+	conn := ConnectionConfig{Driver: "oracle-password=swordfish", Name: "ignored"}
+	if err := conn.Validate(); err == nil || err.Error() != "unsupported database driver" {
 		t.Fatalf("Validate() error = %v, want unsupported driver", err)
+	} else if leaksSecret(err.Error()) {
+		t.Fatalf("Validate() leaked detail: %v", err)
 	}
 	if got := conn.DSN(); got != "" {
 		t.Fatalf("unsupported DSN = %q, want empty string", got)
 	}
-	if _, err := TryOpenDB(conn); err == nil || !strings.Contains(err.Error(), "unsupported database driver: oracle") {
+	if _, err := TryOpenDB(conn); err == nil || err.Error() != "unsupported database driver" {
 		t.Fatalf("TryOpenDB() error = %v, want unsupported driver", err)
+	} else if leaksSecret(err.Error()) {
+		t.Fatalf("TryOpenDB() leaked detail: %v", err)
 	}
-	if _, err := TryOpenGORM(conn); err == nil || !strings.Contains(err.Error(), "unsupported database driver: oracle") {
+	if _, err := TryOpenGORM(conn); err == nil || err.Error() != "unsupported database driver" {
 		t.Fatalf("TryOpenGORM() error = %v, want unsupported driver", err)
+	} else if leaksSecret(err.Error()) {
+		t.Fatalf("TryOpenGORM() leaked detail: %v", err)
 	}
 }
 
@@ -236,6 +242,10 @@ func TestDatabaseStartupFatalMessagesAreSanitized(t *testing.T) {
 			t.Fatalf("startup error for %q missing database context: %s", operation, msg)
 		}
 	}
+}
+
+func leaksSecret(value string) bool {
+	return strings.Contains(value, "swordfish") || strings.Contains(value, "password") || strings.Contains(value, "oracle")
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "config", "exported_config_test.go"), []byte(testSrc), 0o644); err != nil {

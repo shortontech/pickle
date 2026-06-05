@@ -6244,6 +6244,7 @@ var configSupportTemplate = template.Must(template.New("config-support").Parse(`
 import (
 	"bufio"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -6307,7 +6308,7 @@ func (c ConnectionConfig) Validate() error {
 	case "pgsql", "postgres", "mysql", "sqlite":
 		return nil
 	default:
-		return fmt.Errorf("unsupported database driver: %s", c.Driver)
+		return errors.New("unsupported database driver")
 	}
 }
 
@@ -6326,7 +6327,7 @@ func (c ConnectionConfig) dsn() (string, error) {
 	case "sqlite":
 		return c.Name, nil
 	default:
-		return "", fmt.Errorf("unsupported database driver: %s", c.Driver)
+		return "", errors.New("unsupported database driver")
 	}
 }
 
@@ -6335,7 +6336,7 @@ func (c ConnectionConfig) driverName() (string, error) {
 	case "pgsql", "postgres": return "pgx", nil
 	case "mysql": return "mysql", nil
 	case "sqlite": return "sqlite3", nil
-	default: return "", fmt.Errorf("unsupported database driver: %s", c.Driver)
+	default: return "", errors.New("unsupported database driver")
 	}
 }
 
@@ -6345,8 +6346,8 @@ func TryOpenDB(conn ConnectionConfig) (*sql.DB, error) {
 	dsn, err := conn.dsn()
 	if err != nil { return nil, err }
 	db, err := sql.Open(driverName, dsn)
-	if err != nil { return nil, fmt.Errorf("open database: %w", err) }
-	if err := db.Ping(); err != nil { db.Close(); return nil, fmt.Errorf("ping database: %w", err) }
+	if err != nil { return nil, errors.New("open database") }
+	if err := db.Ping(); err != nil { db.Close(); return nil, errors.New("ping database") }
 	return db, nil
 }
 
@@ -6369,10 +6370,10 @@ func TryOpenGORM(conn ConnectionConfig) (*gorm.DB, error) {
 		dialector = sqlite.Dialector{Conn: sqlDB}
 	default:
 		sqlDB.Close()
-		return nil, fmt.Errorf("unsupported database driver: %s", conn.Driver)
+		return nil, errors.New("unsupported database driver")
 	}
 	db, err := gorm.Open(dialector, &gorm.Config{})
-	if err != nil { sqlDB.Close(); return nil, fmt.Errorf("initialize gorm: %w", err) }
+	if err != nil { sqlDB.Close(); return nil, errors.New("initialize gorm") }
 	return db, nil
 }
 

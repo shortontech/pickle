@@ -222,6 +222,25 @@ func TestApplyLockTimeoutIsDriverAware(t *testing.T) {
 		t.Fatalf("postgres lock timeout statement = (%q, %#v), want SET LOCAL/1500ms", sql, arg)
 	}
 }
+
+func TestOrderClauseRejectsUnsafeInput(t *testing.T) {
+	if got := OrderClause("created_at", " desc "); got != "created_at DESC" {
+		t.Fatalf("OrderClause safe result = %q, want created_at DESC", got)
+	}
+	assertPanics(t, func() { OrderClause("created_at; DROP TABLE users", "ASC") })
+	assertPanics(t, func() { OrderClause("created_at", "DESC; DROP TABLE users") })
+	assertPanics(t, func() { OrderClause("", "ASC") })
+}
+
+func assertPanics(t *testing.T, fn func()) {
+	t.Helper()
+	defer func() {
+		if recovered := recover(); recovered == nil {
+			t.Fatal("expected panic")
+		}
+	}()
+	fn()
+}
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_db_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)

@@ -2576,9 +2576,6 @@ func (e *exporter) writeGraphQLQuerySupport(tables []*schema.Table, views []*sch
 	var b strings.Builder
 	b.WriteString("package models\n\n")
 	b.WriteString("import (\n")
-	if hasEncrypted {
-		b.WriteString("\t\"fmt\"\n")
-	}
 	b.WriteString("\t\"strings\"\n")
 	b.WriteString("\n")
 	b.WriteString("\t\"github.com/vektah/gqlparser/v2/gqlerror\"\n")
@@ -2766,7 +2763,7 @@ func graphQLEncryptFilterValue(value any) (any, error) {
 		for _, item := range v {
 			s, ok := item.(string)
 			if !ok {
-				return nil, fmt.Errorf("encrypted GraphQL filter values must be strings, got %T", item)
+				return nil, graphQLModelBadInput("encrypted GraphQL filter values must be strings")
 			}
 			encrypted, err := encryptDeterministic(key, []byte(s))
 			if err != nil {
@@ -2776,7 +2773,7 @@ func graphQLEncryptFilterValue(value any) (any, error) {
 		}
 		return out, nil
 	default:
-		return nil, fmt.Errorf("encrypted GraphQL filter value must be a string or []string, got %T", value)
+		return nil, graphQLModelBadInput("encrypted GraphQL filter value must be a string or []string")
 	}
 }
 

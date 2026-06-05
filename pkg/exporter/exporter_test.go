@@ -4015,6 +4015,7 @@ func writeExportedZeroGraphQLEncryptedFilterTest(t *testing.T, out string) {
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -4066,6 +4067,18 @@ func TestExportedGraphQLQueryFiltersDeterministicEncryptedColumns(t *testing.T) 
 
 	if _, err := QueryUser().WhereEmailLike("ada%").First(); !isBadInput(err) {
 		t.Fatalf("unsupported encrypted GraphQL filter error = %v, want BAD_USER_INPUT", err)
+	}
+
+	t.Setenv("APP_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef")
+	if _, err := graphQLEncryptFilterValue(42); !isBadInput(err) {
+		t.Fatalf("invalid encrypted GraphQL filter scalar error = %v, want BAD_USER_INPUT", err)
+	} else if strings.Contains(err.Error(), "int") || strings.Contains(err.Error(), "%!") {
+		t.Fatalf("invalid encrypted GraphQL filter scalar leaked type detail: %v", err)
+	}
+	if _, err := graphQLEncryptFilterValue([]any{"ada@example.com", 42}); !isBadInput(err) {
+		t.Fatalf("invalid encrypted GraphQL filter list error = %v, want BAD_USER_INPUT", err)
+	} else if strings.Contains(err.Error(), "int") || strings.Contains(err.Error(), "%!") {
+		t.Fatalf("invalid encrypted GraphQL filter list leaked type detail: %v", err)
 	}
 }
 

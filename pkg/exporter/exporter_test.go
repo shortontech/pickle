@@ -3356,6 +3356,14 @@ func TestExportedGQLGenTargetCRUDResolvers(t *testing.T) {
 	queries := &queryResolver{Resolver: resolver}
 
 	userID := uuid.New()
+	if _, err := mutations.CreatePost(ctx, model.CreatePostInput{
+		UserID: userID.String(),
+		Title:  "Nope",
+		Body:   "unauthenticated",
+	}); err == nil {
+		t.Fatal("direct create post without auth should fail")
+	}
+	ctx = WithGraphQLAPIAuthClaims(ctx, &GraphQLAPIAuthClaims{UserID: userID.String(), Role: "admin"})
 	post, err := mutations.CreatePost(ctx, model.CreatePostInput{
 		UserID: userID.String(),
 		Title:  "Hello",

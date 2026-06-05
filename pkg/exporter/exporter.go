@@ -2176,6 +2176,7 @@ func writeGraphQLAPISingleResolver(b *strings.Builder, tbl *schema.Table) {
 func writeGraphQLAPICreateResolver(b *strings.Builder, tbl *schema.Table) {
 	structName := tableToStruct(tbl.Name)
 	fmt.Fprintf(b, "func (r *mutationResolver) Create%s(ctx context.Context, input model.Create%sInput) (*models.%s, error) {\n", structName, structName, structName)
+	writeGraphQLAPIRequireAuth(b, "create"+structName, "nil")
 	writeGraphQLAPIValidateCreateInternalFields(b, tbl)
 	fmt.Fprintf(b, "\trecord := &models.%s{}\n", structName)
 	writeGraphQLAPIInitializeCreateRecord(b, tbl)
@@ -2210,6 +2211,7 @@ func writeGraphQLAPIUpdateResolver(b *strings.Builder, tbl *schema.Table) {
 		return
 	}
 	fmt.Fprintf(b, "func (r *mutationResolver) Update%s(ctx context.Context, id string, input model.Update%sInput) (*models.%s, error) {\n", structName, structName, structName)
+	writeGraphQLAPIRequireAuth(b, "update"+structName, "nil")
 	writeGraphQLAPIPKParse(b, tbl, pk, "nil")
 	fmt.Fprintf(b, "\trecord, err := models.Query%s().Where%s(parsedID).First()\n", structName, snakeToPascal(pk.Name))
 	b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n")
@@ -2229,12 +2231,19 @@ func writeGraphQLAPIDeleteResolver(b *strings.Builder, tbl *schema.Table) {
 		return
 	}
 	fmt.Fprintf(b, "func (r *mutationResolver) Delete%s(ctx context.Context, id string) (bool, error) {\n", structName)
+	writeGraphQLAPIRequireAuth(b, "delete"+structName, "false")
 	writeGraphQLAPIPKParse(b, tbl, pk, "false")
 	fmt.Fprintf(b, "\trecord, err := models.Query%s().Where%s(parsedID).First()\n", structName, snakeToPascal(pk.Name))
 	b.WriteString("\tif err != nil {\n\t\treturn false, err\n\t}\n")
 	fmt.Fprintf(b, "\tif err := models.Query%s().Delete(record); err != nil {\n\t\treturn false, err\n\t}\n", structName)
 	b.WriteString("\treturn true, nil\n")
 	b.WriteString("}\n\n")
+}
+
+func writeGraphQLAPIRequireAuth(b *strings.Builder, operation, failureReturn string) {
+	b.WriteString("\tif GraphQLAPIAuthFromContext(ctx) == nil {\n")
+	fmt.Fprintf(b, "\t\treturn %s, fmt.Errorf(%q)\n", failureReturn, operation+": authentication required")
+	b.WriteString("\t}\n")
 }
 
 func writeGraphQLAPIPKParse(b *strings.Builder, tbl *schema.Table, pk *schema.Column, failureReturn string) {

@@ -98,6 +98,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "pickle.")
 	assertNoGoFileContains(t, out, "PICKLE_")
+	assertNoGoFileContains(t, out, "RegisterPickleEndpoints")
+	assertNoGoFileContains(t, out, "/pickle/config/reload")
 	assertFileContains(t, filepath.Join(out, "go.sum"), "gorm.io/gorm")
 	writeExportedAuthBehaviorTest(t, out)
 	writeExportedSessionCSRFBehaviorTest(t, out)
@@ -1123,6 +1125,21 @@ func TestExportedCommandAppRunsMigrations(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Ada") {
 		t.Fatalf("create user response = %s, want Ada", rec.Body.String())
+	}
+
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/pickle/health"},
+		{http.MethodPost, "/pickle/config/reload"},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		rec := httptest.NewRecorder()
+		commands.HTTPHandler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s %s status = %d, want 404; body = %s", tc.method, tc.path, rec.Code, rec.Body.String())
+		}
 	}
 }
 

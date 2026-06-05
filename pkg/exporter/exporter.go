@@ -6449,7 +6449,7 @@ func findingCategory(rule string) string {
 	case "encrypted_columns", "integrity_tables", "raw_sql_migration", "actions_audit":
 		return "manual"
 	default:
-		return "unsupported"
+		return "manual"
 	}
 }
 

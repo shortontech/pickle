@@ -7107,7 +7107,6 @@ func TestFindingCategoryClassifiesUnlowerableBoundariesAsUnsupported(t *testing.
 		"gate_export_dynamic_role",
 		"gate_export_callsite",
 		"graphql_action_export_unsupported",
-		"new_unclassified_export_boundary",
 	} {
 		if got := findingCategory(rule); got != "unsupported" {
 			t.Fatalf("findingCategory(%q) = %q, want unsupported", rule, got)
@@ -7116,11 +7115,36 @@ func TestFindingCategoryClassifiesUnlowerableBoundariesAsUnsupported(t *testing.
 	for _, rule := range []string{
 		"actions_audit",
 		"raw_sql_migration",
+		"new_unclassified_export_boundary",
 	} {
 		if got := findingCategory(rule); got != "manual" {
 			t.Fatalf("findingCategory(%q) = %q, want manual", rule, got)
 		}
 	}
+}
+
+func TestExportReportTreatsUnclassifiedFindingsAsManualReview(t *testing.T) {
+	out := t.TempDir()
+	reportPath := filepath.Join(out, "EXPORT_REPORT.md")
+	ex := &exporter{
+		project:    &generator.Project{Dir: "source-app"},
+		outDir:     out,
+		modulePath: "exported-app",
+		result: &Result{
+			ReportPath: reportPath,
+			Findings: []Finding{{
+				File:    "database/migrations",
+				Rule:    "new_unclassified_export_boundary",
+				Message: "new exporter note",
+			}},
+		},
+	}
+	if err := ex.writeReport("gorm"); err != nil {
+		t.Fatalf("writeReport: %v", err)
+	}
+	assertFileContains(t, reportPath, "## Unsupported\n\nNo unsupported export findings.")
+	assertFileContains(t, reportPath, "## Manual Review")
+	assertFileContains(t, reportPath, "`database/migrations` `new_unclassified_export_boundary` - new exporter note")
 }
 
 func TestRewriteMutableQueryVariable(t *testing.T) {

@@ -2203,6 +2203,9 @@ func prepareGraphQLPostBody(w http.ResponseWriter, r *http.Request) bool {
 		writeGraphQLHTTPError(w, "batched GraphQL requests are not supported", CodeBadUserInput)
 		return false
 	}
+	if !validateGraphQLRequestEnvelopeFieldUniqueness(w, trimmed) {
+		return false
+	}
 	var raw map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(trimmed))
 	decoder.UseNumber()
@@ -2218,6 +2221,44 @@ func prepareGraphQLPostBody(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
+	return true
+}
+
+func validateGraphQLRequestEnvelopeFieldUniqueness(w http.ResponseWriter, body []byte) bool {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	token, err := decoder.Token()
+	if err != nil {
+		writeGraphQLHTTPError(w, "invalid GraphQL request body", CodeBadUserInput)
+		return false
+	}
+	if delim, ok := token.(json.Delim); !ok || delim != '{' {
+		writeGraphQLHTTPError(w, "invalid GraphQL request body", CodeBadUserInput)
+		return false
+	}
+	seen := map[string]bool{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			writeGraphQLHTTPError(w, "invalid GraphQL request body", CodeBadUserInput)
+			return false
+		}
+		field, ok := token.(string)
+		if !ok {
+			writeGraphQLHTTPError(w, "invalid GraphQL request body", CodeBadUserInput)
+			return false
+		}
+		if seen[field] {
+			writeGraphQLHTTPError(w, "GraphQL request contains duplicate field", CodeBadUserInput)
+			return false
+		}
+		seen[field] = true
+		var discard any
+		if err := decoder.Decode(&discard); err != nil {
+			writeGraphQLHTTPError(w, "invalid GraphQL request body", CodeBadUserInput)
+			return false
+		}
+	}
 	return true
 }
 

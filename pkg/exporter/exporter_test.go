@@ -3109,6 +3109,7 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "err.Path = graphQLErrorPath(path)")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLRequestBodyBytes = 1 << 20")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLRequestEnvelopeFieldBytes = 32")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func validateGraphQLRequestEnvelopeFieldUniqueness")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func validateGraphQLRequestEnvelopeFields")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLQueryBytes = 64 << 10")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "GraphQL query must be a string")
@@ -3468,6 +3469,26 @@ fragment UserFields on User {
 		}
 		if strings.Contains(rec.Body.String(), "debug") || strings.Contains(rec.Body.String(), "dont-leak-me") {
 			t.Fatalf("unsupported envelope field error leaked request value: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("duplicate_envelope_field_rejected_before_parse", func(t *testing.T) {
+		body := ` + "`" + `{
+  "query": "query First { users(page: { first: 1 }) { edges { node { id } } } }",
+  "query": "query Second { users(page: { first: 1 }) { edges { node { name } } } }"
+}` + "`" + `
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL request contains duplicate field") {
+			t.Fatalf("missing duplicate envelope field error: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "Second") || strings.Contains(rec.Body.String(), "name") {
+			t.Fatalf("duplicate envelope field error leaked request value: %s", rec.Body.String())
 		}
 	})
 

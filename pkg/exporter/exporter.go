@@ -4131,7 +4131,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 
 	"%s/internal/httpx"
 )
@@ -4192,21 +4191,10 @@ func auditRoles(ctx *httpx.Context) string {
 }
 
 func auditContextIP(ctx *httpx.Context) string {
-	if ctx == nil || ctx.Request() == nil {
+	if ctx == nil {
 		return ""
 	}
-	req := ctx.Request()
-	if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
-		return xff
-	}
-	if xri := req.Header.Get("X-Real-IP"); xri != "" {
-		return xri
-	}
-	host, _, err := net.SplitHostPort(req.RemoteAddr)
-	if err != nil {
-		return req.RemoteAddr
-	}
-	return host
+	return ctx.ClientIP()
 }
 
 func auditContextRequestID(ctx *httpx.Context) string {
@@ -7324,6 +7312,7 @@ func (c *Context) ParamUUID(name string) (uuid.UUID, error) { value, err := uuid
 func (c *Context) Cookie(name string) (string, error) { cookie, err := c.request.Cookie(name); if err != nil { return "", err }; return cookie.Value, nil }
 func (c *Context) Query(name string) string { return c.request.URL.Query().Get(name) }
 func (c *Context) BearerToken() string { h := c.request.Header.Get("Authorization"); parts := strings.Fields(h); if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") { return parts[1] }; return "" }
+func (c *Context) ClientIP() string { if c == nil || c.request == nil { return "" }; return clientIP(c.request) }
 func (c *Context) Auth() *AuthInfo { if c.auth == nil { return &AuthInfo{} }; return c.auth }
 func (c *Context) SetAuth(claims any) { switch v := claims.(type) { case *AuthInfo: c.auth = v; default: panic(fmt.Sprintf("pickle: SetAuth() requires *AuthInfo, got %T", claims)) } }
 func (c *Context) IsAuthenticated() bool { return c.auth != nil && c.auth.UserID != "" }

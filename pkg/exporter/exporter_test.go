@@ -1408,6 +1408,7 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/users/ban", nil)
 	req.Header.Set("X-Request-ID", "req-123")
+	req.Header.Set("X-Forwarded-For", "198.51.100.200")
 	req.RemoteAddr = "192.0.2.10:1234"
 	ctx := httpx.NewContext(req)
 	ctx.SetAuth(&httpx.AuthInfo{UserID: uuid.New().String(), Role: "admin"})
@@ -1457,6 +1458,13 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	}
 	if actionName != "Ban" {
 		t.Fatalf("audit action name = %q, want Ban", actionName)
+	}
+	var auditIP string
+	if err := db.Raw("SELECT ip_address FROM user_actions LIMIT 1").Scan(&auditIP).Error; err != nil {
+		t.Fatal(err)
+	}
+	if auditIP != "192.0.2.10" {
+		t.Fatalf("audit ip = %q, want unspoofed remote address", auditIP)
 	}
 
 	badAuditCtx := httpx.NewContext(req)
@@ -2548,6 +2556,15 @@ func TestExportedRateLimitIgnoresSpoofedProxyHeadersByDefault(t *testing.T) {
 	second := NewContext(requestFrom("10.0.0.1:1234", "198.51.100.2"))
 	if resp := limiter(second, handler); resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("spoofed X-Forwarded-For should still share the remote bucket, got %d", resp.StatusCode)
+	}
+}
+
+func TestExportedContextClientIPIgnoresSpoofedProxyHeadersByDefault(t *testing.T) {
+	resetTrustedProxyStateForTest()
+	t.Setenv("TRUSTED_PROXIES", "")
+	ctx := NewContext(requestFrom("10.0.0.1:1234", "198.51.100.77"))
+	if got := ctx.ClientIP(); got != "10.0.0.1" {
+		t.Fatalf("ClientIP = %q, want remote address without trusting X-Forwarded-For", got)
 	}
 }
 

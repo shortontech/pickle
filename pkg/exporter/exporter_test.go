@@ -150,6 +150,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "models.DB.Model(&models.User{})")
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "QueryUser")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "basic-crud/internal/httpx")
+	assertFileContains(t, filepath.Join(out, "internal", "httpx", "httpx.go"), "func writeRouterNotFound")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Target ORM: `gorm`")
 
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
@@ -2549,6 +2550,33 @@ func TestExportedAllRoutesAndRegisterRoutes(t *testing.T) {
 	}
 }
 
+func TestExportedRouterDirectMissUsesHardenedJSONNotFound(t *testing.T) {
+	t.Setenv("RATE_LIMIT", "false")
+	router := httpx.Routes(func(r *httpx.Router) {
+		r.Get("/known", func(ctx *httpx.Context) httpx.Response {
+			return ctx.NoContent()
+		})
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/pickle/config/reload", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("direct router miss status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("direct router miss Content-Type = %q, want application/json", got)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("direct router miss X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if !strings.Contains(rec.Body.String(), "\"not found\"") {
+		t.Fatalf("direct router miss body = %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "pickle") || strings.Contains(rec.Body.String(), "config") || strings.Contains(rec.Body.String(), "404 page") {
+		t.Fatalf("direct router miss leaked route/default text: %s", rec.Body.String())
+	}
+}
+
 func TestExportedRegisterRoutesDuplicatePanics(t *testing.T) {
 	router := httpx.Routes(func(r *httpx.Router) {
 		r.Get("/dup", func(ctx *httpx.Context) httpx.Response { return ctx.NoContent() })
@@ -3710,6 +3738,7 @@ func TestExportZeroGraphQLLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Exported app gqlgen GraphQL API target")
 	assertFileNotContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Generated GraphQL package")
 	assertFileContains(t, filepath.Join(out, "app", "http", "requests", "bindings.go"), "package requests")
+	assertFileContains(t, filepath.Join(out, "internal", "httpx", "httpx.go"), "func writeRouterNotFound")
 	assertCleanExportReport(t, out)
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "pickle.")

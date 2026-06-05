@@ -6701,6 +6701,7 @@ func (r *Router) Resource(prefix string, c ResourceController, middleware ...any
 func resolveMiddleware(middleware []any) []MiddlewareFunc { resolved := make([]MiddlewareFunc, 0, len(middleware)); for _, mw := range middleware { switch v := mw.(type) { case MiddlewareFunc: resolved = append(resolved, v); case func(*Context, func() Response) Response: resolved = append(resolved, MiddlewareFunc(v)); case MiddlewareProvider: resolved = append(resolved, v.Middleware()); default: panic("pickle export: invalid middleware type") } }; return resolved }
 func (r *Router) AllRoutes() []Route { routes := make([]Route, len(r.routes)); copy(routes, r.routes); return routes }
 func writeRecoveredError(w http.ResponseWriter) { Response{StatusCode: http.StatusInternalServerError, Body: map[string]string{"error": "internal server error"}}.Write(w) }
+func writeRouterNotFound(w http.ResponseWriter) { Response{StatusCode: http.StatusNotFound, Body: map[string]string{"error": "not found"}}.Write(w) }
 func recoveredPanicError(_ any) error { return fmt.Errorf("panic recovered") }
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var ctx *Context
@@ -6725,7 +6726,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		resp.Write(w)
 		return
 	}
-	http.NotFound(w, req)
+	writeRouterNotFound(w)
 }
 var paramPattern = regexp.MustCompile(` + "`" + `:(\w+)` + "`" + `)
 func (r *Router) RegisterRoutes(mux *http.ServeMux) {

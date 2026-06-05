@@ -7863,7 +7863,6 @@ const jobsSupportSource = `package jobs
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -7884,35 +7883,97 @@ type JobEntry struct {
 
 type Scheduler struct { entries []*JobEntry }
 
-func Cron(fn func(s *Scheduler)) *Scheduler { s := &Scheduler{}; fn(s); return s }
+func Cron(fn func(s *Scheduler)) *Scheduler {
+	s := &Scheduler{}
+	if fn != nil {
+		fn(s)
+	}
+	return s
+}
 
-func (s *Scheduler) Job(schedule string, job Job) *JobEntry { e := &JobEntry{Schedule: schedule, Job: job}; s.entries = append(s.entries, e); return e }
+func (s *Scheduler) Job(schedule string, job Job) *JobEntry {
+	e := &JobEntry{Schedule: schedule, Job: job}
+	if s != nil {
+		s.entries = append(s.entries, e)
+	}
+	return e
+}
 
-func (s *Scheduler) Entries() []*JobEntry { return s.entries }
+func (s *Scheduler) Entries() []*JobEntry {
+	if s == nil {
+		return nil
+	}
+	entries := make([]*JobEntry, len(s.entries))
+	copy(entries, s.entries)
+	return entries
+}
 
-func (e *JobEntry) MaxRetries(n int) *JobEntry { e.maxRetries = n; return e }
-func (e *JobEntry) RetryDelay(d time.Duration) *JobEntry { e.retryDelay = d; return e }
-func (e *JobEntry) Timeout(d time.Duration) *JobEntry { e.timeout = d; return e }
-func (e *JobEntry) SkipIfRunning() *JobEntry { e.allowOverlap = false; return e }
-func (e *JobEntry) AllowOverlap() *JobEntry { e.allowOverlap = true; return e }
+func (e *JobEntry) MaxRetries(n int) *JobEntry {
+	if e == nil {
+		return e
+	}
+	if n < 0 {
+		n = 0
+	}
+	e.maxRetries = n
+	return e
+}
+func (e *JobEntry) RetryDelay(d time.Duration) *JobEntry {
+	if e == nil {
+		return e
+	}
+	if d < 0 {
+		d = 0
+	}
+	e.retryDelay = d
+	return e
+}
+func (e *JobEntry) Timeout(d time.Duration) *JobEntry {
+	if e == nil {
+		return e
+	}
+	if d < 0 {
+		d = 0
+	}
+	e.timeout = d
+	return e
+}
+func (e *JobEntry) SkipIfRunning() *JobEntry {
+	if e != nil {
+		e.allowOverlap = false
+	}
+	return e
+}
+func (e *JobEntry) AllowOverlap() *JobEntry {
+	if e != nil {
+		e.allowOverlap = true
+	}
+	return e
+}
 
 func (s *Scheduler) Start(ctx context.Context) {
+	if s == nil || ctx == nil {
+		return
+	}
 	c := cron.New()
 	for _, entry := range s.entries {
 		entry := entry
+		if entry == nil {
+			continue
+		}
 		var mu sync.Mutex
 		running := false
 		_, err := c.AddFunc(entry.Schedule, func() {
 			if !entry.allowOverlap {
 				mu.Lock()
-				if running { mu.Unlock(); log.Printf("job %T skipped: previous run still in progress", entry.Job); return }
+				if running { mu.Unlock(); log.Printf("job skipped: previous run still in progress"); return }
 				running = true
 				mu.Unlock()
 				defer func() { mu.Lock(); running = false; mu.Unlock() }()
 			}
 			runJob(entry)
 		})
-		if err != nil { log.Printf("job %T schedule rejected", entry.Job) }
+		if err != nil { log.Printf("job schedule rejected") }
 	}
 	c.Start()
 	<-ctx.Done()
@@ -7920,6 +7981,10 @@ func (s *Scheduler) Start(ctx context.Context) {
 }
 
 func runJob(entry *JobEntry) {
+	if entry == nil {
+		log.Printf("job failed (attempt 1/1): job failed")
+		return
+	}
 	attempts := entry.maxRetries + 1
 	for i := 0; i < attempts; i++ {
 		var err error
@@ -7927,16 +7992,19 @@ func runJob(entry *JobEntry) {
 			ctx, cancel := context.WithTimeout(context.Background(), entry.timeout)
 			done := make(chan error, 1)
 			go func() { done <- safeHandleJob(entry.Job) }()
-			select { case err = <-done: case <-ctx.Done(): err = fmt.Errorf("job timed out after %s", entry.timeout) }
+			select { case err = <-done: case <-ctx.Done(): err = errors.New("job timeout") }
 			cancel()
 		} else { err = safeHandleJob(entry.Job) }
 		if err == nil { return }
-		log.Printf("job %T failed (attempt %d/%d): job failed", entry.Job, i+1, attempts)
+		log.Printf("job failed (attempt %d/%d): job failed", i+1, attempts)
 		if i < attempts-1 && entry.retryDelay > 0 { time.Sleep(entry.retryDelay) }
 	}
 }
 
 func safeHandleJob(job Job) (err error) {
+	if job == nil {
+		return errors.New("job failed")
+	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = errors.New("job panic")

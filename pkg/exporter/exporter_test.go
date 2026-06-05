@@ -5215,6 +5215,10 @@ func (j *exportedPanicJob) Handle() error {
 	panic("secret job panic")
 }
 
+type passwordSwordfishJob struct{}
+
+func (*passwordSwordfishJob) Handle() error { return errExportedFlaky }
+
 func TestExportedSchedulerOptionsAndRetries(t *testing.T) {
 	var logs bytes.Buffer
 	previousLogOutput := log.Writer()
@@ -5249,8 +5253,10 @@ func TestExportedSchedulerOptionsAndRetries(t *testing.T) {
 	if got := atomic.LoadInt32(&job.attempts); got != 3 {
 		t.Fatalf("attempts = %d, want 3", got)
 	}
-	if strings.Contains(logs.String(), "swordfish") {
-		t.Fatalf("scheduler retry log leaked error detail: %s", logs.String())
+	for _, leak := range []string{"swordfish", "password", "exportedFlakyJob"} {
+		if strings.Contains(logs.String(), leak) {
+			t.Fatalf("scheduler retry log leaked %q: %s", leak, logs.String())
+		}
 	}
 	if !strings.Contains(logs.String(), "job failed") {
 		t.Fatalf("scheduler retry log missing sanitized marker: %s", logs.String())
@@ -5269,11 +5275,69 @@ func TestExportedSchedulerRejectsInvalidSchedulesWithoutLeakingSpec(t *testing.T
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	scheduler.Start(ctx)
-	if strings.Contains(logs.String(), "swordfish") || strings.Contains(logs.String(), "password=") || strings.Contains(logs.String(), "expected exactly") {
-		t.Fatalf("invalid schedule log leaked detail: %s", logs.String())
+	for _, leak := range []string{"swordfish", "password=", "expected exactly", "exportedFlakyJob"} {
+		if strings.Contains(logs.String(), leak) {
+			t.Fatalf("invalid schedule log leaked %q: %s", leak, logs.String())
+		}
 	}
 	if !strings.Contains(logs.String(), "schedule rejected") {
 		t.Fatalf("invalid schedule log missing sanitized marker: %s", logs.String())
+	}
+}
+
+func TestExportedSchedulerNilInputsDoNotPanic(t *testing.T) {
+	var logs bytes.Buffer
+	previousLogOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousLogOutput)
+
+	scheduler := Cron(nil)
+	if scheduler == nil {
+		t.Fatal("Cron(nil) returned nil scheduler")
+	}
+	if entries := scheduler.Entries(); len(entries) != 0 {
+		t.Fatalf("Cron(nil) entries = %d, want 0", len(entries))
+	}
+	scheduler.Start(nil)
+
+	var nilScheduler *Scheduler
+	if entries := nilScheduler.Entries(); entries != nil {
+		t.Fatalf("nil scheduler entries = %#v, want nil", entries)
+	}
+	entry := nilScheduler.Job("*/5 * * * *", &exportedFlakyJob{})
+	if entry == nil || entry.Schedule != "*/5 * * * *" {
+		t.Fatalf("nil scheduler Job returned %#v", entry)
+	}
+	nilScheduler.Start(context.Background())
+
+	if got := ((*JobEntry)(nil)).MaxRetries(-1).RetryDelay(-time.Second).Timeout(-time.Second).SkipIfRunning().AllowOverlap(); got != nil {
+		t.Fatalf("nil entry chain returned %#v, want nil", got)
+	}
+	runJob(nil)
+	runJob(&JobEntry{})
+	err := safeHandleJob(nil)
+	if err == nil || err.Error() != "job failed" {
+		t.Fatalf("safeHandleJob(nil) = %v, want sanitized job failed", err)
+	}
+	if strings.Contains(logs.String(), "panic") || strings.Contains(logs.String(), "swordfish") || strings.Contains(logs.String(), "password") {
+		t.Fatalf("nil input handling leaked detail: %s", logs.String())
+	}
+}
+
+func TestExportedSchedulerLogsDoNotLeakJobTypeNames(t *testing.T) {
+	var logs bytes.Buffer
+	previousLogOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousLogOutput)
+
+	runJob(&JobEntry{Job: &passwordSwordfishJob{}})
+	for _, leak := range []string{"passwordSwordfishJob", "password", "Swordfish", "swordfish"} {
+		if strings.Contains(logs.String(), leak) {
+			t.Fatalf("scheduler log leaked %q: %s", leak, logs.String())
+		}
+	}
+	if !strings.Contains(logs.String(), "job failed") {
+		t.Fatalf("scheduler log missing sanitized failure marker: %s", logs.String())
 	}
 }
 

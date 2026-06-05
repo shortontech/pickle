@@ -227,6 +227,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -478,6 +479,48 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	})
 	if resp.Status != 401 {
 		t.Fatalf("middleware status = %d, want 401", resp.Status)
+	}
+}
+
+func TestExportedAuthInitOnlyRequiresActiveDriverConfig(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(` + "`" + `CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, role TEXT NOT NULL, payload TEXT, expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `); err != nil {
+		t.Fatal(err)
+	}
+
+	auth.Init(func(key, fallback string) string {
+		values := map[string]string{
+			"AUTH_DRIVER": "session",
+			"DB_CONNECTION": "sqlite",
+			"SESSION_SECRET": "session-secret",
+		}
+		if value, ok := values[key]; ok {
+			return value
+		}
+		return fallback
+	}, db)
+
+	if auth.ActiveDriverName() != "session" {
+		t.Fatalf("active driver = %q, want session", auth.ActiveDriverName())
+	}
+	if _, ok := auth.ActiveDriver().(*session.Driver); !ok {
+		t.Fatalf("active driver type = %T, want session driver", auth.ActiveDriver())
+	}
+
+	ctx := httpx.NewContext(httptest.NewRequest(http.MethodPost, "/login", nil))
+	cookies, err := session.Create(ctx, "user-3", "member")
+	if err != nil {
+		t.Fatalf("session create without JWT_SECRET: %v", err)
+	}
+	if cookies.Session == nil || cookies.CSRF == nil {
+		t.Fatalf("session create cookies = %#v", cookies)
+	}
+	if _, err := auth.TryDriver("jwt"); err == nil || !strings.Contains(err.Error(), "JWT_SECRET is required") {
+		t.Fatalf("TryDriver(jwt) error = %v, want JWT_SECRET configuration error", err)
 	}
 }
 

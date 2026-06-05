@@ -5550,6 +5550,7 @@ type AuthDriver interface {
 
 var (
 	registry = map[string]AuthDriver{}
+	factories = map[string]func() AuthDriver{}
 	envFunc = config.Env
 )
 
@@ -5563,9 +5564,17 @@ func Init(env func(string, string) string, db *sql.DB) {
 	} else if envFunc != nil {
 		driver = envFunc("DB_CONNECTION", "sqlite")
 	}
-	registry["jwt"] = jwt.NewDriver(envFunc, db, driver)
-	registry["oauth"] = oauth.NewDriver(envFunc, db, driver)
-	registry["session"] = session.NewDriver(envFunc, db, driver)
+	registry = map[string]AuthDriver{}
+	factories = map[string]func() AuthDriver{
+		"jwt": func() AuthDriver { return jwt.NewDriver(envFunc, db, driver) },
+		"oauth": func() AuthDriver { return oauth.NewDriver(envFunc, db, driver) },
+		"session": func() AuthDriver { return session.NewDriver(envFunc, db, driver) },
+	}
+	if _, ok := factories[activeDriverName()]; ok {
+		if _, err := TryActiveDriver(); err != nil {
+			panic(err.Error())
+		}
+	}
 }
 
 func Driver(name string) AuthDriver {
@@ -5578,9 +5587,24 @@ func Driver(name string) AuthDriver {
 
 func TryDriver(name string) (AuthDriver, error) {
 	d, ok := registry[name]
+	if ok {
+		return d, nil
+	}
+	factory, ok := factories[name]
 	if !ok {
 		return nil, fmt.Errorf("auth: unknown driver %%q", name)
 	}
+	var recovered any
+	func() {
+		defer func() {
+			recovered = recover()
+		}()
+		d = factory()
+	}()
+	if recovered != nil {
+		return nil, fmt.Errorf("auth: initialize driver %%q: %%v", name, recovered)
+	}
+	registry[name] = d
 	return d, nil
 }
 

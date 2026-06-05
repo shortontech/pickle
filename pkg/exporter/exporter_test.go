@@ -1548,7 +1548,9 @@ func writeExportedRouterMiddlewareBehaviorTest(t *testing.T, out string) {
 	testSrc := `package httpx_test
 
 import (
+	"bytes"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -1713,6 +1715,11 @@ func TestExportedRegisterRoutesDuplicatePanics(t *testing.T) {
 
 func TestExportedOnErrorReceivesRecoveredPanic(t *testing.T) {
 	t.Setenv("RATE_LIMIT", "false")
+	var logs bytes.Buffer
+	previousLogOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousLogOutput)
+
 	var reported error
 	router := httpx.Routes(func(r *httpx.Router) {
 		r.OnError(func(ctx *httpx.Context, err error) {
@@ -1745,6 +1752,12 @@ func TestExportedOnErrorReceivesRecoveredPanic(t *testing.T) {
 	}
 	if reported == nil || reported.Error() != "boom" {
 		t.Fatalf("reported error = %v", reported)
+	}
+	if strings.Contains(logs.String(), "boom") {
+		t.Fatalf("panic log leaked detail: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "panic recovered") {
+		t.Fatalf("panic log missing sanitized marker: %s", logs.String())
 	}
 }
 

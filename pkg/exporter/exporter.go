@@ -5717,7 +5717,7 @@ func (r *Router) AllRoutes() []Route { routes := make([]Route, len(r.routes)); c
 func writeRecoveredError(w http.ResponseWriter) { Response{StatusCode: http.StatusInternalServerError, Body: map[string]string{"error": "internal server error"}}.Write(w) }
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var ctx *Context
-	defer func() { if recovered := recover(); recovered != nil { err, ok := recovered.(error); if !ok { err = fmt.Errorf("%v", recovered) }; log.Printf("panic: %v\n%s", err, debug.Stack()); if r.onError != nil { r.onError(ctx, err) }; writeRecoveredError(w) } }()
+	defer func() { if recovered := recover(); recovered != nil { err, ok := recovered.(error); if !ok { err = fmt.Errorf("%v", recovered) }; log.Printf("panic recovered\n%s", debug.Stack()); if r.onError != nil { r.onError(ctx, err) }; writeRecoveredError(w) } }()
 	rateLimitResp, rateLimitHeaders := checkRateLimit(req)
 	if rateLimitResp != nil {
 		rateLimitResp.Write(w)

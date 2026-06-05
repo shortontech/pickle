@@ -2261,6 +2261,17 @@ func validateGraphQLRequestEnvelope(w http.ResponseWriter, raw map[string]any) b
 			return false
 		}
 	}
+	if extensions, ok := raw["extensions"]; ok && extensions != nil {
+		values, ok := extensions.(map[string]any)
+		if !ok {
+			writeGraphQLHTTPError(w, "GraphQL extensions must be an object", CodeBadUserInput)
+			return false
+		}
+		if err := validateGraphQLExtensions(values); err != nil {
+			writeGraphQLHTTPError(w, err.Error(), CodeBadUserInput)
+			return false
+		}
+	}
 	return true
 }
 
@@ -2278,6 +2289,21 @@ func isGraphQLName(name string) bool {
 		return false
 	}
 	return name != ""
+}
+
+func validateGraphQLExtensions(extensions map[string]any) error {
+	if len(extensions) > maxGraphQLVariableCollectionItems {
+		return BadInput("GraphQL extensions exceed safety limits")
+	}
+	for name, value := range extensions {
+		if len(name) > maxGraphQLVariableNameBytes {
+			return BadInput("GraphQL extension name is too large")
+		}
+		if !validGraphQLVariableValue(value, 0) {
+			return BadInput("GraphQL extensions exceed safety limits")
+		}
+	}
+	return nil
 }
 
 func isGraphQLJSONContentType(contentType string) bool {

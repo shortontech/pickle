@@ -3115,6 +3115,7 @@ func TestExportGraphQLSafetyLowersGraphQLPackage(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLVariables = 64")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "const maxGraphQLVariableNameBytes = 256")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func validateGraphQLVariables")
+	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func validateGraphQLExtensions")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "http.MaxBytesReader(w, r.Body, maxGraphQLRequestBodyBytes)")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), "func graphQLRequestedPageLimit")
 	assertFileContains(t, filepath.Join(out, "app", "graphql", "handler_gen.go"), `parsePositivePageInt(pageArg["last"])`)
@@ -3760,6 +3761,95 @@ fragment UserFields on User {
 		}
 	})
 
+	t.Run("non_object_extensions_rejected_before_parse", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{
+			"query":      "query AllowedUsers { users(page: { first: 1 }) { edges { node { id } } } }",
+			"extensions": []any{"not", "an", "object"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL extensions must be an object") {
+			t.Fatalf("missing extensions type error: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "not") {
+			t.Fatalf("extensions type error leaked request value: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("oversized_extensions_rejected_before_parse", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{
+			"query":      "query AllowedUsers { users(page: { first: 1 }) { edges { node { id } } } }",
+			"extensions": map[string]any{"trace": strings.Repeat("x", 4097)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL extensions exceed safety limits") {
+			t.Fatalf("missing extensions budget error: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), strings.Repeat("x", 128)) {
+			t.Fatalf("extensions budget error leaked request value: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("oversized_extension_name_rejected_before_parse", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{
+			"query":      "query AllowedUsers { users(page: { first: 1 }) { edges { node { id } } } }",
+			"extensions": map[string]any{strings.Repeat("x", 257): "value"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "GraphQL extension name is too large") {
+			t.Fatalf("missing extension name size error: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), strings.Repeat("x", 128)) {
+			t.Fatalf("extension name size error leaked request value: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("null_extensions_are_accepted", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{
+			"query":      "query AllowedUsers { users(page: { first: 1 }) { edges { node { id } } } }",
+			"extensions": nil,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "\"errors\"") {
+			t.Fatalf("null extensions should execute without errors: %s", rec.Body.String())
+		}
+	})
+
 	t.Run("batched_json_requests_are_rejected", func(t *testing.T) {
 		body := ` + "`" + `[
   { "query": "{ users { edges { node { id } } } }" },
@@ -3888,6 +3978,30 @@ func TestExportedGraphQLVariableBudget(t *testing.T) {
 	}
 	if err := validateGraphQLVariables(map[string]any{"deep": deep}); err == nil || !strings.Contains(err.Error(), "GraphQL variables exceed safety limits") {
 		t.Fatalf("deep variable error = %v", err)
+	}
+}
+
+func TestExportedGraphQLExtensionsBudget(t *testing.T) {
+	if err := validateGraphQLExtensions(map[string]any{
+		"trace": map[string]any{"sampled": true},
+	}); err != nil {
+		t.Fatalf("valid extensions rejected: %v", err)
+	}
+
+	wide := map[string]any{}
+	for i := 0; i < maxGraphQLVariableCollectionItems+1; i++ {
+		wide[string(rune('a'+i))] = true
+	}
+	if err := validateGraphQLExtensions(wide); err == nil || !strings.Contains(err.Error(), "GraphQL extensions exceed safety limits") {
+		t.Fatalf("wide extensions error = %v", err)
+	}
+
+	if err := validateGraphQLExtensions(map[string]any{strings.Repeat("x", maxGraphQLVariableNameBytes+1): "value"}); err == nil || !strings.Contains(err.Error(), "GraphQL extension name is too large") {
+		t.Fatalf("oversized extension name error = %v", err)
+	}
+
+	if err := validateGraphQLExtensions(map[string]any{"trace": strings.Repeat("x", maxGraphQLVariableStringBytes+1)}); err == nil || !strings.Contains(err.Error(), "GraphQL extensions exceed safety limits") {
+		t.Fatalf("oversized extension value error = %v", err)
 	}
 }
 

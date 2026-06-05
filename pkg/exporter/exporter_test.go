@@ -2715,6 +2715,37 @@ func Index(role string) ([]models.User, error) {
 	}
 }
 
+func TestRewriteAliasedModelsImportQueryChain(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"User": true},
+	}
+	src := []byte(`package controllers
+
+import m "example.com/app/app/models"
+
+func Show(id string) (*m.User, error) {
+	return m.QueryUser().WhereID(id).First()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	if strings.Contains(got, `m "exported-app/app/models"`) {
+		t.Fatalf("models import kept source alias:\n%s", got)
+	}
+	compact := strings.Join(strings.Fields(got), " ")
+	assertContainsAll(t, compact,
+		`"exported-app/app/models"`,
+		"func Show(id string) (*models.User, error)",
+		"models.DB.Model(&models.User{})",
+		`.Where( "id = ?", id).First(&record).Error`,
+	)
+}
+
 func TestPascalToSnakePreservesCommonInitialisms(t *testing.T) {
 	cases := map[string]string{
 		"ID":        "id",
@@ -2727,6 +2758,15 @@ func TestPascalToSnakePreservesCommonInitialisms(t *testing.T) {
 	for input, want := range cases {
 		if got := pascalToSnake(input); got != want {
 			t.Fatalf("pascalToSnake(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func assertContainsAll(t *testing.T, got string, wants ...string) {
+	t.Helper()
+	for _, want := range wants {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rewritten source missing %q:\n%s", want, got)
 		}
 	}
 }

@@ -359,7 +359,7 @@ func (e *exporter) rewriteGoFile(path string, data []byte) ([]byte, error) {
 		if err != nil {
 			continue
 		}
-		if p == e.sourceModule+"/app/models" {
+		if p == e.sourceModule+"/app/models" && imp.Name != nil && imp.Name.Name != "." && imp.Name.Name != "_" {
 			if imp.Name != nil {
 				modelAlias = imp.Name.Name
 			}
@@ -375,6 +375,11 @@ func (e *exporter) rewriteGoFile(path string, data []byte) ([]byte, error) {
 		case p == e.sourceModule+"/app/http":
 			imp.Path.Value = strconv.Quote(e.modulePath + "/internal/httpx")
 			imp.Name = ast.NewIdent("httpx")
+		case p == e.sourceModule+"/app/models":
+			imp.Path.Value = strconv.Quote(e.modulePath + "/app/models")
+			if imp.Name != nil && imp.Name.Name == modelAlias {
+				imp.Name = nil
+			}
 		case strings.HasPrefix(p, e.sourceModule+"/database/actions/"):
 			imp.Path.Value = strconv.Quote(e.modulePath + "/app/models")
 			if imp.Name != nil {
@@ -382,7 +387,7 @@ func (e *exporter) rewriteGoFile(path string, data []byte) ([]byte, error) {
 			} else {
 				actionImportAliases = append(actionImportAliases, filepath.Base(p))
 			}
-			imp.Name = ast.NewIdent(modelAlias)
+			imp.Name = nil
 		case e.isServiceHTTPImport(p):
 			imp.Path.Value = strconv.Quote(e.modulePath + "/internal/httpx")
 			imp.Name = ast.NewIdent("httpx")
@@ -404,9 +409,14 @@ func (e *exporter) rewriteGoFile(path string, data []byte) ([]byte, error) {
 		if id, ok := sel.X.(*ast.Ident); ok && id.Name == "pickle" {
 			id.Name = "httpx"
 		}
+		if modelAlias != "models" {
+			if id, ok := sel.X.(*ast.Ident); ok && id.Name == modelAlias {
+				id.Name = "models"
+			}
+		}
 		for _, alias := range actionImportAliases {
 			if id, ok := sel.X.(*ast.Ident); ok && id.Name == alias {
-				id.Name = modelAlias
+				id.Name = "models"
 			}
 		}
 		return true

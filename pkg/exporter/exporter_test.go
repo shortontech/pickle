@@ -116,6 +116,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), `panic("csrf: failed to generate random nonce: " + err.Error())`)
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), `errors.New("jwt: database error")`)
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), `return "", errors.New("jwt: database error")`)
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), `errors.New("jwt: unsupported algorithm")`)
+	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "jwt: unsupported algorithm %s")
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "jwt: revoke token: %w")
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "jwt: revoke all for user: %w")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "len(parts[0]) != 64 || len(parts[1]) != 64")
@@ -556,6 +558,21 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	}
 	if cappedJWTClaims.ExpiresAt-cappedJWTClaims.IssuedAt != 365*24*60*60 {
 		t.Fatalf("capped jwt expiry seconds = %d, want %d", cappedJWTClaims.ExpiresAt-cappedJWTClaims.IssuedAt, 365*24*60*60)
+	}
+	badAlgJWTDriver := jwt.NewDriver(func(key, fallback string) string {
+		switch key {
+		case "JWT_SECRET":
+			return "0123456789abcdef0123456789abcdef"
+		case "JWT_ALGORITHM":
+			return "HS256-password=swordfish"
+		default:
+			return fallback
+		}
+	}, db, "sqlite")
+	if _, err := badAlgJWTDriver.SignToken(jwt.Claims{Subject: "secret-user"}); err == nil || err.Error() != "jwt: unsupported algorithm" {
+		t.Fatalf("unsupported jwt algorithm error = %v, want sanitized unsupported algorithm", err)
+	} else if strings.Contains(err.Error(), "swordfish") || strings.Contains(err.Error(), "password") || strings.Contains(err.Error(), "HS256-") {
+		t.Fatalf("unsupported jwt algorithm leaked detail: %v", err)
 	}
 
 	closedJWTDB, err := sql.Open("sqlite3", ":memory:")

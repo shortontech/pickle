@@ -7257,7 +7257,7 @@ func hmacSign(data, secret []byte, alg string) ([]byte, error) {
 	case "HS256": h = sha256.New
 	case "HS384": h = sha512.New384
 	case "HS512": h = sha512.New
-	default: return nil, fmt.Errorf("jwt: unsupported algorithm %%s", alg)
+	default: return nil, errors.New("jwt: unsupported algorithm")
 	}
 	mac := hmac.New(h, secret)
 	mac.Write(data)

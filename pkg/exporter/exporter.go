@@ -6745,7 +6745,7 @@ func runJob(entry *JobEntry) {
 			cancel()
 		} else { err = safeHandleJob(entry.Job) }
 		if err == nil { return }
-		log.Printf("job %T failed (attempt %d/%d): %v", entry.Job, i+1, attempts, err)
+		log.Printf("job %T failed (attempt %d/%d): job failed", entry.Job, i+1, attempts)
 		if i < attempts-1 && entry.retryDelay > 0 { time.Sleep(entry.retryDelay) }
 	}
 }

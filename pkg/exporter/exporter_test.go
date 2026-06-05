@@ -3808,7 +3808,9 @@ func writeExportedCronBehaviorTests(t *testing.T, out string) {
 	jobsTest := `package jobs
 
 import (
+	"bytes"
 	"fmt"
+	"log"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -3832,7 +3834,7 @@ var errExportedFlaky = &exportedCronError{}
 
 type exportedCronError struct{}
 
-func (*exportedCronError) Error() string { return "flaky" }
+func (*exportedCronError) Error() string { return "database password is swordfish" }
 
 type exportedPanicJob struct {
 	attempts int32
@@ -3844,6 +3846,11 @@ func (j *exportedPanicJob) Handle() error {
 }
 
 func TestExportedSchedulerOptionsAndRetries(t *testing.T) {
+	var logs bytes.Buffer
+	previousLogOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousLogOutput)
+
 	job := &exportedFlakyJob{failures: 2}
 	scheduler := Cron(func(s *Scheduler) {
 		s.Job("*/5 * * * *", job).
@@ -3871,6 +3878,12 @@ func TestExportedSchedulerOptionsAndRetries(t *testing.T) {
 	runJob(entry)
 	if got := atomic.LoadInt32(&job.attempts); got != 3 {
 		t.Fatalf("attempts = %d, want 3", got)
+	}
+	if strings.Contains(logs.String(), "swordfish") {
+		t.Fatalf("scheduler retry log leaked error detail: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "job failed") {
+		t.Fatalf("scheduler retry log missing sanitized marker: %s", logs.String())
 	}
 }
 

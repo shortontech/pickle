@@ -3284,7 +3284,9 @@ func writeExportedGraphQLErrorBehaviorTest(t *testing.T, out string) {
 	testSrc := `package graphql
 
 import (
+	"bytes"
 	"fmt"
+	"log"
 	"strings"
 	"testing"
 )
@@ -3321,6 +3323,11 @@ func TestExportedGraphQLErrorsPreservePath(t *testing.T) {
 }
 
 func TestExportedGraphQLExecutionRecoversPanics(t *testing.T) {
+	var logs bytes.Buffer
+	previousLogOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousLogOutput)
+
 	data, errs := executeSafely(&ResolveContext{}, panicRoot{}, &Document{
 		Operation: "query",
 		Fields: []Field{{Name: "boom"}},
@@ -3337,6 +3344,12 @@ func TestExportedGraphQLExecutionRecoversPanics(t *testing.T) {
 	extensions, ok := errs[0]["extensions"].(map[string]any)
 	if !ok || extensions["code"] != CodeInternalServerError {
 		t.Fatalf("panic extensions = %#v", errs[0]["extensions"])
+	}
+	if strings.Contains(logs.String(), "secret panic detail") {
+		t.Fatalf("panic log leaked detail: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "graphql panic recovered") {
+		t.Fatalf("panic log missing sanitized marker: %s", logs.String())
 	}
 }
 

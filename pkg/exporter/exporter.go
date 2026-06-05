@@ -2082,7 +2082,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -2364,11 +2363,7 @@ func valueToGoWithVariables(v *ast.Value, variables map[string]any) any {
 func executeSafely(ctx *ResolveContext, root rootResolver, doc *Document) (data map[string]any, gqlErrs []map[string]any) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err, ok := recovered.(error)
-			if !ok {
-				err = fmt.Errorf("%%v", recovered)
-			}
-			log.Printf("graphql panic: %%v\n%%s", err, debug.Stack())
+			log.Printf("graphql panic recovered\n%%s", debug.Stack())
 			data = nil
 			gqlErrs = []map[string]any{
 				toGraphQLError(InternalError("internal server error"), nil),

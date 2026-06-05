@@ -98,6 +98,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "func (d *Driver) TokenEndpoint")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "maxOAuthTokenExpirySeconds")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "maxOAuthBearerTokenBytes")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "maxOAuthAuthorizationHeaderBytes")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "boundedPositiveSeconds")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func CSRF")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "len(parts[0]) != 64 || len(parts[1]) != 64")
@@ -539,6 +540,16 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	badTokenResp := oauthDriver.TokenEndpoint(httpx.NewContext(badTokenReq))
 	if badTokenResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("invalid oauth credentials status = %d body = %#v", badTokenResp.StatusCode, badTokenResp.Body)
+	}
+	largeAuthHeaderReq, _ := http.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader("grant_type=client_credentials"))
+	largeAuthHeaderReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	largeAuthHeaderReq.Header.Set("Authorization", "Basic "+strings.Repeat("x", 13<<10))
+	largeAuthHeaderResp := oauthDriver.TokenEndpoint(httpx.NewContext(largeAuthHeaderReq))
+	if largeAuthHeaderResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("oversized oauth Authorization status = %d body = %#v", largeAuthHeaderResp.StatusCode, largeAuthHeaderResp.Body)
+	}
+	if strings.Contains(fmt.Sprint(largeAuthHeaderResp.Body), strings.Repeat("x", 128)) {
+		t.Fatalf("oversized oauth Authorization response leaked header: %#v", largeAuthHeaderResp.Body)
 	}
 	largeTokenReq, _ := http.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader("grant_type=client_credentials&padding="+strings.Repeat("x", 9000)))
 	largeTokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")

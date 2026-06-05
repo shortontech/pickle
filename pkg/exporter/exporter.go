@@ -6701,6 +6701,7 @@ type Driver struct {
 const maxTokenRequestBodyBytes = 8 << 10
 const maxOAuthTokenExpirySeconds = 365 * 24 * 60 * 60
 const maxOAuthBearerTokenBytes = 8 << 10
+const maxOAuthAuthorizationHeaderBytes = 12 << 10
 
 func NewDriver(env func(string, string) string, db *sql.DB, driver string) *Driver {
 	expiry := 3600
@@ -6801,6 +6802,7 @@ func isFormURLEncoded(contentType string) bool {
 }
 
 func parseBasicAuth(header string) (string, string, bool) {
+	if len(header) > maxOAuthAuthorizationHeaderBytes { return "", "", false }
 	if !strings.HasPrefix(header, "Basic ") { return "", "", false }
 	decoded, err := base64.StdEncoding.DecodeString(header[6:])
 	if err != nil { return "", "", false }

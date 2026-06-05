@@ -3263,7 +3263,7 @@ func loadGraphQLAPIRBACClaims(claims *resolver.GraphQLAPIAuthClaims) error {
 	err := appmodels.DB.Raw("SELECT r.slug, r.manages FROM roles r JOIN role_user ru ON ru.role_id = r.id WHERE ru.user_id = ?", claims.UserID).Scan(&roles).Error
 	if err != nil {
 		if isMissingGraphQLAPIRBACTableError(err) {
-			return nil
+			return handleMissingGraphQLAPIRBACSchema()
 		}
 		return err
 	}
@@ -3285,6 +3285,32 @@ func loadGraphQLAPIRBACClaims(claims *resolver.GraphQLAPIAuthClaims) error {
 		claims.Role = claims.Roles[0]
 	}
 	return nil
+}
+
+func handleMissingGraphQLAPIRBACSchema() error {
+	rolesExists, err := graphQLAPIRBACTableExists("roles")
+	if err != nil {
+		return err
+	}
+	roleUserExists, err := graphQLAPIRBACTableExists("role_user")
+	if err != nil {
+		return err
+	}
+	if !rolesExists && !roleUserExists {
+		return nil
+	}
+	return errors.New("graphql rbac schema incomplete")
+}
+
+func graphQLAPIRBACTableExists(table string) (bool, error) {
+	err := appmodels.DB.Exec("SELECT 1 FROM " + table + " LIMIT 0").Error
+	if err == nil {
+		return true, nil
+	}
+	if isMissingGraphQLAPIRBACTableError(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 func isMissingGraphQLAPIRBACTableError(err error) bool {

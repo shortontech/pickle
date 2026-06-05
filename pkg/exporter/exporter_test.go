@@ -5361,6 +5361,7 @@ func writeExportedGraphQLAPIHandlerRBACBehaviorTest(t *testing.T, out string) {
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -5436,6 +5437,102 @@ func TestExportedGQLGenTargetAuthLoadsDatabaseRoles(t *testing.T) {
 	}
 	if graphQLAPIHasRole(claims, "viewer") {
 		t.Fatalf("token fallback role should not grant after RBAC load: %+v", claims)
+	}
+}
+
+func TestExportedGQLGenTargetAuthRBACFallbackOnlyWhenSchemaMissing(t *testing.T) {
+	userID := uuid.NewString()
+	tokenRole := "admin"
+
+	missingDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := missingDB.Exec(` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, revoked_at DATETIME, created_at DATETIME NOT NULL)` + "`" + `).Error; err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(missingDB)
+	missingSQLDB, err := missingDB.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth.Init(func(key, fallback string) string {
+		switch key {
+		case "AUTH_DRIVER":
+			return "jwt"
+		case "DB_CONNECTION":
+			return "sqlite"
+		case "JWT_SECRET":
+			return "0123456789abcdef0123456789abcdef"
+		default:
+			return fallback
+		}
+	}, missingSQLDB)
+	missingToken, err := auth.Driver("jwt").(*jwt.Driver).SignToken(jwt.Claims{
+		Subject:   userID,
+		Role:      tokenRole,
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("sign missing-schema jwt: %v", err)
+	}
+	missingReq, err := http.NewRequest(http.MethodPost, "/graphql", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingReq.Header.Set("Authorization", "Bearer "+missingToken)
+	missingClaims, err := extractGraphQLAPIAuth(missingReq)
+	if err != nil {
+		t.Fatalf("missing schema auth should use token fallback: %v", err)
+	}
+	if missingClaims == nil || missingClaims.RBACLoaded || !graphQLAPIHasRole(missingClaims, tokenRole) {
+		t.Fatalf("missing schema claims = %+v, want token fallback role", missingClaims)
+	}
+
+	partialDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := partialDB.Exec(` + "`" + `CREATE TABLE jwt_tokens (jti TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL, revoked_at DATETIME, created_at DATETIME NOT NULL)` + "`" + `).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := partialDB.Exec(` + "`" + `CREATE TABLE roles (id TEXT PRIMARY KEY, slug TEXT NOT NULL, manages BOOLEAN NOT NULL)` + "`" + `).Error; err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(partialDB)
+	partialSQLDB, err := partialDB.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth.Init(func(key, fallback string) string {
+		switch key {
+		case "AUTH_DRIVER":
+			return "jwt"
+		case "DB_CONNECTION":
+			return "sqlite"
+		case "JWT_SECRET":
+			return "0123456789abcdef0123456789abcdef"
+		default:
+			return fallback
+		}
+	}, partialSQLDB)
+	partialToken, err := auth.Driver("jwt").(*jwt.Driver).SignToken(jwt.Claims{
+		Subject:   userID,
+		Role:      tokenRole,
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("sign partial-schema jwt: %v", err)
+	}
+	partialReq, err := http.NewRequest(http.MethodPost, "/graphql", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partialReq.Header.Set("Authorization", "Bearer "+partialToken)
+	if claims, err := extractGraphQLAPIAuth(partialReq); err == nil {
+		t.Fatalf("partial RBAC schema should fail closed, got claims %+v", claims)
+	} else if err.Error() != "graphql rbac schema incomplete" || strings.Contains(err.Error(), "role_user") || strings.Contains(err.Error(), "SELECT") {
+		t.Fatalf("partial RBAC schema error = %v, want sanitized incomplete schema error", err)
 	}
 }
 `

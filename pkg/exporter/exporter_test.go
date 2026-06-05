@@ -97,6 +97,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func CSRF")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "len(parts[0]) != 64 || len(parts[1]) != 64")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func validSessionID")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func validCookieName")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_ban.go"), "DB.Save(user).Error")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_promote.go"), "type PromoteResult struct")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_standalone_gate.go"), "func CanView")
@@ -1062,6 +1063,56 @@ func TestExportedSessionCreateSetsSessionAndCSRFCookies(t *testing.T) {
 	if findCookie(resp.Cookies, csrfConfig.cookieName) == nil {
 		t.Fatal("csrf cookie should be set")
 	}
+}
+
+func TestExportedSessionRejectsInvalidCookieNames(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	for _, name := range []string{"sid", "sid.v1", "sid_v1"} {
+		if !validCookieName(name) {
+			t.Fatalf("validCookieName(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"", "bad cookie", "bad;cookie", "bad\ncookie", strings.Repeat("x", 65)} {
+		if validCookieName(name) {
+			t.Fatalf("validCookieName(%q) = true, want false", name)
+		}
+	}
+
+	assertSessionDriverPanic(t, "invalid SESSION_COOKIE", func() {
+		NewDriver(func(key, fallback string) string {
+			if key == "SESSION_COOKIE" {
+				return "bad cookie"
+			}
+			return fallback
+		}, db, "sqlite")
+	})
+	assertSessionDriverPanic(t, "invalid CSRF_COOKIE", func() {
+		NewDriver(func(key, fallback string) string {
+			if key == "CSRF_COOKIE" {
+				return strings.Repeat("x", 65)
+			}
+			return fallback
+		}, db, "sqlite")
+	})
+}
+
+func assertSessionDriverPanic(t *testing.T, want string, fn func()) {
+	t.Helper()
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			t.Fatalf("expected panic containing %q", want)
+		}
+		if !strings.Contains(recovered.(string), want) {
+			t.Fatalf("panic = %v, want %q", recovered, want)
+		}
+	}()
+	fn()
 }
 
 func TestExportedCSRFRequiresConfiguredSecretWithoutPanic(t *testing.T) {

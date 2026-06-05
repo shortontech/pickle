@@ -6732,6 +6732,8 @@ var csrfConfig struct {
 var sessionCookieName = "session_id"
 var activeDriver *Driver
 
+const maxSessionCookieNameBytes = 64
+
 type Driver struct {
 	db *sql.DB
 	driver string
@@ -6747,8 +6749,11 @@ func NewDriver(env func(string, string) string, db *sql.DB, driver string) *Driv
 		if n > 0 { ttl = n }
 	}
 	cookieName := env("SESSION_COOKIE", "session_id")
+	csrfCookieName := env("CSRF_COOKIE", "csrf_token")
+	if !validCookieName(cookieName) { panic("session: invalid SESSION_COOKIE") }
+	if !validCookieName(csrfCookieName) { panic("session: invalid CSRF_COOKIE") }
 	sessionCookieName = cookieName
-	csrfConfig.cookieName = env("CSRF_COOKIE", "csrf_token")
+	csrfConfig.cookieName = csrfCookieName
 	if secret := env("SESSION_SECRET", ""); secret != "" { csrfConfig.secret = []byte(secret) } else { csrfConfig.secret = nil }
 	d := &Driver{db: db, driver: driver, cookieName: cookieName, ttl: ttl}
 	activeDriver = d
@@ -6948,6 +6953,25 @@ func validSessionID(sessionID string) bool {
 	}
 	_, err := uuid.Parse(sessionID)
 	return err == nil
+}
+
+func validCookieName(name string) bool {
+	if name == "" || len(name) > maxSessionCookieNameBytes {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			continue
+		}
+		switch c {
+		case '!', '#', '$', '%%', '&', '\'', '*', '+', '-', '.', '^', '_', 0x60, '|', '~':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func bindPlaceholders(driver, query string) string {

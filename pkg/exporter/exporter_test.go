@@ -1175,6 +1175,14 @@ func TestExportedRequestBindingsRejectUnsafeBodies(t *testing.T) {
 	invalid := requestWithBody(` + "`" + `{"name":"Ada","email":"not-an-email","password":"short"}` + "`" + `)
 	if _, bindErr := BindCreateUserRequest(invalid); bindErr == nil || bindErr.Status != http.StatusUnprocessableEntity {
 		t.Fatalf("validation bind error = %#v, want 422", bindErr)
+	} else {
+		body := bindErr.Error()
+		if !strings.Contains(body, "email:") || !strings.Contains(body, "password:") {
+			t.Fatalf("validation bind error should use JSON field names: %q", body)
+		}
+		if strings.Contains(body, "Email:") || strings.Contains(body, "Password:") {
+			t.Fatalf("validation bind error leaked Go field names: %q", body)
+		}
 	}
 
 	fallbackErr := formatValidationErrors(errors.New("database password is swordfish"))

@@ -2109,6 +2109,8 @@ func Handler() http.Handler {
 	srv.AddTransport(transport.POST{})
 	srv.SetQueryCache(lru.New[*ast.QueryDocument](1000))
 	srv.SetParserTokenLimit(maxQueryInputNodes * 20)
+	srv.SetRecoverFunc(graphQLRecover)
+	srv.SetErrorPresenter(graphQLErrorPresenter)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -2135,6 +2137,32 @@ func Handler() http.Handler {
 		}
 		srv.ServeHTTP(graphQLStatusWriter{ResponseWriter: w}, r)
 	})
+}
+
+func graphQLRecover(_ context.Context, _ any) error {
+	log.Printf("graphql panic recovered\n%%s", debug.Stack())
+	return &gqlerror.Error{
+		Message:    "internal server error",
+		Extensions: map[string]any{"code": CodeInternalServerError},
+	}
+}
+
+func graphQLErrorPresenter(ctx context.Context, err error) *gqlerror.Error {
+	presented := gqlgen.DefaultErrorPresenter(ctx, err)
+	if presented == nil {
+		return nil
+	}
+	if presented.Extensions != nil && presented.Extensions["code"] == CodeInternalServerError {
+		presented.Message = "internal server error"
+		return presented
+	}
+	if presented.Message == "internal server error" {
+		if presented.Extensions == nil {
+			presented.Extensions = map[string]any{}
+		}
+		presented.Extensions["code"] = CodeInternalServerError
+	}
+	return presented
 }
 
 func prepareGraphQLPostBody(w http.ResponseWriter, r *http.Request) bool {

@@ -3285,6 +3285,7 @@ func writeExportedGraphQLErrorBehaviorTest(t *testing.T, out string) {
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -3390,6 +3391,41 @@ func TestExportedGraphQLGQLGenInternalResponsesAreSanitized(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprint(resp.Errors[0]), "secret marshal detail") {
 		t.Fatalf("gqlgen internal response leaked detail: %#v", resp.Errors[0])
+	}
+}
+
+func TestExportedGraphQLGQLGenRecoverHookIsSanitized(t *testing.T) {
+	var logs bytes.Buffer
+	previousLogOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousLogOutput)
+
+	err := graphQLRecover(context.Background(), "secret library panic")
+	if err == nil {
+		t.Fatal("recover hook returned nil error")
+	}
+	if strings.Contains(fmt.Sprint(err), "secret library panic") {
+		t.Fatalf("recover hook leaked panic detail in error: %#v", err)
+	}
+
+	presented := graphQLErrorPresenter(context.Background(), err)
+	if presented == nil {
+		t.Fatal("presenter returned nil")
+	}
+	if presented.Message != "internal server error" {
+		t.Fatalf("presented message = %q, want sanitized internal server error", presented.Message)
+	}
+	if presented.Extensions["code"] != CodeInternalServerError {
+		t.Fatalf("presented extensions = %#v", presented.Extensions)
+	}
+	if strings.Contains(fmt.Sprint(presented), "secret library panic") {
+		t.Fatalf("presenter leaked panic detail: %#v", presented)
+	}
+	if strings.Contains(logs.String(), "secret library panic") {
+		t.Fatalf("recover log leaked panic detail: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "graphql panic recovered") {
+		t.Fatalf("recover log missing sanitized marker: %s", logs.String())
 	}
 }
 

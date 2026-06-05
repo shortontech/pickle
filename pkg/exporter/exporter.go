@@ -3961,8 +3961,14 @@ const httpxSource = `package httpx
 
 import (
 	"encoding/json"
+	"math"
+	"net"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 type Controller struct{}
@@ -4024,6 +4030,11 @@ func (r *Router) Delete(path string, handler HandlerFunc, middleware ...Middlewa
 func (r *Router) add(method, path string, handler HandlerFunc, middleware ...MiddlewareFunc) { r.routes = append(r.routes, route{method: method, path: joinPath(r.prefix, path), handler: handler, middleware: append(append([]MiddlewareFunc{}, r.middleware...), middleware...)}) }
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	defer func() { if recovered := recover(); recovered != nil { http.Error(w, "internal server error", http.StatusInternalServerError) } }()
+	rateLimitResp, rateLimitHeaders := checkRateLimit(req)
+	if rateLimitResp != nil {
+		rateLimitResp.Write(w)
+		return
+	}
 	for _, rt := range r.routes {
 		params, ok := matchPath(rt.path, req.URL.Path)
 		if rt.method != req.Method || !ok { continue }
@@ -4034,7 +4045,9 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			inner := next
 			next = func() Response { return mw(ctx, inner) }
 		}
-		next().Write(w)
+		resp := next()
+		for k, v := range rateLimitHeaders { if resp.Headers == nil { resp.Headers = map[string]string{} }; resp.Headers[k] = v }
+		resp.Write(w)
 		return
 	}
 	http.NotFound(w, req)
@@ -4048,7 +4061,56 @@ func matchPath(pattern, actual string) (map[string]string, bool) {
 	for i := range pp { if strings.HasPrefix(pp[i], ":") { params[strings.TrimPrefix(pp[i], ":")] = aa[i]; continue }; if pp[i] != aa[i] { return nil, false } }
 	return params, true
 }
-func RateLimit(rps, burst int) MiddlewareFunc { return func(ctx *Context, next func() Response) Response { return next() } }
+
+type rateBucket struct { mu sync.Mutex; tokens float64; lastFill time.Time; lastSeen time.Time }
+func (b *rateBucket) allow(rps float64, burst int) bool { b.mu.Lock(); defer b.mu.Unlock(); now := time.Now(); elapsed := now.Sub(b.lastFill).Seconds(); b.tokens = math.Min(float64(burst), b.tokens+elapsed*rps); b.lastFill = now; b.lastSeen = now; if b.tokens < 1 { return false }; b.tokens--; return true }
+func (b *rateBucket) retryAfter(rps float64) int { b.mu.Lock(); defer b.mu.Unlock(); if rps <= 0 { return 1 }; missing := 1 - b.tokens; if missing <= 0 { return 1 }; retry := int(math.Ceil(missing / rps)); if retry < 1 { return 1 }; return retry }
+
+type rateLimiterStore struct { mu sync.Mutex; buckets map[string]*rateBucket; rps float64; burst int; enabled bool }
+func newRateLimiterStore(rps float64, burst int) *rateLimiterStore { if burst < 1 { burst = 1 }; return &rateLimiterStore{buckets: map[string]*rateBucket{}, rps: rps, burst: burst, enabled: rps > 0} }
+func (s *rateLimiterStore) allow(key string) (*rateBucket, bool) { s.mu.Lock(); bucket := s.buckets[key]; if bucket == nil { bucket = &rateBucket{tokens: float64(s.burst), lastFill: time.Now(), lastSeen: time.Now()}; s.buckets[key] = bucket }; s.mu.Unlock(); return bucket, bucket.allow(s.rps, s.burst) }
+func (s *rateLimiterStore) cleanup() { cutoff := time.Now().Add(-10 * time.Minute); s.mu.Lock(); defer s.mu.Unlock(); for key, bucket := range s.buckets { bucket.mu.Lock(); stale := bucket.lastSeen.Before(cutoff); bucket.mu.Unlock(); if stale { delete(s.buckets, key) } } }
+
+var globalLimiterOnce sync.Once
+var globalLimiter *rateLimiterStore
+
+func checkRateLimit(r *http.Request) (*Response, map[string]string) {
+	globalLimiterOnce.Do(func() {
+		enabled := strings.ToLower(os.Getenv("RATE_LIMIT")) != "false"
+		rps, _ := strconv.ParseFloat(env("RATE_LIMIT_RPS", "10"), 64)
+		burst, _ := strconv.Atoi(env("RATE_LIMIT_BURST", "20"))
+		globalLimiter = newRateLimiterStore(rps, burst)
+		globalLimiter.enabled = enabled && globalLimiter.enabled
+		go cleanupRateLimiter(globalLimiter)
+	})
+	if globalLimiter == nil || !globalLimiter.enabled { return nil, nil }
+	bucket, ok := globalLimiter.allow(clientIP(r))
+	remaining := bucketRemaining(bucket)
+	if ok { return nil, rateLimitHeaders(globalLimiter.rps, globalLimiter.burst, remaining) }
+	return rateLimitExceeded(bucket, globalLimiter.rps, globalLimiter.burst), nil
+}
+
+func RateLimit(rps, burst int) MiddlewareFunc {
+	store := newRateLimiterStore(float64(rps), burst)
+	go cleanupRateLimiter(store)
+	return func(ctx *Context, next func() Response) Response {
+		if !store.enabled { return next() }
+		bucket, ok := store.allow(clientIP(ctx.Request()))
+		if ok {
+			resp := next()
+			for k, v := range rateLimitHeaders(store.rps, store.burst, bucketRemaining(bucket)) { if resp.Headers == nil { resp.Headers = map[string]string{} }; resp.Headers[k] = v }
+			return resp
+		}
+		return *rateLimitExceeded(bucket, store.rps, store.burst)
+	}
+}
+
+func cleanupRateLimiter(store *rateLimiterStore) { ticker := time.NewTicker(5 * time.Minute); defer ticker.Stop(); for range ticker.C { store.cleanup() } }
+func bucketRemaining(bucket *rateBucket) float64 { if bucket == nil { return 0 }; bucket.mu.Lock(); defer bucket.mu.Unlock(); return bucket.tokens }
+func rateLimitExceeded(bucket *rateBucket, rps float64, burst int) *Response { resp := Response{StatusCode: http.StatusTooManyRequests, Body: map[string]string{"error": "rate limit exceeded"}, Headers: map[string]string{"Content-Type": "application/json", "Retry-After": strconv.Itoa(bucket.retryAfter(rps))}}; for k, v := range rateLimitHeaders(rps, burst, 0) { resp.Headers[k] = v }; return &resp }
+func rateLimitHeaders(rps float64, burst int, remaining float64) map[string]string { if remaining < 0 { remaining = 0 }; reset := time.Now(); if rps > 0 { deficit := float64(burst) - remaining; if deficit > 0 { reset = reset.Add(time.Duration((deficit / rps) * float64(time.Second))) } }; return map[string]string{"X-RateLimit-Limit": strconv.Itoa(int(rps)), "X-RateLimit-Remaining": strconv.Itoa(int(remaining)), "X-RateLimit-Reset": strconv.FormatInt(reset.Unix(), 10)} }
+func env(key, fallback string) string { if value := os.Getenv(key); value != "" { return value }; return fallback }
+func clientIP(r *http.Request) string { if xff := r.Header.Get("X-Forwarded-For"); xff != "" { parts := strings.Split(xff, ","); return strings.TrimSpace(parts[0]) }; if xri := r.Header.Get("X-Real-IP"); xri != "" { return xri }; if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil { return host }; return r.RemoteAddr }
 `
 
 const rbacMiddlewareSupportSource = `package middleware

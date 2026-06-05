@@ -417,6 +417,7 @@ import (
 )
 
 func TestExportedRouterRunsMiddlewareInDeclaredOrder(t *testing.T) {
+	t.Setenv("RATE_LIMIT", "false")
 	var order []string
 	groupMiddleware := func(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
 		order = append(order, "group")
@@ -445,6 +446,37 @@ func TestExportedRouterRunsMiddlewareInDeclaredOrder(t *testing.T) {
 	want := []string{"group", "route", "handler:42"}
 	if !reflect.DeepEqual(order, want) {
 		t.Fatalf("middleware order = %#v, want %#v", order, want)
+	}
+}
+
+func TestExportedRateLimitMiddlewareDeniesAfterBurst(t *testing.T) {
+	t.Setenv("RATE_LIMIT", "false")
+	router := httpx.Routes(func(r *httpx.Router) {
+		r.Get("/limited", func(ctx *httpx.Context) httpx.Response {
+			return ctx.NoContent()
+		}, httpx.RateLimit(1, 1))
+	})
+
+	first := httptest.NewRequest(http.MethodGet, "/limited", nil)
+	first.RemoteAddr = "192.0.2.10:1234"
+	firstRec := httptest.NewRecorder()
+	router.ServeHTTP(firstRec, first)
+	if firstRec.Code != http.StatusNoContent {
+		t.Fatalf("first status = %d, body = %s", firstRec.Code, firstRec.Body.String())
+	}
+	if firstRec.Header().Get("X-RateLimit-Limit") == "" {
+		t.Fatal("expected rate limit headers on allowed response")
+	}
+
+	second := httptest.NewRequest(http.MethodGet, "/limited", nil)
+	second.RemoteAddr = "192.0.2.10:1234"
+	secondRec := httptest.NewRecorder()
+	router.ServeHTTP(secondRec, second)
+	if secondRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, body = %s", secondRec.Code, secondRec.Body.String())
+	}
+	if secondRec.Header().Get("Retry-After") == "" {
+		t.Fatal("expected Retry-After header on denied response")
 	}
 }
 `

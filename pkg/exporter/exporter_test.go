@@ -2983,6 +2983,102 @@ func History() ([]models.Transaction, error) {
 	}
 }
 
+func TestRewriteQueryLockClauses(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"Job": true},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func Claim(status string) ([]models.Job, error) {
+	return models.QueryJob().
+		WhereStatus(status).
+		Lock().
+		SkipLocked().
+		Limit(10).
+		All()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	compact := strings.Join(strings.Fields(got), " ")
+	assertContainsAll(t, compact,
+		`"gorm.io/gorm/clause"`,
+		`Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"`,
+		`Where("status = ?", status)`,
+		"Limit(10)",
+	)
+	for _, unexpected := range []string{"QueryJob", ".Lock()", ".SkipLocked()"} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("rewritten source retained %q:\n%s", unexpected, got)
+		}
+	}
+}
+
+func TestRewriteQueryShareNoWaitLockClause(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"Job": true},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func ReadOne(id string) (*models.Job, error) {
+	return models.QueryJob().
+		WhereID(id).
+		LockForShare().
+		NoWait().
+		First()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	compact := strings.Join(strings.Fields(got), " ")
+	assertContainsAll(t, compact,
+		`"gorm.io/gorm/clause"`,
+		`Clauses(clause.Locking{Strength: "SHARE", Options: "NOWAIT"`,
+		`Where("id = ?", id)`,
+	)
+	for _, unexpected := range []string{"QueryJob", "LockForShare", "NoWait"} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("rewritten source retained %q:\n%s", unexpected, got)
+		}
+	}
+}
+
+func TestRewriteMutableQueryLockRequiresFluentChain(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"Job": true},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func Claim() ([]models.Job, error) {
+	q := models.QueryJob()
+	q.Lock()
+	return q.All()
+}
+`)
+	_, err := ex.rewriteGoFile("controller.go", src)
+	if err == nil || !strings.Contains(err.Error(), "Lock must be used in a fluent query chain for export") {
+		t.Fatalf("rewriteGoFile error = %v, want fluent-chain lock boundary", err)
+	}
+}
+
 func TestRewriteAliasedModelsImportQueryChain(t *testing.T) {
 	ex := &exporter{
 		sourceModule: "example.com/app",

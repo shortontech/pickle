@@ -429,6 +429,10 @@ func (e *exporter) rewriteGoFile(path string, data []byte) ([]byte, error) {
 	if err := e.rejectRemainingPickleQueries(path, fset, f); err != nil {
 		return nil, err
 	}
+	if fileUsesIdent(f, "clause") {
+		addImport(f, "gorm.io/gorm/clause", "")
+		dedupeImports(f)
+	}
 
 	var buf bytes.Buffer
 	if err := format.Node(&buf, fset, f); err != nil {
@@ -460,6 +464,50 @@ func dedupeImports(f *ast.File) {
 		}
 		gen.Specs = specs
 	}
+}
+
+func fileUsesIdent(f *ast.File, name string) bool {
+	used := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		if used {
+			return false
+		}
+		id, ok := n.(*ast.Ident)
+		if ok && id.Name == name {
+			used = true
+			return false
+		}
+		return true
+	})
+	return used
+}
+
+func addImport(f *ast.File, path, name string) {
+	quoted := strconv.Quote(path)
+	for _, imp := range f.Imports {
+		if imp.Path.Value == quoted {
+			if name != "" && imp.Name == nil {
+				imp.Name = ast.NewIdent(name)
+			}
+			return
+		}
+	}
+	spec := &ast.ImportSpec{Path: &ast.BasicLit{Kind: token.STRING, Value: quoted}}
+	if name != "" {
+		spec.Name = ast.NewIdent(name)
+	}
+	for _, decl := range f.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.IMPORT {
+			continue
+		}
+		gen.Specs = append(gen.Specs, spec)
+		f.Imports = append(f.Imports, spec)
+		return
+	}
+	gen := &ast.GenDecl{Tok: token.IMPORT, Specs: []ast.Spec{spec}}
+	f.Decls = append([]ast.Decl{gen}, f.Decls...)
+	f.Imports = append(f.Imports, spec)
 }
 
 func (e *exporter) isServiceHTTPImport(path string) bool {
@@ -649,14 +697,16 @@ func (e *exporter) rejectRemainingPickleQueries(path string, fset *token.FileSet
 }
 
 type queryChain struct {
-	Model       string
-	Terminal    string
-	Filters     []queryFilter
-	Preloads    []string
-	Limit       ast.Expr
-	Offset      ast.Expr
-	Arg         ast.Expr
-	AllVersions bool
+	Model        string
+	Terminal     string
+	Filters      []queryFilter
+	Preloads     []string
+	Limit        ast.Expr
+	Offset       ast.Expr
+	Arg          ast.Expr
+	AllVersions  bool
+	LockStrength string
+	LockOptions  string
 }
 
 type queryFilter struct {
@@ -726,6 +776,28 @@ func buildQueryChain(model string, methods []struct {
 				return qc, true, fmt.Errorf("AllVersions does not accept arguments")
 			}
 			qc.AllVersions = true
+		case m.name == "Lock" || m.name == "LockForUpdate":
+			if len(m.args) != 0 {
+				return qc, true, fmt.Errorf("%s does not accept arguments", m.name)
+			}
+			qc.LockStrength = "UPDATE"
+		case m.name == "LockForShare":
+			if len(m.args) != 0 {
+				return qc, true, fmt.Errorf("LockForShare does not accept arguments")
+			}
+			qc.LockStrength = "SHARE"
+		case m.name == "SkipLocked":
+			if len(m.args) != 0 {
+				return qc, true, fmt.Errorf("SkipLocked does not accept arguments")
+			}
+			qc.LockOptions = "SKIP LOCKED"
+		case m.name == "NoWait":
+			if len(m.args) != 0 {
+				return qc, true, fmt.Errorf("NoWait does not accept arguments")
+			}
+			qc.LockOptions = "NOWAIT"
+		case m.name == "Timeout":
+			return qc, true, fmt.Errorf("Timeout query locks are not exported yet")
 		case m.name == "Limit":
 			if len(m.args) != 1 {
 				return qc, true, fmt.Errorf("Limit requires one argument")
@@ -882,6 +954,8 @@ func rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[string]string) (a
 		expr, err = parseExpr(fmt.Sprintf("%s.Order(%s + \" \" + %s)", id.Name, col, dir))
 	case sel.Sel.Name == "AllVersions":
 		return nil, true, fmt.Errorf("AllVersions must be used in a fluent query chain for export")
+	case sel.Sel.Name == "Lock" || sel.Sel.Name == "LockForUpdate" || sel.Sel.Name == "LockForShare" || sel.Sel.Name == "SkipLocked" || sel.Sel.Name == "NoWait" || sel.Sel.Name == "Timeout":
+		return nil, true, fmt.Errorf("%s must be used in a fluent query chain for export", sel.Sel.Name)
 	case sel.Sel.Name == "SelectAll" || sel.Sel.Name == "AnyOwner":
 		if len(call.Args) != 0 {
 			return nil, true, fmt.Errorf("%s does not accept arguments", sel.Sel.Name)
@@ -1043,6 +1117,17 @@ func (e *exporter) gormChain(q queryChain) string {
 	if q.Offset != nil {
 		arg, _ := exprString(q.Offset)
 		chain += ".Offset(" + arg + ")"
+	}
+	if q.LockStrength != "" || q.LockOptions != "" {
+		strength := q.LockStrength
+		if strength == "" {
+			strength = "UPDATE"
+		}
+		chain += fmt.Sprintf(".Clauses(clause.Locking{Strength: %q", strength)
+		if q.LockOptions != "" {
+			chain += fmt.Sprintf(", Options: %q", q.LockOptions)
+		}
+		chain += "})"
 	}
 	return chain
 }

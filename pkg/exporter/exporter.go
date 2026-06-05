@@ -2073,19 +2073,30 @@ func NewRunner(db *gorm.DB, driver string) *Runner {
 }
 
 func (r *Runner) ensureMigrationsTable() error {
-	sql := ` + "`" + `CREATE TABLE IF NOT EXISTS migrations (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		migration VARCHAR(255) NOT NULL,
-		batch INTEGER NOT NULL
-	)` + "`" + `
-	if r.Driver == "pgsql" || r.Driver == "postgres" {
-		sql = ` + "`" + `CREATE TABLE IF NOT EXISTS migrations (
+	return r.DB.Exec(migrationsTableSQL(r.Driver)).Error
+}
+
+func migrationsTableSQL(driver string) string {
+	switch driver {
+	case "pgsql", "postgres":
+		return ` + "`" + `CREATE TABLE IF NOT EXISTS migrations (
 			id SERIAL PRIMARY KEY,
 			migration VARCHAR(255) NOT NULL,
 			batch INTEGER NOT NULL
 		)` + "`" + `
+	case "mysql":
+		return ` + "`" + `CREATE TABLE IF NOT EXISTS migrations (
+			id INTEGER PRIMARY KEY AUTO_INCREMENT,
+			migration VARCHAR(255) NOT NULL,
+			batch INTEGER NOT NULL
+		)` + "`" + `
+	default:
+		return ` + "`" + `CREATE TABLE IF NOT EXISTS migrations (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		migration VARCHAR(255) NOT NULL,
+		batch INTEGER NOT NULL
+	)` + "`" + `
 	}
-	return r.DB.Exec(sql).Error
 }
 
 func (r *Runner) applied() (map[string]int, error) {

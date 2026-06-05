@@ -1787,6 +1787,7 @@ func TestExportedScheduleRegistry(t *testing.T) {
 	migrationsTest := `package migrations
 
 import (
+	"strings"
 	"testing"
 
 	"gorm.io/driver/sqlite"
@@ -1828,6 +1829,23 @@ func TestExportedSQLMigrationRunner(t *testing.T) {
 	}
 	if err := runner.Fresh(Registry); err != nil {
 		t.Fatalf("fresh: %v", err)
+	}
+}
+
+func TestMigrationTableDDLMatchesDriver(t *testing.T) {
+	cases := map[string]string{
+		"sqlite":   "AUTOINCREMENT",
+		"postgres": "SERIAL PRIMARY KEY",
+		"pgsql":    "SERIAL PRIMARY KEY",
+		"mysql":    "AUTO_INCREMENT",
+	}
+	for driver, want := range cases {
+		if got := migrationsTableSQL(driver); !strings.Contains(got, want) {
+			t.Fatalf("migrationsTableSQL(%q) = %q, want it to contain %q", driver, got, want)
+		}
+	}
+	if got := migrationsTableSQL("mysql"); strings.Contains(got, "AUTOINCREMENT") {
+		t.Fatalf("mysql migration table uses sqlite autoincrement: %q", got)
 	}
 }
 `

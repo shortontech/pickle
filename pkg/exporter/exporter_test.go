@@ -2549,12 +2549,18 @@ func (c *countingCommand) Run(args []string) error {
 	cliTestSrc := `package main
 
 import (
+	"bytes"
 	"database/sql"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -2607,9 +2613,101 @@ func TestExportedServerBinaryRejectsUnknownCommandBeforeStartup(t *testing.T) {
 	}
 }
 
+func TestExportedServerBinaryServesHTTP(t *testing.T) {
+	port := freeBinaryPort(t)
+	dbPath := filepath.Join(t.TempDir(), "server.sqlite")
+	cmd := exec.Command("go", "run", ".")
+	cmd.Env = append(os.Environ(),
+		"APP_PORT="+port,
+		"DB_CONNECTION=sqlite",
+		"DB_DATABASE="+dbPath,
+		"JWT_SECRET=0123456789abcdef0123456789abcdef",
+		"APP_ENCRYPTION_KEY=12345678901234567890123456789012",
+	)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start exported server binary: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	doneConsumed := false
+	defer func() {
+		if doneConsumed {
+			return
+		}
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("exported server binary did not exit after kill; output=%s", output.String())
+		}
+	}()
+
+	url := "http://127.0.0.1:" + port + "/pickle/health"
+	var resp *http.Response
+	var err error
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case waitErr := <-done:
+			doneConsumed = true
+			t.Fatalf("exported server binary exited before serving: %v\n%s", waitErr, output.String())
+		default:
+		}
+		resp, err = http.Get(url)
+		if err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("exported server binary did not serve %s: %v\n%s", url, err, output.String())
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("server status = %d body=%s output=%s", resp.StatusCode, body, output.String())
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("server Content-Type = %q, want application/json", got)
+	}
+	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("server X-Content-Type-Options = %q, want nosniff", got)
+	}
+	text := string(body)
+	if !strings.Contains(text, "not found") {
+		t.Fatalf("server body = %s, want not found", text)
+	}
+	if strings.Contains(text, "pickle") || strings.Contains(text, "config") {
+		t.Fatalf("server body leaked legacy route detail: %s", text)
+	}
+}
+
 func countBinaryRows(t *testing.T, db *sql.DB, table string) int {
 	t.Helper()
 	return countBinaryWhere(t, db, table, "1 = 1")
+}
+
+func freeBinaryPort(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return port
 }
 
 func countBinaryWhere(t *testing.T, db *sql.DB, table, where string) int {

@@ -1463,8 +1463,14 @@ import (
 )
 
 var DB *gorm.DB
+var dbDriver string
 
 func SetDB(db *gorm.DB) { DB = db }
+
+func SetDBWithDriver(db *gorm.DB, driver string) {
+	DB = db
+	dbDriver = strings.ToLower(strings.TrimSpace(driver))
+}
 
 type Tx struct {
 	DB *gorm.DB
@@ -1492,7 +1498,23 @@ func ApplyLockTimeout(db *gorm.DB, d time.Duration) error {
 	if db == nil || d <= 0 {
 		return nil
 	}
-	return db.Exec("SET LOCAL lock_timeout = ?", fmt.Sprintf("%dms", d.Milliseconds())).Error
+	sql, arg, ok := lockTimeoutStatement(d)
+	if !ok {
+		return nil
+	}
+	return db.Exec(sql, arg).Error
+}
+
+func lockTimeoutStatement(d time.Duration) (string, any, bool) {
+	if d <= 0 {
+		return "", nil, false
+	}
+	switch dbDriver {
+	case "pgsql", "postgres":
+		return "SET LOCAL lock_timeout = ?", fmt.Sprintf("%dms", d.Milliseconds()), true
+	default:
+		return "", nil, false
+	}
 }
 
 func OrderClause(column, direction string) string {
@@ -3600,8 +3622,9 @@ func NewApp() *App {
 	return BuildApp(
 		func() {
 			config.Init()
-			db := config.Database.OpenGORM()
-			models.SetDB(db)
+			conn := config.Database.Connection()
+			db := config.OpenGORM(conn)
+			models.SetDBWithDriver(db, conn.Driver)
 			sqlDB, err := db.DB()
 			if err != nil {
 				log.Fatalf("commands: failed to unwrap database handle: %v", err)
@@ -4150,7 +4173,8 @@ func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL, hasSchedule
 	b.WriteString("func main() {\n")
 	b.WriteString("\tconfig.Init()\n")
 	if hasDatabaseConfig {
-		b.WriteString("\tmodels.SetDB(config.Database.OpenGORM())\n")
+		b.WriteString("\tconn := config.Database.Connection()\n")
+		b.WriteString("\tmodels.SetDBWithDriver(config.OpenGORM(conn), conn.Driver)\n")
 	}
 	if hasSchedule {
 		b.WriteString("\tctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)\n")
@@ -4204,7 +4228,8 @@ func (e *exporter) generateMultiServiceServerMain(hasDatabaseConfig, hasSchedule
 	b.WriteString("func main() {\n")
 	b.WriteString("\tconfig.Init()\n")
 	if hasDatabaseConfig {
-		b.WriteString("\tmodels.SetDB(config.Database.OpenGORM())\n")
+		b.WriteString("\tconn := config.Database.Connection()\n")
+		b.WriteString("\tmodels.SetDBWithDriver(config.OpenGORM(conn), conn.Driver)\n")
 	}
 	if hasSchedule {
 		b.WriteString("\tctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)\n")
@@ -6275,7 +6300,8 @@ import (
 
 func main() {
 	config.Init()
-	models.SetDB(config.Database.OpenGORM())
+	conn := config.Database.Connection()
+	models.SetDBWithDriver(config.OpenGORM(conn), conn.Driver)
 	addr := ":" + config.App.Port
 	log.Printf("listening on %%s", addr)
 	mux := http.NewServeMux()

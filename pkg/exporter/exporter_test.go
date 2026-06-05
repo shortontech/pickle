@@ -98,6 +98,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	writeExportedAuthBehaviorTest(t, out)
 	writeExportedSessionCSRFBehaviorTest(t, out)
 	writeExportedConfigBehaviorTest(t, out)
+	writeExportedModelDBBehaviorTest(t, out)
 	writeExportedActionAuditBehaviorTest(t, out)
 	writeExportedMigrationBehaviorTest(t, out)
 	writeExportedCommandAppBehaviorTest(t, out)
@@ -173,6 +174,47 @@ func TestDatabaseConfigRejectsUnknownConnectionsWithoutFatal(t *testing.T) {
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "config", "exported_config_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedModelDBBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package models
+
+import (
+	"testing"
+	"time"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+func TestApplyLockTimeoutIsDriverAware(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetDBWithDriver(db, "sqlite")
+
+	if sql, arg, ok := lockTimeoutStatement(time.Second); ok || sql != "" || arg != nil {
+		t.Fatalf("sqlite lock timeout statement = (%q, %#v, %v), want no-op", sql, arg, ok)
+	}
+	if err := ApplyLockTimeout(db, time.Second); err != nil {
+		t.Fatalf("sqlite ApplyLockTimeout should no-op, got %v", err)
+	}
+
+	SetDBWithDriver(db, "postgres")
+	sql, arg, ok := lockTimeoutStatement(1500*time.Millisecond)
+	if !ok {
+		t.Fatal("postgres lock timeout statement should be enabled")
+	}
+	if sql != "SET LOCAL lock_timeout = ?" || arg != "1500ms" {
+		t.Fatalf("postgres lock timeout statement = (%q, %#v), want SET LOCAL/1500ms", sql, arg)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_db_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

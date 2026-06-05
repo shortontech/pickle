@@ -96,6 +96,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "oauth", "oauth.go"), "func (d *Driver) TokenEndpoint")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func CSRF")
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "len(parts[0]) != 64 || len(parts[1]) != 64")
+	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "session", "session.go"), "func validSessionID")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_ban.go"), "DB.Save(user).Error")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_promote.go"), "type PromoteResult struct")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_standalone_gate.go"), "func CanView")
@@ -529,11 +530,12 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	}
 
 	sessionDriver := auth.Driver("session").(*session.Driver)
-	if _, err := db.Exec("INSERT INTO sessions (id, user_id, role, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", "sess-1", "user-2", "viewer", time.Now().Add(time.Hour), time.Now(), time.Now()); err != nil {
+	sessionID := "11111111-1111-4111-8111-111111111111"
+	if _, err := db.Exec("INSERT INTO sessions (id, user_id, role, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", sessionID, "user-2", "viewer", time.Now().Add(time.Hour), time.Now(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	sessionReq, _ := http.NewRequest("GET", "/", nil)
-	sessionReq.AddCookie(&http.Cookie{Name: sessionDriver.CookieName(), Value: "sess-1"})
+	sessionReq.AddCookie(&http.Cookie{Name: sessionDriver.CookieName(), Value: sessionID})
 	sessionInfo, err := sessionDriver.Authenticate(sessionReq)
 	if err != nil {
 		t.Fatalf("authenticate session: %v", err)
@@ -580,11 +582,17 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	if _, err := sessionDriver.Authenticate(sessionReq); err == nil {
 		t.Fatal("destroyed session should fail authentication")
 	}
-	if _, err := db.Exec("INSERT INTO sessions (id, user_id, role, payload, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", "sess-expired", "user-2", "viewer", ` + "`" + `{"stale":"secret"}` + "`" + `, time.Now().Add(-time.Hour), time.Now().Add(-2*time.Hour), time.Now().Add(-2*time.Hour)); err != nil {
+	oversizedSessionReq, _ := http.NewRequest("GET", "/", nil)
+	oversizedSessionReq.AddCookie(&http.Cookie{Name: sessionDriver.CookieName(), Value: strings.Repeat("x", 256)})
+	if _, err := sessionDriver.Authenticate(oversizedSessionReq); err == nil || strings.Contains(err.Error(), strings.Repeat("x", 64)) {
+		t.Fatalf("oversized session cookie error = %v, want sanitized invalid session", err)
+	}
+	expiredSessionID := "22222222-2222-4222-8222-222222222222"
+	if _, err := db.Exec("INSERT INTO sessions (id, user_id, role, payload, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", expiredSessionID, "user-2", "viewer", ` + "`" + `{"stale":"secret"}` + "`" + `, time.Now().Add(-time.Hour), time.Now().Add(-2*time.Hour), time.Now().Add(-2*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	expiredReq, _ := http.NewRequest("GET", "/", nil)
-	expiredReq.AddCookie(&http.Cookie{Name: sessionDriver.CookieName(), Value: "sess-expired"})
+	expiredReq.AddCookie(&http.Cookie{Name: sessionDriver.CookieName(), Value: expiredSessionID})
 	expiredCtx := httpx.NewContext(expiredReq)
 	if _, err := session.Get(expiredCtx, "stale"); err == nil {
 		t.Fatal("expired session get should fail")
@@ -915,7 +923,8 @@ func TestExportedSessionCSRFBoundary(t *testing.T) {
 	}
 	NewDriver(env, db, "sqlite")
 
-	getCtx := httpx.NewContext(requestWithSession(http.MethodGet, "sess-1"))
+	sessionID := "11111111-1111-4111-8111-111111111111"
+	getCtx := httpx.NewContext(requestWithSession(http.MethodGet, sessionID))
 	getResp := CSRF(getCtx, func() httpx.Response {
 		return getCtx.NoContent()
 	})
@@ -939,7 +948,18 @@ func TestExportedSessionCSRFBoundary(t *testing.T) {
 		t.Fatalf("anonymous safe request should not receive CSRF cookie: %#v", cookie)
 	}
 
-	postCtx := httpx.NewContext(requestWithSession(http.MethodPost, "sess-1"))
+	oversizedSessionGetCtx := httpx.NewContext(requestWithSession(http.MethodGet, strings.Repeat("x", 256)))
+	oversizedSessionGetResp := CSRF(oversizedSessionGetCtx, func() httpx.Response {
+		return oversizedSessionGetCtx.NoContent()
+	})
+	if oversizedSessionGetResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("oversized session safe request status = %d", oversizedSessionGetResp.StatusCode)
+	}
+	if cookie := findCookie(oversizedSessionGetResp.Cookies, "csrf_token"); cookie != nil {
+		t.Fatalf("oversized session cookie should not receive CSRF cookie: %#v", cookie)
+	}
+
+	postCtx := httpx.NewContext(requestWithSession(http.MethodPost, sessionID))
 	missing := CSRF(postCtx, func() httpx.Response {
 		t.Fatal("CSRF should block missing token")
 		return httpx.Response{}
@@ -948,7 +968,7 @@ func TestExportedSessionCSRFBoundary(t *testing.T) {
 		t.Fatalf("missing token status = %d", missing.StatusCode)
 	}
 
-	invalidReq := requestWithSession(http.MethodPost, "sess-1")
+	invalidReq := requestWithSession(http.MethodPost, sessionID)
 	invalidReq.Header.Set("X-CSRF-TOKEN", "bogus.token")
 	invalidCtx := httpx.NewContext(invalidReq)
 	invalid := CSRF(invalidCtx, func() httpx.Response {
@@ -959,7 +979,7 @@ func TestExportedSessionCSRFBoundary(t *testing.T) {
 		t.Fatalf("invalid token status = %d", invalid.StatusCode)
 	}
 
-	oversizedReq := requestWithSession(http.MethodPost, "sess-1")
+	oversizedReq := requestWithSession(http.MethodPost, sessionID)
 	oversizedReq.Header.Set("X-CSRF-TOKEN", strings.Repeat("a", 4096)+"."+strings.Repeat("b", 4096))
 	oversizedCtx := httpx.NewContext(oversizedReq)
 	oversized := CSRF(oversizedCtx, func() httpx.Response {
@@ -981,8 +1001,8 @@ func TestExportedSessionCSRFBoundary(t *testing.T) {
 		t.Fatalf("anonymous POST status = %d", anonymousPost.StatusCode)
 	}
 
-	validReq := requestWithSession(http.MethodPost, "sess-1")
-	validReq.Header.Set("X-CSRF-TOKEN", generateCSRFToken("sess-1", csrfConfig.secret))
+	validReq := requestWithSession(http.MethodPost, sessionID)
+	validReq.Header.Set("X-CSRF-TOKEN", generateCSRFToken(sessionID, csrfConfig.secret))
 	validCtx := httpx.NewContext(validReq)
 	valid := CSRF(validCtx, func() httpx.Response {
 		return validCtx.NoContent()
@@ -991,7 +1011,7 @@ func TestExportedSessionCSRFBoundary(t *testing.T) {
 		t.Fatalf("valid token status = %d", valid.StatusCode)
 	}
 
-	bearerReq := requestWithSession(http.MethodPost, "sess-1")
+	bearerReq := requestWithSession(http.MethodPost, sessionID)
 	bearerReq.Header.Set("Authorization", "Bearer api-token")
 	bearerCtx := httpx.NewContext(bearerReq)
 	bearer := CSRF(bearerCtx, func() httpx.Response {
@@ -1059,7 +1079,7 @@ func TestExportedCSRFRequiresConfiguredSecretWithoutPanic(t *testing.T) {
 	if len(csrfConfig.secret) != 0 {
 		t.Fatal("missing SESSION_SECRET should clear CSRF secret")
 	}
-	ctx := httpx.NewContext(requestWithSession(http.MethodPost, "sess-1"))
+	ctx := httpx.NewContext(requestWithSession(http.MethodPost, "11111111-1111-4111-8111-111111111111"))
 	resp := CSRF(ctx, func() httpx.Response {
 		t.Fatal("CSRF should not call next when secret is missing")
 		return httpx.Response{}
@@ -1085,10 +1105,11 @@ func TestExportedSessionPayloadErrorsAreSanitized(t *testing.T) {
 		return fallback
 	}, db, "sqlite")
 
-	if _, err := db.Exec("INSERT INTO sessions (id, user_id, role, payload, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", "bad-payload", "user-1", "member", "{secret", time.Now().Add(time.Hour), time.Now(), time.Now()); err != nil {
+	badPayloadSessionID := "33333333-3333-4333-8333-333333333333"
+	if _, err := db.Exec("INSERT INTO sessions (id, user_id, role, payload, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", badPayloadSessionID, "user-1", "member", "{secret", time.Now().Add(time.Hour), time.Now(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	badCtx := httpx.NewContext(requestWithSession(http.MethodGet, "bad-payload"))
+	badCtx := httpx.NewContext(requestWithSession(http.MethodGet, badPayloadSessionID))
 	if _, err := Get(badCtx, "secret"); err == nil || err.Error() != "session: invalid session payload" || strings.Contains(err.Error(), "{secret") {
 		t.Fatalf("Get invalid payload error = %v, want sanitized invalid payload", err)
 	}
@@ -1096,7 +1117,7 @@ func TestExportedSessionPayloadErrorsAreSanitized(t *testing.T) {
 		t.Fatalf("Put invalid payload error = %v, want sanitized invalid payload", err)
 	}
 
-	missingCtx := httpx.NewContext(requestWithSession(http.MethodGet, "missing-session"))
+	missingCtx := httpx.NewContext(requestWithSession(http.MethodGet, "44444444-4444-4444-8444-444444444444"))
 	if _, err := Get(missingCtx, "secret"); err == nil || err.Error() != "session: invalid or expired session" || strings.Contains(err.Error(), "sql:") {
 		t.Fatalf("Get missing session error = %v, want sanitized invalid session", err)
 	}
@@ -1123,7 +1144,7 @@ func TestExportedSessionCreateDestroyDatabaseErrorsAreSanitized(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx := httpx.NewContext(requestWithSession(http.MethodPost, "sess-1"))
+	ctx := httpx.NewContext(requestWithSession(http.MethodPost, "11111111-1111-4111-8111-111111111111"))
 	if _, err := Create(ctx, "user-1", "member"); err == nil || err.Error() != "session: database error" || strings.Contains(err.Error(), "sql:") {
 		t.Fatalf("Create closed DB error = %v, want sanitized database error", err)
 	}

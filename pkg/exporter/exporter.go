@@ -6758,6 +6758,7 @@ func NewDriver(env func(string, string) string, db *sql.DB, driver string) *Driv
 func (d *Driver) Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
 	cookie, err := r.Cookie(d.cookieName)
 	if err != nil { return nil, errors.New("session: missing session cookie") }
+	if !validSessionID(cookie.Value) { return nil, errors.New("session: invalid or expired session") }
 	if d.db == nil { return nil, errors.New("session: database not configured") }
 	var userID, role string
 	var expiresAt time.Time
@@ -6815,6 +6816,9 @@ func Destroy(ctx *httpx.Context) (httpx.Response, error) {
 	if err != nil {
 		return httpx.Response{}, errors.New("session: no session cookie")
 	}
+	if !validSessionID(sessionID) {
+		return httpx.Response{}, errors.New("session: invalid or expired session")
+	}
 	if _, err := d.db.Exec(bindPlaceholders(d.driver, "DELETE FROM sessions WHERE id = ?"), sessionID); err != nil {
 		return httpx.Response{}, errors.New("session: database error")
 	}
@@ -6830,6 +6834,9 @@ func Get(ctx *httpx.Context, key string) (string, error) {
 	sessionID, err := ctx.Cookie(d.cookieName)
 	if err != nil {
 		return "", errors.New("session: no session cookie")
+	}
+	if !validSessionID(sessionID) {
+		return "", errors.New("session: invalid or expired session")
 	}
 	var payloadRaw sql.NullString
 	var expiresAt time.Time
@@ -6872,6 +6879,9 @@ func Put(ctx *httpx.Context, key string, value any) error {
 	sessionID, err := ctx.Cookie(d.cookieName)
 	if err != nil {
 		return errors.New("session: no session cookie")
+	}
+	if !validSessionID(sessionID) {
+		return errors.New("session: invalid or expired session")
 	}
 	var payloadRaw sql.NullString
 	var expiresAt time.Time
@@ -6928,7 +6938,16 @@ func CSRF(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
 func sessionIDFromRequest(r *http.Request) string {
 	c, err := r.Cookie(sessionCookieName)
 	if err != nil { return "" }
+	if !validSessionID(c.Value) { return "" }
 	return c.Value
+}
+
+func validSessionID(sessionID string) bool {
+	if len(sessionID) != 36 {
+		return false
+	}
+	_, err := uuid.Parse(sessionID)
+	return err == nil
 }
 
 func bindPlaceholders(driver, query string) string {

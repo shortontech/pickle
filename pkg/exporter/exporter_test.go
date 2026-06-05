@@ -2049,6 +2049,44 @@ func TestMigrationTableDDLMatchesDriver(t *testing.T) {
 		t.Fatalf("mysql migration table uses sqlite autoincrement: %q", got)
 	}
 }
+
+func TestNormalizeSQLForMySQL(t *testing.T) {
+	input := "CREATE TABLE \"events\" (\n" +
+		"\t\"id\" UUID PRIMARY KEY,\n" +
+		"\t\"payload\" JSONB NOT NULL,\n" +
+		"\t\"body\" BYTEA,\n" +
+		"\t\"created_at\" TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n" +
+		"\t\"nonce\" UUID DEFAULT gen_random_uuid()\n" +
+		");\n" +
+		"DROP TABLE IF EXISTS \"events\" CASCADE;"
+	got := normalizeSQLForDriver(input, "mysql")
+	bt := string(rune(96))
+	for _, want := range []string{
+		"CREATE TABLE " + bt + "events" + bt,
+		bt + "id" + bt + " CHAR(36) PRIMARY KEY",
+		bt + "payload" + bt + " JSON NOT NULL",
+		bt + "body" + bt + " BLOB",
+		bt + "created_at" + bt + " DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP",
+		"DROP TABLE IF EXISTS " + bt + "events" + bt + ";",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("mysql normalized SQL missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "CASCADE") || strings.Contains(got, "JSONB") || strings.Contains(got, "TIMESTAMPTZ") || strings.Contains(got, string(rune(34))) {
+		t.Fatalf("mysql normalized SQL retained unsupported syntax:\n%s", got)
+	}
+}
+
+func TestNormalizeSQLForSQLite(t *testing.T) {
+	input := "CREATE TABLE \"events\" (\"id\" UUID DEFAULT gen_random_uuid(), \"payload\" JSONB, \"created_at\" TIMESTAMPTZ DEFAULT NOW())"
+	got := normalizeSQLForDriver(input, "sqlite")
+	for _, want := range []string{"\"id\" TEXT", "\"payload\" TEXT", "\"created_at\" DATETIME DEFAULT CURRENT_TIMESTAMP"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("sqlite normalized SQL missing %q:\n%s", want, got)
+		}
+	}
+}
 `
 	if err := os.WriteFile(filepath.Join(out, "database", "migrations", "exported_migrations_test.go"), []byte(migrationsTest), 0o644); err != nil {
 		t.Fatal(err)

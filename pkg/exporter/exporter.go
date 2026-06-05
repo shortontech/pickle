@@ -2297,12 +2297,37 @@ func (r *Runner) execMigrationFile(name string) error {
 }
 
 func normalizeSQLForDriver(sql, driver string) string {
-	if driver != "sqlite" && driver != "sqlite3" {
+	switch driver {
+	case "sqlite", "sqlite3":
+		return normalizeSQLForSQLite(sql)
+	case "mysql":
+		return normalizeSQLForMySQL(sql)
+	default:
 		return sql
 	}
+}
+
+func normalizeSQLForSQLite(sql string) string {
 	replacements := map[string]string{
 		" UUID": " TEXT",
 		" JSONB": " TEXT",
+		" BYTEA": " BLOB",
+		" TIMESTAMPTZ": " DATETIME",
+		" DEFAULT NOW()": " DEFAULT CURRENT_TIMESTAMP",
+		" DEFAULT gen_random_uuid()": "",
+		" CASCADE": "",
+	}
+	for from, to := range replacements {
+		sql = strings.ReplaceAll(sql, from, to)
+	}
+	return sql
+}
+
+func normalizeSQLForMySQL(sql string) string {
+	sql = strings.ReplaceAll(sql, string(rune(34)), string(rune(96)))
+	replacements := map[string]string{
+		" UUID": " CHAR(36)",
+		" JSONB": " JSON",
 		" BYTEA": " BLOB",
 		" TIMESTAMPTZ": " DATETIME",
 		" DEFAULT NOW()": " DEFAULT CURRENT_TIMESTAMP",

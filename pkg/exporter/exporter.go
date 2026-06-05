@@ -2794,7 +2794,6 @@ import (
 	"log"
 	"mime"
 	"net/http"
-	"runtime/debug"
 	"strings"
 
 	gqlgen "github.com/99designs/gqlgen/graphql"
@@ -2981,7 +2980,7 @@ func isMissingGraphQLAPIRBACTableError(err error) bool {
 }
 
 func graphQLAPIRecover(_ context.Context, _ any) error {
-	log.Printf("graphqlapi panic recovered\n%%s", debug.Stack())
+	log.Printf("graphqlapi panic recovered")
 	return graphQLAPICodedError("internal server error", "INTERNAL_SERVER_ERROR")
 }
 
@@ -6593,7 +6592,6 @@ import (
 	"net/http"
 	"os"
 	"regexp"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -6687,7 +6685,7 @@ func writeRecoveredError(w http.ResponseWriter) { Response{StatusCode: http.Stat
 func recoveredPanicError(_ any) error { return fmt.Errorf("panic recovered") }
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var ctx *Context
-	defer func() { if recovered := recover(); recovered != nil { log.Printf("panic recovered\n%s", debug.Stack()); if r.onError != nil { r.onError(ctx, recoveredPanicError(recovered)) }; writeRecoveredError(w) } }()
+	defer func() { if recovered := recover(); recovered != nil { log.Printf("panic recovered"); if r.onError != nil { r.onError(ctx, recoveredPanicError(recovered)) }; writeRecoveredError(w) } }()
 	rateLimitResp, rateLimitHeaders := checkRateLimit(req)
 	if rateLimitResp != nil {
 		rateLimitResp.Write(w)

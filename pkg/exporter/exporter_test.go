@@ -2509,6 +2509,9 @@ func TestExportedOnErrorReceivesRecoveredPanic(t *testing.T) {
 	if strings.Contains(logs.String(), "swordfish") || strings.Contains(logs.String(), "password") {
 		t.Fatalf("panic log leaked detail: %s", logs.String())
 	}
+	if strings.Contains(logs.String(), "goroutine ") || strings.Contains(logs.String(), ".ServeHTTP(") {
+		t.Fatalf("panic log leaked stack detail: %s", logs.String())
+	}
 	if !strings.Contains(logs.String(), "panic recovered") {
 		t.Fatalf("panic log missing sanitized marker: %s", logs.String())
 	}
@@ -4181,10 +4184,14 @@ func writeExportedZeroGraphQLAPIErrorBehaviorTest(t *testing.T, out string) {
 	testSrc := `package graphqlapi
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"strings"
 	"testing"
+
+	"github.com/vektah/gqlparser/v2/gqlerror"
 )
 
 func TestExportedGQLGenTargetErrorPresenterSanitizesUncodedErrors(t *testing.T) {
@@ -4205,6 +4212,31 @@ func TestExportedGQLGenTargetErrorPresenterSanitizesUncodedErrors(t *testing.T) 
 	coded := graphQLAPIErrorPresenter(context.Background(), graphQLAPICodedError("bad request shape", "BAD_USER_INPUT"))
 	if coded == nil || coded.Message != "bad request shape" || coded.Extensions["code"] != "BAD_USER_INPUT" {
 		t.Fatalf("coded error was not preserved: %#v", coded)
+	}
+}
+
+func TestExportedGQLGenTargetRecoverLogsSanitizedMarker(t *testing.T) {
+	var logs bytes.Buffer
+	previousLogOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousLogOutput)
+
+	err := graphQLAPIRecover(context.Background(), "database password is swordfish")
+	gqlErr, ok := err.(*gqlerror.Error)
+	if !ok {
+		t.Fatalf("recover error type = %T", err)
+	}
+	if gqlErr.Message != "internal server error" || gqlErr.Extensions["code"] != "INTERNAL_SERVER_ERROR" {
+		t.Fatalf("recover error = %v", err)
+	}
+	if strings.Contains(logs.String(), "swordfish") || strings.Contains(logs.String(), "password") {
+		t.Fatalf("recover log leaked detail: %s", logs.String())
+	}
+	if strings.Contains(logs.String(), "goroutine ") || strings.Contains(logs.String(), "graphQLAPIRecover(") {
+		t.Fatalf("recover log leaked stack detail: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "graphqlapi panic recovered") {
+		t.Fatalf("recover log missing sanitized marker: %s", logs.String())
 	}
 }
 `

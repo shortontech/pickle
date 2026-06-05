@@ -229,6 +229,7 @@ func writeExportedModelDBBehaviorTest(t *testing.T, out string) {
 	testSrc := `package models
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -260,23 +261,40 @@ func TestApplyLockTimeoutIsDriverAware(t *testing.T) {
 	}
 }
 
-func TestOrderClauseRejectsUnsafeInput(t *testing.T) {
+func TestOrderClauseFailsClosedOnUnsafeInput(t *testing.T) {
 	if got := OrderClause("created_at", " desc "); got != "created_at DESC" {
 		t.Fatalf("OrderClause safe result = %q, want created_at DESC", got)
 	}
-	assertPanics(t, func() { OrderClause("created_at; DROP TABLE users", "ASC") })
-	assertPanics(t, func() { OrderClause("created_at", "DESC; DROP TABLE users") })
-	assertPanics(t, func() { OrderClause("", "ASC") })
+	for _, tc := range []struct {
+		name      string
+		column    string
+		direction string
+	}{
+		{name: "unsafe column", column: "created_at; DROP TABLE users", direction: "ASC"},
+		{name: "unsafe direction", column: "created_at", direction: "DESC; DROP TABLE users"},
+		{name: "empty column", column: "", direction: "ASC"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := OrderClause(tc.column, tc.direction); got != "" {
+				t.Fatalf("OrderClause(%q, %q) = %q, want empty fail-closed clause", tc.column, tc.direction, got)
+			}
+		})
+	}
 }
 
-func assertPanics(t *testing.T, fn func()) {
-	t.Helper()
-	defer func() {
-		if recovered := recover(); recovered == nil {
-			t.Fatal("expected panic")
-		}
-	}()
-	fn()
+func TestOrderClauseUnsafeInputDoesNotReachSQL(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmt := db.Session(&gorm.Session{DryRun: true}).
+		Model(&User{}).
+		Order(OrderClause("created_at; DROP TABLE users", "DESC; DROP TABLE users")).
+		Find(&[]User{}).Statement
+	sql := stmt.SQL.String()
+	if strings.Contains(sql, "DROP TABLE") || strings.Contains(sql, "DESC;") {
+		t.Fatalf("unsafe order input leaked into SQL: %s", sql)
+	}
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_db_test.go"), []byte(testSrc), 0o644); err != nil {

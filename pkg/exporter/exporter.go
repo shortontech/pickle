@@ -1617,11 +1617,11 @@ func lockTimeoutStatement(d time.Duration) (string, any, bool) {
 
 func OrderClause(column, direction string) string {
 	if !validSQLIdentifier(column) {
-		panic("models: OrderClause column must be a valid identifier, got: " + column)
+		return ""
 	}
 	dir := strings.ToUpper(strings.TrimSpace(direction))
 	if dir != "ASC" && dir != "DESC" {
-		panic("models: OrderClause direction must be ASC or DESC, got: " + direction)
+		return ""
 	}
 	return column + " " + dir
 }

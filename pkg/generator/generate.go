@@ -156,25 +156,26 @@ type inspectorTableInfo struct {
 }
 
 type inspectorColumnInfo struct {
-	Name             string `json:"name"`
-	Type             string `json:"type"`
-	GoType           string `json:"go_type"`
-	Nullable         bool   `json:"nullable"`
-	PrimaryKey       bool   `json:"primary_key,omitempty"`
-	Unique           bool   `json:"unique,omitempty"`
-	Default          any    `json:"default,omitempty"`
-	HasDefault       bool   `json:"has_default,omitempty"`
-	ForeignKeyTable  string `json:"foreign_key_table,omitempty"`
-	ForeignKeyColumn string `json:"foreign_key_column,omitempty"`
-	Length           int    `json:"length,omitempty"`
-	Precision        int    `json:"precision,omitempty"`
-	Scale            int    `json:"scale,omitempty"`
-	Public           bool   `json:"public,omitempty"`
-	OwnerSees        bool   `json:"owner_sees,omitempty"`
-	OwnerColumn      bool   `json:"owner_column,omitempty"`
-	Encrypted        bool   `json:"encrypted,omitempty"`
-	Sealed           bool   `json:"sealed,omitempty"`
-	UnsafePublic     bool   `json:"unsafe_public,omitempty"`
+	Name             string          `json:"name"`
+	Type             string          `json:"type"`
+	GoType           string          `json:"go_type"`
+	Nullable         bool            `json:"nullable"`
+	PrimaryKey       bool            `json:"primary_key,omitempty"`
+	Unique           bool            `json:"unique,omitempty"`
+	Default          any             `json:"default,omitempty"`
+	HasDefault       bool            `json:"has_default,omitempty"`
+	ForeignKeyTable  string          `json:"foreign_key_table,omitempty"`
+	ForeignKeyColumn string          `json:"foreign_key_column,omitempty"`
+	Length           int             `json:"length,omitempty"`
+	Precision        int             `json:"precision,omitempty"`
+	Scale            int             `json:"scale,omitempty"`
+	Public           bool            `json:"public,omitempty"`
+	OwnerSees        bool            `json:"owner_sees,omitempty"`
+	OwnerColumn      bool            `json:"owner_column,omitempty"`
+	VisibleTo        map[string]bool `json:"visible_to,omitempty"`
+	Encrypted        bool            `json:"encrypted,omitempty"`
+	Sealed           bool            `json:"sealed,omitempty"`
+	UnsafePublic     bool            `json:"unsafe_public,omitempty"`
 }
 
 type inspectorIndexInfo struct {
@@ -425,6 +426,7 @@ func convertInspectorColumn(ci inspectorColumnInfo, owner string) (*schema.Colum
 		IsPublic:         ci.Public,
 		IsOwnerSees:      ci.OwnerSees,
 		IsOwnerColumn:    ci.OwnerColumn,
+		VisibleTo:        ci.VisibleTo,
 		IsEncrypted:      ci.Encrypted,
 		IsSealed:         ci.Sealed,
 		IsUnsafePublic:   ci.UnsafePublic,

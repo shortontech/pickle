@@ -123,6 +123,10 @@ func Export(opts Options) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scanning scopes: %w", err)
 	}
+	ex.managesRoles, err = exportedManagesRoles(project.Dir)
+	if err != nil {
+		return nil, fmt.Errorf("deriving manages roles: %w", err)
+	}
 	for _, view := range views {
 		ex.models[tableToStruct(view.Name)] = true
 	}
@@ -201,6 +205,7 @@ type exporter struct {
 	hasEncryptedColumns bool
 	integrityModels     map[string]integrityModelInfo
 	scopes              map[string][]generator.ScopeDef
+	managesRoles        map[string]bool
 }
 
 type integrityModelInfo struct {
@@ -208,6 +213,20 @@ type integrityModelInfo struct {
 	Immutable   bool
 	AppendOnly  bool
 	SoftDeletes bool
+}
+
+func exportedManagesRoles(projectDir string) (map[string]bool, error) {
+	policies, err := generator.ParsePolicyOps(filepath.Join(projectDir, "database", "policies"))
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, role := range generator.StaticDeriveRoles(policies) {
+		if role.IsManages {
+			out[role.Slug] = true
+		}
+	}
+	return out, nil
 }
 
 func configureMultiServiceProject(project *generator.Project, cfg *squeeze.Config) {
@@ -805,6 +824,8 @@ type queryChain struct {
 	Orders       []queryOrder
 	Preloads     []string
 	Selects      []string
+	RoleSelect   *queryRoleSelect
+	RoleScope    string
 	Limit        ast.Expr
 	Offset       ast.Expr
 	Arg          ast.Expr
@@ -825,6 +846,12 @@ type queryFilter struct {
 type queryOrder struct {
 	Column    string
 	Direction string
+}
+
+type queryRoleSelect struct {
+	Arg          ast.Expr
+	SingleRole   bool
+	IncludeOwner bool
 }
 
 type queryVarState struct {
@@ -1002,6 +1029,21 @@ func buildQueryChain(model, dbRoot string, methods []struct {
 				return qc, true, fmt.Errorf("SelectOwner does not accept arguments")
 			}
 			qc.Selects = []string{"__visibility_owner__"}
+		case m.name == "SelectFor":
+			if len(m.args) != 1 {
+				return qc, true, fmt.Errorf("SelectFor requires one argument")
+			}
+			qc.RoleSelect = &queryRoleSelect{Arg: m.args[0], SingleRole: true}
+		case m.name == "SelectForRoles":
+			if len(m.args) != 1 {
+				return qc, true, fmt.Errorf("SelectForRoles requires one argument")
+			}
+			qc.RoleSelect = &queryRoleSelect{Arg: m.args[0]}
+		case m.name == "SelectForOwner":
+			if len(m.args) != 1 {
+				return qc, true, fmt.Errorf("SelectForOwner requires one argument")
+			}
+			qc.RoleSelect = &queryRoleSelect{Arg: m.args[0], IncludeOwner: true}
 		case strings.HasPrefix(m.name, "OrderBy") && m.name != "OrderBy":
 			if len(m.args) != 1 {
 				return qc, true, fmt.Errorf("%s requires one argument", m.name)
@@ -1271,6 +1313,20 @@ func (e *exporter) rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[str
 			return nil, true, colErr
 		}
 		expr, err = parseExpr(fmt.Sprintf("%s.Select([]string{%s})", id.Name, quotedStringList(cols)))
+	case sel.Sel.Name == "SelectFor" || sel.Sel.Name == "SelectForRoles" || sel.Sel.Name == "SelectForOwner":
+		if len(call.Args) != 1 {
+			return nil, true, fmt.Errorf("%s requires one argument", sel.Sel.Name)
+		}
+		roleSelect := queryRoleSelect{
+			Arg:          call.Args[0],
+			SingleRole:   sel.Sel.Name == "SelectFor",
+			IncludeOwner: sel.Sel.Name == "SelectForOwner",
+		}
+		scope, scopeErr := e.roleVisibilityScopeExpr(state.Model, roleSelect)
+		if scopeErr != nil {
+			return nil, true, scopeErr
+		}
+		expr, err = parseExpr(fmt.Sprintf("%s.Scopes(%s)", id.Name, scope))
 	case sel.Sel.Name == "First" || sel.Sel.Name == "All" || sel.Sel.Name == "Count" || sel.Sel.Name == "VerifyChain" || sel.Sel.Name == "VerifyRow" || strings.HasPrefix(sel.Sel.Name, "Sum") || strings.HasPrefix(sel.Sel.Name, "Avg"):
 		return nil, false, nil
 	default:
@@ -1288,6 +1344,13 @@ func (e *exporter) gormExpr(q queryChain) (ast.Expr, error) {
 	}
 	if err := e.resolveQueryChainSelects(&q); err != nil {
 		return nil, err
+	}
+	if q.RoleSelect != nil {
+		scope, err := e.roleVisibilityScopeExpr(q.Model, *q.RoleSelect)
+		if err != nil {
+			return nil, err
+		}
+		q.RoleScope = scope
 	}
 	if q.lockRequiresTransaction() && !q.inTransaction() {
 		return e.lockOutsideTransactionExpr(q.Model, q.Terminal)
@@ -1363,6 +1426,13 @@ func (e *exporter) gormBuilderExpr(q queryChain) (ast.Expr, error) {
 	}
 	if err := e.resolveQueryChainSelects(&q); err != nil {
 		return nil, err
+	}
+	if q.RoleSelect != nil {
+		scope, err := e.roleVisibilityScopeExpr(q.Model, *q.RoleSelect)
+		if err != nil {
+			return nil, err
+		}
+		q.RoleScope = scope
 	}
 	return parseExpr(e.gormChain(q))
 }
@@ -1595,6 +1665,57 @@ func (e *exporter) resolveQueryChainSelects(q *queryChain) error {
 	return nil
 }
 
+func (e *exporter) roleVisibilityScopeExpr(model string, roleSelect queryRoleSelect) (string, error) {
+	table := e.schemaTables[model]
+	if table == nil {
+		return "", fmt.Errorf("%s role visibility selection requires schema metadata", model)
+	}
+	publicCols, ownerCols, roleCols := e.queryRoleVisibilityColumns(table)
+	rolesExpr, err := exprString(roleSelect.Arg)
+	if err != nil {
+		return "", err
+	}
+	if roleSelect.SingleRole {
+		rolesExpr = "[]string{" + rolesExpr + "}"
+	}
+	return fmt.Sprintf("models.RoleVisibilitySelectScope([]string{%s}, map[string][]string{%s}, []string{%s}, []string{%s}, %s, %t)",
+		quotedStringList(publicCols),
+		quotedRoleColumnMap(roleCols),
+		quotedStringList(ownerCols),
+		quotedStringList(e.sortedManagesRoles()),
+		rolesExpr,
+		roleSelect.IncludeOwner,
+	), nil
+}
+
+func (e *exporter) queryRoleVisibilityColumns(table *schema.Table) ([]string, []string, map[string][]string) {
+	var publicCols []string
+	var ownerCols []string
+	roleCols := map[string][]string{}
+	for _, col := range table.Columns {
+		storage := graphQLSelectColumnName(col)
+		if col.IsPublic {
+			publicCols = append(publicCols, storage)
+			ownerCols = append(ownerCols, storage)
+		} else if col.IsOwnerSees {
+			ownerCols = append(ownerCols, storage)
+		}
+		for role := range col.VisibleTo {
+			roleCols[role] = append(roleCols[role], storage)
+		}
+	}
+	return publicCols, ownerCols, roleCols
+}
+
+func (e *exporter) sortedManagesRoles() []string {
+	var roles []string
+	for role := range e.managesRoles {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	return roles
+}
+
 func gormVarLockExpr(varName, strength, options string) (ast.Expr, error) {
 	if strength == "" {
 		strength = "UPDATE"
@@ -1618,6 +1739,9 @@ func (e *exporter) gormChain(q queryChain) string {
 		} else {
 			chain += fmt.Sprintf(".Select([]string{%s})", quotedStringList(q.Selects))
 		}
+	}
+	if q.RoleScope != "" {
+		chain += fmt.Sprintf(".Scopes(%s)", q.RoleScope)
 	}
 	for _, f := range q.Filters {
 		col := f.Column
@@ -1828,6 +1952,51 @@ func OrderClause(column, direction string) string {
 		return ""
 	}
 	return column + " " + dir
+}
+
+func RoleVisibilitySelectScope(publicCols []string, roleCols map[string][]string, ownerCols []string, managesRoles []string, roles []string, includeOwner bool) func(*gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		if hasAnyRole(roles, managesRoles) {
+			return db.Select("*")
+		}
+		cols := appendUniqueColumns(nil, publicCols)
+		for _, role := range roles {
+			cols = appendUniqueColumns(cols, roleCols[role])
+		}
+		if includeOwner {
+			cols = appendUniqueColumns(cols, ownerCols)
+		}
+		if len(cols) == 0 {
+			return db.Select("*")
+		}
+		return db.Select(cols)
+	}
+}
+
+func hasAnyRole(roles []string, candidates []string) bool {
+	for _, role := range roles {
+		for _, candidate := range candidates {
+			if role == candidate {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func appendUniqueColumns(cols []string, add []string) []string {
+	seen := map[string]bool{}
+	for _, col := range cols {
+		seen[col] = true
+	}
+	for _, col := range add {
+		if col == "" || seen[col] {
+			continue
+		}
+		cols = append(cols, col)
+		seen[col] = true
+	}
+	return cols
 }
 
 func validSQLIdentifier(s string) bool {
@@ -7242,6 +7411,19 @@ func quotedStringList(values []string) string {
 	var parts []string
 	for _, value := range values {
 		parts = append(parts, fmt.Sprintf("%q", value))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func quotedRoleColumnMap(values map[string][]string) string {
+	var keys []string
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var parts []string
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%q: []string{%s}", key, quotedStringList(values[key])))
 	}
 	return strings.Join(parts, ", ")
 }

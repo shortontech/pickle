@@ -37,12 +37,13 @@ type columnInfo struct {
 	Length           int    ` + "`" + `json:"length,omitempty"` + "`" + `
 	Precision        int    ` + "`" + `json:"precision,omitempty"` + "`" + `
 	Scale            int    ` + "`" + `json:"scale,omitempty"` + "`" + `
-	Public           bool   ` + "`" + `json:"public,omitempty"` + "`" + `
-	OwnerSees        bool   ` + "`" + `json:"owner_sees,omitempty"` + "`" + `
-	OwnerColumn      bool   ` + "`" + `json:"owner_column,omitempty"` + "`" + `
-	Encrypted        bool   ` + "`" + `json:"encrypted,omitempty"` + "`" + `
-	Sealed           bool   ` + "`" + `json:"sealed,omitempty"` + "`" + `
-	UnsafePublic     bool   ` + "`" + `json:"unsafe_public,omitempty"` + "`" + `
+	Public           bool            ` + "`" + `json:"public,omitempty"` + "`" + `
+	OwnerSees        bool            ` + "`" + `json:"owner_sees,omitempty"` + "`" + `
+	OwnerColumn      bool            ` + "`" + `json:"owner_column,omitempty"` + "`" + `
+	VisibleTo        map[string]bool ` + "`" + `json:"visible_to,omitempty"` + "`" + `
+	Encrypted        bool            ` + "`" + `json:"encrypted,omitempty"` + "`" + `
+	Sealed           bool            ` + "`" + `json:"sealed,omitempty"` + "`" + `
+	UnsafePublic     bool            ` + "`" + `json:"unsafe_public,omitempty"` + "`" + `
 }
 
 type tableInfo struct {
@@ -181,6 +182,7 @@ func columnToInfo(col *{{ .TypesPkg }}.Column) columnInfo {
 		Public:           col.IsPublic,
 		OwnerSees:        col.IsOwnerSees,
 		OwnerColumn:      col.IsOwnerColumn,
+		VisibleTo:        col.VisibleTo,
 		Encrypted:        col.IsEncrypted,
 		Sealed:           col.IsSealed,
 		UnsafePublic:     col.IsUnsafePublic,

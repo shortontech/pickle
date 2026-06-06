@@ -154,9 +154,14 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "services", "visibility_selectors.go"), `Select([]string{`)
 	assertFileContains(t, filepath.Join(out, "app", "services", "visibility_selectors.go"), `"email_encrypted"`)
 	assertFileContains(t, filepath.Join(out, "app", "services", "visibility_selectors.go"), `"body"`)
+	assertFileContains(t, filepath.Join(out, "app", "services", "visibility_selectors.go"), `RoleVisibilitySelectScope`)
+	assertFileContains(t, filepath.Join(out, "app", "services", "visibility_selectors.go"), `"editor"`)
+	assertFileContains(t, filepath.Join(out, "app", "services", "visibility_selectors.go"), `"admin"`)
 	assertFileNotContains(t, filepath.Join(out, "app", "services", "visibility_selectors.go"), `"password_hash_encrypted"`)
 	assertFileNotContains(t, filepath.Join(out, "app", "services", "visibility_selectors.go"), "SelectPublic")
 	assertFileNotContains(t, filepath.Join(out, "app", "services", "visibility_selectors.go"), "SelectOwner")
+	assertFileNotContains(t, filepath.Join(out, "app", "services", "visibility_selectors.go"), "SelectForRoles")
+	assertFileNotContains(t, filepath.Join(out, "app", "services", "visibility_selectors.go"), "SelectForOwner")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "models.DB.Model(&models.User{})")
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "QueryUser")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "user_controller.go"), "basic-crud/internal/httpx")
@@ -4624,6 +4629,18 @@ func UseBanAction() models.User { return models.User{} }
 
 func writeVisibilityQuerySourceFixture(t *testing.T, projectDir string) {
 	t.Helper()
+	postMigration := filepath.Join(projectDir, "database", "migrations", "2026_02_21_100001_create_posts_table.go")
+	data, err := os.ReadFile(postMigration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewritten := strings.Replace(string(data), `t.Text("body").NotNull().OwnerSees()`, `t.Text("body").NotNull().OwnerSees().RoleSees("editor")`, 1)
+	if rewritten == string(data) {
+		t.Fatal("post migration fixture did not contain owner-visible body column")
+	}
+	if err := os.WriteFile(postMigration, []byte(rewritten), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	src := `package services
 
 import models "github.com/shortontech/pickle/testdata/basic-crud/app/models"
@@ -4638,6 +4655,20 @@ func PublicUsersByName(name string) ([]models.User, error) {
 func OwnerPostsByStatus(status string) ([]models.Post, error) {
 	q := models.QueryPost()
 	q.SelectOwner()
+	q.WhereStatus(status)
+	return q.All()
+}
+
+func RolePostsByStatus(status string, roles []string) ([]models.Post, error) {
+	return models.QueryPost().
+		SelectForRoles(roles).
+		WhereStatus(status).
+		All()
+}
+
+func OwnerRolePostsByStatus(status string, roles []string) ([]models.Post, error) {
+	q := models.QueryPost()
+	q.SelectForOwner(roles)
 	q.WhereStatus(status)
 	return q.All()
 }
@@ -8321,6 +8352,105 @@ func OwnerUsers(role string) ([]models.User, error) {
 	for _, unexpected := range []string{"SelectOwner", "password_hash"} {
 		if strings.Contains(got, unexpected) {
 			t.Fatalf("rewritten mutable source retained unsafe visibility detail %q:\n%s", unexpected, got)
+		}
+	}
+}
+
+func TestRewriteQueryRoleVisibilitySelectors(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"User": true},
+		managesRoles: map[string]bool{"admin": true},
+		schemaTables: map[string]*schema.Table{
+			"User": {Name: "users", Columns: []*schema.Column{
+				{Name: "id", Type: schema.UUID, IsPrimaryKey: true, IsPublic: true},
+				{Name: "name", Type: schema.String, IsPublic: true},
+				{Name: "email", Type: schema.String, IsEncrypted: true, VisibleTo: map[string]bool{"support": true}},
+				{Name: "private_key", Type: schema.String, IsSealed: true, IsOwnerSees: true},
+				{Name: "password_hash", Type: schema.String, IsEncrypted: true},
+			}},
+		},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func RoleUsers(role string) ([]models.User, error) {
+	return models.QueryUser().
+		SelectFor(role).
+		All()
+}
+
+func MultiRoleUsers(roles []string) ([]models.User, error) {
+	return models.QueryUser().
+		SelectForRoles(roles).
+		All()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	compact := strings.Join(strings.Fields(got), " ")
+	assertContainsAll(t, compact,
+		`RoleVisibilitySelectScope`,
+		`[]string{"id", "name"`,
+		`"support": []string{"email_encrypted"`,
+		`[]string{"admin"`,
+		`[]string{role}`,
+		`roles, false`,
+	)
+	for _, unexpected := range []string{"SelectFor", "password_hash"} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("rewritten role visibility source retained %q:\n%s", unexpected, got)
+		}
+	}
+}
+
+func TestRewriteMutableQueryRoleVisibilitySelectors(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"User": true},
+		managesRoles: map[string]bool{"admin": true},
+		schemaTables: map[string]*schema.Table{
+			"User": {Name: "users", Columns: []*schema.Column{
+				{Name: "id", Type: schema.UUID, IsPrimaryKey: true, IsPublic: true},
+				{Name: "name", Type: schema.String, IsPublic: true},
+				{Name: "email", Type: schema.String, IsEncrypted: true, VisibleTo: map[string]bool{"support": true}},
+				{Name: "private_key", Type: schema.String, IsSealed: true, IsOwnerSees: true},
+				{Name: "password_hash", Type: schema.String, IsEncrypted: true},
+			}},
+		},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func OwnerUsers(roles []string) ([]models.User, error) {
+	q := models.QueryUser()
+	q.SelectForOwner(roles)
+	return q.All()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	compact := strings.Join(strings.Fields(got), " ")
+	assertContainsAll(t, compact,
+		`q = q.Scopes(models.RoleVisibilitySelectScope`,
+		`[]string{"id", "name"`,
+		`"support": []string{"email_encrypted"`,
+		`[]string{"id", "name", "private_key_encrypted"`,
+		`roles, true`,
+	)
+	for _, unexpected := range []string{"SelectForOwner", "password_hash"} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("rewritten mutable role visibility source retained %q:\n%s", unexpected, got)
 		}
 	}
 }

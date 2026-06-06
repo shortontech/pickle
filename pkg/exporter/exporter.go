@@ -10098,6 +10098,12 @@ func Put(ctx *httpx.Context, key string, value any) error {
 }
 
 func CSRF(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
+	if next == nil {
+		return httpx.Response{StatusCode: 500, Body: map[string]string{"error": "internal server error"}}
+	}
+	if ctx == nil {
+		return httpx.Response{StatusCode: 403, Body: map[string]string{"error": "CSRF request missing"}}
+	}
 	if len(csrfConfig.secret) == 0 { return ctx.Forbidden("CSRF secret not configured") }
 	r := ctx.Request()
 	if r == nil { return ctx.Forbidden("CSRF request missing") }

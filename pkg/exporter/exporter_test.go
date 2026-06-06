@@ -1650,6 +1650,55 @@ func TestExportedCSRFFailsClosedForNilRequest(t *testing.T) {
 	}
 }
 
+func TestExportedCSRFFailsClosedForNilContinuationAndContext(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	NewDriver(func(key, fallback string) string {
+		if key == "SESSION_SECRET" {
+			return "session-secret"
+		}
+		return fallback
+	}, db, "sqlite")
+
+	sessionID := "11111111-1111-4111-8111-111111111111"
+	validReq := requestWithSession(http.MethodPost, sessionID)
+	validReq.Header.Set("X-CSRF-TOKEN", generateCSRFToken(sessionID, csrfConfig.secret))
+	bearerReq := requestWithSession(http.MethodPost, sessionID)
+	bearerReq.Header.Set("Authorization", "Bearer api-token")
+
+	for name, resp := range map[string]httpx.Response{
+		"safe_method": CSRF(httpx.NewContext(requestWithSession(http.MethodGet, sessionID)), nil),
+		"bearer":      CSRF(httpx.NewContext(bearerReq), nil),
+		"valid_token": CSRF(httpx.NewContext(validReq), nil),
+	} {
+		if resp.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("%s status = %d, want 500", name, resp.StatusCode)
+		}
+		body, ok := resp.Body.(map[string]string)
+		if !ok || body["error"] != "internal server error" {
+			t.Fatalf("%s body = %#v, want sanitized internal server error", name, resp.Body)
+		}
+		if strings.Contains(body["error"], "panic") || strings.Contains(body["error"], "nil pointer") || strings.Contains(body["error"], sessionID) {
+			t.Fatalf("%s leaked internal detail: %#v", name, body)
+		}
+	}
+
+	nilCtxResp := CSRF(nil, func() httpx.Response {
+		t.Fatal("CSRF should not call next for nil context")
+		return httpx.Response{}
+	})
+	if nilCtxResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("nil context CSRF status = %d, want 403", nilCtxResp.StatusCode)
+	}
+	body, ok := nilCtxResp.Body.(map[string]string)
+	if !ok || body["error"] != "CSRF request missing" {
+		t.Fatalf("nil context CSRF body = %#v", nilCtxResp.Body)
+	}
+}
+
 func TestExportedCSRFNonceFailuresAreSanitized(t *testing.T) {
 	previous := csrfNonceReader
 	csrfNonceReader = strings.NewReader("")

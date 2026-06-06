@@ -9317,6 +9317,8 @@ func (c TransferController) Approve(ctx *pickle.Context) pickle.Response {
 	return ctx.JSON(http.StatusAccepted, map[string]any{
 		"ok": true,
 		"userId": ctx.Auth().UserID,
+		"clientIP": ctx.ClientIP(),
+		"requestID": ctx.Request().Header.Get("X-Request-ID"),
 	})
 }
 `), 0o644); err != nil {
@@ -9646,6 +9648,9 @@ func TestExportedActionOnlyGraphQLHandlerServesControllerAction(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Forwarded-For", "198.51.100.200")
+	req.Header.Set("X-Request-ID", "graphql-req-123")
+	req.RemoteAddr = "192.0.2.77:4321"
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -9662,6 +9667,12 @@ func TestExportedActionOnlyGraphQLHandlerServesControllerAction(t *testing.T) {
 	}
 	if len(resp.Errors) != 0 || resp.Data.ApproveTransfer["ok"] != true || resp.Data.ApproveTransfer["userId"] == "" {
 		t.Fatalf("authenticated mutation response = %s", rec.Body.String())
+	}
+	if resp.Data.ApproveTransfer["clientIP"] != "192.0.2.77" {
+		t.Fatalf("graphql action clientIP = %#v, want remote address preserved without trusting spoofed X-Forwarded-For; body=%s", resp.Data.ApproveTransfer["clientIP"], rec.Body.String())
+	}
+	if resp.Data.ApproveTransfer["requestID"] != "graphql-req-123" {
+		t.Fatalf("graphql action requestID = %#v, want original request id; body=%s", resp.Data.ApproveTransfer["requestID"], rec.Body.String())
 	}
 
 	oversizedBody, err := json.Marshal(map[string]any{

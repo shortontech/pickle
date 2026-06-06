@@ -2629,6 +2629,14 @@ const maxGraphQLAPIActionInputNodes = 500
 const maxGraphQLAPIActionInputStringBytes = 4096
 
 type graphQLAPIAuthContextKey struct{}
+type graphQLAPIRequestMetadataContextKey struct{}
+
+type GraphQLAPIRequestMetadata struct {
+	RemoteAddr    string
+	XForwardedFor string
+	XRealIP       string
+	RequestID     string
+}
 
 type GraphQLAPIAuthClaims struct {
 	UserID     string
@@ -2651,6 +2659,21 @@ func GraphQLAPIAuthFromContext(ctx context.Context) *GraphQLAPIAuthClaims {
 	}
 	claims, _ := ctx.Value(graphQLAPIAuthContextKey{}).(*GraphQLAPIAuthClaims)
 	return claims
+}
+
+func WithGraphQLAPIRequestMetadata(ctx context.Context, metadata GraphQLAPIRequestMetadata) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, graphQLAPIRequestMetadataContextKey{}, metadata)
+}
+
+func GraphQLAPIRequestMetadataFromContext(ctx context.Context) GraphQLAPIRequestMetadata {
+	if ctx == nil {
+		return GraphQLAPIRequestMetadata{}
+	}
+	metadata, _ := ctx.Value(graphQLAPIRequestMetadataContextKey{}).(GraphQLAPIRequestMetadata)
+	return metadata
 }
 
 func graphQLAPIAuthCanManage(claims *GraphQLAPIAuthClaims) bool {
@@ -2845,6 +2868,7 @@ func graphQLAPIControllerAction(ctx context.Context, action string, input map[st
 		return nil, graphQLAPIResolverError("internal server error", "INTERNAL_SERVER_ERROR")
 	}
 	req.Header.Set("Content-Type", "application/json")
+	graphQLAPIApplyRequestMetadata(req, GraphQLAPIRequestMetadataFromContext(ctx))
 	recorder := httptest.NewRecorder()
 	actionCtx := httpx.NewContextWithResponse(recorder, req)
 	actionCtx.SetAuth(&httpx.AuthInfo{UserID: claims.UserID, Role: claims.Role})
@@ -2939,6 +2963,22 @@ func graphQLAPIValidateControllerActionOutput(output map[string]any) error {
 		return graphQLAPIResolverError("GraphQL action output exceeds safety limits", "INTERNAL_SERVER_ERROR")
 	}
 	return nil
+}
+
+func graphQLAPIApplyRequestMetadata(req *http.Request, metadata GraphQLAPIRequestMetadata) {
+	if req == nil {
+		return
+	}
+	req.RemoteAddr = metadata.RemoteAddr
+	if metadata.XForwardedFor != "" {
+		req.Header.Set("X-Forwarded-For", metadata.XForwardedFor)
+	}
+	if metadata.XRealIP != "" {
+		req.Header.Set("X-Real-IP", metadata.XRealIP)
+	}
+	if metadata.RequestID != "" {
+		req.Header.Set("X-Request-ID", metadata.RequestID)
+	}
 }
 
 func graphQLAPIValidControllerActionInputValue(value any, depth int, nodes *int) bool {
@@ -4568,6 +4608,7 @@ func Handler() http.Handler {
 			if !prepareGraphQLAPIPostBody(w, r, execSchema.Schema()) {
 				return
 			}
+			r = r.WithContext(resolver.WithGraphQLAPIRequestMetadata(r.Context(), graphQLAPIRequestMetadata(r)))
 			claims, err := extractGraphQLAPIAuth(r)
 			if err != nil {
 				log.Printf("graphqlapi auth failed")
@@ -4578,6 +4619,22 @@ func Handler() http.Handler {
 		}
 		srv.ServeHTTP(graphQLAPIStatusWriter{ResponseWriter: w}, r)
 	})
+}
+
+func graphQLAPIRequestMetadata(r *http.Request) resolver.GraphQLAPIRequestMetadata {
+	if r == nil {
+		return resolver.GraphQLAPIRequestMetadata{}
+	}
+	requestID := r.Header.Get("X-Request-ID")
+	if requestID == "" {
+		requestID = r.Header.Get("X-Request-Id")
+	}
+	return resolver.GraphQLAPIRequestMetadata{
+		RemoteAddr:    r.RemoteAddr,
+		XForwardedFor: r.Header.Get("X-Forwarded-For"),
+		XRealIP:       r.Header.Get("X-Real-IP"),
+		RequestID:     requestID,
+	}
 }
 
 func graphQLAPIAuthDirective(ctx context.Context, obj any, next gqlgen.Resolver) (any, error) {

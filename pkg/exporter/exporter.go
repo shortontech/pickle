@@ -4730,6 +4730,7 @@ type graphQLAPIQueryShape struct {
 	Fields     int
 	Aliases    int
 	InputNodes int
+	Variables  int
 }
 
 func validateGraphQLAPIQueryShape(query string) error {
@@ -4751,6 +4752,13 @@ func validateGraphQLAPIQueryShape(query string) error {
 			continue
 		}
 		operations++
+		variableShape := graphQLAPIVariableDefinitionShape(operation.VariableDefinitions)
+		variableShape.InputNodes += graphQLAPIDirectiveInputNodes(operation.Directives)
+		if variableShape.Depth > shape.Depth {
+			shape.Depth = variableShape.Depth
+		}
+		shape.Variables += variableShape.Variables
+		shape.InputNodes += variableShape.InputNodes
 		operationShape := graphQLAPISelectionShape(operation.SelectionSet, fragments, seenFragments, 1)
 		if operationShape.Depth > shape.Depth {
 			shape.Depth = operationShape.Depth
@@ -4761,6 +4769,9 @@ func validateGraphQLAPIQueryShape(query string) error {
 	}
 	if operations > maxGraphQLAPIOperations {
 		return graphQLAPICodedError("GraphQL query operations exceed safety limit", "BAD_USER_INPUT")
+	}
+	if shape.Variables > maxGraphQLAPIVariables {
+		return graphQLAPICodedError("GraphQL variable definitions exceed safety limit", "BAD_USER_INPUT")
 	}
 	if shape.Depth > maxGraphQLAPIDepth {
 		return graphQLAPICodedError("GraphQL query depth exceeds safety limit", "BAD_USER_INPUT")
@@ -4820,6 +4831,13 @@ func graphQLAPISelectionShape(selections ast.SelectionSet, fragments map[string]
 				continue
 			}
 			seenFragments[sel.Name] = true
+			fragmentShape := graphQLAPIVariableDefinitionShape(fragment.VariableDefinition)
+			fragmentShape.InputNodes += graphQLAPIDirectiveInputNodes(fragment.Directives)
+			if fragmentShape.Depth > shape.Depth {
+				shape.Depth = fragmentShape.Depth
+			}
+			shape.Variables += fragmentShape.Variables
+			shape.InputNodes += fragmentShape.InputNodes
 			child := graphQLAPISelectionShape(fragment.SelectionSet, fragments, seenFragments, depth)
 			delete(seenFragments, sel.Name)
 			if child.Depth > shape.Depth {
@@ -4828,7 +4846,21 @@ func graphQLAPISelectionShape(selections ast.SelectionSet, fragments map[string]
 			shape.Fields += child.Fields
 			shape.Aliases += child.Aliases
 			shape.InputNodes += child.InputNodes
+			shape.Variables += child.Variables
 		}
+	}
+	return shape
+}
+
+func graphQLAPIVariableDefinitionShape(definitions ast.VariableDefinitionList) graphQLAPIQueryShape {
+	shape := graphQLAPIQueryShape{}
+	for _, definition := range definitions {
+		if definition == nil {
+			continue
+		}
+		shape.Variables++
+		shape.InputNodes += graphQLAPIValueInputNodes(definition.DefaultValue)
+		shape.InputNodes += graphQLAPIDirectiveInputNodes(definition.Directives)
 	}
 	return shape
 }

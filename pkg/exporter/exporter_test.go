@@ -5781,6 +5781,7 @@ func writeExportedZeroGraphQLAPIHTTPBehaviorTest(t *testing.T, out string) {
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -5987,6 +5988,37 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "GraphQL query is too large") {
 		t.Fatalf("oversized query response should name query limit: %s", rec.Body.String())
+	}
+
+	var variableDefs strings.Builder
+	for i := 0; i < 65; i++ {
+		if i > 0 {
+			variableDefs.WriteString(",")
+		}
+		fmt.Fprintf(&variableDefs, "$v%d: String", i)
+	}
+	variableDefinitionFloodQuery := "query TooMany(" + variableDefs.String() + ") { posts { totalCount } }"
+	req = httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader([]byte(` + "`" + `{"query":` + "`" + ` + mustJSONQuote(variableDefinitionFloodQuery) + ` + "`" + `}` + "`" + `)))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !responseHasErrorCode(t, rec.Body.Bytes(), "BAD_USER_INPUT") {
+		t.Fatalf("variable definition flood response status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "GraphQL variable definitions exceed safety limit") {
+		t.Fatalf("variable definition flood response should name definition limit: %s", rec.Body.String())
+	}
+
+	defaultInputFloodQuery := ` + "`" + `query Defaults($ids: [String] = [` + "`" + ` + strings.TrimSuffix(strings.Repeat(` + "`" + `"x",` + "`" + `, 501), ",") + ` + "`" + `]) { posts { totalCount } }` + "`" + `
+	req = httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader([]byte(` + "`" + `{"query":` + "`" + ` + mustJSONQuote(defaultInputFloodQuery) + ` + "`" + `}` + "`" + `)))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !responseHasErrorCode(t, rec.Body.Bytes(), "BAD_USER_INPUT") {
+		t.Fatalf("variable default flood response status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "GraphQL query inputs exceed safety limit") {
+		t.Fatalf("variable default flood response should name input limit: %s", rec.Body.String())
 	}
 
 	fieldFloodQuery := "{ posts { " + strings.Repeat("totalCount ", 201) + "} }"

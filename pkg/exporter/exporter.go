@@ -6436,10 +6436,7 @@ func (e *exporter) writeFindingSection(b *strings.Builder, title, category strin
 
 func findingCategory(rule string) string {
 	switch rule {
-	case "action_export_unsupported_signature", "action_export_unsupported_query",
-		"gate_export_unsupported_signature", "gate_export_policy_dependency",
-		"gate_export_dynamic_role", "gate_export_callsite",
-		"graphql_action_export_unsupported":
+	case "graphql_action_export_unsupported":
 		return "unsupported"
 	case "rbac_policy_export":
 		return "partial"

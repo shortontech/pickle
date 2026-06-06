@@ -7510,9 +7510,9 @@ func TestExportReportListsUnsupportedBoundariesOnlyWhenUnsupported(t *testing.T)
 		result: &Result{
 			ReportPath: reportPath,
 			Findings: []Finding{{
-				File:    filepath.Join("database", "actions", "users"),
-				Rule:    "action_export_unsupported_signature",
-				Message: "unsupported action signature",
+				File:    filepath.Join("database", "policies", "graphql"),
+				Rule:    "graphql_action_export_unsupported",
+				Message: "GraphQL controller action approveTransfer is not lowered by the standalone gqlgen export target",
 			}},
 		},
 	}
@@ -7520,7 +7520,7 @@ func TestExportReportListsUnsupportedBoundariesOnlyWhenUnsupported(t *testing.T)
 		t.Fatalf("writeReport: %v", err)
 	}
 	assertFileContains(t, reportPath, "## Unsupported")
-	assertFileContains(t, reportPath, "`database/actions/users` `action_export_unsupported_signature` - unsupported action signature")
+	assertFileContains(t, reportPath, "`database/policies/graphql` `graphql_action_export_unsupported` - GraphQL controller action approveTransfer is not lowered by the standalone gqlgen export target")
 	assertFileNotContains(t, reportPath, "No unsupported export findings.")
 	assertFileNotContains(t, reportPath, "## Manual Review")
 }
@@ -7598,21 +7598,17 @@ func (p *API) Up() {
 }
 
 func TestFindingCategoryClassifiesUnlowerableBoundariesAsUnsupported(t *testing.T) {
+	if got := findingCategory("graphql_action_export_unsupported"); got != "unsupported" {
+		t.Fatalf("findingCategory(graphql_action_export_unsupported) = %q, want unsupported", got)
+	}
 	for _, rule := range []string{
+		"actions_audit",
 		"action_export_unsupported_signature",
 		"action_export_unsupported_query",
 		"gate_export_unsupported_signature",
 		"gate_export_policy_dependency",
 		"gate_export_dynamic_role",
 		"gate_export_callsite",
-		"graphql_action_export_unsupported",
-	} {
-		if got := findingCategory(rule); got != "unsupported" {
-			t.Fatalf("findingCategory(%q) = %q, want unsupported", rule, got)
-		}
-	}
-	for _, rule := range []string{
-		"actions_audit",
 		"raw_sql_migration",
 		"new_unclassified_export_boundary",
 	} {

@@ -3110,6 +3110,30 @@ func TestExportedPolicyStateSupport(t *testing.T) {
 	if roles != 0 {
 		t.Fatalf("roles after rollback = %d, want 0", roles)
 	}
+	for _, table := range []string{"role_actions", "role_user", "rbac_changelog", "graphql_exposures", "graphql_actions", "graphql_changelog"} {
+		var rows int64
+		if err := db.Table(table).Count(&rows).Error; err != nil {
+			t.Fatal(err)
+		}
+		if rows != 0 {
+			t.Fatalf("%s rows after rollback = %d, want 0", table, rows)
+		}
+	}
+	if err := Fresh(db, "sqlite"); err != nil {
+		t.Fatalf("policy fresh: %v", err)
+	}
+	if err := db.Table("roles").Count(&roles).Error; err != nil {
+		t.Fatal(err)
+	}
+	if roles != 3 {
+		t.Fatalf("roles after fresh = %d, want 3", roles)
+	}
+	if err := db.Table("graphql_exposures").Where("model = ? AND operation = ?", "users", "list").Count(&userList).Error; err != nil {
+		t.Fatal(err)
+	}
+	if userList != 1 {
+		t.Fatalf("graphql users.list exposures after fresh = %d, want 1", userList)
+	}
 }
 
 func TestExportedPolicyMigrateRollsBackSeedFailures(t *testing.T) {

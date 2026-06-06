@@ -253,11 +253,24 @@ func configureMultiServiceProject(project *generator.Project, cfg *squeeze.Confi
 type exportError struct {
 	File    string
 	Line    int
+	Rule    string
 	Message string
 }
 
 func (e exportError) Error() string {
+	if e.Rule != "" {
+		return fmt.Sprintf("%s:%d: [%s] %s", e.File, e.Line, e.Rule, e.Message)
+	}
 	return fmt.Sprintf("%s:%d: %s", e.File, e.Line, e.Message)
+}
+
+func queryExportError(path string, line int, message string) exportError {
+	return exportError{
+		File:    path,
+		Line:    line,
+		Rule:    "query_export_unsupported",
+		Message: message,
+	}
 }
 
 func (e *exporter) prepareOutDir(force bool) error {
@@ -607,19 +620,19 @@ func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, 
 			call, ok := s.Rhs[0].(*ast.CallExpr)
 			if ok {
 				if assign, ok, err := e.rewriteQueryVarMutation(call, queryVars); err != nil {
-					return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+					return nil, queryExportError(path, fset.Position(call.Pos()).Line, err.Error())
 				} else if ok {
 					if len(s.Lhs) != 1 {
-						return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: "query builder assignment must target one variable"}
+						return nil, queryExportError(path, fset.Position(call.Pos()).Line, "query builder assignment must target one variable")
 					}
 					lhs, lhsOK := s.Lhs[0].(*ast.Ident)
 					if !lhsOK {
-						return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: "query builder assignment must target a variable"}
+						return nil, queryExportError(path, fset.Position(call.Pos()).Line, "query builder assignment must target a variable")
 					}
 					if rhs, rhsOK := assign.(*ast.AssignStmt); rhsOK && len(rhs.Lhs) == 1 {
 						rhsID, rhsIDOK := rhs.Lhs[0].(*ast.Ident)
 						if !rhsIDOK || rhsID.Name != lhs.Name {
-							return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: "query builder assignment must target the same variable"}
+							return nil, queryExportError(path, fset.Position(call.Pos()).Line, "query builder assignment must target the same variable")
 						}
 						return assign, nil
 					}
@@ -629,11 +642,11 @@ func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, 
 				}
 
 				if terminal, ok, err := parseQueryVarTerminal(call, queryVars); err != nil {
-					return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+					return nil, queryExportError(path, fset.Position(call.Pos()).Line, err.Error())
 				} else if ok {
 					expr, err := e.gormVarTerminalExpr(terminal)
 					if err != nil {
-						return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+						return nil, queryExportError(path, fset.Position(call.Pos()).Line, err.Error())
 					}
 					s.Rhs[0] = expr
 					return stmt, nil
@@ -645,7 +658,7 @@ func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, 
 					}
 					chain, chainOK, err := parseQueryBuilderChain(call)
 					if err != nil {
-						return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+						return nil, queryExportError(path, fset.Position(call.Pos()).Line, err.Error())
 					}
 					if chainOK && chain.Terminal == "" {
 						ident, identOK := s.Lhs[0].(*ast.Ident)
@@ -653,7 +666,7 @@ func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, 
 							chain.DeferLatest = true
 							expr, err := e.gormBuilderExpr(chain)
 							if err != nil {
-								return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+								return nil, queryExportError(path, fset.Position(call.Pos()).Line, err.Error())
 							}
 							s.Rhs[0] = expr
 							queryVars[ident.Name] = queryVarState{
@@ -675,12 +688,12 @@ func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, 
 				}
 				chain, ok, err := parseQueryChain(call)
 				if err != nil {
-					return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+					return nil, queryExportError(path, fset.Position(call.Pos()).Line, err.Error())
 				}
 				if ok {
 					expr, err := e.gormExpr(chain)
 					if err != nil {
-						return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+						return nil, queryExportError(path, fset.Position(call.Pos()).Line, err.Error())
 					}
 					s.Rhs[0] = expr
 				}
@@ -693,7 +706,7 @@ func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, 
 		}
 		assign, ok, err := e.rewriteQueryVarMutation(call, queryVars)
 		if err != nil {
-			return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+			return nil, queryExportError(path, fset.Position(call.Pos()).Line, err.Error())
 		}
 		if ok {
 			return assign, nil
@@ -709,26 +722,26 @@ func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, 
 			}
 			chain, chainOK, err := parseQueryChain(call)
 			if err != nil {
-				return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+				return nil, queryExportError(path, fset.Position(call.Pos()).Line, err.Error())
 			}
 			if chainOK {
 				expr, err := e.gormExpr(chain)
 				if err != nil {
-					return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+					return nil, queryExportError(path, fset.Position(call.Pos()).Line, err.Error())
 				}
 				s.Results[i] = expr
 				continue
 			}
 			terminal, ok, err := parseQueryVarTerminal(call, queryVars)
 			if err != nil {
-				return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+				return nil, queryExportError(path, fset.Position(call.Pos()).Line, err.Error())
 			}
 			if !ok {
 				continue
 			}
 			expr, err := e.gormVarTerminalExpr(terminal)
 			if err != nil {
-				return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
+				return nil, queryExportError(path, fset.Position(call.Pos()).Line, err.Error())
 			}
 			s.Results[i] = expr
 		}
@@ -759,7 +772,7 @@ func (e *exporter) rejectRemainingPickleQueries(path string, fset *token.FileSet
 				return true
 			}
 			pos := fset.Position(call.Pos())
-			firstErr = exportError{File: path, Line: pos.Line, Message: "unsupported Pickle query chain; exporter requires clean GORM lowering"}
+			firstErr = queryExportError(path, pos.Line, "unsupported Pickle query chain; exporter requires clean GORM lowering")
 			return false
 		}
 		return true
@@ -7520,7 +7533,7 @@ func (e *exporter) writeFindingSection(b *strings.Builder, title, category strin
 
 func findingCategory(rule string) string {
 	switch rule {
-	case "graphql_action_export_unsupported":
+	case "graphql_action_export_unsupported", "query_export_unsupported":
 		return "unsupported"
 	case "rbac_policy_export":
 		return "partial"

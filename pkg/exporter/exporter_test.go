@@ -8488,6 +8488,9 @@ func TestFindingCategoryClassifiesUnlowerableBoundariesAsUnsupported(t *testing.
 	if got := findingCategory("graphql_action_export_unsupported"); got != "unsupported" {
 		t.Fatalf("findingCategory(graphql_action_export_unsupported) = %q, want unsupported", got)
 	}
+	if got := findingCategory("query_export_unsupported"); got != "unsupported" {
+		t.Fatalf("findingCategory(query_export_unsupported) = %q, want unsupported", got)
+	}
 	for _, rule := range []string{
 		"actions_audit",
 		"action_export_unsupported_signature",
@@ -8527,6 +8530,58 @@ func TestExportReportTreatsUnclassifiedFindingsAsManualReview(t *testing.T) {
 	assertFileContains(t, reportPath, "## Unsupported\n\nNo unsupported export findings.")
 	assertFileContains(t, reportPath, "## Manual Review")
 	assertFileContains(t, reportPath, "`database/migrations` `new_unclassified_export_boundary` - new exporter note")
+}
+
+func TestRewriteUnsupportedQueryMethodReportsExportBoundary(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"User": true},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func Index(sql string) ([]models.User, error) {
+	return models.QueryUser().Raw(sql).All()
+}
+`)
+	_, err := ex.rewriteGoFile("controller.go", src)
+	if err == nil {
+		t.Fatal("rewriteGoFile succeeded for unsupported query method")
+	}
+	got := err.Error()
+	assertContainsAll(t, got,
+		"controller.go:",
+		"[query_export_unsupported]",
+		"unsupported query method Raw",
+	)
+}
+
+func TestRewriteQueryWithoutTerminalReportsExportBoundary(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"User": true},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func Index(role string) any {
+	return models.QueryUser().WhereRole(role)
+}
+`)
+	_, err := ex.rewriteGoFile("controller.go", src)
+	if err == nil {
+		t.Fatal("rewriteGoFile succeeded for query chain without terminal operation")
+	}
+	got := err.Error()
+	assertContainsAll(t, got,
+		"controller.go:",
+		"[query_export_unsupported]",
+		"query chain has no terminal operation",
+	)
 }
 
 func TestRewriteMutableQueryVariable(t *testing.T) {

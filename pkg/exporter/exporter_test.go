@@ -6604,14 +6604,40 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 		t.Fatalf("public visibility user = %+v", publicUser)
 	}
 
-	ownerCtx := WithGraphQLAPIAuthClaims(context.Background(), &GraphQLAPIAuthClaims{UserID: uuid.NewString(), Role: "viewer"})
+	strangerCtx := WithGraphQLAPIAuthClaims(context.Background(), &GraphQLAPIAuthClaims{UserID: uuid.NewString(), Role: "viewer"})
+	strangerUsers, err := queries.Users(strangerCtx, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("stranger users: %v", err)
+	}
+	strangerUser := strangerUsers.Edges[0].Node
+	if strangerUser.Email != "" || !strangerUser.CreatedAt.IsZero() {
+		t.Fatalf("stranger visibility user = %+v", strangerUser)
+	}
+
+	ownerCtx := WithGraphQLAPIAuthClaims(context.Background(), &GraphQLAPIAuthClaims{UserID: user.ID.String(), Role: "viewer"})
 	ownerUsers, err := queries.Users(ownerCtx, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("owner users: %v", err)
 	}
 	ownerUser := ownerUsers.Edges[0].Node
 	if ownerUser.Email != "ada@example.com" || !ownerUser.CreatedAt.IsZero() {
-		t.Fatalf("owner visibility user = %+v", ownerUser)
+		t.Fatalf("owner list visibility user = %+v", ownerUser)
+	}
+
+	ownerSingleUser, err := queries.User(ownerCtx, user.ID.String())
+	if err != nil {
+		t.Fatalf("owner single user: %v", err)
+	}
+	if ownerSingleUser == nil || ownerSingleUser.Email != "ada@example.com" || !ownerSingleUser.CreatedAt.IsZero() {
+		t.Fatalf("owner single visibility user = %+v", ownerSingleUser)
+	}
+
+	strangerSingleUser, err := queries.User(strangerCtx, user.ID.String())
+	if err != nil {
+		t.Fatalf("stranger single user: %v", err)
+	}
+	if strangerSingleUser == nil || strangerSingleUser.Email != "" || !strangerSingleUser.CreatedAt.IsZero() {
+		t.Fatalf("stranger single visibility user = %+v", strangerSingleUser)
 	}
 
 	managerCtx := WithGraphQLAPIAuthClaims(context.Background(), &GraphQLAPIAuthClaims{UserID: uuid.NewString(), Role: "viewer", Roles: []string{"tenant_admin"}, Manages: true, RBACLoaded: true})
@@ -6629,7 +6655,7 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 		t.Fatalf("invalid timestamp filter error = %v, want BAD_USER_INPUT", err)
 	}
 
-	strangerTopPosts, err := queries.Posts(ownerCtx, nil, nil, nil)
+	strangerTopPosts, err := queries.Posts(strangerCtx, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("stranger top-level posts: %v", err)
 	}
@@ -6637,8 +6663,7 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 		t.Fatalf("stranger top-level posts edges/total = %d/%d, want 0/0", len(strangerTopPosts.Edges), strangerTopPosts.TotalCount)
 	}
 
-	matchingOwnerCtx := WithGraphQLAPIAuthClaims(context.Background(), &GraphQLAPIAuthClaims{UserID: user.ID.String(), Role: "viewer"})
-	ownerTopPosts, err := queries.Posts(matchingOwnerCtx, nil, nil, nil)
+	ownerTopPosts, err := queries.Posts(ownerCtx, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("owner top-level posts: %v", err)
 	}
@@ -6646,11 +6671,11 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 		t.Fatalf("owner top-level posts edges/total = %d/%d, want %d/%d", len(ownerTopPosts.Edges), ownerTopPosts.TotalCount, defaultGraphQLAPIPageSize, policyRelationshipPageSize+5)
 	}
 
-	ownerPost, err := queries.Post(matchingOwnerCtx, firstPost.ID.String())
+	ownerPost, err := queries.Post(ownerCtx, firstPost.ID.String())
 	if err != nil || ownerPost == nil || ownerPost.ID != firstPost.ID {
 		t.Fatalf("owner top-level post = %+v, %v", ownerPost, err)
 	}
-	strangerPost, err := queries.Post(ownerCtx, firstPost.ID.String())
+	strangerPost, err := queries.Post(strangerCtx, firstPost.ID.String())
 	if err != nil || strangerPost != nil {
 		t.Fatalf("stranger top-level post = %+v, %v; want nil without error", strangerPost, err)
 	}
@@ -6664,7 +6689,7 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 		t.Fatalf("unauthenticated relationship error = %v, want UNAUTHENTICATED", err)
 	}
 
-	strangerPosts, err := userFields.Posts(ownerCtx, user)
+	strangerPosts, err := userFields.Posts(strangerCtx, user)
 	if err != nil {
 		t.Fatalf("stranger posts: %v", err)
 	}
@@ -6672,7 +6697,7 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 		t.Fatalf("stranger relationship posts = %d, want 0", len(strangerPosts))
 	}
 
-	ownerPosts, err := userFields.Posts(matchingOwnerCtx, user)
+	ownerPosts, err := userFields.Posts(ownerCtx, user)
 	if !isBadInput(err) || ownerPosts != nil {
 		t.Fatalf("owner overflowing relationship posts = %d/%v, want BAD_USER_INPUT and nil", len(ownerPosts), err)
 	}

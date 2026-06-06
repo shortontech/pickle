@@ -2379,6 +2379,7 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 	}
 	support.WriteString("\t\"errors\"\n")
 	support.WriteString("\t\"fmt\"\n")
+	support.WriteString("\t\"reflect\"\n")
 	if len(actions) > 0 {
 		support.WriteString("\t\"net/http\"\n")
 		support.WriteString("\t\"net/http/httptest\"\n")
@@ -2594,6 +2595,24 @@ func graphQLAPIUnauthenticated(message string) *gqlerror.Error {
 
 func graphQLAPIRecordNotFound(err error) bool {
 	return errors.Is(err, gorm.ErrRecordNotFound)
+}
+
+func graphQLAPISetZero(record any, fieldName string) {
+	value := reflect.ValueOf(record)
+	for value.IsValid() && (value.Kind() == reflect.Pointer || value.Kind() == reflect.Interface) {
+		if value.IsNil() {
+			return
+		}
+		value = value.Elem()
+	}
+	if !value.IsValid() || value.Kind() != reflect.Struct {
+		return
+	}
+	field := value.FieldByName(fieldName)
+	if !field.IsValid() || !field.CanSet() {
+		return
+	}
+	field.Set(reflect.Zero(field.Type()))
 }
 
 func gqlgenStringPtr(value string) *string {
@@ -3183,6 +3202,9 @@ func writeGraphQLAPIListResolver(b *strings.Builder, tbl *schema.Table) {
 	b.WriteString("\trecords, err := q.All()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n")
 	fmt.Fprintf(b, "\tedges := make([]*model.%sEdge, 0, len(records))\n", structName)
 	b.WriteString("\tfor i := range records {\n\t\trecord := records[i]\n")
+	if graphQLTableHasOwnerOnlyFields(tbl) {
+		fmt.Fprintf(b, "\t\tgraphQLAPIScrub%sVisibility(ctx, &record)\n", structName)
+	}
 	fmt.Fprintf(b, "\t\tedges = append(edges, &model.%sEdge{Node: &record, Cursor: gqlgenCursor(offset + i)})\n\t}\n", structName)
 	b.WriteString("\tvar startCursor *string\n\tvar endCursor *string\n\tif len(edges) > 0 {\n\t\tstartCursor = gqlgenStringPtr(edges[0].Cursor)\n\t\tendCursor = gqlgenStringPtr(edges[len(edges)-1].Cursor)\n\t}\n")
 	fmt.Fprintf(b, "\treturn &model.%sConnection{Edges: edges, PageInfo: &model.PageInfo{HasNextPage: hasNext, HasPreviousPage: hasPrevious, StartCursor: startCursor, EndCursor: endCursor}, TotalCount: totalCount}, nil\n", structName)
@@ -3202,7 +3224,11 @@ func writeGraphQLAPISingleResolver(b *strings.Builder, tbl *schema.Table) {
 		fmt.Fprintf(b, "\tgraphQLAPISelect%sVisibility(ctx, q)\n", structName)
 	}
 	writeGraphQLAPIScopeTopLevelOwnerReadFromAuth(b, tbl, graphQLSingleFieldName(tbl), "nil")
-	b.WriteString("\trecord, err := q.First()\n\tif err != nil {\n\t\tif graphQLAPIRecordNotFound(err) {\n\t\t\treturn nil, nil\n\t\t}\n\t\treturn nil, err\n\t}\n\treturn record, nil\n")
+	b.WriteString("\trecord, err := q.First()\n\tif err != nil {\n\t\tif graphQLAPIRecordNotFound(err) {\n\t\t\treturn nil, nil\n\t\t}\n\t\treturn nil, err\n\t}\n")
+	if graphQLTableHasOwnerOnlyFields(tbl) {
+		fmt.Fprintf(b, "\tgraphQLAPIScrub%sVisibility(ctx, record)\n", structName)
+	}
+	b.WriteString("\treturn record, nil\n")
 	b.WriteString("}\n\n")
 }
 
@@ -3502,6 +3528,23 @@ func writeGraphQLAPIFilterApplier(b *strings.Builder, tbl *schema.Table) {
 		b.WriteString("\tq.SelectOwner()\n")
 		b.WriteString("}\n\n")
 	}
+	if graphQLTableHasOwnerOnlyFields(tbl) {
+		fmt.Fprintf(b, "func graphQLAPIScrub%sVisibility(ctx context.Context, record *models.%s) {\n", structName, structName)
+		b.WriteString("\tif record == nil {\n\t\treturn\n\t}\n")
+		b.WriteString("\tclaims := GraphQLAPIAuthFromContext(ctx)\n")
+		b.WriteString("\tif claims == nil || claims.Manages || (!claims.RBACLoaded && claims.Role == \"admin\") {\n\t\treturn\n\t}\n")
+		ownerField := "ID"
+		if ownerCol := exportedGraphQLOwnerColumn(tbl); ownerCol != nil {
+			ownerField = snakeToPascal(ownerCol.Name)
+		}
+		fmt.Fprintf(b, "\tif claims.UserID != \"\" && fmt.Sprint(record.%s) == claims.UserID {\n\t\treturn\n\t}\n", ownerField)
+		for _, col := range tbl.Columns {
+			if col.IsOwnerSees && !isExcludedFromExportedGraphQL(tbl, col) {
+				fmt.Fprintf(b, "\tgraphQLAPISetZero(record, %q)\n", snakeToPascal(col.Name))
+			}
+		}
+		b.WriteString("}\n\n")
+	}
 	fmt.Fprintf(b, "func apply%sFilter(q *models.%sQuery, filter *model.%sFilter) error {\n", structName, structName, structName)
 	for _, col := range tbl.Columns {
 		if isExcludedFromExportedGraphQL(tbl, col) {
@@ -3598,7 +3641,11 @@ func writeGraphQLAPIRelationshipResolver(b *strings.Builder, parent, child *sche
 			fmt.Fprintf(b, "\tgraphQLAPISelect%sVisibility(ctx, q)\n", childStruct)
 		}
 		writeGraphQLAPIScopeRelationshipOwnerFromAuth(b, child, strings.ToLower(methodName), "nil")
-		b.WriteString("\trecord, err := q.First()\n\tif err != nil {\n\t\tif graphQLAPIRecordNotFound(err) {\n\t\t\treturn nil, nil\n\t\t}\n\t\treturn nil, err\n\t}\n\treturn record, nil\n")
+		b.WriteString("\trecord, err := q.First()\n\tif err != nil {\n\t\tif graphQLAPIRecordNotFound(err) {\n\t\t\treturn nil, nil\n\t\t}\n\t\treturn nil, err\n\t}\n")
+		if graphQLTableHasOwnerOnlyFields(child) {
+			fmt.Fprintf(b, "\tgraphQLAPIScrub%sVisibility(ctx, record)\n", childStruct)
+		}
+		b.WriteString("\treturn record, nil\n")
 		b.WriteString("}\n\n")
 	default:
 		fmt.Fprintf(b, "func (r *%sResolver) %s(ctx context.Context, obj *models.%s) ([]*models.%s, error) {\n", resolverType, methodName, parentStruct, childStruct)
@@ -3613,7 +3660,11 @@ func writeGraphQLAPIRelationshipResolver(b *strings.Builder, parent, child *sche
 		b.WriteString("\trecords, err := q.All()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n")
 		b.WriteString("\tif len(records) > relationshipLimit {\n\t\treturn nil, graphQLAPIBadInput(\"GraphQL relationship exceeds maximum page size; expose a paginated relationship field\")\n\t}\n")
 		fmt.Fprintf(b, "\titems := make([]*models.%s, 0, len(records))\n", childStruct)
-		b.WriteString("\tfor i := range records {\n\t\titems = append(items, &records[i])\n\t}\n\treturn items, nil\n")
+		b.WriteString("\tfor i := range records {\n")
+		if graphQLTableHasOwnerOnlyFields(child) {
+			fmt.Fprintf(b, "\t\tgraphQLAPIScrub%sVisibility(ctx, &records[i])\n", childStruct)
+		}
+		b.WriteString("\t\titems = append(items, &records[i])\n\t}\n\treturn items, nil\n")
 		b.WriteString("}\n\n")
 	}
 }
@@ -3678,6 +3729,18 @@ func writeGraphQLAPIFieldReturn(b *strings.Builder, col *schema.Column, goField,
 func exportedGraphQLTableHasVisibility(tbl *schema.Table) bool {
 	for _, col := range tbl.Columns {
 		if col.IsPublic || col.IsOwnerSees {
+			return true
+		}
+	}
+	return false
+}
+
+func graphQLTableHasOwnerOnlyFields(tbl *schema.Table) bool {
+	if tbl == nil {
+		return false
+	}
+	for _, col := range tbl.Columns {
+		if col.IsOwnerSees && !isExcludedFromExportedGraphQL(tbl, col) {
 			return true
 		}
 	}
@@ -4405,6 +4468,10 @@ func graphQLAPIOwnerID(obj any) (string, bool) {
 		if !field.IsValid() {
 			continue
 		}
+		return graphQLAPIFieldString(field), true
+	}
+	field := value.FieldByName("ID")
+	if field.IsValid() {
 		return graphQLAPIFieldString(field), true
 	}
 	return "", false

@@ -7457,6 +7457,93 @@ func TestGenerateSQLMigrationsLowersRawSQLWithFinding(t *testing.T) {
 	}
 }
 
+func TestExportReportsRawSQLMigrationsAsManualReviewEndToEnd(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "cron-test"))
+	migrationPath := filepath.Join(projectDir, "database", "migrations", "2026_06_05_120000_raw_manual_review.go")
+	if err := os.WriteFile(migrationPath, []byte(`package migrations
+
+type RawManualReview_2026_06_05_120000 struct {
+	Migration
+}
+
+func (m *RawManualReview_2026_06_05_120000) Up() {
+	m.RawSQL(`+"`"+`CREATE TABLE raw_manual_items (id TEXT PRIMARY KEY, note TEXT NOT NULL);`+"`"+`)
+}
+
+func (m *RawManualReview_2026_06_05_120000) Down() {
+	m.RawSQL(`+"`"+`DROP TABLE raw_manual_items;`+"`"+`)
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "exported")
+	res, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err != nil {
+		t.Fatalf("Export failed: %v", err)
+	}
+	if !hasFinding(res.Findings, "raw_sql_migration") {
+		t.Fatalf("expected raw_sql_migration finding, got %+v", res.Findings)
+	}
+
+	reportPath := filepath.Join(out, "EXPORT_REPORT.md")
+	assertFileContains(t, reportPath, "## Unsupported\n\nNo unsupported export findings.")
+	assertFileContains(t, reportPath, "## Manual Review")
+	assertFileContains(t, reportPath, "`database/migrations` `raw_sql_migration` - migration RawManualReview_2026_06_05_120000 contains raw SQL; exported statements need driver-specific review")
+	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260605120000_raw_manual_review.up.sql"), "CREATE TABLE raw_manual_items")
+	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260605120000_raw_manual_review.down.sql"), "DROP TABLE raw_manual_items")
+	assertStandaloneNoPickleRuntime(t, out)
+
+	behaviorTest := `package migrations
+
+import (
+	"testing"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+func TestExportedRawSQLMigrationRunsAndRollsBack(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := NewRunner(db, "sqlite")
+	if err := runner.Migrate(Registry); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if !tableExists(t, db, "raw_manual_items") {
+		t.Fatal("raw_manual_items table missing after migrate")
+	}
+	if err := runner.Rollback(Registry); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if tableExists(t, db, "raw_manual_items") {
+		t.Fatal("raw_manual_items table still exists after rollback")
+	}
+}
+
+func tableExists(t *testing.T, db *gorm.DB, table string) bool {
+	t.Helper()
+	var name string
+	err := db.Raw("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&name).Error
+	if err != nil {
+		t.Fatal(err)
+	}
+	return name == table
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "database", "migrations", "exported_raw_sql_behavior_test.go"), []byte(behaviorTest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runExported(t, out, "go", "test", "./database/migrations")
+}
+
 func TestExportReportSeparatesManualReviewFromUnsupported(t *testing.T) {
 	out := t.TempDir()
 	reportPath := filepath.Join(out, "EXPORT_REPORT.md")

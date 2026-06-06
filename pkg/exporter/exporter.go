@@ -4681,9 +4681,8 @@ var graphQLExposureSeeds = []graphQLExposureSeed{
 
 var graphQLActionSeeds = []graphQLActionSeed{
 `)
-	for _, action := range graphQLState.Actions {
-		fmt.Fprintf(&b, "\t{Name: %q},\n", action.Name)
-	}
+	// ControllerAction policies are reported as unsupported until the exporter
+	// can lower them into the standalone gqlgen schema and resolver target.
 	b.WriteString(`}
 
 var rolePolicyIDs = []string{

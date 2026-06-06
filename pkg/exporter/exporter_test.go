@@ -7655,8 +7655,50 @@ func (p *ActionAPI_2026_06_05_100000) Down() {
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "`database/policies/graphql` `graphql_action_export_unsupported` - GraphQL controller action approveTransfer is not lowered by the standalone gqlgen export target")
 	assertFileNotContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "No unsupported export findings.")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "approveTransfer")
+	assertFileNotContains(t, filepath.Join(out, "database", "policies", "support.go"), "approveTransfer")
 	assertStandaloneNoPickleRuntime(t, out)
+	writeExportedUnsupportedGraphQLActionPolicyStateTest(t, out)
 	runExported(t, out, "go", "test", "./...")
+}
+
+func writeExportedUnsupportedGraphQLActionPolicyStateTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package policies
+
+import (
+	"testing"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+func TestExportedPolicyStateOmitsUnsupportedGraphQLActions(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db, "sqlite"); err != nil {
+		t.Fatalf("policy migrate: %v", err)
+	}
+	var actionRows int64
+	if err := db.Table("graphql_actions").Where("name = ?", "approveTransfer").Count(&actionRows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if actionRows != 0 {
+		t.Fatalf("unsupported graphql action rows = %d, want 0", actionRows)
+	}
+	var exposureRows int64
+	if err := db.Table("graphql_exposures").Where("model = ? AND operation = ?", "users", "list").Count(&exposureRows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if exposureRows != 1 {
+		t.Fatalf("supported graphql exposure rows = %d, want 1", exposureRows)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "database", "policies", "exported_unsupported_graphql_action_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestExporterReportsGraphQLControllerActionsAsUnsupported(t *testing.T) {

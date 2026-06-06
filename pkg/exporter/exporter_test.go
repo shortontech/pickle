@@ -10478,12 +10478,47 @@ func assertNoGoFileContains(t *testing.T, root, needle string) {
 
 func assertStandaloneNoPickleRuntime(t *testing.T, out string) {
 	t.Helper()
+	assertNoExportFileContains(t, out, "github.com/shortontech/pickle")
+	assertNoExportFileContains(t, out, "PICKLE_")
+	assertNoExportFileContains(t, out, "RegisterPickleEndpoints")
+	assertNoExportFileContains(t, out, "/pickle/config/reload")
 	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
 	assertNoGoFileContains(t, out, "pickle.")
 	assertNoGoFileContains(t, out, "PICKLE_")
 	assertNoGoFileContains(t, out, "RegisterPickleEndpoints")
 	assertNoGoFileContains(t, out, "/pickle/config/reload")
 	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
+}
+
+func assertNoExportFileContains(t *testing.T, root, needle string) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "vendor", "node_modules":
+				return filepath.SkipDir
+			default:
+				return nil
+			}
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(data), needle) {
+			t.Fatalf("%s contains %q", path, needle)
+		}
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 }
 
 func assertNoGoFilesUnder(t *testing.T, root string) {

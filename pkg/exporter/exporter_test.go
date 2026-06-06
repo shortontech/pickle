@@ -9142,11 +9142,17 @@ func TestFindingCategoryClassifiesUnlowerableBoundariesAsUnsupported(t *testing.
 	if got := findingCategory("migration_export_unsupported"); got != "unsupported" {
 		t.Fatalf("findingCategory(migration_export_unsupported) = %q, want unsupported", got)
 	}
+	if got := findingCategory("action_export_unsupported_signature"); got != "unsupported" {
+		t.Fatalf("findingCategory(action_export_unsupported_signature) = %q, want unsupported", got)
+	}
+	if got := findingCategory("action_export_unsupported_query"); got != "unsupported" {
+		t.Fatalf("findingCategory(action_export_unsupported_query) = %q, want unsupported", got)
+	}
+	if got := findingCategory("gate_export_unsupported_signature"); got != "unsupported" {
+		t.Fatalf("findingCategory(gate_export_unsupported_signature) = %q, want unsupported", got)
+	}
 	for _, rule := range []string{
 		"actions_audit",
-		"action_export_unsupported_signature",
-		"action_export_unsupported_query",
-		"gate_export_unsupported_signature",
 		"gate_export_policy_dependency",
 		"gate_export_dynamic_role",
 		"gate_export_callsite",

@@ -5327,6 +5327,19 @@ func TestExportedEncryptedColumnsRoundTrip(t *testing.T) {
 	var broken models.User
 	if err := db.First(&broken, "id = ?", user.ID).Error; err == nil {
 		t.Fatal("tampered sealed ciphertext should fail authentication")
+	} else if err.Error() != "decryption error" || strings.Contains(err.Error(), "cipher") || strings.Contains(err.Error(), tampered) {
+		t.Fatalf("tampered sealed ciphertext error = %v, want sanitized decryption error", err)
+	}
+
+	badDeterministic := "not-valid-base64-secret"
+	if err := db.Model(&models.User{}).Where("id = ?", user.ID).Update("email_encrypted", badDeterministic).Error; err != nil {
+		t.Fatalf("tamper deterministic field: %v", err)
+	}
+	var brokenDeterministic models.User
+	if err := db.First(&brokenDeterministic, "id = ?", user.ID).Error; err == nil {
+		t.Fatal("malformed deterministic ciphertext should fail")
+	} else if err.Error() != "decryption error" || strings.Contains(err.Error(), "base64") || strings.Contains(err.Error(), "illegal") || strings.Contains(err.Error(), badDeterministic) {
+		t.Fatalf("malformed deterministic ciphertext error = %v, want sanitized decryption error", err)
 	}
 
 	os.Unsetenv("APP_ENCRYPTION_KEY")

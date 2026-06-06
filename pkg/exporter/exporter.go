@@ -10692,7 +10692,7 @@ func encryptModelFields(model exportedEncryptedModel) error {
 	for _, field := range model.encryptedFields() {
 		plain, err := field.Marshal()
 		if err != nil {
-			return err
+			return errors.New("encryption error")
 		}
 		var ciphertext string
 		if field.Deterministic {
@@ -10701,7 +10701,7 @@ func encryptModelFields(model exportedEncryptedModel) error {
 			ciphertext, err = encryptRandom(key, plain)
 		}
 		if err != nil {
-			return fmt.Errorf("encrypting %s: %w", field.Column, err)
+			return errors.New("encryption error")
 		}
 		field.SetCiphertext(ciphertext)
 		field.SetCiphertextV2(nil)
@@ -10729,10 +10729,10 @@ func decryptModelFields(model exportedEncryptedModel) error {
 			plain, err = decryptRandom(key, ciphertext)
 		}
 		if err != nil {
-			return fmt.Errorf("decrypting %s: %w", field.Column, err)
+			return errors.New("decryption error")
 		}
 		if err := field.Unmarshal(plain); err != nil {
-			return err
+			return errors.New("decryption error")
 		}
 	}
 	return nil

@@ -6023,6 +6023,8 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 
 	fieldFloodQuery := "{ posts { " + strings.Repeat("totalCount ", 201) + "} }"
 	inputFloodQuery := "{ posts(filter: { title: { in: [" + strings.TrimSuffix(strings.Repeat("\"x\",", 501), ",") + "] } }) { totalCount } }"
+	deepInputLiteralQuery := "{ posts(filter: { title: { eq: " + strings.Repeat("[", 10) + "\"x\"" + strings.Repeat("]", 10) + " } }) { totalCount } }"
+	deepDefaultInputQuery := "query DeepDefault($ids: String = " + strings.Repeat("[", 10) + "\"x\"" + strings.Repeat("]", 10) + ") { posts { totalCount } }"
 	for name, body := range map[string][]byte{
 		"batched":          []byte(` + "`" + `[{"query":"{ posts { totalCount } }"}]` + "`" + `),
 		"duplicate_field":  []byte(` + "`" + `{"query":"{ posts { totalCount } }","query":"{ comments { totalCount } }"}` + "`" + `),
@@ -6033,6 +6035,8 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 		"alias_flood":      []byte(` + "`" + `{"query":"{ ` + "`" + ` + strings.Repeat("alias: posts { totalCount } ", 26) + ` + "`" + `}"}` + "`" + `),
 		"field_flood":      []byte(` + "`" + `{"query":` + "`" + ` + mustJSONQuote(fieldFloodQuery) + ` + "`" + `}` + "`" + `),
 		"input_flood":      []byte(` + "`" + `{"query":` + "`" + ` + mustJSONQuote(inputFloodQuery) + ` + "`" + `}` + "`" + `),
+		"deep_input":       []byte(` + "`" + `{"query":` + "`" + ` + mustJSONQuote(deepInputLiteralQuery) + ` + "`" + `}` + "`" + `),
+		"deep_default":     []byte(` + "`" + `{"query":` + "`" + ` + mustJSONQuote(deepDefaultInputQuery) + ` + "`" + `}` + "`" + `),
 		"operation_flood":  []byte(` + "`" + `{"query":"` + "`" + ` + strings.Repeat("query TooMany { posts { totalCount } } ", 9) + ` + "`" + `"}` + "`" + `),
 		"deep_query":       []byte(` + "`" + `{"query":"{ posts { edges { node { id { a { b { c { d { e { f { g } } } } } } } } } } }"}` + "`" + `),
 		"bad_variables":    []byte(` + "`" + `{"query":"query Good($id: ID) { post(id: $id) { id } }","variables":["not","object"]}` + "`" + `),

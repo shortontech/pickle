@@ -4730,6 +4730,7 @@ type graphQLAPIQueryShape struct {
 	Fields     int
 	Aliases    int
 	InputNodes int
+	InputDepth int
 	Variables  int
 }
 
@@ -4753,12 +4754,15 @@ func validateGraphQLAPIQueryShape(query string) error {
 		}
 		operations++
 		variableShape := graphQLAPIVariableDefinitionShape(operation.VariableDefinitions)
-		variableShape.InputNodes += graphQLAPIDirectiveInputNodes(operation.Directives)
+		graphQLAPIAddShape(&variableShape, graphQLAPIDirectiveInputShape(operation.Directives))
 		if variableShape.Depth > shape.Depth {
 			shape.Depth = variableShape.Depth
 		}
 		shape.Variables += variableShape.Variables
 		shape.InputNodes += variableShape.InputNodes
+		if variableShape.InputDepth > shape.InputDepth {
+			shape.InputDepth = variableShape.InputDepth
+		}
 		operationShape := graphQLAPISelectionShape(operation.SelectionSet, fragments, seenFragments, 1)
 		if operationShape.Depth > shape.Depth {
 			shape.Depth = operationShape.Depth
@@ -4766,6 +4770,9 @@ func validateGraphQLAPIQueryShape(query string) error {
 		shape.Fields += operationShape.Fields
 		shape.Aliases += operationShape.Aliases
 		shape.InputNodes += operationShape.InputNodes
+		if operationShape.InputDepth > shape.InputDepth {
+			shape.InputDepth = operationShape.InputDepth
+		}
 	}
 	if operations > maxGraphQLAPIOperations {
 		return graphQLAPICodedError("GraphQL query operations exceed safety limit", "BAD_USER_INPUT")
@@ -4785,6 +4792,9 @@ func validateGraphQLAPIQueryShape(query string) error {
 	if shape.InputNodes > maxGraphQLAPIInputNodes {
 		return graphQLAPICodedError("GraphQL query inputs exceed safety limit", "BAD_USER_INPUT")
 	}
+	if shape.InputDepth > maxGraphQLAPIVariableDepth {
+		return graphQLAPICodedError("GraphQL query inputs exceed safety limit", "BAD_USER_INPUT")
+	}
 	return nil
 }
 
@@ -4800,8 +4810,8 @@ func graphQLAPISelectionShape(selections ast.SelectionSet, fragments map[string]
 			if sel.Alias != "" && sel.Alias != sel.Name {
 				shape.Aliases++
 			}
-			shape.InputNodes += graphQLAPIArgumentInputNodes(sel.Arguments)
-			shape.InputNodes += graphQLAPIDirectiveInputNodes(sel.Directives)
+			graphQLAPIAddShape(&shape, graphQLAPIArgumentInputShape(sel.Arguments))
+			graphQLAPIAddShape(&shape, graphQLAPIDirectiveInputShape(sel.Directives))
 			child := graphQLAPISelectionShape(sel.SelectionSet, fragments, seenFragments, depth+1)
 			if child.Depth > shape.Depth {
 				shape.Depth = child.Depth
@@ -4809,11 +4819,14 @@ func graphQLAPISelectionShape(selections ast.SelectionSet, fragments map[string]
 			shape.Fields += child.Fields
 			shape.Aliases += child.Aliases
 			shape.InputNodes += child.InputNodes
+			if child.InputDepth > shape.InputDepth {
+				shape.InputDepth = child.InputDepth
+			}
 		case *ast.InlineFragment:
 			if sel == nil {
 				continue
 			}
-			shape.InputNodes += graphQLAPIDirectiveInputNodes(sel.Directives)
+			graphQLAPIAddShape(&shape, graphQLAPIDirectiveInputShape(sel.Directives))
 			child := graphQLAPISelectionShape(sel.SelectionSet, fragments, seenFragments, depth)
 			if child.Depth > shape.Depth {
 				shape.Depth = child.Depth
@@ -4821,23 +4834,29 @@ func graphQLAPISelectionShape(selections ast.SelectionSet, fragments map[string]
 			shape.Fields += child.Fields
 			shape.Aliases += child.Aliases
 			shape.InputNodes += child.InputNodes
+			if child.InputDepth > shape.InputDepth {
+				shape.InputDepth = child.InputDepth
+			}
 		case *ast.FragmentSpread:
 			if sel == nil || seenFragments[sel.Name] {
 				continue
 			}
-			shape.InputNodes += graphQLAPIDirectiveInputNodes(sel.Directives)
+			graphQLAPIAddShape(&shape, graphQLAPIDirectiveInputShape(sel.Directives))
 			fragment := fragments[sel.Name]
 			if fragment == nil {
 				continue
 			}
 			seenFragments[sel.Name] = true
 			fragmentShape := graphQLAPIVariableDefinitionShape(fragment.VariableDefinition)
-			fragmentShape.InputNodes += graphQLAPIDirectiveInputNodes(fragment.Directives)
+			graphQLAPIAddShape(&fragmentShape, graphQLAPIDirectiveInputShape(fragment.Directives))
 			if fragmentShape.Depth > shape.Depth {
 				shape.Depth = fragmentShape.Depth
 			}
 			shape.Variables += fragmentShape.Variables
 			shape.InputNodes += fragmentShape.InputNodes
+			if fragmentShape.InputDepth > shape.InputDepth {
+				shape.InputDepth = fragmentShape.InputDepth
+			}
 			child := graphQLAPISelectionShape(fragment.SelectionSet, fragments, seenFragments, depth)
 			delete(seenFragments, sel.Name)
 			if child.Depth > shape.Depth {
@@ -4847,9 +4866,25 @@ func graphQLAPISelectionShape(selections ast.SelectionSet, fragments map[string]
 			shape.Aliases += child.Aliases
 			shape.InputNodes += child.InputNodes
 			shape.Variables += child.Variables
+			if child.InputDepth > shape.InputDepth {
+				shape.InputDepth = child.InputDepth
+			}
 		}
 	}
 	return shape
+}
+
+func graphQLAPIAddShape(shape *graphQLAPIQueryShape, child graphQLAPIQueryShape) {
+	if child.Depth > shape.Depth {
+		shape.Depth = child.Depth
+	}
+	if child.InputDepth > shape.InputDepth {
+		shape.InputDepth = child.InputDepth
+	}
+	shape.Fields += child.Fields
+	shape.Aliases += child.Aliases
+	shape.InputNodes += child.InputNodes
+	shape.Variables += child.Variables
 }
 
 func graphQLAPIVariableDefinitionShape(definitions ast.VariableDefinitionList) graphQLAPIQueryShape {
@@ -4859,43 +4894,43 @@ func graphQLAPIVariableDefinitionShape(definitions ast.VariableDefinitionList) g
 			continue
 		}
 		shape.Variables++
-		shape.InputNodes += graphQLAPIValueInputNodes(definition.DefaultValue)
-		shape.InputNodes += graphQLAPIDirectiveInputNodes(definition.Directives)
+		graphQLAPIAddShape(&shape, graphQLAPIValueInputShape(definition.DefaultValue, 0))
+		graphQLAPIAddShape(&shape, graphQLAPIDirectiveInputShape(definition.Directives))
 	}
 	return shape
 }
 
-func graphQLAPIArgumentInputNodes(arguments ast.ArgumentList) int {
-	total := 0
+func graphQLAPIArgumentInputShape(arguments ast.ArgumentList) graphQLAPIQueryShape {
+	shape := graphQLAPIQueryShape{}
 	for _, argument := range arguments {
 		if argument == nil {
 			continue
 		}
-		total += graphQLAPIValueInputNodes(argument.Value)
+		graphQLAPIAddShape(&shape, graphQLAPIValueInputShape(argument.Value, 0))
 	}
-	return total
+	return shape
 }
 
-func graphQLAPIDirectiveInputNodes(directives ast.DirectiveList) int {
-	total := 0
+func graphQLAPIDirectiveInputShape(directives ast.DirectiveList) graphQLAPIQueryShape {
+	shape := graphQLAPIQueryShape{}
 	for _, directive := range directives {
 		if directive == nil {
 			continue
 		}
-		total += graphQLAPIArgumentInputNodes(directive.Arguments)
+		graphQLAPIAddShape(&shape, graphQLAPIArgumentInputShape(directive.Arguments))
 	}
-	return total
+	return shape
 }
 
-func graphQLAPIValueInputNodes(value *ast.Value) int {
+func graphQLAPIValueInputShape(value *ast.Value, depth int) graphQLAPIQueryShape {
 	if value == nil {
-		return 0
+		return graphQLAPIQueryShape{}
 	}
-	total := 1
+	shape := graphQLAPIQueryShape{InputNodes: 1, InputDepth: depth}
 	for _, child := range value.Children {
-		total += graphQLAPIValueInputNodes(child.Value)
+		graphQLAPIAddShape(&shape, graphQLAPIValueInputShape(child.Value, depth+1))
 	}
-	return total
+	return shape
 }
 
 func validateGraphQLAPIVariables(variables map[string]any) error {

@@ -9128,6 +9128,8 @@ type AuthInfo struct { UserID string; Role string; Claims any }
 type RoleInfo struct { Slug string; Manages bool }
 type Context struct { request *http.Request; response http.ResponseWriter; auth *AuthInfo; params map[string]string; roles []string; rolesLoaded bool; isAdmin bool }
 
+const maxBearerTokenHeaderBytes = 12 << 10
+
 func NewContext(r *http.Request) *Context { return &Context{request: r, params: map[string]string{}} }
 func NewContextWithResponse(w http.ResponseWriter, r *http.Request) *Context { ctx := NewContext(r); ctx.response = w; return ctx }
 func (c *Context) Request() *http.Request { if c == nil { return nil }; return c.request }
@@ -9137,7 +9139,7 @@ func (c *Context) SetParam(name, value string) { if c == nil { return }; if c.pa
 func (c *Context) ParamUUID(name string) (uuid.UUID, error) { value, err := uuid.Parse(c.Param(name)); if err != nil { return uuid.Nil, fmt.Errorf("invalid uuid parameter") }; return value, nil }
 func (c *Context) Cookie(name string) (string, error) { if c == nil || c.request == nil { return "", http.ErrNoCookie }; cookie, err := c.request.Cookie(name); if err != nil { return "", err }; return cookie.Value, nil }
 func (c *Context) Query(name string) string { if c == nil || c.request == nil || c.request.URL == nil { return "" }; return c.request.URL.Query().Get(name) }
-func (c *Context) BearerToken() string { if c == nil || c.request == nil { return "" }; h := c.request.Header.Get("Authorization"); parts := strings.Fields(h); if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") { return parts[1] }; return "" }
+func (c *Context) BearerToken() string { if c == nil || c.request == nil { return "" }; h := c.request.Header.Get("Authorization"); if len(h) > maxBearerTokenHeaderBytes { return "" }; parts := strings.Fields(h); if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && parts[1] != "" { return parts[1] }; return "" }
 func (c *Context) ClientIP() string { if c == nil || c.request == nil { return "" }; return clientIP(c.request) }
 func (c *Context) Auth() *AuthInfo { if c == nil || c.auth == nil { return &AuthInfo{} }; return c.auth }
 func (c *Context) SetAuth(claims any) { if c == nil { return }; switch v := claims.(type) { case nil: c.auth = nil; case *AuthInfo: c.auth = v; default: panic(fmt.Sprintf("SetAuth requires *AuthInfo, got %T", claims)) } }

@@ -4453,6 +4453,23 @@ func TestExportedContextHelpersHandleNilRequest(t *testing.T) {
 	if got := ctx.BearerToken(); got != "" {
 		t.Fatalf("BearerToken on nil request = %q, want empty", got)
 	}
+	bearerReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	bearerReq.Header.Set("Authorization", "bearer   token-1")
+	if got := NewContext(bearerReq).BearerToken(); got != "token-1" {
+		t.Fatalf("BearerToken valid header = %q, want token-1", got)
+	}
+	for _, header := range []string{
+		"Bearer",
+		"Bearer token extra-secret",
+		"Basic token",
+		"Bearer " + strings.Repeat("x", maxBearerTokenHeaderBytes),
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", header)
+		if got := NewContext(req).BearerToken(); got != "" {
+			t.Fatalf("BearerToken malformed header %q = %q, want empty", header, got)
+		}
+	}
 	if got := ctx.ClientIP(); got != "" {
 		t.Fatalf("ClientIP on nil request = %q, want empty", got)
 	}

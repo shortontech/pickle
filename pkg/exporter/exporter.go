@@ -176,7 +176,7 @@ func Export(opts Options) (*Result, error) {
 	if err := ex.tidyModule(); err != nil {
 		return nil, err
 	}
-	if err := ex.generateGQLGenTarget(); err != nil {
+	if err := ex.generateGraphQLExportTarget(); err != nil {
 		return nil, err
 	}
 	if err := ex.tidyModule(); err != nil {
@@ -339,7 +339,7 @@ func (e *exporter) tidyModule() error {
 	return nil
 }
 
-func (e *exporter) generateGQLGenTarget() error {
+func (e *exporter) generateGraphQLExportTarget() error {
 	if e.dryRun || !e.hasGraphQLPackage() {
 		return nil
 	}
@@ -7918,9 +7918,9 @@ func (e *exporter) addGraphQLActionFindings() {
 	}
 	_, unsupported := e.exportedGraphQLControllerActions()
 	for _, action := range unsupported {
-		message := fmt.Sprintf("GraphQL controller action %s is not lowered by the standalone gqlgen export target", action.Name)
+		message := fmt.Sprintf("GraphQL controller action %s is not lowered by the exported Go GraphQL target backed by gqlgen", action.Name)
 		if action.Handler != "" && action.Handler != "nil" {
-			message = fmt.Sprintf("GraphQL controller action %s (%s) is not lowered by the standalone gqlgen export target", action.Name, action.Handler)
+			message = fmt.Sprintf("GraphQL controller action %s (%s) is not lowered by the exported Go GraphQL target backed by gqlgen", action.Name, action.Handler)
 		}
 		e.result.Findings = append(e.result.Findings, Finding{
 			File:    filepath.Join("database", "policies", "graphql"),
@@ -7944,7 +7944,7 @@ func (e *exporter) writeReport(orm string) error {
 	b.WriteString("- SQL migrations for supported schema operations\n")
 	b.WriteString("- HTTP routing, request binding, auth, config, and server support\n")
 	if e.hasGraphQLPackage() {
-		b.WriteString("- Standalone emitted Go GraphQL target backed by gqlgen, with GORM query support and /graphql server mount\n")
+		b.WriteString("- Exported Go GraphQL target backed by gqlgen, with GORM query support and /graphql server mount\n")
 	}
 	if e.hasEncryptedColumns {
 		b.WriteString("- Encrypted and sealed columns with GORM encrypt/decrypt hooks\n")

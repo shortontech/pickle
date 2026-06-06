@@ -5428,7 +5428,7 @@ func TestExportZeroGraphQLLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), `mux.Handle("/graphql", graphqlapi.Handler())`)
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "routes.API.RegisterRoutes(mux)")
 	assertFileNotContains(t, filepath.Join("..", "..", "go.mod"), "github.com/99designs/gqlgen")
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone emitted Go GraphQL target backed by gqlgen")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Exported Go GraphQL target backed by gqlgen")
 	assertFileNotContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Generated GraphQL package")
 	assertFileContains(t, filepath.Join(out, "app", "http", "requests", "bindings.go"), "package requests")
 	assertFileContains(t, filepath.Join(out, "internal", "httpx", "httpx.go"), "func writeRouterNotFound")
@@ -6404,7 +6404,7 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `mux.HandleFunc("/", exportedNotFound)`)
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "func exportedNotFound")
 	assertFileNotContains(t, filepath.Join("..", "..", "go.mod"), "github.com/99designs/gqlgen")
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone emitted Go GraphQL target backed by gqlgen")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Exported Go GraphQL target backed by gqlgen")
 	assertFileNotContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Generated GraphQL package")
 	assertCleanExportReport(t, out)
 	assertStandaloneNoPickleRuntime(t, out)
@@ -8583,7 +8583,7 @@ func TestExportReportListsUnsupportedBoundariesOnlyWhenUnsupported(t *testing.T)
 				{
 					File:    filepath.Join("database", "policies", "graphql"),
 					Rule:    "graphql_action_export_unsupported",
-					Message: "GraphQL controller action approveTransfer is not lowered by the standalone gqlgen export target",
+					Message: "GraphQL controller action approveTransfer is not lowered by the exported Go GraphQL target backed by gqlgen",
 				},
 				{
 					File:    filepath.Join("database", "migrations", "2026_02_21_100000_add_email_to_users_table.go"),
@@ -8597,7 +8597,7 @@ func TestExportReportListsUnsupportedBoundariesOnlyWhenUnsupported(t *testing.T)
 		t.Fatalf("writeReport: %v", err)
 	}
 	assertFileContains(t, reportPath, "## Unsupported")
-	assertFileContains(t, reportPath, "`database/policies/graphql` `graphql_action_export_unsupported` - GraphQL controller action approveTransfer is not lowered by the standalone gqlgen export target")
+	assertFileContains(t, reportPath, "`database/policies/graphql` `graphql_action_export_unsupported` - GraphQL controller action approveTransfer is not lowered by the exported Go GraphQL target backed by gqlgen")
 	assertFileContains(t, reportPath, "`database/migrations/2026_02_21_100000_add_email_to_users_table.go` `migration_export_unsupported` - unsupported migration export for 2026_02_21_100000_add_email_to_users_table.go: add-column/index migrations are not lowered yet")
 	assertFileNotContains(t, reportPath, "No unsupported export findings.")
 	assertFileNotContains(t, reportPath, "## Manual Review")
@@ -8637,7 +8637,7 @@ func (p *ActionAPI_2026_06_05_100000) Down() {
 		t.Fatalf("expected graphql_action_export_unsupported finding, got %+v", res.Findings)
 	}
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Unsupported")
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "`database/policies/graphql` `graphql_action_export_unsupported` - GraphQL controller action approveTransfer is not lowered by the standalone gqlgen export target")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "`database/policies/graphql` `graphql_action_export_unsupported` - GraphQL controller action approveTransfer is not lowered by the exported Go GraphQL target backed by gqlgen")
 	assertFileNotContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "No unsupported export findings.")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "approveTransfer")
 	assertFileNotContains(t, filepath.Join(out, "database", "policies", "support.go"), "approveTransfer")
@@ -8698,7 +8698,7 @@ func (p *ActionAPI_2026_06_05_100000) Down() {
 	if !hasFinding(res.Findings, "graphql_action_export_unsupported") {
 		t.Fatalf("expected graphql_action_export_unsupported finding, got %+v", res.Findings)
 	}
-	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "`database/policies/graphql` `graphql_action_export_unsupported` - GraphQL controller action approveTransfer (controllers.TransferController{}.Approve) is not lowered by the standalone gqlgen export target")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "`database/policies/graphql` `graphql_action_export_unsupported` - GraphQL controller action approveTransfer (controllers.TransferController{}.Approve) is not lowered by the exported Go GraphQL target backed by gqlgen")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "approveTransfer")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "ApproveTransfer")
 	assertFileNotContains(t, filepath.Join(out, "database", "policies", "support.go"), "approveTransfer")

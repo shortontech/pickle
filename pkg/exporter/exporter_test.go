@@ -2280,12 +2280,16 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+
+	"basic-crud/internal/httpx"
 )
 
 func TestActionAuditUpsertsMatchDialect(t *testing.T) {
@@ -2346,6 +2350,40 @@ func TestRunAuditedActionFailsClosedWithoutAuth(t *testing.T) {
 	}
 	if sqliteDB.Migrator().HasTable("user_actions") {
 		t.Fatal("audit tables should roll back when audit user id is missing")
+	}
+}
+
+func TestAuditMetadataHelpersAreBounded(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/audit", nil)
+	req.RemoteAddr = "192.0.2.44:1234"
+	req.Header.Set("X-Request-ID", " req-123 ")
+	ctx := httpx.NewContext(req)
+
+	if got := auditContextIP(ctx); got != "192.0.2.44" {
+		t.Fatalf("auditContextIP = %q, want remote IP", got)
+	}
+	if got := auditContextRequestID(ctx); got != "req-123" {
+		t.Fatalf("auditContextRequestID = %q, want trimmed request ID", got)
+	}
+
+	req.RemoteAddr = strings.Repeat("1", maxAuditIPBytes+1)
+	req.Header.Set("X-Request-ID", strings.Repeat("x", maxAuditRequestIDBytes+1))
+	if got := auditContextIP(ctx); got != "" {
+		t.Fatalf("oversized audit IP = %q, want empty", got)
+	}
+	if got := auditContextRequestID(ctx); got != "" {
+		t.Fatalf("oversized audit request ID = %q, want empty", got)
+	}
+
+	req.RemoteAddr = "192.0.2.44:1234"
+	req.Header.Set("X-Request-ID", "req\nsecret")
+	if got := auditContextRequestID(ctx); got != "" {
+		t.Fatalf("control-character audit request ID = %q, want empty", got)
+	}
+	req.Header.Del("X-Request-ID")
+	req.Header.Set("X-Request-Id", "legacy-req")
+	if got := auditContextRequestID(ctx); got != "legacy-req" {
+		t.Fatalf("legacy audit request ID = %q, want legacy-req", got)
 	}
 }
 `

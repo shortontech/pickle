@@ -5624,6 +5624,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 
 	"%s/internal/httpx"
 )
@@ -5637,6 +5638,9 @@ type AuditFunc func(ctx *httpx.Context, action, model string, resourceID any, ex
 var OnAuditPerformed AuditFunc
 var OnAuditDenied AuditFunc
 var OnAuditFailed AuditFunc
+
+const maxAuditIPBytes = 45
+const maxAuditRequestIDBytes = 100
 
 func sanitizedAuditFailureReason(_ error) string {
 	return "action failed"
@@ -5687,7 +5691,7 @@ func auditContextIP(ctx *httpx.Context) string {
 	if ctx == nil {
 		return ""
 	}
-	return ctx.ClientIP()
+	return auditSafeMetadata(ctx.ClientIP(), maxAuditIPBytes)
 }
 
 func auditContextRequestID(ctx *httpx.Context) string {
@@ -5695,9 +5699,22 @@ func auditContextRequestID(ctx *httpx.Context) string {
 		return ""
 	}
 	if id := ctx.Request().Header.Get("X-Request-ID"); id != "" {
-		return id
+		return auditSafeMetadata(id, maxAuditRequestIDBytes)
 	}
-	return ctx.Request().Header.Get("X-Request-Id")
+	return auditSafeMetadata(ctx.Request().Header.Get("X-Request-Id"), maxAuditRequestIDBytes)
+}
+
+func auditSafeMetadata(value string, maxBytes int) string {
+	value = strings.TrimSpace(value)
+	if value == "" || maxBytes <= 0 || len(value) > maxBytes {
+		return ""
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return ""
+		}
+	}
+	return value
 }
 `, e.modulePath)
 	formatted, err := format.Source([]byte(src))

@@ -4680,6 +4680,7 @@ func writeExportedCustomScopeBehaviorTest(t *testing.T, out string) {
 	testSrc := `package models_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -4728,6 +4729,30 @@ func TestExportedCustomScopeFiltersWithStandaloneQuerySupport(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	rolledBackID := "rolled-back"
+	rollbackErr := errors.New("force rollback")
+	err = models.WithTransaction(func(tx *models.Tx) error {
+		if err := tx.QuerySession().Create(&models.Session{
+			ID:        rolledBackID,
+			UserID:    uuid.New(),
+			Role:      "admin",
+			ExpiresAt: now,
+		}); err != nil {
+			return err
+		}
+		return rollbackErr
+	})
+	if !errors.Is(err, rollbackErr) {
+		t.Fatalf("rollback transaction error = %v, want %v", err, rollbackErr)
+	}
+	var rolledBackCount int64
+	if err := db.Model(&models.Session{}).Where("id = ?", rolledBackID).Count(&rolledBackCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if rolledBackCount != 0 {
+		t.Fatalf("tx.QuerySession().Create escaped rollback; count = %d", rolledBackCount)
 	}
 }
 `
@@ -5180,6 +5205,9 @@ func CountAdminSessionsInTransaction() (int, error) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "query_support.go"), "type SessionScopeBuilder struct")
 	assertFileContains(t, filepath.Join(out, "app", "models", "query_support.go"), "func QuerySession() *SessionQuery")
 	assertFileContains(t, filepath.Join(out, "app", "models", "query_support.go"), "func (tx *Tx) QuerySession() *SessionQuery")
+	assertFileContains(t, filepath.Join(out, "app", "models", "query_support.go"), "func (q *SessionQuery) Create(record *Session) error {")
+	assertFileContains(t, filepath.Join(out, "app", "models", "query_support.go"), "return q.db.Session(&gorm.Session{NewDB: true}).Create(record).Error")
+	assertFileNotContains(t, filepath.Join(out, "app", "models", "query_support.go"), "return DB.Create(record).Error")
 	assertFileContains(t, filepath.Join(out, "app", "models", "query_support.go"), "func (sb *SessionScopeBuilder) WhereRole(value any) *SessionScopeBuilder")
 	assertFileContains(t, filepath.Join(out, "app", "models", "custom_scopes_gen.go"), "func (q *SessionQuery) Admin() *SessionQuery")
 	assertFileContains(t, filepath.Join(out, "app", "models", "custom_scopes_gen.go"), "func (q *SessionQuery) ExpiresAfter(since time.Time) *SessionQuery")

@@ -3397,9 +3397,9 @@ func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns
 	b.WriteString(fmt.Sprintf("func (q *%s) All() ([]%s, error) { var records []%s; err := q.db.Find(&records).Error; return records, err }\n", queryName, structName, structName))
 	b.WriteString(fmt.Sprintf("func (q *%s) Count() (int64, error) { var count int64; err := q.db.Count(&count).Error; return count, err }\n", queryName))
 	if !readOnly {
-		b.WriteString(fmt.Sprintf("func (q *%s) Create(record *%s) error { return DB.Create(record).Error }\n", queryName, structName))
-		b.WriteString(fmt.Sprintf("func (q *%s) Update(record *%s) error { return DB.Save(record).Error }\n", queryName, structName))
-		b.WriteString(fmt.Sprintf("func (q *%s) Delete(record *%s) error { return DB.Delete(record).Error }\n", queryName, structName))
+		b.WriteString(fmt.Sprintf("func (q *%s) Create(record *%s) error { return q.db.Session(&gorm.Session{NewDB: true}).Create(record).Error }\n", queryName, structName))
+		b.WriteString(fmt.Sprintf("func (q *%s) Update(record *%s) error { return q.db.Session(&gorm.Session{NewDB: true}).Save(record).Error }\n", queryName, structName))
+		b.WriteString(fmt.Sprintf("func (q *%s) Delete(record *%s) error { return q.db.Session(&gorm.Session{NewDB: true}).Delete(record).Error }\n", queryName, structName))
 	}
 	b.WriteByte('\n')
 }

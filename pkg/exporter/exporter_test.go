@@ -9304,7 +9304,10 @@ func writeExportedSupportedGraphQLActionResolverTest(t *testing.T, out string) {
 
 import (
 	"context"
+	"strings"
 	"testing"
+
+	"github.com/vektah/gqlparser/v2/gqlerror"
 )
 
 func TestExportedGraphQLControllerActionResolverCallsController(t *testing.T) {
@@ -9326,6 +9329,17 @@ func TestExportedGraphQLControllerActionResolverCallsController(t *testing.T) {
 	if _, err := mutations.ApproveTransfer(context.Background(), map[string]any{}); err == nil {
 		t.Fatal("approveTransfer without auth should fail")
 	}
+	if _, err := mutations.ApproveTransfer(ctx, map[string]any{"note": strings.Repeat("x", maxGraphQLAPIActionInputStringBytes+1)}); !isControllerActionBadInput(err) {
+		t.Fatalf("oversized action input error = %v, want BAD_USER_INPUT", err)
+	}
+	if _, err := mutations.ApproveTransfer(ctx, map[string]any{"nested": map[string]any{"a": map[string]any{"b": map[string]any{"c": map[string]any{"d": map[string]any{"e": map[string]any{"f": map[string]any{"g": map[string]any{"h": map[string]any{"i": "too deep"}}}}}}}}}}); !isControllerActionBadInput(err) {
+		t.Fatalf("deep action input error = %v, want BAD_USER_INPUT", err)
+	}
+}
+
+func isControllerActionBadInput(err error) bool {
+	gqlErr, ok := err.(*gqlerror.Error)
+	return ok && gqlErr.Extensions["code"] == "BAD_USER_INPUT" && gqlErr.Message == "GraphQL action input exceeds safety limits"
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "resolver", "exported_controller_action_test.go"), []byte(testSrc), 0o644); err != nil {
@@ -9371,6 +9385,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -9450,6 +9465,30 @@ func TestExportedActionOnlyGraphQLHandlerServesControllerAction(t *testing.T) {
 	}
 	if len(resp.Errors) != 0 || resp.Data.ApproveTransfer["ok"] != true || resp.Data.ApproveTransfer["userId"] == "" {
 		t.Fatalf("authenticated mutation response = %s", rec.Body.String())
+	}
+
+	oversizedBody, err := json.Marshal(map[string]any{
+		"query": "mutation Approve($input: JSON!) { approveTransfer(input: $input) }",
+		"variables": map[string]any{
+			"input": map[string]any{"note": strings.Repeat("x", 4097)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal oversized action input: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(oversizedBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("oversized action input status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !actionResponseHasErrorCode(t, rec.Body.Bytes(), "BAD_USER_INPUT") {
+		t.Fatalf("oversized action input should be denied, body=%s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), strings.Repeat("x", 128)) {
+		t.Fatalf("oversized action input leaked value: %s", rec.Body.String())
 	}
 }
 

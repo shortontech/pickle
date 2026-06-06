@@ -2557,6 +2557,11 @@ func writeGraphQLAPIResolverSupport(b *strings.Builder) {
 	b.WriteString(`const defaultGraphQLAPIPageSize = 25
 const maxGraphQLAPIPageSize = 100
 const maxGraphQLAPIInputListSize = 100
+const maxGraphQLAPIActionInputNameBytes = 256
+const maxGraphQLAPIActionInputDepth = 8
+const maxGraphQLAPIActionInputCollectionItems = 256
+const maxGraphQLAPIActionInputNodes = 500
+const maxGraphQLAPIActionInputStringBytes = 4096
 
 type graphQLAPIAuthContextKey struct{}
 
@@ -2753,6 +2758,9 @@ func graphQLAPIControllerAction(ctx context.Context, action string, input map[st
 	if claims == nil {
 		return nil, graphQLAPIUnauthenticated(action+": authentication required")
 	}
+	if err := graphQLAPIValidateControllerActionInput(input); err != nil {
+		return nil, err
+	}
 	body, err := json.Marshal(input)
 	if err != nil {
 		return nil, graphQLAPIBadInput(action+": invalid input")
@@ -2835,6 +2843,53 @@ func graphQLAPIJSONValue(value any) any {
 		return out
 	default:
 		return v
+	}
+}
+
+func graphQLAPIValidateControllerActionInput(input map[string]any) error {
+	nodes := 0
+	if !graphQLAPIValidControllerActionInputValue(input, 0, &nodes) {
+		return graphQLAPIBadInput("GraphQL action input exceeds safety limits")
+	}
+	return nil
+}
+
+func graphQLAPIValidControllerActionInputValue(value any, depth int, nodes *int) bool {
+	if depth > maxGraphQLAPIActionInputDepth || nodes == nil {
+		return false
+	}
+	*nodes = *nodes + 1
+	if *nodes > maxGraphQLAPIActionInputNodes {
+		return false
+	}
+	switch v := value.(type) {
+	case string:
+		return len(v) <= maxGraphQLAPIActionInputStringBytes
+	case []any:
+		if len(v) > maxGraphQLAPIActionInputCollectionItems {
+			return false
+		}
+		for _, item := range v {
+			if !graphQLAPIValidControllerActionInputValue(item, depth+1, nodes) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		if len(v) > maxGraphQLAPIActionInputCollectionItems {
+			return false
+		}
+		for key, item := range v {
+			if len(key) > maxGraphQLAPIActionInputNameBytes {
+				return false
+			}
+			if !graphQLAPIValidControllerActionInputValue(item, depth+1, nodes) {
+				return false
+			}
+		}
+		return true
+	default:
+		return true
 	}
 }
 

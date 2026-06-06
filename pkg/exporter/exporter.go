@@ -5159,6 +5159,8 @@ func validGraphQLAPIVariableValue(value any, depth int) bool {
 	switch v := value.(type) {
 	case string:
 		return len(v) <= maxGraphQLAPIVariableStringBytes
+	case json.Number:
+		return len(v.String()) <= maxGraphQLAPIVariableStringBytes
 	case []any:
 		if len(v) > maxGraphQLAPIVariableCollectionItems {
 			return false
@@ -5173,7 +5175,10 @@ func validGraphQLAPIVariableValue(value any, depth int) bool {
 		if len(v) > maxGraphQLAPIVariableCollectionItems {
 			return false
 		}
-		for _, item := range v {
+		for key, item := range v {
+			if len(key) > maxGraphQLAPIVariableNameBytes {
+				return false
+			}
 			if !validGraphQLAPIVariableValue(item, depth+1) {
 				return false
 			}

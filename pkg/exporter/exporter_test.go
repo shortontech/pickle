@@ -6060,8 +6060,11 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 		"deep_query":       []byte(` + "`" + `{"query":"{ posts { edges { node { id { a { b { c { d { e { f { g } } } } } } } } } } }"}` + "`" + `),
 		"bad_variables":    []byte(` + "`" + `{"query":"query Good($id: ID) { post(id: $id) { id } }","variables":["not","object"]}` + "`" + `),
 		"deep_variables":   []byte(` + "`" + `{"query":"query Good($v: String) { posts { totalCount } }","variables":{"deep":{"a":{"b":{"c":{"d":{"e":{"f":{"g":{"h":{"i":"too deep"}}}}}}}}}}}` + "`" + `),
+		"huge_number":      []byte(` + "`" + `{"query":"query Good($v: Int) { posts(page: { first: $v }) { totalCount } }","variables":{"v":` + "`" + ` + strings.Repeat("9", 4097) + ` + "`" + `}}` + "`" + `),
+		"huge_nested_key":  []byte(` + "`" + `{"query":"query Good($input: PostFilterInput) { posts(filter: $input) { totalCount } }","variables":{"input":{"` + "`" + ` + strings.Repeat("x", 257) + ` + "`" + `":"too large"}}}` + "`" + `),
 		"bad_extensions":   []byte(` + "`" + `{"query":"{ posts { totalCount } }","extensions":["not","object"]}` + "`" + `),
 		"large_extensions": []byte(` + "`" + `{"query":"{ posts { totalCount } }","extensions":{"trace":"` + "`" + ` + strings.Repeat("x", 4097) + ` + "`" + `"}}` + "`" + `),
+		"huge_extension_number": []byte(` + "`" + `{"query":"{ posts { totalCount } }","extensions":{"trace":` + "`" + ` + strings.Repeat("9", 4097) + ` + "`" + `}}` + "`" + `),
 	} {
 		t.Run(name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))

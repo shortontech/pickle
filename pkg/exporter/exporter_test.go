@@ -5939,6 +5939,28 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 	if rec.Code != http.StatusUnsupportedMediaType || !responseHasErrorCode(t, rec.Body.Bytes(), "BAD_USER_INPUT") {
 		t.Fatalf("missing content type response status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	oversizedBody := bytes.Repeat([]byte("x"), (1<<20)+1)
+	req = httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(oversizedBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge || !responseHasErrorCode(t, rec.Body.Bytes(), "BAD_USER_INPUT") {
+		t.Fatalf("oversized body response status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "graphql request body too large") {
+		t.Fatalf("oversized body response should name body limit without internals: %s", rec.Body.String())
+	}
+	oversizedQuery := "{ posts { " + strings.Repeat("totalCount ", 7000) + "} }"
+	req = httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader([]byte(` + "`" + `{"query":` + "`" + ` + mustJSONQuote(oversizedQuery) + ` + "`" + `}` + "`" + `)))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !responseHasErrorCode(t, rec.Body.Bytes(), "BAD_USER_INPUT") {
+		t.Fatalf("oversized query response status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "GraphQL query is too large") {
+		t.Fatalf("oversized query response should name query limit: %s", rec.Body.String())
+	}
 
 	fieldFloodQuery := "{ posts { " + strings.Repeat("totalCount ", 201) + "} }"
 	inputFloodQuery := "{ posts(filter: { title: { in: [" + strings.TrimSuffix(strings.Repeat("\"x\",", 501), ",") + "] } }) { totalCount } }"

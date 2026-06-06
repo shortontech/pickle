@@ -4646,6 +4646,12 @@ func TestExportedRateLimitMiddlewareNilNextFailsClosed(t *testing.T) {
 func TestExportedRateLimitHonorsTrustedProxyHeaders(t *testing.T) {
 	resetTrustedProxyStateForTest()
 	t.Setenv("TRUSTED_PROXIES", "10.0.0.0/8")
+	previous := rateLimitCallback
+	defer func() { rateLimitCallback = previous }()
+	var events []RateLimitEvent
+	rateLimitCallback = func(ctx *Context, event RateLimitEvent) {
+		events = append(events, event)
+	}
 	limiter := RateLimit(1, 1)
 	handler := func() Response { return Response{StatusCode: http.StatusNoContent} }
 
@@ -4656,6 +4662,41 @@ func TestExportedRateLimitHonorsTrustedProxyHeaders(t *testing.T) {
 	second := NewContext(requestFrom("10.0.0.1:1234", "198.51.100.2"))
 	if resp := limiter(second, handler); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("trusted proxy should key by client IP, got %d", resp.StatusCode)
+	}
+	if len(events) < 2 || events[0].Key != "198.51.100.1" || events[1].Key != "198.51.100.2" {
+		t.Fatalf("trusted proxy rate limit keys = %#v, want client IPs", events)
+	}
+}
+
+func TestExportedClientIPRejectsUnsafeProxyHeaderValues(t *testing.T) {
+	resetTrustedProxyStateForTest()
+	t.Setenv("TRUSTED_PROXIES", "10.0.0.0/8")
+
+	for _, tc := range []struct {
+		name string
+		req  *http.Request
+		want string
+	}{
+		{name: "oversized xff", req: requestFrom("10.0.0.1:1234", strings.Repeat("1", maxClientIPBytes+1)), want: "10.0.0.1"},
+		{name: "malformed xff", req: requestFrom("10.0.0.1:1234", "password=swordfish"), want: "10.0.0.1"},
+		{name: "control xff", req: requestFrom("10.0.0.1:1234", "198.51.100.1\nsecret"), want: "10.0.0.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := clientIP(tc.req); got != tc.want {
+				t.Fatalf("clientIP = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	xriReq := requestFrom("10.0.0.1:1234", "")
+	xriReq.Header.Set("X-Real-IP", "203.0.113.9")
+	if got := clientIP(xriReq); got != "203.0.113.9" {
+		t.Fatalf("valid X-Real-IP clientIP = %q, want 203.0.113.9", got)
+	}
+	badXRIReq := requestFrom("10.0.0.1:1234", "")
+	badXRIReq.Header.Set("X-Real-IP", "203.0.113.9\rsecret")
+	if got := clientIP(badXRIReq); got != "10.0.0.1" {
+		t.Fatalf("unsafe X-Real-IP clientIP = %q, want remote fallback", got)
 	}
 }
 

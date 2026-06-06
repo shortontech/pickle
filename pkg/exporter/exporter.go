@@ -9334,6 +9334,8 @@ var trustedProxies []net.IPNet
 var trustedProxiesAll bool
 var trustedProxiesOnce sync.Once
 
+const maxClientIPBytes = 64
+
 func checkRateLimit(r *http.Request) (*Response, map[string]string) {
 	globalLimiterOnce.Do(func() {
 		enabled := strings.ToLower(os.Getenv("RATE_LIMIT")) != "false"
@@ -9410,11 +9412,12 @@ func rateLimitHeaders(rps float64, burst int, remaining float64) map[string]stri
 func env(key, fallback string) string { if value := os.Getenv(key); value != "" { return value }; return fallback }
 func initTrustedProxies() { trustedProxiesOnce.Do(func() { raw := strings.TrimSpace(env("TRUSTED_PROXIES", "")); if raw == "" { return }; if raw == "all" { trustedProxiesAll = true; return }; for _, entry := range strings.Split(raw, ",") { entry = strings.TrimSpace(entry); if entry == "" { continue }; if !strings.Contains(entry, "/") { ip := net.ParseIP(entry); if ip == nil { continue }; if ip.To4() != nil { entry += "/32" } else { entry += "/128" } }; _, cidr, err := net.ParseCIDR(entry); if err == nil { trustedProxies = append(trustedProxies, *cidr) } } }) }
 func proxyHeadersTrusted(remote string) bool { initTrustedProxies(); if trustedProxiesAll { return true }; ip := net.ParseIP(remote); if ip == nil { return false }; for _, cidr := range trustedProxies { if cidr.Contains(ip) { return true } }; return false }
-func firstUntrustedIP(xff string) string { parts := strings.Split(xff, ","); for i := len(parts) - 1; i >= 0; i-- { ip := strings.TrimSpace(parts[i]); if ip != "" && !proxyHeadersTrusted(ip) { return ip } }; return strings.TrimSpace(parts[0]) }
+func firstUntrustedIP(xff string) string { parts := strings.Split(xff, ","); fallback := ""; for i := len(parts) - 1; i >= 0; i-- { ip := safeClientIP(parts[i]); if ip == "" { continue }; if fallback == "" { fallback = ip }; if !proxyHeadersTrusted(ip) { return ip } }; return fallback }
 func stripPort(addr string) string { if host, _, err := net.SplitHostPort(addr); err == nil { return host }; return addr }
 func contextPath(ctx *Context) string { if ctx == nil { return "" }; return requestPath(ctx.Request()) }
 func requestPath(r *http.Request) string { if r == nil || r.URL == nil { return "" }; return r.URL.Path }
-func clientIP(r *http.Request) string { if r == nil { return "" }; remote := stripPort(r.RemoteAddr); if !proxyHeadersTrusted(remote) { return remote }; if xff := r.Header.Get("X-Forwarded-For"); xff != "" { return firstUntrustedIP(xff) }; if xri := r.Header.Get("X-Real-IP"); xri != "" { return strings.TrimSpace(xri) }; return remote }
+func clientIP(r *http.Request) string { if r == nil { return "" }; remote := safeClientIP(stripPort(r.RemoteAddr)); if !proxyHeadersTrusted(remote) { return remote }; if xff := r.Header.Get("X-Forwarded-For"); xff != "" { if ip := firstUntrustedIP(xff); ip != "" { return ip } }; if xri := r.Header.Get("X-Real-IP"); xri != "" { if ip := safeClientIP(xri); ip != "" { return ip } }; return remote }
+func safeClientIP(value string) string { value = strings.TrimSpace(value); if value == "" || len(value) > maxClientIPBytes { return "" }; for _, r := range value { if r < 0x20 || r == 0x7f { return "" } }; ip := net.ParseIP(value); if ip == nil { return "" }; return ip.String() }
 `
 
 const rbacMiddlewareSupportSource = `package middleware

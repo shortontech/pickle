@@ -4653,6 +4653,64 @@ func (c ShadowMigrateCommand) Run(args []string) error {
 	}
 }
 
+func writeTestScope(t *testing.T, projectDir, modelDir, filename, src string) {
+	t.Helper()
+	dir := filepath.Join(projectDir, "database", "scopes", modelDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, filename), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedCustomScopeBehaviorTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package models_test
+
+import (
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"encryption-test/app/models"
+)
+
+func TestExportedCustomScopeFiltersWithStandaloneQuerySupport(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	if err := db.AutoMigrate(&models.Session{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	rows := []models.Session{
+		{ID: "admin", UserID: uuid.New(), Role: "admin", ExpiresAt: now},
+		{ID: "viewer", UserID: uuid.New(), Role: "viewer", ExpiresAt: now},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := models.QuerySession().Admin().ExpiresAfter(now.Add(-time.Minute)).All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != "admin" {
+		t.Fatalf("Admin scope returned %+v, want only admin session", sessions)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_custom_scope_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeExportedEncryptionBehaviorTest(t *testing.T, out string) {
 	t.Helper()
 	testSrc := `package models_test
@@ -5038,6 +5096,54 @@ func TestExportEncryptionLowersGORMHooks(t *testing.T) {
 	assertCleanExportReport(t, out)
 	assertStandaloneNoPickleRuntime(t, out)
 	writeExportedEncryptionBehaviorTest(t, out)
+	runExported(t, out, "go", "test", "./...")
+}
+
+func TestExportCustomScopesEmitStandaloneQuerySupport(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "encryption-test"))
+	writeTestScope(t, projectDir, "session", "admin.go", `package session
+
+import (
+	"time"
+
+	"github.com/shortontech/pickle/testdata/encryption-test/app/models"
+)
+
+func Admin(q *models.SessionScopeBuilder) *models.SessionScopeBuilder {
+	return q.WhereRole("admin").OrderBy("id", "ASC")
+}
+
+func ExpiresAfter(q *models.SessionScopeBuilder, since time.Time) *models.SessionScopeBuilder {
+	return q.WhereExpiresAtAfter(since)
+}
+`)
+	out := filepath.Join(t.TempDir(), "exported")
+	res, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err != nil {
+		t.Fatalf("Export failed: %v", err)
+	}
+	if len(res.Findings) != 0 {
+		t.Fatalf("did not expect findings, got %+v", res.Findings)
+	}
+
+	assertFileContains(t, filepath.Join(out, "app", "models", "query_support.go"), "type SessionScopeBuilder struct")
+	assertFileContains(t, filepath.Join(out, "app", "models", "query_support.go"), "func QuerySession() *SessionQuery")
+	assertFileContains(t, filepath.Join(out, "app", "models", "query_support.go"), "func (sb *SessionScopeBuilder) WhereRole(value any) *SessionScopeBuilder")
+	assertFileContains(t, filepath.Join(out, "app", "models", "custom_scopes_gen.go"), "func (q *SessionQuery) Admin() *SessionQuery")
+	assertFileContains(t, filepath.Join(out, "app", "models", "custom_scopes_gen.go"), "func (q *SessionQuery) ExpiresAfter(since time.Time) *SessionQuery")
+	assertFileContains(t, filepath.Join(out, "app", "models", "custom_scopes_gen.go"), "func sessionScopeAdmin(q *SessionScopeBuilder) *SessionScopeBuilder")
+	assertFileContains(t, filepath.Join(out, "app", "models", "custom_scopes_gen.go"), `"time"`)
+	assertFileContains(t, filepath.Join(out, "database", "scopes", "session", "admin.go"), `"encryption-test/app/models"`)
+	assertPathMissing(t, filepath.Join(out, "gqlgen.yml"))
+	assertFileNotContains(t, filepath.Join(out, "go.mod"), "github.com/99designs/gqlgen")
+	assertCleanExportReport(t, out)
+	assertStandaloneNoPickleRuntime(t, out)
+	writeExportedCustomScopeBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
 

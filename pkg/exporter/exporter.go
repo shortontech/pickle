@@ -119,6 +119,10 @@ func Export(opts Options) (*Result, error) {
 	ex.schemaTables = schemaTableSet(tables)
 	ex.hasEncryptedColumns = tablesHaveEncryptedColumns(tables)
 	ex.integrityModels = integrityModelSet(tables)
+	ex.scopes, err = generator.ScanScopes(filepath.Join(project.Dir, "database", "scopes"))
+	if err != nil {
+		return nil, fmt.Errorf("scanning scopes: %w", err)
+	}
 	for _, view := range views {
 		ex.models[tableToStruct(view.Name)] = true
 	}
@@ -196,6 +200,7 @@ type exporter struct {
 	sqlMigrations       []sqlMigration
 	hasEncryptedColumns bool
 	integrityModels     map[string]integrityModelInfo
+	scopes              map[string][]generator.ScopeDef
 }
 
 type integrityModelInfo struct {
@@ -616,6 +621,9 @@ func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, 
 				}
 
 				if len(s.Lhs) == 1 {
+					if e.preserveQueryCall(call) {
+						return stmt, nil
+					}
 					chain, chainOK, err := parseQueryBuilderChain(call)
 					if err != nil {
 						return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
@@ -643,6 +651,9 @@ func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, 
 					}
 				}
 
+				if e.preserveQueryCall(call) {
+					return stmt, nil
+				}
 				chain, ok, err := parseQueryChain(call)
 				if err != nil {
 					return nil, exportError{File: path, Line: fset.Position(call.Pos()).Line, Message: err.Error()}
@@ -672,6 +683,9 @@ func (e *exporter) rewriteStmt(path string, fset *token.FileSet, stmt ast.Stmt, 
 		for i, result := range s.Results {
 			call, ok := result.(*ast.CallExpr)
 			if !ok {
+				continue
+			}
+			if e.preserveQueryCall(call) {
 				continue
 			}
 			chain, chainOK, err := parseQueryChain(call)
@@ -722,6 +736,9 @@ func (e *exporter) rejectRemainingPickleQueries(path string, fset *token.FileSet
 			return true
 		}
 		if isQueryRootCall(call) {
+			if e.preserveQueryRootCall(call) {
+				return true
+			}
 			pos := fset.Position(call.Pos())
 			firstErr = exportError{File: path, Line: pos.Line, Message: "unsupported Pickle query chain; exporter requires clean GORM lowering"}
 			return false
@@ -729,6 +746,50 @@ func (e *exporter) rejectRemainingPickleQueries(path string, fset *token.FileSet
 		return true
 	})
 	return firstErr
+}
+
+func (e *exporter) preserveQueryCall(call *ast.CallExpr) bool {
+	model, ok := queryCallModel(call)
+	return ok && e.modelHasCustomScopes(model)
+}
+
+func (e *exporter) preserveQueryRootCall(call *ast.CallExpr) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	model := strings.TrimPrefix(sel.Sel.Name, "Query")
+	return e.modelHasCustomScopes(model)
+}
+
+func (e *exporter) modelHasCustomScopes(model string) bool {
+	if len(e.scopes) == 0 {
+		return false
+	}
+	modelDir := strings.TrimSuffix(strings.ToLower(pascalToSnake(model)), "s")
+	return len(e.scopes[modelDir]) > 0
+}
+
+func queryCallModel(call *ast.CallExpr) (string, bool) {
+	cur := ast.Expr(call)
+	for {
+		c, ok := cur.(*ast.CallExpr)
+		if !ok {
+			return "", false
+		}
+		sel, ok := c.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return "", false
+		}
+		if id, ok := sel.X.(*ast.Ident); ok && id.Name == "models" && strings.HasPrefix(sel.Sel.Name, "Query") {
+			return strings.TrimPrefix(sel.Sel.Name, "Query"), true
+		}
+		if rootCall, ok := sel.X.(*ast.CallExpr); ok {
+			cur = rootCall
+			continue
+		}
+		return "", false
+	}
 }
 
 type queryChain struct {
@@ -1721,6 +1782,30 @@ func (e *exporter) writeModels(tables []*schema.Table, views []*schema.View) err
 			return err
 		}
 	}
+	if e.needsModelQuerySupport() {
+		data, err := e.generateModelQuerySupport(tables, views, e.hasGraphQLPackage())
+		if err != nil {
+			return err
+		}
+		filename := "query_support.go"
+		if e.hasGraphQLPackage() {
+			filename = "graphql_query_support.go"
+		}
+		if err := e.writeFile(filepath.Join("app", "models", filename), data); err != nil {
+			return err
+		}
+	}
+	if len(e.scopes) > 0 {
+		data, err := e.generateCustomScopeSupport()
+		if err != nil {
+			return err
+		}
+		if len(data) > 0 {
+			if err := e.writeFile(filepath.Join("app", "models", "custom_scopes_gen.go"), data); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -1801,7 +1886,7 @@ func (e *exporter) writeGraphQLPackage(tables []*schema.Table, views []*schema.V
 	if err := e.writeGraphQLAPIResolverTarget(schemaSDL, tables, relationships, relationshipBudgets); err != nil {
 		return err
 	}
-	return e.writeGraphQLQuerySupport(tables, views)
+	return nil
 }
 
 func (e *exporter) writeGraphQLTargetFiles(schemaSDL string) error {
@@ -2959,20 +3044,37 @@ func extractStringConstFromGoSource(src []byte, name string) (string, error) {
 	return "", fmt.Errorf("const %s was not found", name)
 }
 
-func (e *exporter) writeGraphQLQuerySupport(tables []*schema.Table, views []*schema.View) error {
+func (e *exporter) needsModelQuerySupport() bool {
+	return e.hasGraphQLPackage() || len(e.scopes) > 0
+}
+
+func (e *exporter) generateModelQuerySupport(tables []*schema.Table, views []*schema.View, graphQLErrors bool) ([]byte, error) {
 	hasEncrypted := tablesHaveEncryptedColumns(tables)
 	var b strings.Builder
 	b.WriteString("package models\n\n")
 	b.WriteString("import (\n")
+	if !graphQLErrors {
+		b.WriteString("\t\"errors\"\n")
+	}
 	b.WriteString("\t\"strings\"\n")
 	b.WriteString("\n")
-	b.WriteString("\t\"github.com/vektah/gqlparser/v2/gqlerror\"\n")
-	b.WriteString("\n")
+	if graphQLErrors {
+		b.WriteString("\t\"github.com/vektah/gqlparser/v2/gqlerror\"\n")
+		b.WriteString("\n")
+	}
 	b.WriteString("\t\"gorm.io/gorm\"\n")
 	b.WriteString(")\n\n")
-	b.WriteString(exportedGraphQLModelErrorHelpers)
+	if graphQLErrors {
+		b.WriteString(exportedGraphQLModelErrorHelpers)
+	} else {
+		b.WriteString(exportedModelErrorHelpers)
+	}
 	if hasEncrypted {
-		b.WriteString(exportedGraphQLQuerySupportHelpers)
+		if graphQLErrors {
+			b.WriteString(exportedGraphQLQuerySupportHelpers)
+		} else {
+			b.WriteString(exportedQuerySupportHelpers)
+		}
 	}
 	for _, table := range tables {
 		writeGraphQLModelQuerySupport(&b, table.Name, table.Columns, false)
@@ -2986,14 +3088,211 @@ func (e *exporter) writeGraphQLQuerySupport(tables []*schema.Table, views []*sch
 	}
 	formatted, err := format.Source([]byte(b.String()))
 	if err != nil {
-		return fmt.Errorf("formatting exported GraphQL query support: %w", err)
+		return nil, fmt.Errorf("formatting exported query support: %w", err)
 	}
-	return e.writeFile(filepath.Join("app", "models", "graphql_query_support.go"), formatted)
+	return formatted, nil
+}
+
+func (e *exporter) generateCustomScopeSupport() ([]byte, error) {
+	if len(e.scopes) == 0 {
+		return nil, nil
+	}
+	imports := map[string]string{}
+	var models []string
+	for modelDir := range e.scopes {
+		models = append(models, modelDir)
+	}
+	sort.Strings(models)
+
+	scopeNames := map[string]map[string]string{}
+	for _, modelDir := range models {
+		scopeNames[modelDir] = map[string]string{}
+		for _, scope := range e.scopes[modelDir] {
+			scopeNames[modelDir][scope.Name] = exportedScopeHelperName(modelDir, scope.Name)
+		}
+	}
+
+	var wrappers []string
+	var funcs []string
+	for _, modelDir := range models {
+		tableName := modelDir + "s"
+		scopeBuilderType := tableToStruct(tableName) + "ScopeBuilder"
+		scopes := append([]generator.ScopeDef(nil), e.scopes[modelDir]...)
+		sort.Slice(scopes, func(i, j int) bool {
+			if scopes[i].SourceFile == scopes[j].SourceFile {
+				return scopes[i].Name < scopes[j].Name
+			}
+			return scopes[i].SourceFile < scopes[j].SourceFile
+		})
+		for _, scope := range scopes {
+			src, err := e.exportedScopeFunction(modelDir, scopeBuilderType, scope, scopeNames[modelDir], imports)
+			if err != nil {
+				return nil, err
+			}
+			funcs = append(funcs, src)
+			var paramSig, paramCall string
+			if len(scope.ExtraParams) > 0 {
+				var sigs, calls []string
+				for _, p := range scope.ExtraParams {
+					sigs = append(sigs, fmt.Sprintf("%s %s", p.Name, exportedScopeType(p.Type)))
+					calls = append(calls, p.Name)
+				}
+				paramSig = strings.Join(sigs, ", ")
+				paramCall = ", " + strings.Join(calls, ", ")
+			}
+			queryType := tableToStruct(tableName) + "Query"
+			var wrapper strings.Builder
+			fmt.Fprintf(&wrapper, "func (q *%s) %s(%s) *%s {\n", queryType, scope.Name, paramSig, queryType)
+			fmt.Fprintf(&wrapper, "\treturn q.ApplyScope(%s(q.ToScopeBuilder()%s))\n", exportedScopeHelperName(modelDir, scope.Name), paramCall)
+			wrapper.WriteString("}\n\n")
+			wrappers = append(wrappers, wrapper.String())
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("// Code generated by Pickle. DO NOT EDIT.\n")
+	b.WriteString("package models\n\n")
+	if len(imports) > 0 {
+		var keys []string
+		for key := range imports {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		var importBlock strings.Builder
+		importBlock.WriteString("import (\n")
+		for _, key := range keys {
+			namePath := strings.SplitN(key, "\x00", 2)
+			if namePath[0] != "" {
+				fmt.Fprintf(&importBlock, "\t%s %q\n", namePath[0], namePath[1])
+			} else {
+				fmt.Fprintf(&importBlock, "\t%q\n", namePath[1])
+			}
+		}
+		importBlock.WriteString(")\n\n")
+		b.WriteString(importBlock.String())
+	}
+	for _, wrapper := range wrappers {
+		b.WriteString(wrapper)
+	}
+	for _, fn := range funcs {
+		b.WriteString(fn)
+		b.WriteString("\n")
+	}
+	formatted, err := format.Source([]byte(b.String()))
+	if err != nil {
+		return nil, fmt.Errorf("formatting exported custom scope support: %w\n%s", err, b.String())
+	}
+	return formatted, nil
+}
+
+func (e *exporter) exportedScopeFunction(modelDir, scopeBuilderType string, scope generator.ScopeDef, scopeNames map[string]string, imports map[string]string) (string, error) {
+	path := filepath.Join(e.project.Dir, filepath.FromSlash(scope.SourceFile))
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	if err != nil {
+		return "", fmt.Errorf("parsing scope %s: %w", scope.SourceFile, err)
+	}
+	for _, imp := range file.Imports {
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		if p == e.sourceModule+"/app/models" {
+			continue
+		}
+		if strings.HasPrefix(p, e.sourceModule+"/") {
+			p = e.modulePath + strings.TrimPrefix(p, e.sourceModule)
+		}
+		name := ""
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		imports[name+"\x00"+p] = p
+	}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != scope.Name {
+			continue
+		}
+		rewriteScopeBody(fn.Body, scopeNames)
+		body := scopeBodyString(fset, fn.Body)
+		var paramSig string
+		if len(scope.ExtraParams) > 0 {
+			var sigs []string
+			for _, p := range scope.ExtraParams {
+				sigs = append(sigs, fmt.Sprintf("%s %s", p.Name, exportedScopeType(p.Type)))
+			}
+			paramSig = ", " + strings.Join(sigs, ", ")
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "func %s(q *%s%s) *%s {\n", exportedScopeHelperName(modelDir, scope.Name), scopeBuilderType, paramSig, scopeBuilderType)
+		b.WriteString(body)
+		if fn.Type.Results == nil || len(fn.Type.Results.List) == 0 {
+			b.WriteString("\treturn q\n")
+		}
+		b.WriteString("}\n\n")
+		return b.String(), nil
+	}
+	return "", fmt.Errorf("scope %s not found in %s", scope.Name, scope.SourceFile)
+}
+
+func rewriteScopeBody(body *ast.BlockStmt, scopeNames map[string]string) {
+	if body == nil {
+		return
+	}
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := call.Fun.(*ast.Ident); ok {
+			if helper, exists := scopeNames[id.Name]; exists {
+				id.Name = helper
+			}
+		}
+		return true
+	})
+}
+
+func scopeBodyString(fset *token.FileSet, body *ast.BlockStmt) string {
+	if body == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, stmt := range body.List {
+		var stmtBuf bytes.Buffer
+		if err := format.Node(&stmtBuf, fset, stmt); err != nil {
+			continue
+		}
+		lines := strings.Split(strings.TrimRight(stmtBuf.String(), "\n"), "\n")
+		for _, line := range lines {
+			b.WriteString("\t")
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+func exportedScopeHelperName(modelDir, scopeName string) string {
+	return lowerFirst(tableToStruct(modelDir + "_scope_" + pascalToSnake(scopeName)))
+}
+
+func exportedScopeType(t string) string {
+	return strings.ReplaceAll(t, "models.", "")
+}
+
+func lowerFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToLower(s[:1]) + s[1:]
 }
 
 func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns []*schema.Column, readOnly bool) {
 	structName := tableToStruct(tableName)
 	queryName := structName + "Query"
+	scopeBuilderName := structName + "ScopeBuilder"
 	publicCols := graphQLVisibilitySelectColumns(columns, func(col *schema.Column) bool {
 		return col.IsPublic
 	})
@@ -3005,6 +3304,8 @@ func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns
 	b.WriteString(fmt.Sprintf("func (q *%s) SelectPublic() *%s { q.db = q.db.Select([]string{%s}); return q }\n", queryName, queryName, quotedStringList(publicCols)))
 	b.WriteString(fmt.Sprintf("func (q *%s) SelectOwner() *%s { q.db = q.db.Select([]string{%s}); return q }\n", queryName, queryName, quotedStringList(ownerCols)))
 	b.WriteString(fmt.Sprintf("func (q *%s) SelectAll() *%s { q.db = q.db.Select(\"*\"); return q }\n", queryName, queryName))
+	b.WriteString(fmt.Sprintf("func (q *%s) ToScopeBuilder() *%s { return &%s{db: q.db} }\n", queryName, scopeBuilderName, scopeBuilderName))
+	b.WriteString(fmt.Sprintf("func (q *%s) ApplyScope(sb *%s) *%s { if sb != nil { q.db = sb.db }; return q }\n", queryName, scopeBuilderName, queryName))
 	b.WriteString(fmt.Sprintf("func (q *%s) AnyOwner() *%s { return q }\n", queryName, queryName))
 	b.WriteString(fmt.Sprintf("func (q *%s) Limit(n int) *%s { q.db = q.db.Limit(n); return q }\n", queryName, queryName))
 	b.WriteString(fmt.Sprintf("func (q *%s) Offset(n int) *%s { q.db = q.db.Offset(n); return q }\n", queryName, queryName))
@@ -3041,6 +3342,47 @@ func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns
 				continue
 			}
 			b.WriteString(fmt.Sprintf("func (q *%s) Where%s%s(value any) *%s { q.db = q.db.Where(%q, value); return q }\n", queryName, fieldName, suffix, queryName, columnName+" "+op+" ?"))
+		}
+	}
+	b.WriteString(fmt.Sprintf("type %s struct { db *gorm.DB }\n\n", scopeBuilderName))
+	b.WriteString(fmt.Sprintf("func (sb *%s) SelectPublic() *%s { sb.db = sb.db.Select([]string{%s}); return sb }\n", scopeBuilderName, scopeBuilderName, quotedStringList(publicCols)))
+	b.WriteString(fmt.Sprintf("func (sb *%s) SelectOwner() *%s { sb.db = sb.db.Select([]string{%s}); return sb }\n", scopeBuilderName, scopeBuilderName, quotedStringList(ownerCols)))
+	b.WriteString(fmt.Sprintf("func (sb *%s) SelectAll() *%s { sb.db = sb.db.Select(\"*\"); return sb }\n", scopeBuilderName, scopeBuilderName))
+	b.WriteString(fmt.Sprintf("func (sb *%s) Limit(n int) *%s { sb.db = sb.db.Limit(n); return sb }\n", scopeBuilderName, scopeBuilderName))
+	b.WriteString(fmt.Sprintf("func (sb *%s) Offset(n int) *%s { sb.db = sb.db.Offset(n); return sb }\n", scopeBuilderName, scopeBuilderName))
+	b.WriteString(fmt.Sprintf("func (sb *%s) OrderBy(column, direction string) *%s {\n", scopeBuilderName, scopeBuilderName))
+	b.WriteString("\tdir := strings.ToUpper(strings.TrimSpace(direction))\n")
+	b.WriteString("\tif dir != \"DESC\" { dir = \"ASC\" }\n")
+	b.WriteString("\tswitch column {\n")
+	for _, col := range columns {
+		if !graphQLSortableColumn(col) {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("\tcase %q:\n", col.Name))
+		if storage := graphQLSelectColumnName(col); storage != col.Name {
+			b.WriteString(fmt.Sprintf("\t\tcolumn = %q\n", storage))
+		}
+	}
+	b.WriteString("\tdefault:\n")
+	b.WriteString("\t\treturn sb\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tsb.db = sb.db.Order(OrderClause(column, dir))\n")
+	b.WriteString("\treturn sb\n")
+	b.WriteString("}\n")
+	for _, col := range columns {
+		fieldName := snakeToPascal(col.Name)
+		for _, suffix := range []string{"", "Like", "In", "After", "Before", "GTE", "GT", "LTE", "LT", "Not", "NotIn"} {
+			columnName := graphQLSelectColumnName(col)
+			op := whereSuffixOperator(suffix)
+			if col.IsSealed || (col.IsEncrypted && !graphQLEncryptedWhereSuffixSupported(suffix)) {
+				b.WriteString(fmt.Sprintf("func (sb *%s) Where%s%s(value any) *%s { sb.db.AddError(graphQLModelBadInput(%q)); sb.db = sb.db.Where(\"1 = 0\"); return sb }\n", scopeBuilderName, fieldName, suffix, scopeBuilderName, graphQLUnsupportedFilterMessage(col, suffix)))
+				continue
+			}
+			if col.IsEncrypted {
+				b.WriteString(fmt.Sprintf("func (sb *%s) Where%s%s(value any) *%s { sb.db = graphQLEncryptedWhere(sb.db, %q, %q, value); return sb }\n", scopeBuilderName, fieldName, suffix, scopeBuilderName, columnName, op))
+				continue
+			}
+			b.WriteString(fmt.Sprintf("func (sb *%s) Where%s%s(value any) *%s { sb.db = sb.db.Where(%q, value); return sb }\n", scopeBuilderName, fieldName, suffix, scopeBuilderName, columnName+" "+op+" ?"))
 		}
 	}
 	b.WriteString(fmt.Sprintf("func (q *%s) First() (*%s, error) { var record %s; err := q.db.First(&record).Error; return &record, err }\n", queryName, structName, structName))
@@ -3114,6 +3456,12 @@ const exportedGraphQLModelErrorHelpers = `func graphQLModelBadInput(message stri
 
 `
 
+const exportedModelErrorHelpers = `func graphQLModelBadInput(message string) error {
+	return errors.New(message)
+}
+
+`
+
 const exportedGraphQLQuerySupportHelpers = `func graphQLEncryptedWhere(db *gorm.DB, column, op string, value any) *gorm.DB {
 	encryptedValue, err := graphQLEncryptFilterValue(value)
 	if err != nil {
@@ -3163,6 +3511,21 @@ func graphQLEncryptFilterValue(value any) (any, error) {
 	default:
 		return nil, graphQLModelBadInput("encrypted GraphQL filter value must be a string or []string")
 	}
+}
+
+`
+
+const exportedQuerySupportHelpers = `func graphQLEncryptedWhere(db *gorm.DB, column, op string, value any) *gorm.DB {
+	encryptedValue, err := graphQLEncryptFilterValue(value)
+	if err != nil {
+		db.AddError(err)
+		return db.Where("1 = 0")
+	}
+	return db.Where(column+" "+op+" ?", encryptedValue)
+}
+
+func graphQLEncryptFilterValue(value any) (any, error) {
+	return EncryptDeterministicFilterValue(value)
 }
 
 `

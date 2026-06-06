@@ -5227,6 +5227,9 @@ func (e *exporter) writeActionSet(set *generator.ActionSet) error {
 	if err := generator.ValidateActions(set); err != nil {
 		return fmt.Errorf("exporting actions for %s: %w", set.Model, err)
 	}
+	if err := e.validateExportedActionSignatures(set); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for _, action := range set.Actions {
 		if err := e.copyActionSource(action.SourceFile, set.Model, seen); err != nil {
@@ -5253,6 +5256,144 @@ func (e *exporter) writeActionSet(set *generator.ActionSet) error {
 		}
 	}
 	return nil
+}
+
+func (e *exporter) validateExportedActionSignatures(set *generator.ActionSet) error {
+	if e == nil || e.project == nil || set == nil {
+		return nil
+	}
+	for _, action := range set.Actions {
+		if err := e.validateExportedActionSignature(action); err != nil {
+			return err
+		}
+	}
+	for _, gate := range set.Gates {
+		if err := e.validateExportedGateSignature(gate); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *exporter) validateExportedActionSignature(action generator.ActionDef) error {
+	path := filepath.Join(e.project.Dir, action.SourceFile)
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		return err
+	}
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != action.Name || actionReceiverTypeName(fn.Recv) != action.StructName {
+			continue
+		}
+		if lenFieldList(fn.Type.Params) != 2 {
+			return actionSignatureExportError(action.SourceFile, fset.Position(fn.Pos()).Line, action.Name)
+		}
+		results := fn.Type.Results
+		switch lenFieldList(results) {
+		case 1:
+			if !isErrorType(results.List[0].Type) {
+				return actionSignatureExportError(action.SourceFile, fset.Position(fn.Pos()).Line, action.Name)
+			}
+		case 2:
+			if !isErrorType(results.List[1].Type) || isErrorType(results.List[0].Type) {
+				return actionSignatureExportError(action.SourceFile, fset.Position(fn.Pos()).Line, action.Name)
+			}
+		default:
+			return actionSignatureExportError(action.SourceFile, fset.Position(fn.Pos()).Line, action.Name)
+		}
+		return nil
+	}
+	return actionSignatureExportError(action.SourceFile, 0, action.Name)
+}
+
+func (e *exporter) validateExportedGateSignature(gate generator.GateDef) error {
+	path := filepath.Join(e.project.Dir, gate.SourceFile)
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		return err
+	}
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != gate.Name || fn.Recv != nil {
+			continue
+		}
+		if lenFieldList(fn.Type.Params) != 2 || lenFieldList(fn.Type.Results) != 1 || !isUUIDPointerType(fn.Type.Results.List[0].Type) {
+			return gateSignatureExportError(gate.SourceFile, fset.Position(fn.Pos()).Line, gate.Name)
+		}
+		return nil
+	}
+	return gateSignatureExportError(gate.SourceFile, 0, gate.Name)
+}
+
+func actionSignatureExportError(file string, line int, action string) exportError {
+	return exportError{
+		File:    file,
+		Line:    line,
+		Rule:    "action_export_unsupported_signature",
+		Message: fmt.Sprintf("action %s has a signature that cannot be lowered safely", action),
+	}
+}
+
+func gateSignatureExportError(file string, line int, gate string) exportError {
+	return exportError{
+		File:    file,
+		Line:    line,
+		Rule:    "gate_export_unsupported_signature",
+		Message: fmt.Sprintf("gate %s has a signature that cannot be lowered safely", gate),
+	}
+}
+
+func lenFieldList(list *ast.FieldList) int {
+	if list == nil {
+		return 0
+	}
+	total := 0
+	for _, field := range list.List {
+		if len(field.Names) == 0 {
+			total++
+			continue
+		}
+		total += len(field.Names)
+	}
+	return total
+}
+
+func isErrorType(expr ast.Expr) bool {
+	id, ok := expr.(*ast.Ident)
+	return ok && id.Name == "error"
+}
+
+func isUUIDPointerType(expr ast.Expr) bool {
+	ptr, ok := expr.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	switch t := ptr.X.(type) {
+	case *ast.SelectorExpr:
+		return t.Sel.Name == "UUID"
+	case *ast.Ident:
+		return t.Name == "UUID"
+	default:
+		return false
+	}
+}
+
+func actionReceiverTypeName(recv *ast.FieldList) string {
+	if recv == nil || len(recv.List) == 0 {
+		return ""
+	}
+	switch t := recv.List[0].Type.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		if id, ok := t.X.(*ast.Ident); ok {
+			return id.Name
+		}
+	}
+	return ""
 }
 
 func (e *exporter) copyActionSource(sourceFile, model string, seen map[string]bool) error {

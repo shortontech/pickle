@@ -7851,6 +7851,106 @@ func (a SuspendAction) Suspend(ctx *pickle.Context, user *models.User) error {
 	}
 }
 
+func TestExportFailsUnsupportedActionSignatureWithBoundaryRule(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
+	actionsDir := filepath.Join(projectDir, "database", "actions", "user")
+	if err := os.MkdirAll(actionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	action := `package user
+
+import (
+	models "github.com/shortontech/pickle/testdata/basic-crud/app/models"
+	pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
+)
+
+type SuspendAction struct{}
+
+func (a SuspendAction) Suspend(ctx *pickle.Context, user *models.User) string {
+	return "not an error"
+}
+`
+	gate := `package user
+
+import "github.com/google/uuid"
+
+func CanSuspend(ctx *Context, user *User) *uuid.UUID {
+	id := uuid.New()
+	return &id
+}
+`
+	if err := os.WriteFile(filepath.Join(actionsDir, "suspend.go"), []byte(action), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(actionsDir, "suspend_gate.go"), []byte(gate), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "exported")
+	_, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err == nil {
+		t.Fatal("Export succeeded for unsupported action signature")
+	}
+	assertContainsAll(t, err.Error(),
+		"database/actions/user/suspend.go:",
+		"[action_export_unsupported_signature]",
+		"action Suspend has a signature that cannot be lowered safely",
+	)
+}
+
+func TestExportFailsUnsupportedGateSignatureWithBoundaryRule(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
+	actionsDir := filepath.Join(projectDir, "database", "actions", "user")
+	if err := os.MkdirAll(actionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	action := `package user
+
+import (
+	models "github.com/shortontech/pickle/testdata/basic-crud/app/models"
+	pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
+)
+
+type SuspendAction struct{}
+
+func (a SuspendAction) Suspend(ctx *pickle.Context, user *models.User) error {
+	user.Name = "suspended"
+	return models.QueryUser().Update(user)
+}
+`
+	gate := `package user
+
+func CanSuspend(ctx *Context, user *User) bool {
+	return true
+}
+`
+	if err := os.WriteFile(filepath.Join(actionsDir, "suspend.go"), []byte(action), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(actionsDir, "suspend_gate.go"), []byte(gate), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "exported")
+	_, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err == nil {
+		t.Fatal("Export succeeded for unsupported gate signature")
+	}
+	assertContainsAll(t, err.Error(),
+		"database/actions/user/suspend_gate.go:",
+		"[gate_export_unsupported_signature]",
+		"gate CanSuspend has a signature that cannot be lowered safely",
+	)
+}
+
 func TestExportFailsUnsupportedQueryWithBoundaryRule(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "zero-graphql"))
 	servicesDir := filepath.Join(projectDir, "app", "services")

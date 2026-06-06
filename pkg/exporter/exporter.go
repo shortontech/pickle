@@ -9553,6 +9553,7 @@ const (
 	maxJWTTokenBytes   = 8 << 10
 	maxJWTSegmentBytes = 4 << 10
 	maxJWTExpirySeconds = 365 * 24 * 60 * 60
+	maxJWTClaimStringBytes = 512
 )
 
 type Claims struct {
@@ -9600,6 +9601,7 @@ func (d *Driver) SignToken(claims Claims) (string, error) {
 	if d.secret == "" { return "", errors.New("jwt: secret not configured") }
 	if d.db == nil { return "", errors.New("jwt: database not configured") }
 	if claims.Subject == "" { return "", errors.New("jwt: missing subject") }
+	if !validJWTClaimsForSigning(claims) { return "", errors.New("jwt: invalid claims") }
 	now := time.Now().Unix()
 	if claims.IssuedAt == 0 { claims.IssuedAt = now }
 	if claims.ExpiresAt == 0 && d.expiry > 0 { claims.ExpiresAt = now + int64(d.expiry) }
@@ -9615,6 +9617,15 @@ func (d *Driver) SignToken(claims Claims) (string, error) {
 	if err != nil { return "", err }
 	if err := d.registerToken(claims); err != nil { return "", errors.New("jwt: database error") }
 	return signingInput + "." + base64URLEncode(sig), nil
+}
+
+func validJWTClaimsForSigning(claims Claims) bool {
+	for _, value := range []string{claims.JTI, claims.Subject, claims.Issuer, claims.Role} {
+		if len(value) > maxJWTClaimStringBytes {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *Driver) ValidateToken(token string) (Claims, error) {

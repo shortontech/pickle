@@ -712,6 +712,32 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	} else if strings.Contains(err.Error(), "swordfish") || strings.Contains(err.Error(), "password") || strings.Contains(err.Error(), "HS256-") {
 		t.Fatalf("unsupported jwt algorithm leaked detail: %v", err)
 	}
+	jwtRowsBeforeOversizedClaims := countSQLRows(t, db, "jwt_tokens")
+	for _, tc := range []struct {
+		name   string
+		claims jwt.Claims
+		leak   string
+	}{
+		{name: "subject", claims: jwt.Claims{Subject: strings.Repeat("subject-secret", 80)}, leak: "subject-secret"},
+		{name: "role", claims: jwt.Claims{Subject: "user-oversized-role", Role: strings.Repeat("role-secret", 80)}, leak: "role-secret"},
+		{name: "jti", claims: jwt.Claims{Subject: "user-oversized-jti", JTI: strings.Repeat("jti-secret", 80)}, leak: "jti-secret"},
+	} {
+		t.Run("oversized jwt claim "+tc.name, func(t *testing.T) {
+			token, err := jwtDriver.SignToken(tc.claims)
+			if err == nil || err.Error() != "jwt: invalid claims" {
+				t.Fatalf("SignToken oversized %s token=%q err=%v, want sanitized invalid claims", tc.name, token, err)
+			}
+			if token != "" {
+				t.Fatalf("SignToken oversized %s returned token length %d", tc.name, len(token))
+			}
+			if strings.Contains(err.Error(), tc.leak) || strings.Contains(err.Error(), "database") || strings.Contains(err.Error(), "jwt_tokens") {
+				t.Fatalf("SignToken oversized %s leaked detail: %v", tc.name, err)
+			}
+		})
+	}
+	if rows := countSQLRows(t, db, "jwt_tokens"); rows != jwtRowsBeforeOversizedClaims {
+		t.Fatalf("oversized jwt claims inserted %d token rows, want %d", rows, jwtRowsBeforeOversizedClaims)
+	}
 
 	closedJWTDB, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
@@ -1217,6 +1243,15 @@ func assertInvalidJWT(t *testing.T, err error) {
 	if !errors.Is(err, jwt.ErrInvalidToken) {
 		t.Fatalf("jwt error = %v, want ErrInvalidToken", err)
 	}
+}
+
+func countSQLRows(t *testing.T, db *sql.DB, table string) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	return count
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "http", "auth", "exported_auth_test.go"), []byte(testSrc), 0o644); err != nil {

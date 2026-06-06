@@ -1047,6 +1047,17 @@ func buildQueryChain(model, dbRoot string, methods []struct {
 			}
 			qc.Terminal = m.name
 			qc.Arg = m.args[0]
+		case m.name == "VerifyChain":
+			if len(m.args) != 0 {
+				return qc, true, fmt.Errorf("VerifyChain does not accept arguments")
+			}
+			qc.Terminal = m.name
+		case m.name == "VerifyRow":
+			if len(m.args) != 1 {
+				return qc, true, fmt.Errorf("VerifyRow requires one argument")
+			}
+			qc.Terminal = m.name
+			qc.Arg = m.args[0]
 		default:
 			return qc, true, fmt.Errorf("unsupported query method %s", m.name)
 		}
@@ -1067,6 +1078,7 @@ type queryVarTerminal struct {
 	LockStrength  string
 	LockOptions   string
 	LockTimeout   ast.Expr
+	Arg           ast.Expr
 }
 
 func parseQueryVarTerminal(call *ast.CallExpr, queryVars map[string]queryVarState) (queryVarTerminal, bool, error) {
@@ -1082,10 +1094,16 @@ func parseQueryVarTerminal(call *ast.CallExpr, queryVars map[string]queryVarStat
 	if !ok {
 		return queryVarTerminal{}, false, nil
 	}
-	if sel.Sel.Name != "First" && sel.Sel.Name != "All" && sel.Sel.Name != "Count" && !strings.HasPrefix(sel.Sel.Name, "Sum") && !strings.HasPrefix(sel.Sel.Name, "Avg") {
+	if sel.Sel.Name != "First" && sel.Sel.Name != "All" && sel.Sel.Name != "Count" && sel.Sel.Name != "VerifyChain" && sel.Sel.Name != "VerifyRow" && !strings.HasPrefix(sel.Sel.Name, "Sum") && !strings.HasPrefix(sel.Sel.Name, "Avg") {
 		return queryVarTerminal{}, false, nil
 	}
-	if len(call.Args) != 0 {
+	var arg ast.Expr
+	if sel.Sel.Name == "VerifyRow" {
+		if len(call.Args) != 1 {
+			return queryVarTerminal{}, true, fmt.Errorf("VerifyRow requires one argument")
+		}
+		arg = call.Args[0]
+	} else if len(call.Args) != 0 {
 		return queryVarTerminal{}, true, fmt.Errorf("%s does not accept arguments", sel.Sel.Name)
 	}
 	return queryVarTerminal{
@@ -1098,6 +1116,7 @@ func parseQueryVarTerminal(call *ast.CallExpr, queryVars map[string]queryVarStat
 		LockStrength:  state.LockStrength,
 		LockOptions:   state.LockOptions,
 		LockTimeout:   state.LockTimeout,
+		Arg:           arg,
 	}, true, nil
 }
 
@@ -1226,7 +1245,7 @@ func (e *exporter) rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[str
 			return nil, true, fmt.Errorf("%s does not accept arguments", sel.Sel.Name)
 		}
 		return &ast.EmptyStmt{}, true, nil
-	case sel.Sel.Name == "First" || sel.Sel.Name == "All" || sel.Sel.Name == "Count" || strings.HasPrefix(sel.Sel.Name, "Sum") || strings.HasPrefix(sel.Sel.Name, "Avg"):
+	case sel.Sel.Name == "First" || sel.Sel.Name == "All" || sel.Sel.Name == "Count" || sel.Sel.Name == "VerifyChain" || sel.Sel.Name == "VerifyRow" || strings.HasPrefix(sel.Sel.Name, "Sum") || strings.HasPrefix(sel.Sel.Name, "Avg"):
 		return nil, false, nil
 	default:
 		return nil, true, fmt.Errorf("unsupported query method %s", sel.Sel.Name)
@@ -1290,6 +1309,20 @@ func (e *exporter) gormExpr(q queryChain) (ast.Expr, error) {
 			return parseExpr(fmt.Sprintf("models.Delete%s(%s)", q.Model, arg))
 		}
 		return parseExpr(fmt.Sprintf("%s.Delete(%s).Error", q.dbRoot(), arg))
+	case q.Terminal == "VerifyChain":
+		if _, ok := e.integrityModels[q.Model]; !ok {
+			return nil, fmt.Errorf("VerifyChain is only supported for integrity models")
+		}
+		return parseExpr(fmt.Sprintf("models.Verify%sChain()", q.Model))
+	case q.Terminal == "VerifyRow":
+		if _, ok := e.integrityModels[q.Model]; !ok {
+			return nil, fmt.Errorf("VerifyRow is only supported for integrity models")
+		}
+		arg, err := exprString(q.Arg)
+		if err != nil {
+			return nil, err
+		}
+		return parseExpr(fmt.Sprintf("models.Verify%sRow(%s)", q.Model, arg))
 	default:
 		return nil, fmt.Errorf("unsupported terminal query method %s", q.Terminal)
 	}
@@ -1329,6 +1362,20 @@ func (e *exporter) gormVarTerminalExpr(q queryVarTerminal) (ast.Expr, error) {
 		}
 		column := pascalToSnake(field)
 		return parseExpr(fmt.Sprintf("func() (*float64, error) { var value *float64; err := %s.Select(%q).Scan(&value).Error; return value, err }()", query, fn+"("+column+")"))
+	case q.Terminal == "VerifyChain":
+		if _, ok := e.integrityModels[q.Model]; !ok {
+			return nil, fmt.Errorf("VerifyChain is only supported for integrity models")
+		}
+		return parseExpr(fmt.Sprintf("func() error { _ = %s; return models.Verify%sChain() }()", q.Var, q.Model))
+	case q.Terminal == "VerifyRow":
+		if _, ok := e.integrityModels[q.Model]; !ok {
+			return nil, fmt.Errorf("VerifyRow is only supported for integrity models")
+		}
+		arg, err := exprString(q.Arg)
+		if err != nil {
+			return nil, err
+		}
+		return parseExpr(fmt.Sprintf("func() error { _ = %s; return models.Verify%sRow(%s) }()", q.Var, q.Model, arg))
 	default:
 		return nil, fmt.Errorf("unsupported terminal query method %s", q.Terminal)
 	}

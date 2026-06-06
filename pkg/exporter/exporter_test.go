@@ -5092,6 +5092,7 @@ func bytesEqual(a, b []byte) bool {
 
 func TestExportLedgerCompiles(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "ledger"))
+	writeLedgerIntegrityQuerySourceFixture(t, projectDir)
 	out := filepath.Join(t.TempDir(), "exported")
 	_, err := Export(Options{
 		ProjectDir:   projectDir,
@@ -5110,6 +5111,9 @@ func TestExportLedgerCompiles(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "integrity_support.go"), "func VerifyTransactionChain() error")
 	assertFileContains(t, filepath.Join(out, "app", "models", "integrity_support.go"), "func integrityDatabaseError() error")
 	assertFileNotContains(t, filepath.Join(out, "app", "models", "integrity_support.go"), "return db.Create(record).Error")
+	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "integrity_verify.go"), "models.VerifyTransactionRow(tx)")
+	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "integrity_verify.go"), "models.VerifyTransactionChain()")
+	assertFileNotContains(t, filepath.Join(out, "app", "http", "controllers", "integrity_verify.go"), "QueryTransaction")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "account_controller.go"), "models.DB.Model(&models.")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "account_controller.go"), "Account{})")
 	assertPathMissing(t, filepath.Join(out, "integrity_test.go"))
@@ -5118,6 +5122,26 @@ func TestExportLedgerCompiles(t *testing.T) {
 	assertNoGoFileContains(t, out, "QueryAccount")
 	writeExportedIntegrityBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
+}
+
+func writeLedgerIntegrityQuerySourceFixture(t *testing.T, projectDir string) {
+	t.Helper()
+	src := `package controllers
+
+import "github.com/shortontech/ledger/app/models"
+
+func VerifyTransactionIntegrity(tx *models.Transaction) error {
+	if err := models.QueryTransaction().VerifyRow(tx); err != nil {
+		return err
+	}
+	q := models.QueryTransaction()
+	return q.VerifyChain()
+}
+`
+	path := filepath.Join(projectDir, "app", "http", "controllers", "integrity_verify.go")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestExportEncryptionLowersGORMHooks(t *testing.T) {
@@ -8563,6 +8587,88 @@ func Current(accountID string) ([]models.Transaction, error) {
 	)
 	if strings.Contains(got, "QueryTransaction") {
 		t.Fatalf("rewritten source retained Pickle query method:\n%s", got)
+	}
+}
+
+func TestRewriteIntegrityQueryVerificationHelpers(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"Transaction": true},
+		integrityModels: map[string]integrityModelInfo{
+			"Transaction": {
+				Table:      &schema.Table{Name: "transactions"},
+				AppendOnly: true,
+			},
+		},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func Verify(tx *models.Transaction) error {
+	if err := models.QueryTransaction().VerifyRow(tx); err != nil {
+		return err
+	}
+	return models.QueryTransaction().VerifyChain()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	assertContainsAll(t, strings.Join(strings.Fields(got), " "),
+		`models.VerifyTransactionRow(tx)`,
+		`models.VerifyTransactionChain()`,
+	)
+	for _, unexpected := range []string{"QueryTransaction", ".VerifyRow", ".VerifyChain"} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("rewritten source retained %q:\n%s", unexpected, got)
+		}
+	}
+}
+
+func TestRewriteMutableIntegrityQueryVerificationHelpers(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"Transaction": true},
+		integrityModels: map[string]integrityModelInfo{
+			"Transaction": {
+				Table:      &schema.Table{Name: "transactions"},
+				AppendOnly: true,
+			},
+		},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func Verify(tx *models.Transaction) error {
+	q := models.QueryTransaction()
+	if err := q.VerifyRow(tx); err != nil {
+		return err
+	}
+	return q.VerifyChain()
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	assertContainsAll(t, strings.Join(strings.Fields(got), " "),
+		`q := models.DB.Model(&models.`,
+		`Transaction{})`,
+		`models.VerifyTransactionRow(`,
+		`tx`,
+		`models.VerifyTransactionChain()`,
+	)
+	for _, unexpected := range []string{"QueryTransaction", ".VerifyRow", ".VerifyChain"} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("rewritten source retained %q:\n%s", unexpected, got)
+		}
 	}
 }
 

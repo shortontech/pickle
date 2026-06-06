@@ -2128,6 +2128,33 @@ func TestRunAuditedActionSanitizesMissingAuditSeed(t *testing.T) {
 		t.Fatalf("missing audit seed error leaked model/action detail: %v", err)
 	}
 }
+
+func TestRunAuditedActionFailsClosedWithoutAuth(t *testing.T) {
+	sqliteDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetDB(sqliteDB)
+	bodyRan := false
+	err = runAuditedAction(nil, "User", "Ban", uuid.New(), nil, nil, func() error {
+		bodyRan = true
+		return nil
+	})
+	if !bodyRan {
+		t.Fatal("action body should run before audit persistence rejects missing auth")
+	}
+	if !errors.Is(err, errAuditUserID) || err.Error() != "audit user id" {
+		t.Fatalf("missing audit auth error = %v, want sanitized audit user id error", err)
+	}
+	for _, forbidden := range []string{"invalid UUID", "User", "Ban", "user_actions", "INSERT"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("missing audit auth error leaked %q: %v", forbidden, err)
+		}
+	}
+	if sqliteDB.Migrator().HasTable("user_actions") {
+		t.Fatal("audit tables should roll back when audit user id is missing")
+	}
+}
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "models", "exported_action_audit_sql_test.go"), []byte(sqlTestSrc), 0o644); err != nil {
 		t.Fatal(err)

@@ -8199,6 +8199,7 @@ func (p *ActionAPI_2026_06_05_100000) Down() {
 	assertStandaloneNoPickleRuntime(t, out)
 	writeExportedSupportedGraphQLActionPolicyStateTest(t, out)
 	writeExportedActionOnlyGraphQLActionResolverTest(t, out)
+	writeExportedActionOnlyGraphQLActionHTTPTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
 
@@ -8335,6 +8336,120 @@ func TestExportedActionOnlyGraphQLControllerActionResolverCallsController(t *tes
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "resolver", "exported_action_only_controller_action_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedActionOnlyGraphQLActionHTTPTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package graphqlapi_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"basic-crud/app/graphqlapi"
+	"basic-crud/app/http/auth"
+	"basic-crud/app/http/auth/jwt"
+	"basic-crud/app/models"
+)
+
+func TestExportedActionOnlyGraphQLHandlerServesControllerAction(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	if err := db.AutoMigrate(&models.JwtToken{}); err != nil {
+		t.Fatalf("auto migrate jwt tokens: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth.Init(func(key, fallback string) string {
+		switch key {
+		case "AUTH_DRIVER":
+			return "jwt"
+		case "DB_CONNECTION":
+			return "sqlite"
+		case "JWT_SECRET":
+			return "0123456789abcdef0123456789abcdef"
+		default:
+			return fallback
+		}
+	}, sqlDB)
+
+	handler := graphqlapi.Handler()
+	body := []byte(` + "`" + `{"query":"mutation Approve($input: JSON!) { approveTransfer(input: $input) }","variables":{"input":{"note":"ship it"}}}` + "`" + `)
+	req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unauthenticated status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !actionResponseHasErrorCode(t, rec.Body.Bytes(), "UNAUTHENTICATED") {
+		t.Fatalf("unauthenticated mutation should be denied, body=%s", rec.Body.String())
+	}
+
+	token, err := auth.Driver("jwt").(*jwt.Driver).SignToken(jwt.Claims{
+		Subject:   uuid.NewString(),
+		Role:      "viewer",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("sign jwt: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authenticated status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			ApproveTransfer map[string]any ` + "`" + `json:"approveTransfer"` + "`" + `
+		} ` + "`" + `json:"data"` + "`" + `
+		Errors []map[string]any ` + "`" + `json:"errors"` + "`" + `
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode authenticated response: %v body=%s", err, rec.Body.String())
+	}
+	if len(resp.Errors) != 0 || resp.Data.ApproveTransfer["ok"] != true || resp.Data.ApproveTransfer["userId"] == "" {
+		t.Fatalf("authenticated mutation response = %s", rec.Body.String())
+	}
+}
+
+func actionResponseHasErrorCode(t *testing.T, body []byte, code string) bool {
+	t.Helper()
+	var resp struct {
+		Errors []struct {
+			Extensions map[string]any ` + "`" + `json:"extensions"` + "`" + `
+		} ` + "`" + `json:"errors"` + "`" + `
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode error response: %v body=%s", err, string(body))
+	}
+	for _, gqlErr := range resp.Errors {
+		if gqlErr.Extensions["code"] == code {
+			return true
+		}
+	}
+	return false
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "exported_action_only_handler_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

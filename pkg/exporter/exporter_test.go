@@ -6295,6 +6295,7 @@ func TestExportedGQLGenTargetOwnerOnlyDirectiveChecksOwner(t *testing.T) {
 
 func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "graphql-safety"))
+	addDeepGraphQLRelationshipFixture(t, projectDir)
 	out := filepath.Join(t.TempDir(), "exported")
 	res, err := Export(Options{
 		ProjectDir:   projectDir,
@@ -6328,6 +6329,8 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "complexity_gen.go"), "root.User.Posts = func(childComplexity int) int")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "complexity_gen.go"), "graphQLAPIListComplexity(childComplexity, 10, min(50, maxGraphQLAPIComplexityPageSize))")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "complexity_gen.go"), "root.Post.Comments = func(childComplexity int) int")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "complexity_gen.go"), `"User.posts":`)
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "complexity_gen.go"), `"Reaction.flags":`)
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "generated", "generated.go"), "type ResolverRoot interface")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *Resolver) Query() generated.QueryResolver")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "support_gen.go"), "func gqlgenPageWindow")
@@ -6394,6 +6397,75 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "generated", "generated.go"), "type ResolverRoot interface")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *Resolver) Query() generated.QueryResolver")
 	runExported(t, out, "go", "test", "./...")
+}
+
+func addDeepGraphQLRelationshipFixture(t *testing.T, projectDir string) {
+	t.Helper()
+	migrationPath := filepath.Join(projectDir, "database", "migrations", "2026_06_02_100002_create_reactions_table.go")
+	if err := os.WriteFile(migrationPath, []byte(`package migrations
+
+type CreateReactionsTable_2026_06_02_100002 struct {
+	Migration
+}
+
+func (m *CreateReactionsTable_2026_06_02_100002) Up() {
+	m.CreateTable("reactions", func(t *Table) {
+		t.UUID("id").PrimaryKey().Default("gen_random_uuid()")
+		t.UUID("comment_id").NotNull().ForeignKey("comments", "id")
+		t.String("kind", 50).NotNull().Public()
+		t.Timestamps()
+	})
+
+	m.CreateTable("flags", func(t *Table) {
+		t.UUID("id").PrimaryKey().Default("gen_random_uuid()")
+		t.UUID("reaction_id").NotNull().ForeignKey("reactions", "id")
+		t.String("reason", 255).NotNull().Public()
+		t.Timestamps()
+	})
+}
+
+func (m *CreateReactionsTable_2026_06_02_100002) Down() {
+	m.DropTableIfExists("flags")
+	m.DropTableIfExists("reactions")
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policyPath := filepath.Join(projectDir, "database", "policies", "graphql", "2026_06_02_100002_expose_deep_relationships.go")
+	if err := os.WriteFile(policyPath, []byte(`package graphql
+
+type ExposeDeepRelationships_2026_06_02_100002 struct {
+	GraphQLPolicy
+}
+
+func (p *ExposeDeepRelationships_2026_06_02_100002) Up() {
+	p.AlterExpose("comments", func(e *ExposeBuilder) {
+		e.Relationship("reactions", func(r *RelationshipExposure) {
+			r.Cost(10)
+			r.MaxPageSize(50)
+		})
+	})
+	p.Expose("reactions", func(e *ExposeBuilder) {
+		e.List()
+		e.Show()
+		e.Relationship("flags", func(r *RelationshipExposure) {
+			r.Cost(10)
+			r.MaxPageSize(50)
+		})
+	})
+	p.Expose("flags", func(e *ExposeBuilder) {
+		e.List()
+		e.Show()
+	})
+}
+
+func (p *ExposeDeepRelationships_2026_06_02_100002) Down() {
+	p.Unexpose("reactions")
+	p.Unexpose("flags")
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeExportedGraphQLModelVisibilityBehaviorTest(t *testing.T, out string) {
@@ -6879,9 +6951,12 @@ func writeExportedGraphQLAPIComplexityBehaviorTest(t *testing.T, out string) {
 	testSrc := `package graphqlapi
 
 import (
+	"strings"
 	"testing"
 
+	"graphql-safety/app/graphqlapi/generated"
 	"graphql-safety/app/graphqlapi/model"
+	"graphql-safety/app/graphqlapi/resolver"
 )
 
 func TestExportedGQLGenTargetRelationshipComplexityUsesPolicyBudget(t *testing.T) {
@@ -6919,6 +6994,43 @@ func TestExportedGQLGenTargetTopLevelComplexityValidatesPageInput(t *testing.T) 
 	first = 101
 	if got := root.Query.Users(0, nil, nil, &model.PageInput{First: &first}); got <= maxGraphQLAPIComplexity {
 		t.Fatalf("oversized Query.users page complexity = %d, want above max %d", got, maxGraphQLAPIComplexity)
+	}
+}
+
+func TestExportedGQLGenTargetRejectsRelationshipDepthBeforeExecution(t *testing.T) {
+	execSchema := generated.NewExecutableSchema(generated.Config{
+		Resolvers:  &resolver.Resolver{},
+		Complexity: graphQLAPIComplexityRoot(),
+		Directives: generated.DirectiveRoot{
+			Auth:        graphQLAPIAuthDirective,
+			Public:      graphQLAPIPublicDirective,
+			OwnerOnly:   graphQLAPIOwnerOnlyDirective,
+			RequireRole: graphQLAPIRequireRoleDirective,
+		},
+	})
+	query := ` + "`" + `{
+		users {
+			edges {
+				node {
+					posts {
+						comments {
+							reactions {
+								flags {
+									id
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}` + "`" + `
+	err := validateGraphQLAPIQueryShape(execSchema.Schema(), query)
+	if err == nil {
+		t.Fatal("relationship depth query passed preflight budget")
+	}
+	if !strings.Contains(err.Error(), "GraphQL relationship depth exceeds safety limit") {
+		t.Fatalf("relationship depth error = %v", err)
 	}
 }
 `

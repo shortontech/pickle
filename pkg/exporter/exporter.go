@@ -2472,6 +2472,14 @@ func (e *exporter) writeGraphQLAPIComplexityTarget(schemaSDL string, tables []*s
 	b.WriteString(")\n\n")
 	b.WriteString("const defaultGraphQLAPIComplexityPageSize = 25\n")
 	b.WriteString("const maxGraphQLAPIComplexityPageSize = 100\n\n")
+	b.WriteString("var graphQLAPIRelationshipFields = map[string]bool{\n")
+	for _, tbl := range tables {
+		parentStruct := tableToStruct(tbl.Name)
+		for _, rel := range graphQLTableRelationshipsInSDL(schemaSDL, tbl, relationships) {
+			fmt.Fprintf(&b, "\t%q: true,\n", parentStruct+"."+lowerFirst(snakeToPascal(snakeToCamel(rel.ChildTable))))
+		}
+	}
+	b.WriteString("}\n\n")
 	b.WriteString("func graphQLAPIComplexityRoot() generated.ComplexityRoot {\n")
 	b.WriteString("\tvar root generated.ComplexityRoot\n")
 	for _, tbl := range tables {
@@ -4230,6 +4238,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/vektah/gqlparser/v2"
 	gqlgen "github.com/99designs/gqlgen/graphql"
 	"github.com/99designs/gqlgen/graphql/handler"
 	"github.com/99designs/gqlgen/graphql/handler/extension"
@@ -4258,6 +4267,7 @@ const maxGraphQLAPIVariableStringBytes = 4096
 const maxGraphQLAPITokenMultiplier = 20
 const maxGraphQLAPIComplexity = 1000
 const maxGraphQLAPIDepth = 10
+const maxGraphQLAPIRelationshipDepth = 3
 const maxGraphQLAPIFields = 200
 const maxGraphQLAPIAliases = 25
 const maxGraphQLAPIInputNodes = 500
@@ -4273,7 +4283,7 @@ func PlaygroundHandler(endpoint string) http.Handler {
 }
 
 func Handler() http.Handler {
-	srv := handler.New(generated.NewExecutableSchema(generated.Config{
+	execSchema := generated.NewExecutableSchema(generated.Config{
 		Resolvers: &resolver.Resolver{},
 		Complexity: graphQLAPIComplexityRoot(),
 		Directives: generated.DirectiveRoot{
@@ -4282,7 +4292,8 @@ func Handler() http.Handler {
 			OwnerOnly:   graphQLAPIOwnerOnlyDirective,
 			RequireRole: graphQLAPIRequireRoleDirective,
 		},
-	}))
+	})
+	srv := handler.New(execSchema)
 	srv.AddTransport(transport.Options{})
 	srv.AddTransport(transport.POST{})
 	srv.SetQueryCache(lru.New[*ast.QueryDocument](1000))
@@ -4302,7 +4313,7 @@ func Handler() http.Handler {
 			return
 		}
 		if r.Method == http.MethodPost {
-			if !prepareGraphQLAPIPostBody(w, r) {
+			if !prepareGraphQLAPIPostBody(w, r, execSchema.Schema()) {
 				return
 			}
 			claims, err := extractGraphQLAPIAuth(r)
@@ -4555,7 +4566,7 @@ func graphQLAPIErrorPresenter(ctx context.Context, err error) *gqlerror.Error {
 	return presented
 }
 
-func prepareGraphQLAPIPostBody(w http.ResponseWriter, r *http.Request) bool {
+func prepareGraphQLAPIPostBody(w http.ResponseWriter, r *http.Request, schema *ast.Schema) bool {
 	if !isGraphQLAPIJSONContentType(r.Header.Get("Content-Type")) {
 		writeGraphQLAPIHTTPStatusError(w, http.StatusUnsupportedMediaType, "GraphQL POST requests require application/json", "BAD_USER_INPUT")
 		return false
@@ -4598,7 +4609,7 @@ func prepareGraphQLAPIPostBody(w http.ResponseWriter, r *http.Request) bool {
 		writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
 		return false
 	}
-	if !validateGraphQLAPIRequestEnvelope(w, raw) {
+	if !validateGraphQLAPIRequestEnvelope(w, raw, schema) {
 		return false
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
@@ -4643,7 +4654,7 @@ func validateGraphQLAPIRequestEnvelopeFieldUniqueness(w http.ResponseWriter, bod
 	return true
 }
 
-func validateGraphQLAPIRequestEnvelope(w http.ResponseWriter, raw map[string]any) bool {
+func validateGraphQLAPIRequestEnvelope(w http.ResponseWriter, raw map[string]any, schema *ast.Schema) bool {
 	if !validateGraphQLAPIRequestEnvelopeFields(w, raw) {
 		return false
 	}
@@ -4660,7 +4671,7 @@ func validateGraphQLAPIRequestEnvelope(w http.ResponseWriter, raw map[string]any
 		writeGraphQLAPIHTTPError(w, "GraphQL introspection is disabled", "BAD_USER_INPUT")
 		return false
 	}
-	if err := validateGraphQLAPIQueryShape(query); err != nil {
+	if err := validateGraphQLAPIQueryShape(schema, query); err != nil {
 		writeGraphQLAPIHTTPError(w, err.Error(), "BAD_USER_INPUT")
 		return false
 	}
@@ -4726,15 +4737,16 @@ func graphQLAPIQueryRequestsIntrospection(query string) bool {
 }
 
 type graphQLAPIQueryShape struct {
-	Depth      int
-	Fields     int
-	Aliases    int
-	InputNodes int
-	InputDepth int
-	Variables  int
+	Depth             int
+	Fields            int
+	Aliases           int
+	InputNodes        int
+	InputDepth        int
+	Variables         int
+	RelationshipDepth int
 }
 
-func validateGraphQLAPIQueryShape(query string) error {
+func validateGraphQLAPIQueryShape(schema *ast.Schema, query string) error {
 	doc, err := parser.ParseQuery(&ast.Source{Input: query})
 	if err != nil {
 		return graphQLAPICodedError("invalid GraphQL query", "BAD_USER_INPUT")
@@ -4763,13 +4775,16 @@ func validateGraphQLAPIQueryShape(query string) error {
 		if variableShape.InputDepth > shape.InputDepth {
 			shape.InputDepth = variableShape.InputDepth
 		}
-		operationShape := graphQLAPISelectionShape(operation.SelectionSet, fragments, seenFragments, 1)
+		operationShape := graphQLAPISelectionShape(schema, graphQLAPIRootDefinition(schema, operation.Operation), operation.SelectionSet, fragments, seenFragments, 1, 0)
 		if operationShape.Depth > shape.Depth {
 			shape.Depth = operationShape.Depth
 		}
 		shape.Fields += operationShape.Fields
 		shape.Aliases += operationShape.Aliases
 		shape.InputNodes += operationShape.InputNodes
+		if operationShape.RelationshipDepth > shape.RelationshipDepth {
+			shape.RelationshipDepth = operationShape.RelationshipDepth
+		}
 		if operationShape.InputDepth > shape.InputDepth {
 			shape.InputDepth = operationShape.InputDepth
 		}
@@ -4783,6 +4798,9 @@ func validateGraphQLAPIQueryShape(query string) error {
 	if shape.Depth > maxGraphQLAPIDepth {
 		return graphQLAPICodedError("GraphQL query depth exceeds safety limit", "BAD_USER_INPUT")
 	}
+	if shape.RelationshipDepth > maxGraphQLAPIRelationshipDepth {
+		return graphQLAPICodedError("GraphQL relationship depth exceeds safety limit", "BAD_USER_INPUT")
+	}
 	if shape.Fields > maxGraphQLAPIFields {
 		return graphQLAPICodedError("GraphQL query fields exceed safety limit", "BAD_USER_INPUT")
 	}
@@ -4795,10 +4813,27 @@ func validateGraphQLAPIQueryShape(query string) error {
 	if shape.InputDepth > maxGraphQLAPIVariableDepth {
 		return graphQLAPICodedError("GraphQL query inputs exceed safety limit", "BAD_USER_INPUT")
 	}
+	if _, errs := gqlparser.LoadQuery(schema, query); len(errs) > 0 {
+		return graphQLAPICodedError("invalid GraphQL query", "BAD_USER_INPUT")
+	}
 	return nil
 }
 
-func graphQLAPISelectionShape(selections ast.SelectionSet, fragments map[string]*ast.FragmentDefinition, seenFragments map[string]bool, depth int) graphQLAPIQueryShape {
+func graphQLAPIRootDefinition(schema *ast.Schema, operation ast.Operation) *ast.Definition {
+	if schema == nil {
+		return nil
+	}
+	switch operation {
+	case ast.Mutation:
+		return schema.Mutation
+	case ast.Subscription:
+		return schema.Subscription
+	default:
+		return schema.Query
+	}
+}
+
+func graphQLAPISelectionShape(schema *ast.Schema, parent *ast.Definition, selections ast.SelectionSet, fragments map[string]*ast.FragmentDefinition, seenFragments map[string]bool, depth, relationshipDepth int) graphQLAPIQueryShape {
 	shape := graphQLAPIQueryShape{Depth: depth}
 	for _, selection := range selections {
 		switch sel := selection.(type) {
@@ -4812,13 +4847,23 @@ func graphQLAPISelectionShape(selections ast.SelectionSet, fragments map[string]
 			}
 			graphQLAPIAddShape(&shape, graphQLAPIArgumentInputShape(sel.Arguments))
 			graphQLAPIAddShape(&shape, graphQLAPIDirectiveInputShape(sel.Directives))
-			child := graphQLAPISelectionShape(sel.SelectionSet, fragments, seenFragments, depth+1)
+			nextRelationshipDepth := relationshipDepth
+			if parent != nil && graphQLAPIRelationshipFields[parent.Name+"."+sel.Name] {
+				nextRelationshipDepth++
+			}
+			if nextRelationshipDepth > shape.RelationshipDepth {
+				shape.RelationshipDepth = nextRelationshipDepth
+			}
+			child := graphQLAPISelectionShape(schema, graphQLAPIFieldDefinition(schema, parent, sel.Name), sel.SelectionSet, fragments, seenFragments, depth+1, nextRelationshipDepth)
 			if child.Depth > shape.Depth {
 				shape.Depth = child.Depth
 			}
 			shape.Fields += child.Fields
 			shape.Aliases += child.Aliases
 			shape.InputNodes += child.InputNodes
+			if child.RelationshipDepth > shape.RelationshipDepth {
+				shape.RelationshipDepth = child.RelationshipDepth
+			}
 			if child.InputDepth > shape.InputDepth {
 				shape.InputDepth = child.InputDepth
 			}
@@ -4827,13 +4872,20 @@ func graphQLAPISelectionShape(selections ast.SelectionSet, fragments map[string]
 				continue
 			}
 			graphQLAPIAddShape(&shape, graphQLAPIDirectiveInputShape(sel.Directives))
-			child := graphQLAPISelectionShape(sel.SelectionSet, fragments, seenFragments, depth)
+			childParent := parent
+			if sel.TypeCondition != "" && schema != nil {
+				childParent = schema.Types[sel.TypeCondition]
+			}
+			child := graphQLAPISelectionShape(schema, childParent, sel.SelectionSet, fragments, seenFragments, depth, relationshipDepth)
 			if child.Depth > shape.Depth {
 				shape.Depth = child.Depth
 			}
 			shape.Fields += child.Fields
 			shape.Aliases += child.Aliases
 			shape.InputNodes += child.InputNodes
+			if child.RelationshipDepth > shape.RelationshipDepth {
+				shape.RelationshipDepth = child.RelationshipDepth
+			}
 			if child.InputDepth > shape.InputDepth {
 				shape.InputDepth = child.InputDepth
 			}
@@ -4857,7 +4909,11 @@ func graphQLAPISelectionShape(selections ast.SelectionSet, fragments map[string]
 			if fragmentShape.InputDepth > shape.InputDepth {
 				shape.InputDepth = fragmentShape.InputDepth
 			}
-			child := graphQLAPISelectionShape(fragment.SelectionSet, fragments, seenFragments, depth)
+			childParent := parent
+			if fragment.TypeCondition != "" && schema != nil {
+				childParent = schema.Types[fragment.TypeCondition]
+			}
+			child := graphQLAPISelectionShape(schema, childParent, fragment.SelectionSet, fragments, seenFragments, depth, relationshipDepth)
 			delete(seenFragments, sel.Name)
 			if child.Depth > shape.Depth {
 				shape.Depth = child.Depth
@@ -4866,12 +4922,26 @@ func graphQLAPISelectionShape(selections ast.SelectionSet, fragments map[string]
 			shape.Aliases += child.Aliases
 			shape.InputNodes += child.InputNodes
 			shape.Variables += child.Variables
+			if child.RelationshipDepth > shape.RelationshipDepth {
+				shape.RelationshipDepth = child.RelationshipDepth
+			}
 			if child.InputDepth > shape.InputDepth {
 				shape.InputDepth = child.InputDepth
 			}
 		}
 	}
 	return shape
+}
+
+func graphQLAPIFieldDefinition(schema *ast.Schema, parent *ast.Definition, fieldName string) *ast.Definition {
+	if schema == nil || parent == nil {
+		return nil
+	}
+	field := parent.Fields.ForName(fieldName)
+	if field == nil || field.Type == nil {
+		return nil
+	}
+	return schema.Types[field.Type.Name()]
 }
 
 func graphQLAPIAddShape(shape *graphQLAPIQueryShape, child graphQLAPIQueryShape) {
@@ -4885,6 +4955,9 @@ func graphQLAPIAddShape(shape *graphQLAPIQueryShape, child graphQLAPIQueryShape)
 	shape.Aliases += child.Aliases
 	shape.InputNodes += child.InputNodes
 	shape.Variables += child.Variables
+	if child.RelationshipDepth > shape.RelationshipDepth {
+		shape.RelationshipDepth = child.RelationshipDepth
+	}
 }
 
 func graphQLAPIVariableDefinitionShape(definitions ast.VariableDefinitionList) graphQLAPIQueryShape {

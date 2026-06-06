@@ -59,7 +59,7 @@ func Export(opts Options) (*Result, error) {
 		opts.ORM = "gorm"
 	}
 	if opts.ORM != "gorm" {
-		return nil, fmt.Errorf("unsupported orm %q", opts.ORM)
+		return nil, exportError{Rule: "orm_export_unsupported", Message: fmt.Sprintf("unsupported orm %q", opts.ORM)}
 	}
 	if opts.OutDir == "" {
 		return nil, errors.New("--out is required")
@@ -259,6 +259,12 @@ type exportError struct {
 
 func (e exportError) Error() string {
 	if e.Rule != "" {
+		if e.File == "" {
+			return fmt.Sprintf("[%s] %s", e.Rule, e.Message)
+		}
+		if e.Line == 0 {
+			return fmt.Sprintf("%s: [%s] %s", e.File, e.Rule, e.Message)
+		}
 		return fmt.Sprintf("%s:%d: [%s] %s", e.File, e.Line, e.Rule, e.Message)
 	}
 	return fmt.Sprintf("%s:%d: %s", e.File, e.Line, e.Message)
@@ -7533,7 +7539,7 @@ func (e *exporter) writeFindingSection(b *strings.Builder, title, category strin
 
 func findingCategory(rule string) string {
 	switch rule {
-	case "graphql_action_export_unsupported", "query_export_unsupported":
+	case "graphql_action_export_unsupported", "orm_export_unsupported", "query_export_unsupported":
 		return "unsupported"
 	case "rbac_policy_export":
 		return "partial"

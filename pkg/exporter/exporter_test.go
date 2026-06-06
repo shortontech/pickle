@@ -7607,6 +7607,25 @@ func TestExportRefusesNonEmptyOutputWithoutForce(t *testing.T) {
 	}
 }
 
+func TestExportFailsUnsupportedORMWithBoundaryRule(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
+	out := filepath.Join(t.TempDir(), "exported")
+	_, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		ORM:          "sqlc",
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err == nil {
+		t.Fatal("Export succeeded for unsupported ORM")
+	}
+	assertContainsAll(t, err.Error(),
+		"[orm_export_unsupported]",
+		`unsupported orm "sqlc"`,
+	)
+	assertPathMissing(t, out)
+}
+
 func TestExportFailsUngatedActionsBeforeWritingBrokenWiring(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
 	actionsDir := filepath.Join(projectDir, "database", "actions", "user")
@@ -8573,6 +8592,9 @@ func (p *API) Up() {
 func TestFindingCategoryClassifiesUnlowerableBoundariesAsUnsupported(t *testing.T) {
 	if got := findingCategory("graphql_action_export_unsupported"); got != "unsupported" {
 		t.Fatalf("findingCategory(graphql_action_export_unsupported) = %q, want unsupported", got)
+	}
+	if got := findingCategory("orm_export_unsupported"); got != "unsupported" {
+		t.Fatalf("findingCategory(orm_export_unsupported) = %q, want unsupported", got)
 	}
 	if got := findingCategory("query_export_unsupported"); got != "unsupported" {
 		t.Fatalf("findingCategory(query_export_unsupported) = %q, want unsupported", got)

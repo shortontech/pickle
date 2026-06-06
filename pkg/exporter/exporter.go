@@ -279,6 +279,15 @@ func queryExportError(path string, line int, message string) exportError {
 	}
 }
 
+func actionQueryExportError(file string, line int, message string) exportError {
+	return exportError{
+		File:    file,
+		Line:    line,
+		Rule:    "action_export_unsupported_query",
+		Message: message,
+	}
+}
+
 func migrationExportError(location, name string, err error) exportError {
 	return exportError{
 		File:    location,
@@ -5514,6 +5523,10 @@ func (e *exporter) copyActionSource(sourceFile, model string, seen map[string]bo
 	}
 	rewritten, err := e.rewriteGoFile(filepath.Join(e.project.Dir, sourceFile), data)
 	if err != nil {
+		var exportErr exportError
+		if errors.As(err, &exportErr) && exportErr.Rule == "query_export_unsupported" {
+			return actionQueryExportError(sourceFile, exportErr.Line, exportErr.Message)
+		}
 		return err
 	}
 	rewritten, err = e.rewriteActionSourceToModels(filepath.Join(e.project.Dir, sourceFile), rewritten)

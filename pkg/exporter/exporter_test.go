@@ -8051,6 +8051,61 @@ func CanSuspend(ctx string, user int) *uuid.UUID {
 	)
 }
 
+func TestExportFailsUnsupportedActionQueryWithBoundaryRule(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
+	actionsDir := filepath.Join(projectDir, "database", "actions", "user")
+	if err := os.MkdirAll(actionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	action := `package user
+
+import (
+	models "github.com/shortontech/pickle/testdata/basic-crud/app/models"
+	pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
+)
+
+type SuspendAction struct {
+	SQL string
+}
+
+func (a SuspendAction) Suspend(ctx *pickle.Context, user *models.User) error {
+	_, err := models.QueryUser().Raw(a.SQL).All()
+	return err
+}
+`
+	gate := `package user
+
+import "github.com/google/uuid"
+
+func CanSuspend(ctx *Context, user *User) *uuid.UUID {
+	id := uuid.New()
+	return &id
+}
+`
+	if err := os.WriteFile(filepath.Join(actionsDir, "suspend.go"), []byte(action), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(actionsDir, "suspend_gate.go"), []byte(gate), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "exported")
+	_, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err == nil {
+		t.Fatal("Export succeeded for unsupported action query")
+	}
+	assertContainsAll(t, err.Error(),
+		"database/actions/user/suspend.go:",
+		"[action_export_unsupported_query]",
+		"unsupported query method Raw",
+	)
+	assertPathMissing(t, filepath.Join(out, "app", "models", "user_suspend.go"))
+}
+
 func TestExportFailsUnsupportedQueryWithBoundaryRule(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "zero-graphql"))
 	servicesDir := filepath.Join(projectDir, "app", "services")

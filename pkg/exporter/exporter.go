@@ -2805,7 +2805,11 @@ func graphQLAPIControllerAction(ctx context.Context, action string, input map[st
 	if status < 200 || status >= 300 {
 		return nil, graphQLAPIControllerActionStatusError(action, status)
 	}
-	return graphQLAPIMapFromBody(resp.Body), nil
+	out := graphQLAPIMapFromBody(resp.Body)
+	if err := graphQLAPIValidateControllerActionOutput(out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func graphQLAPIControllerActionStatusError(action string, status int) error {
@@ -2861,6 +2865,14 @@ func graphQLAPIValidateControllerActionInput(input map[string]any) error {
 	nodes := 0
 	if !graphQLAPIValidControllerActionInputValue(input, 0, &nodes) {
 		return graphQLAPIBadInput("GraphQL action input exceeds safety limits")
+	}
+	return nil
+}
+
+func graphQLAPIValidateControllerActionOutput(output map[string]any) error {
+	nodes := 0
+	if !graphQLAPIValidControllerActionInputValue(output, 0, &nodes) {
+		return graphQLAPIResolverError("GraphQL action output exceeds safety limits", "INTERNAL_SERVER_ERROR")
 	}
 	return nil
 }

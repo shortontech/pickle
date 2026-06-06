@@ -9444,10 +9444,13 @@ func writeExportedSupportedGraphQLActionResolverTest(t *testing.T, out string) {
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/vektah/gqlparser/v2/gqlerror"
+
+	"basic-crud/internal/httpx"
 )
 
 func TestExportedGraphQLControllerActionResolverCallsController(t *testing.T) {
@@ -9475,11 +9478,26 @@ func TestExportedGraphQLControllerActionResolverCallsController(t *testing.T) {
 	if _, err := mutations.ApproveTransfer(ctx, map[string]any{"nested": map[string]any{"a": map[string]any{"b": map[string]any{"c": map[string]any{"d": map[string]any{"e": map[string]any{"f": map[string]any{"g": map[string]any{"h": map[string]any{"i": "too deep"}}}}}}}}}}); !isControllerActionBadInput(err) {
 		t.Fatalf("deep action input error = %v, want BAD_USER_INPUT", err)
 	}
+	if _, err := graphQLAPIControllerAction(ctx, "oversizedOutput", map[string]any{}, func(actionCtx *httpx.Context) httpx.Response {
+		return httpx.Response{StatusCode: http.StatusOK, Body: map[string]any{"secret": strings.Repeat("x", maxGraphQLAPIActionInputStringBytes+1)}}
+	}); !isControllerActionInternalOutput(err) {
+		t.Fatalf("oversized action map output error = %v, want INTERNAL_SERVER_ERROR", err)
+	}
+	if _, err := graphQLAPIControllerAction(ctx, "oversizedWrappedOutput", map[string]any{}, func(actionCtx *httpx.Context) httpx.Response {
+		return httpx.Response{StatusCode: http.StatusOK, Body: strings.Repeat("x", maxGraphQLAPIActionInputStringBytes+1)}
+	}); !isControllerActionInternalOutput(err) {
+		t.Fatalf("oversized action wrapped output error = %v, want INTERNAL_SERVER_ERROR", err)
+	}
 }
 
 func isControllerActionBadInput(err error) bool {
 	gqlErr, ok := err.(*gqlerror.Error)
 	return ok && gqlErr.Extensions["code"] == "BAD_USER_INPUT" && gqlErr.Message == "GraphQL action input exceeds safety limits"
+}
+
+func isControllerActionInternalOutput(err error) bool {
+	gqlErr, ok := err.(*gqlerror.Error)
+	return ok && gqlErr.Extensions["code"] == "INTERNAL_SERVER_ERROR" && gqlErr.Message == "GraphQL action output exceeds safety limits"
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "resolver", "exported_controller_action_test.go"), []byte(testSrc), 0o644); err != nil {

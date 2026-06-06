@@ -4372,6 +4372,7 @@ const maxGraphQLAPIVariables = 64
 const maxGraphQLAPIVariableNameBytes = 256
 const maxGraphQLAPIVariableDepth = 8
 const maxGraphQLAPIVariableCollectionItems = 256
+const maxGraphQLAPIVariableNodes = 500
 const maxGraphQLAPIVariableStringBytes = 4096
 const maxGraphQLAPITokenMultiplier = 20
 const maxGraphQLAPIComplexity = 1000
@@ -5123,6 +5124,7 @@ func validateGraphQLAPIVariables(variables map[string]any) error {
 	if len(variables) > maxGraphQLAPIVariables {
 		return graphQLAPICodedError("too many GraphQL variables", "BAD_USER_INPUT")
 	}
+	nodes := 0
 	for name, value := range variables {
 		if len(name) > maxGraphQLAPIVariableNameBytes {
 			return graphQLAPICodedError("GraphQL variable name is too large", "BAD_USER_INPUT")
@@ -5130,7 +5132,7 @@ func validateGraphQLAPIVariables(variables map[string]any) error {
 		if !isGraphQLAPIName(name) {
 			return graphQLAPICodedError("GraphQL variable name is invalid", "BAD_USER_INPUT")
 		}
-		if !validGraphQLAPIVariableValue(value, 0) {
+		if !validGraphQLAPIVariableValue(value, 0, &nodes) {
 			return graphQLAPICodedError("GraphQL variables exceed safety limits", "BAD_USER_INPUT")
 		}
 	}
@@ -5141,19 +5143,27 @@ func validateGraphQLAPIExtensions(extensions map[string]any) error {
 	if len(extensions) > maxGraphQLAPIVariableCollectionItems {
 		return graphQLAPICodedError("GraphQL extensions exceed safety limits", "BAD_USER_INPUT")
 	}
+	nodes := 0
 	for name, value := range extensions {
 		if len(name) > maxGraphQLAPIVariableNameBytes {
 			return graphQLAPICodedError("GraphQL extension name is too large", "BAD_USER_INPUT")
 		}
-		if !validGraphQLAPIVariableValue(value, 0) {
+		if !validGraphQLAPIVariableValue(value, 0, &nodes) {
 			return graphQLAPICodedError("GraphQL extensions exceed safety limits", "BAD_USER_INPUT")
 		}
 	}
 	return nil
 }
 
-func validGraphQLAPIVariableValue(value any, depth int) bool {
+func validGraphQLAPIVariableValue(value any, depth int, nodes *int) bool {
 	if depth > maxGraphQLAPIVariableDepth {
+		return false
+	}
+	if nodes == nil {
+		return false
+	}
+	*nodes = *nodes + 1
+	if *nodes > maxGraphQLAPIVariableNodes {
 		return false
 	}
 	switch v := value.(type) {
@@ -5166,7 +5176,7 @@ func validGraphQLAPIVariableValue(value any, depth int) bool {
 			return false
 		}
 		for _, item := range v {
-			if !validGraphQLAPIVariableValue(item, depth+1) {
+			if !validGraphQLAPIVariableValue(item, depth+1, nodes) {
 				return false
 			}
 		}
@@ -5179,7 +5189,7 @@ func validGraphQLAPIVariableValue(value any, depth int) bool {
 			if len(key) > maxGraphQLAPIVariableNameBytes {
 				return false
 			}
-			if !validGraphQLAPIVariableValue(item, depth+1) {
+			if !validGraphQLAPIVariableValue(item, depth+1, nodes) {
 				return false
 			}
 		}

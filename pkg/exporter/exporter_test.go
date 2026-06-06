@@ -6229,6 +6229,22 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 	inputFloodQuery := "{ posts(filter: { title: { in: [" + strings.TrimSuffix(strings.Repeat("\"x\",", 501), ",") + "] } }) { totalCount } }"
 	deepInputLiteralQuery := "{ posts(filter: { title: { eq: " + strings.Repeat("[", 10) + "\"x\"" + strings.Repeat("]", 10) + " } }) { totalCount } }"
 	deepDefaultInputQuery := "query DeepDefault($ids: String = " + strings.Repeat("[", 10) + "\"x\"" + strings.Repeat("]", 10) + ") { posts { totalCount } }"
+	variableNodeFlood := map[string]any{"query": "query Good($input: PostFilterInput) { posts(filter: $input) { totalCount } }", "variables": map[string]any{"input": map[string]any{}}}
+	for i := 0; i < 256; i++ {
+		variableNodeFlood["variables"].(map[string]any)["input"].(map[string]any)[fmt.Sprintf("k%d", i)] = []any{"x", "y"}
+	}
+	variableNodeFloodBody, err := json.Marshal(variableNodeFlood)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extensionNodeFlood := map[string]any{"query": "{ posts { totalCount } }", "extensions": map[string]any{"trace": map[string]any{}}}
+	for i := 0; i < 256; i++ {
+		extensionNodeFlood["extensions"].(map[string]any)["trace"].(map[string]any)[fmt.Sprintf("k%d", i)] = []any{"x", "y"}
+	}
+	extensionNodeFloodBody, err := json.Marshal(extensionNodeFlood)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for name, body := range map[string][]byte{
 		"batched":          []byte(` + "`" + `[{"query":"{ posts { totalCount } }"}]` + "`" + `),
 		"duplicate_field":  []byte(` + "`" + `{"query":"{ posts { totalCount } }","query":"{ comments { totalCount } }"}` + "`" + `),
@@ -6246,10 +6262,12 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 		"deep_query":       []byte(` + "`" + `{"query":"{ posts { edges { node { id { a { b { c { d { e { f { g } } } } } } } } } } }"}` + "`" + `),
 		"bad_variables":    []byte(` + "`" + `{"query":"query Good($id: ID) { post(id: $id) { id } }","variables":["not","object"]}` + "`" + `),
 		"deep_variables":   []byte(` + "`" + `{"query":"query Good($v: String) { posts { totalCount } }","variables":{"deep":{"a":{"b":{"c":{"d":{"e":{"f":{"g":{"h":{"i":"too deep"}}}}}}}}}}}` + "`" + `),
+		"variable_node_flood": variableNodeFloodBody,
 		"huge_number":      []byte(` + "`" + `{"query":"query Good($v: Int) { posts(page: { first: $v }) { totalCount } }","variables":{"v":` + "`" + ` + strings.Repeat("9", 4097) + ` + "`" + `}}` + "`" + `),
 		"huge_nested_key":  []byte(` + "`" + `{"query":"query Good($input: PostFilterInput) { posts(filter: $input) { totalCount } }","variables":{"input":{"` + "`" + ` + strings.Repeat("x", 257) + ` + "`" + `":"too large"}}}` + "`" + `),
 		"bad_extensions":   []byte(` + "`" + `{"query":"{ posts { totalCount } }","extensions":["not","object"]}` + "`" + `),
 		"large_extensions": []byte(` + "`" + `{"query":"{ posts { totalCount } }","extensions":{"trace":"` + "`" + ` + strings.Repeat("x", 4097) + ` + "`" + `"}}` + "`" + `),
+		"extension_node_flood": extensionNodeFloodBody,
 		"huge_extension_number": []byte(` + "`" + `{"query":"{ posts { totalCount } }","extensions":{"trace":` + "`" + ` + strings.Repeat("9", 4097) + ` + "`" + `}}` + "`" + `),
 	} {
 		t.Run(name, func(t *testing.T) {

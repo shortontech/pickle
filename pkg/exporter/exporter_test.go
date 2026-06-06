@@ -798,6 +798,35 @@ func TestExportedAuthDriversPreserveBehavior(t *testing.T) {
 	if oauthInfo.UserID != "client-1" || oauthInfo.Role != "client" {
 		t.Fatalf("oauth auth info = %#v", oauthInfo)
 	}
+	oauthReq, _ := http.NewRequest("GET", "/", nil)
+	oauthReq.Header.Set("Authorization", "Bearer opaque")
+	oauthAuthInfo, err := oauthDriver.Authenticate(oauthReq)
+	if err != nil {
+		t.Fatalf("authenticate oauth bearer token: %v", err)
+	}
+	if oauthAuthInfo.UserID != "client-1" || oauthAuthInfo.Role != "client" {
+		t.Fatalf("oauth bearer auth info = %#v", oauthAuthInfo)
+	}
+	lowercaseBearerReq, _ := http.NewRequest("GET", "/", nil)
+	lowercaseBearerReq.Header.Set("Authorization", "bearer   opaque")
+	if _, err := oauthDriver.Authenticate(lowercaseBearerReq); err != nil {
+		t.Fatalf("lowercase oauth bearer token should authenticate: %v", err)
+	}
+	for _, header := range []string{
+		"Bearer",
+		"Bearer opaque extra-secret",
+		"Bearer\t",
+		"Basic " + strings.Repeat("x", 128),
+		"Bearer " + strings.Repeat("x", 13<<10),
+	} {
+		malformedReq, _ := http.NewRequest("GET", "/", nil)
+		malformedReq.Header.Set("Authorization", header)
+		if _, err := oauthDriver.Authenticate(malformedReq); err == nil || err.Error() != "missing bearer token" {
+			t.Fatalf("malformed oauth bearer header %q error = %v, want missing bearer token", header, err)
+		} else if strings.Contains(err.Error(), "extra-secret") || strings.Contains(err.Error(), strings.Repeat("x", 128)) {
+			t.Fatalf("malformed oauth bearer header leaked detail: %v", err)
+		}
+	}
 	tokenReq, _ := http.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader("grant_type=client_credentials"))
 	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	tokenReq.SetBasicAuth("client-1", "secret-1")

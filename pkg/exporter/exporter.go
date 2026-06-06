@@ -9816,8 +9816,9 @@ func NewDriver(env func(string, string) string, db *sql.DB, driver string) *Driv
 func (d *Driver) Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
 	if r == nil { return nil, errors.New("missing bearer token") }
 	h := r.Header.Get("Authorization")
-	if !strings.HasPrefix(h, "Bearer ") { return nil, errors.New("missing bearer token") }
-	return d.ValidateToken(h[7:])
+	token, ok := parseBearerToken(h)
+	if !ok { return nil, errors.New("missing bearer token") }
+	return d.ValidateToken(token)
 }
 
 func (d *Driver) ValidateToken(token string) (*httpx.AuthInfo, error) {
@@ -9917,6 +9918,17 @@ func parseBasicAuth(header string) (string, string, bool) {
 	parts := strings.SplitN(string(decoded), ":", 2)
 	if len(parts) != 2 { return "", "", false }
 	return parts[0], parts[1], true
+}
+
+func parseBearerToken(header string) (string, bool) {
+	if len(header) > maxOAuthAuthorizationHeaderBytes {
+		return "", false
+	}
+	parts := strings.Fields(header)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" {
+		return "", false
+	}
+	return parts[1], true
 }
 
 func generateToken() (string, error) {

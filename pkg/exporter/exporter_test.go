@@ -3368,6 +3368,39 @@ func TestExportedPolicyOperationsRejectNilDBWithoutPanic(t *testing.T) {
 	}
 }
 
+func TestExportedPolicyStateTableNamesAreAllowlisted(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policyStateTableName("rbac_changelog"); err != nil {
+		t.Fatalf("rbac_changelog rejected: %v", err)
+	}
+	if _, err := policyAppliedUpsertSQL(db, "graphql_changelog"); err != nil {
+		t.Fatalf("graphql_changelog upsert rejected: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		run  func() error
+	}{
+		{name: "state name", run: func() error { _, err := policyStateTableName("rbac_changelog; DROP TABLE roles -- password=swordfish"); return err }},
+		{name: "upsert", run: func() error { _, err := policyAppliedUpsertSQL(db, "graphql_changelog; DROP TABLE graphql_actions -- password=swordfish"); return err }},
+		{name: "applied rows", run: func() error { _, err := appliedPolicyRows(db, "rbac_changelog; DROP TABLE roles -- password=swordfish"); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.run()
+			if err == nil || err.Error() != "policy database error" {
+				t.Fatalf("%s error = %v, want sanitized policy database error", tc.name, err)
+			}
+			for _, forbidden := range []string{"DROP", "password", "swordfish", "roles", "graphql_actions", ";"} {
+				if strings.Contains(err.Error(), forbidden) {
+					t.Fatalf("%s error leaked %q: %v", tc.name, forbidden, err)
+				}
+			}
+		})
+	}
+}
+
 func TestExportedPolicyDatabaseErrorsAreSanitized(t *testing.T) {
 	for _, tc := range []struct {
 		name string

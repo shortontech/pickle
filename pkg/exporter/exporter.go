@@ -6430,13 +6430,17 @@ func seedGraphQLPolicies(db *gorm.DB) error {
 func markPoliciesApplied(db *gorm.DB, table string, ids []string) error {
 	now := time.Now().UTC()
 	for _, id := range ids {
-		if err := db.Exec(policyAppliedUpsertSQL(db, table), id, 1, "applied", now, now).Error; err != nil { return policyDatabaseError() }
+		sql, err := policyAppliedUpsertSQL(db, table)
+		if err != nil { return err }
+		if err := db.Exec(sql, id, 1, "applied", now, now).Error; err != nil { return policyDatabaseError() }
 	}
 	return nil
 }
 
-func policyAppliedUpsertSQL(db *gorm.DB, table string) string {
-	return policyAppliedUpsertSQLForDialect(gormDialectName(db), table)
+func policyAppliedUpsertSQL(db *gorm.DB, table string) (string, error) {
+	safeTable, err := policyStateTableName(table)
+	if err != nil { return "", err }
+	return policyAppliedUpsertSQLForDialect(gormDialectName(db), safeTable), nil
 }
 
 func policyAppliedUpsertSQLForDialect(dialect string, table string) string {
@@ -6446,13 +6450,24 @@ func policyAppliedUpsertSQLForDialect(dialect string, table string) string {
 	return "INSERT INTO " + table + " (id, batch, state, started_at, completed_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET state = excluded.state, completed_at = excluded.completed_at"
 }
 
+func policyStateTableName(table string) (string, error) {
+	switch table {
+	case "rbac_changelog", "graphql_changelog":
+		return table, nil
+	default:
+		return "", policyDatabaseError()
+	}
+}
+
 func gormDialectName(db *gorm.DB) string {
 	if db == nil || db.Dialector == nil { return "" }
 	return db.Dialector.Name()
 }
 
 func appliedPolicyRows(db *gorm.DB, table string) (map[string]int, error) {
-	rows, err := db.Raw("SELECT id, batch FROM " + table + " WHERE state = 'applied'").Rows()
+	safeTable, err := policyStateTableName(table)
+	if err != nil { return nil, err }
+	rows, err := db.Raw("SELECT id, batch FROM " + safeTable + " WHERE state = 'applied'").Rows()
 	if err != nil { return nil, policyDatabaseError() }
 	defer rows.Close()
 	out := map[string]int{}

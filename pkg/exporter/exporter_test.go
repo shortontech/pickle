@@ -8134,11 +8134,18 @@ func TestExportReportListsUnsupportedBoundariesOnlyWhenUnsupported(t *testing.T)
 		modulePath: "exported-app",
 		result: &Result{
 			ReportPath: reportPath,
-			Findings: []Finding{{
-				File:    filepath.Join("database", "policies", "graphql"),
-				Rule:    "graphql_action_export_unsupported",
-				Message: "GraphQL controller action approveTransfer is not lowered by the standalone gqlgen export target",
-			}},
+			Findings: []Finding{
+				{
+					File:    filepath.Join("database", "policies", "graphql"),
+					Rule:    "graphql_action_export_unsupported",
+					Message: "GraphQL controller action approveTransfer is not lowered by the standalone gqlgen export target",
+				},
+				{
+					File:    filepath.Join("database", "migrations", "2026_02_21_100000_add_email_to_users_table.go"),
+					Rule:    "migration_export_unsupported",
+					Message: "unsupported migration export for 2026_02_21_100000_add_email_to_users_table.go: add-column/index migrations are not lowered yet",
+				},
+			},
 		},
 	}
 	if err := ex.writeReport("gorm"); err != nil {
@@ -8146,6 +8153,7 @@ func TestExportReportListsUnsupportedBoundariesOnlyWhenUnsupported(t *testing.T)
 	}
 	assertFileContains(t, reportPath, "## Unsupported")
 	assertFileContains(t, reportPath, "`database/policies/graphql` `graphql_action_export_unsupported` - GraphQL controller action approveTransfer is not lowered by the standalone gqlgen export target")
+	assertFileContains(t, reportPath, "`database/migrations/2026_02_21_100000_add_email_to_users_table.go` `migration_export_unsupported` - unsupported migration export for 2026_02_21_100000_add_email_to_users_table.go: add-column/index migrations are not lowered yet")
 	assertFileNotContains(t, reportPath, "No unsupported export findings.")
 	assertFileNotContains(t, reportPath, "## Manual Review")
 }

@@ -4547,6 +4547,38 @@ func TestExportedLoadRolesDatabaseErrorsAreSanitized(t *testing.T) {
 	}
 }
 
+func TestExportedRBACMiddlewareNilNextFailsClosed(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models.SetDB(db)
+	if err := policies.Migrate(db, "sqlite"); err != nil {
+		t.Fatalf("policy migrate: %v", err)
+	}
+	ctx := httpx.NewContext(newRequest())
+	ctx.SetAuth(&httpx.AuthInfo{UserID: "user-1", Role: "admin"})
+
+	for name, resp := range map[string]httpx.Response{
+		"LoadRoles":   middleware.LoadRoles(ctx, nil),
+		"RequireRole": middleware.RequireRole("admin")(ctx, nil),
+		"RequireAdmin": middleware.RequireAdmin(ctx, nil),
+	} {
+		if resp.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("%s status = %d, want 500", name, resp.StatusCode)
+		}
+		body, ok := resp.Body.(map[string]string)
+		if !ok || body["error"] != "internal server error" {
+			t.Fatalf("%s body = %#v, want sanitized internal server error", name, resp.Body)
+		}
+		for _, forbidden := range []string{"panic", "nil pointer", "roles", "admin", "user-1"} {
+			if strings.Contains(body["error"], forbidden) {
+				t.Fatalf("%s leaked %q in body %#v", name, forbidden, body)
+			}
+		}
+	}
+}
+
 func newRequest() *http.Request {
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
 	return req

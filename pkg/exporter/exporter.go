@@ -9278,6 +9278,9 @@ type roleRow struct {
 }
 
 func LoadRoles(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
+	if next == nil {
+		return httpx.Response{StatusCode: 500, Body: map[string]string{"error": "internal server error"}}
+	}
 	if !ctx.IsAuthenticated() {
 		return ctx.Unauthorized("LoadRoles requires authentication - add Auth middleware before LoadRoles")
 	}
@@ -9298,6 +9301,9 @@ func LoadRoles(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
 
 func RequireRole(roles ...string) httpx.MiddlewareFunc {
 	return func(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
+		if next == nil {
+			return httpx.Response{StatusCode: 500, Body: map[string]string{"error": "internal server error"}}
+		}
 		if !ctx.HasAnyRole(roles...) {
 			return ctx.Forbidden("insufficient role")
 		}
@@ -9306,6 +9312,9 @@ func RequireRole(roles ...string) httpx.MiddlewareFunc {
 }
 
 func RequireAdmin(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
+	if next == nil {
+		return httpx.Response{StatusCode: 500, Body: map[string]string{"error": "internal server error"}}
+	}
 	if !ctx.IsAdmin() {
 		return ctx.Forbidden("admin access required")
 	}

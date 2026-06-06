@@ -1379,6 +1379,18 @@ func TestExportedRequestBindingsRejectUnsafeBodies(t *testing.T) {
 		t.Fatalf("unknown-field bind error = %#v, want 400", bindErr)
 	}
 
+	duplicateField := requestWithBody(` + "`" + `{"name":"Ada","name":"Mallory-password=swordfish","email":"ada@example.com","password":"correct horse"}` + "`" + `)
+	if _, bindErr := BindCreateUserRequest(duplicateField); bindErr == nil || bindErr.Status != http.StatusBadRequest {
+		t.Fatalf("duplicate-field bind error = %#v, want 400", bindErr)
+	} else if bindErr.Error() != "_body: duplicate request field" || strings.Contains(bindErr.Error(), "Mallory") || strings.Contains(bindErr.Error(), "swordfish") {
+		t.Fatalf("duplicate-field bind error leaked detail: %q", bindErr.Error())
+	}
+
+	arrayRoot := requestWithBody(` + "`" + `[{"name":"Ada","email":"ada@example.com","password":"correct horse"}]` + "`" + `)
+	if _, bindErr := BindCreateUserRequest(arrayRoot); bindErr == nil || bindErr.Status != http.StatusBadRequest {
+		t.Fatalf("array-root bind error = %#v, want 400", bindErr)
+	}
+
 	trailingJSON := requestWithBody(` + "`" + `{"name":"Ada","email":"ada@example.com","password":"correct horse"} {"name":"Grace"}` + "`" + `)
 	if _, bindErr := BindCreateUserRequest(trailingJSON); bindErr == nil || bindErr.Status != http.StatusBadRequest {
 		t.Fatalf("trailing JSON bind error = %#v, want 400", bindErr)

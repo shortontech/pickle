@@ -2557,6 +2557,7 @@ func writeGraphQLAPIResolverSupport(b *strings.Builder) {
 	b.WriteString(`const defaultGraphQLAPIPageSize = 25
 const maxGraphQLAPIPageSize = 100
 const maxGraphQLAPIInputListSize = 100
+const maxGraphQLAPICursorBytes = 64
 const maxGraphQLAPIActionInputNameBytes = 256
 const maxGraphQLAPIActionInputDepth = 8
 const maxGraphQLAPIActionInputCollectionItems = 256
@@ -2714,8 +2715,18 @@ func gqlgenPageWindow(page *model.PageInput, totalCount, limit int) (int, int, b
 }
 
 func gqlgenParseCursor(cursor string) (int, error) {
-	if !strings.HasPrefix(cursor, "cursor:") {
+	const prefix = "cursor:"
+	if len(cursor) > maxGraphQLAPICursorBytes || !strings.HasPrefix(cursor, prefix) {
 		return 0, fmt.Errorf("invalid cursor")
+	}
+	digits := cursor[len(prefix):]
+	if digits == "" {
+		return 0, fmt.Errorf("invalid cursor")
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("invalid cursor")
+		}
 	}
 	var offset int
 	if _, err := fmt.Sscanf(cursor, "cursor:%d", &offset); err != nil || offset < 0 {

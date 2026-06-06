@@ -6935,6 +6935,7 @@ func writeExportedGraphQLAPITargetVisibilityBehaviorTest(t *testing.T, out strin
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -7049,6 +7050,24 @@ func TestExportedGQLGenTargetVisibilitySelectsByAuthClaims(t *testing.T) {
 	badTimestamp := "not-a-timestamp"
 	if _, err := queries.Users(managerCtx, &model.UserFilter{CreatedAt: &model.DateTimeFilter{Gte: &badTimestamp}}, nil, nil); !isBadInput(err) {
 		t.Fatalf("invalid timestamp filter error = %v, want BAD_USER_INPUT", err)
+	}
+	if offset, err := gqlgenParseCursor("cursor:10"); err != nil || offset != 10 {
+		t.Fatalf("valid cursor parsed as %d/%v, want 10/nil", offset, err)
+	}
+	for _, cursor := range []string{
+		"cursor:",
+		"cursor:10trailing",
+		"cursor:-1",
+		"cursor: 10",
+		"cursor:" + strings.Repeat("1", maxGraphQLAPICursorBytes),
+	} {
+		if _, err := gqlgenParseCursor(cursor); err == nil || err.Error() != "invalid cursor" {
+			t.Fatalf("cursor %q parse error = %v, want invalid cursor", cursor, err)
+		}
+	}
+	badCursor := "cursor:1trailing"
+	if _, err := queries.Users(managerCtx, nil, nil, &model.PageInput{After: &badCursor}); !isBadInput(err) {
+		t.Fatalf("bad list cursor error = %v, want BAD_USER_INPUT", err)
 	}
 
 	strangerTopPosts, err := queries.Posts(strangerCtx, nil, nil, nil)

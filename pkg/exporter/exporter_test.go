@@ -2354,6 +2354,43 @@ func TestExportedMigrationFreshFailsClosedOnDownErrors(t *testing.T) {
 	assertMigrationRowCount(t, db, failingFresh.ID, 1)
 }
 
+func TestExportedMigrationRegistryRejectsUnsafeEntries(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := migrations.NewRunner(db, "sqlite")
+	unsafe := migrations.MigrationEntry{
+		ID:       "99990101000004_unsafe_file",
+		UpFile:   "../password=swordfish.sql",
+		DownFile: "99990101000004_unsafe_file.down.sql",
+	}
+	for _, tc := range []struct {
+		name string
+		run  func() error
+	}{
+		{name: "migrate", run: func() error { return runner.Migrate([]migrations.MigrationEntry{unsafe}) }},
+		{name: "rollback", run: func() error { return runner.Rollback([]migrations.MigrationEntry{unsafe}) }},
+		{name: "fresh", run: func() error { return runner.Fresh([]migrations.MigrationEntry{unsafe}) }},
+		{name: "status", run: func() error { _, err := runner.Status([]migrations.MigrationEntry{unsafe}); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.run()
+			if err == nil || err.Error() != "migration file name invalid" {
+				t.Fatalf("%s error = %v, want sanitized invalid filename", tc.name, err)
+			}
+			for _, forbidden := range []string{"swordfish", "password", "..", "../", "SELECT"} {
+				if strings.Contains(err.Error(), forbidden) {
+					t.Fatalf("%s leaked %q in error: %v", tc.name, forbidden, err)
+				}
+			}
+		})
+	}
+	if rows := countMigrationRows(t, db); rows != 0 {
+		t.Fatalf("unsafe migration entry recorded %d rows, want 0", rows)
+	}
+}
+
 func TestExportedMigrationRunnerRejectsNilDBWithoutPanic(t *testing.T) {
 	runner := migrations.NewRunner(nil, "sqlite")
 	for _, tc := range []struct {
@@ -2409,6 +2446,18 @@ func TestExportedMigrationDatabaseErrorsAreSanitized(t *testing.T) {
 			}
 		})
 	}
+}
+
+func countMigrationRows(t *testing.T, db *gorm.DB) int64 {
+	t.Helper()
+	if !db.Migrator().HasTable("migrations") {
+		return 0
+	}
+	var count int64
+	if err := db.Table("migrations").Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
 
 func assertSQLiteTableExists(t *testing.T, db *gorm.DB, table string) {

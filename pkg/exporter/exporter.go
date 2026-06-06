@@ -6619,6 +6619,9 @@ func (r *Runner) Migrate(entries []MigrationEntry) error {
 	if err := r.ensureDB(); err != nil {
 		return err
 	}
+	if err := validateMigrationEntries(entries); err != nil {
+		return err
+	}
 	applied, err := r.applied()
 	if err != nil {
 		return err
@@ -6652,6 +6655,9 @@ func (r *Runner) Migrate(entries []MigrationEntry) error {
 
 func (r *Runner) Rollback(entries []MigrationEntry) error {
 	if err := r.ensureDB(); err != nil {
+		return err
+	}
+	if err := validateMigrationEntries(entries); err != nil {
 		return err
 	}
 	applied, err := r.applied()
@@ -6695,6 +6701,9 @@ func (r *Runner) Fresh(entries []MigrationEntry) error {
 	if err := r.ensureDB(); err != nil {
 		return err
 	}
+	if err := validateMigrationEntries(entries); err != nil {
+		return err
+	}
 	for i := len(entries) - 1; i >= 0; i-- {
 		if err := r.execMigrationFile(entries[i].DownFile); err != nil {
 			return fmt.Errorf("fresh rollback %s: %w", entries[i].ID, err)
@@ -6708,6 +6717,9 @@ func (r *Runner) Fresh(entries []MigrationEntry) error {
 
 func (r *Runner) Status(entries []MigrationEntry) ([]MigrationStatus, error) {
 	if err := r.ensureDB(); err != nil {
+		return nil, err
+	}
+	if err := validateMigrationEntries(entries); err != nil {
 		return nil, err
 	}
 	applied, err := r.applied()
@@ -6748,6 +6760,9 @@ func (r *Runner) execMigrationFileOn(db *gorm.DB, name string) error {
 	if db == nil {
 		return fmt.Errorf("migrations: DB is nil")
 	}
+	if err := validateMigrationFileName(name); err != nil {
+		return err
+	}
 	data, err := migrationFiles.ReadFile(name)
 	if err != nil {
 		return err
@@ -6757,6 +6772,32 @@ func (r *Runner) execMigrationFileOn(db *gorm.DB, name string) error {
 		if err := db.Exec(statement).Error; err != nil {
 			return fmt.Errorf("executing migration statement %d: %w", i+1, migrationDatabaseError())
 		}
+	}
+	return nil
+}
+
+func validateMigrationEntries(entries []MigrationEntry) error {
+	for _, entry := range entries {
+		if err := validateMigrationEntry(entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateMigrationEntry(entry MigrationEntry) error {
+	if entry.ID == "" {
+		return errors.New("migration registry entry invalid")
+	}
+	if err := validateMigrationFileName(entry.UpFile); err != nil {
+		return err
+	}
+	return validateMigrationFileName(entry.DownFile)
+}
+
+func validateMigrationFileName(name string) error {
+	if name == "" || strings.ContainsRune(name, '/') || strings.ContainsRune(name, '\\') || strings.Contains(name, "..") || !strings.HasSuffix(name, ".sql") {
+		return errors.New("migration file name invalid")
 	}
 	return nil
 }

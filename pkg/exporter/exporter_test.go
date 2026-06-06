@@ -8131,6 +8131,77 @@ func (p *ActionAPI_2026_06_05_100000) Down() {
 	runExported(t, out, "go", "test", "./...")
 }
 
+func TestExportLowersGraphQLControllerActionsWithoutModelExposure(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
+	if err := os.Remove(filepath.Join(projectDir, "database", "policies", "graphql", "2026_03_25_100000_expose_users.go")); err != nil {
+		t.Fatal(err)
+	}
+	controllerPath := filepath.Join(projectDir, "app", "http", "controllers", "transfer_controller.go")
+	if err := os.WriteFile(controllerPath, []byte(`package controllers
+
+import (
+	"net/http"
+
+	pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
+)
+
+type TransferController struct{}
+
+func (c TransferController) Approve(ctx *pickle.Context) pickle.Response {
+	return ctx.JSON(http.StatusAccepted, map[string]any{
+		"ok": true,
+		"userId": ctx.Auth().UserID,
+	})
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policyPath := filepath.Join(projectDir, "database", "policies", "graphql", "2026_06_05_100000_actions.go")
+	if err := os.WriteFile(policyPath, []byte(`package graphql
+
+import "github.com/shortontech/pickle/testdata/basic-crud/app/http/controllers"
+
+type ActionAPI_2026_06_05_100000 struct {
+	GraphQLPolicy
+}
+
+func (p *ActionAPI_2026_06_05_100000) Up() {
+	p.ControllerAction("approveTransfer", controllers.TransferController{}.Approve)
+}
+
+func (p *ActionAPI_2026_06_05_100000) Down() {
+	p.RemoveAction("approveTransfer")
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "exported")
+	res, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err != nil {
+		t.Fatalf("Export failed: %v", err)
+	}
+	if hasFinding(res.Findings, "graphql_action_export_unsupported") {
+		t.Fatalf("did not expect graphql_action_export_unsupported finding, got %+v", res.Findings)
+	}
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Unsupported\n\nNo unsupported export findings.")
+	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "type Query {\n}")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "type Mutation")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "approveTransfer(input: JSON!): JSON! @auth")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *mutationResolver) ApproveTransfer")
+	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *Resolver) Query()")
+	assertFileContains(t, filepath.Join(out, "database", "policies", "support.go"), `{Name: "approveTransfer"}`)
+	assertStandaloneNoPickleRuntime(t, out)
+	writeExportedSupportedGraphQLActionPolicyStateTest(t, out)
+	writeExportedActionOnlyGraphQLActionResolverTest(t, out)
+	runExported(t, out, "go", "test", "./...")
+}
+
 func writeExportedUnsupportedGraphQLActionPolicyStateTest(t *testing.T, out string) {
 	t.Helper()
 	testSrc := `package policies
@@ -8235,6 +8306,35 @@ func TestExportedGraphQLControllerActionResolverCallsController(t *testing.T) {
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "resolver", "exported_controller_action_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedActionOnlyGraphQLActionResolverTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package resolver
+
+import (
+	"context"
+	"testing"
+)
+
+func TestExportedActionOnlyGraphQLControllerActionResolverCallsController(t *testing.T) {
+	mutations := &mutationResolver{Resolver: &Resolver{}}
+	ctx := WithGraphQLAPIAuthClaims(context.Background(), &GraphQLAPIAuthClaims{
+		UserID: "user-1",
+		Role:   "viewer",
+	})
+	got, err := mutations.ApproveTransfer(ctx, map[string]any{})
+	if err != nil {
+		t.Fatalf("approveTransfer: %v", err)
+	}
+	if got["ok"] != true || got["userId"] != "user-1" {
+		t.Fatalf("approveTransfer response = %#v", got)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "resolver", "exported_action_only_controller_action_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

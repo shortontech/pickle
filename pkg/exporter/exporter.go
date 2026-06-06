@@ -2186,6 +2186,7 @@ func (e *exporter) writeGraphQLPackage(tables []*schema.Table, views []*schema.V
 	}
 	supportedActions, _ := e.exportedGraphQLControllerActions()
 	schemaSDL = addGraphQLControllerActionSDL(schemaSDL, supportedActions)
+	schemaSDL = normalizeGraphQLSDL(schemaSDL)
 	if err := e.writeGraphQLTargetFiles(schemaSDL, supportedActions); err != nil {
 		return err
 	}
@@ -2256,6 +2257,7 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 	}
 
 	var b strings.Builder
+	hasQuery := graphQLSDLHasQueryType(schemaSDL)
 	b.WriteString("package resolver\n\n")
 	b.WriteString("import (\n")
 	b.WriteString("\t\"context\"\n")
@@ -2281,7 +2283,9 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 		fmt.Fprintf(&b, "\t\"%s/internal/httpx\"\n", e.modulePath)
 	}
 	b.WriteString(")\n\n")
-	b.WriteString("type queryResolver struct{ *Resolver }\n")
+	if hasQuery {
+		b.WriteString("type queryResolver struct{ *Resolver }\n")
+	}
 	if graphQLSDLHasMutationType(schemaSDL) {
 		b.WriteString("type mutationResolver struct{ *Resolver }\n")
 	}
@@ -2324,7 +2328,9 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 	if graphQLSDLHasMutationType(schemaSDL) {
 		b.WriteString("func (r *Resolver) Mutation() generated.MutationResolver { return &mutationResolver{r} }\n\n")
 	}
-	b.WriteString("func (r *Resolver) Query() generated.QueryResolver { return &queryResolver{r} }\n")
+	if hasQuery {
+		b.WriteString("func (r *Resolver) Query() generated.QueryResolver { return &queryResolver{r} }\n")
+	}
 
 	formatted, err := format.Source([]byte(b.String()))
 	if err != nil {
@@ -2351,11 +2357,17 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 		support.WriteString("\t\"net/http/httptest\"\n")
 	}
 	support.WriteString("\t\"strings\"\n")
-	support.WriteString("\t\"time\"\n\n")
-	support.WriteString("\t\"github.com/google/uuid\"\n")
+	if len(exposed) > 0 {
+		support.WriteString("\t\"time\"\n\n")
+		support.WriteString("\t\"github.com/google/uuid\"\n")
+	} else {
+		support.WriteString("\n")
+	}
 	support.WriteString("\t\"github.com/vektah/gqlparser/v2/gqlerror\"\n")
 	fmt.Fprintf(&support, "\t\"%s/app/graphqlapi/model\"\n", e.modulePath)
-	fmt.Fprintf(&support, "\t\"%s/app/models\"\n", e.modulePath)
+	if len(exposed) > 0 {
+		fmt.Fprintf(&support, "\t\"%s/app/models\"\n", e.modulePath)
+	}
 	if len(actions) > 0 {
 		fmt.Fprintf(&support, "\t\"%s/internal/httpx\"\n", e.modulePath)
 	}
@@ -2781,6 +2793,10 @@ func graphQLSDLHasQueryField(schemaSDL, field string) bool {
 	return strings.Contains(schemaSDL, "\n  "+field+"(") || strings.Contains(schemaSDL, "\n  "+field+":")
 }
 
+func graphQLSDLHasQueryType(schemaSDL string) bool {
+	return strings.Contains(schemaSDL, "type Query {")
+}
+
 func graphQLSDLHasMutationType(schemaSDL string) bool {
 	return strings.Contains(schemaSDL, "type Mutation {")
 }
@@ -2914,6 +2930,45 @@ func addGraphQLControllerActionSDL(schemaSDL string, actions []exportedGraphQLCo
 	}
 	insertAt := start + closeRel
 	return schemaSDL[:insertAt] + "\n" + fields.String() + schemaSDL[insertAt:] + "\n"
+}
+
+func normalizeGraphQLSDL(schemaSDL string) string {
+	schemaSDL = removeEmptyGraphQLObjectType(schemaSDL, "Query")
+	schemaSDL = removeEmptyGraphQLObjectType(schemaSDL, "Mutation")
+	return strings.TrimSpace(schemaSDL) + "\n"
+}
+
+func removeEmptyGraphQLObjectType(schemaSDL, typeName string) string {
+	marker := "type " + typeName + " {"
+	start := strings.Index(schemaSDL, marker)
+	if start < 0 {
+		return schemaSDL
+	}
+	open := strings.Index(schemaSDL[start:], "{")
+	if open < 0 {
+		return schemaSDL
+	}
+	open += start
+	closeRel := strings.Index(schemaSDL[open:], "}")
+	if closeRel < 0 {
+		return schemaSDL
+	}
+	close := open + closeRel
+	if strings.TrimSpace(schemaSDL[open+1:close]) != "" {
+		return schemaSDL
+	}
+	removeStart := start
+	for removeStart > 0 && schemaSDL[removeStart-1] == '\n' {
+		removeStart--
+	}
+	removeEnd := close + 1
+	for removeEnd < len(schemaSDL) && schemaSDL[removeEnd] == '\n' {
+		removeEnd++
+	}
+	if removeStart > 0 && removeEnd < len(schemaSDL) {
+		return schemaSDL[:removeStart] + "\n\n" + schemaSDL[removeEnd:]
+	}
+	return schemaSDL[:removeStart] + schemaSDL[removeEnd:]
 }
 
 func graphQLListFieldName(tbl *schema.Table) string {

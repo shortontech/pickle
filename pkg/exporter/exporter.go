@@ -4884,6 +4884,10 @@ func validateGraphQLAPIRequestEnvelopeFieldUniqueness(w http.ResponseWriter, bod
 		writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
 		return false
 	}
+	return validateGraphQLAPIJSONObjectFieldUniqueness(w, decoder)
+}
+
+func validateGraphQLAPIJSONObjectFieldUniqueness(w http.ResponseWriter, decoder *json.Decoder) bool {
 	seen := map[string]bool{}
 	for decoder.More() {
 		token, err := decoder.Token()
@@ -4901,13 +4905,55 @@ func validateGraphQLAPIRequestEnvelopeFieldUniqueness(w http.ResponseWriter, bod
 			return false
 		}
 		seen[field] = true
-		var discard any
-		if err := decoder.Decode(&discard); err != nil {
-			writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
+		if !validateGraphQLAPIJSONValueFieldUniqueness(w, decoder) {
 			return false
 		}
 	}
+	token, err := decoder.Token()
+	if err != nil {
+		writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
+		return false
+	}
+	if delim, ok := token.(json.Delim); !ok || delim != '}' {
+		writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
+		return false
+	}
 	return true
+}
+
+func validateGraphQLAPIJSONValueFieldUniqueness(w http.ResponseWriter, decoder *json.Decoder) bool {
+	token, err := decoder.Token()
+	if err != nil {
+		writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
+		return false
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return true
+	}
+	switch delim {
+	case '{':
+		return validateGraphQLAPIJSONObjectFieldUniqueness(w, decoder)
+	case '[':
+		for decoder.More() {
+			if !validateGraphQLAPIJSONValueFieldUniqueness(w, decoder) {
+				return false
+			}
+		}
+		token, err := decoder.Token()
+		if err != nil {
+			writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
+			return false
+		}
+		if end, ok := token.(json.Delim); !ok || end != ']' {
+			writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
+			return false
+		}
+		return true
+	default:
+		writeGraphQLAPIHTTPError(w, "invalid GraphQL request body", "BAD_USER_INPUT")
+		return false
+	}
 }
 
 func validateGraphQLAPIRequestEnvelope(w http.ResponseWriter, raw map[string]any, schema *ast.Schema) bool {

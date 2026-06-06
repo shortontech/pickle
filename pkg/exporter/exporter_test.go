@@ -6539,6 +6539,8 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 	for name, body := range map[string][]byte{
 		"batched":          []byte(` + "`" + `[{"query":"{ posts { totalCount } }"}]` + "`" + `),
 		"duplicate_field":  []byte(` + "`" + `{"query":"{ posts { totalCount } }","query":"{ comments { totalCount } }"}` + "`" + `),
+		"duplicate_variable_field": []byte(` + "`" + `{"query":"query Good($input: PostFilterInput) { posts(filter: $input) { totalCount } }","variables":{"input":{"title":{"eq":"safe","eq":"shadow"}}}}` + "`" + `),
+		"duplicate_extension_field": []byte(` + "`" + `{"query":"{ posts { totalCount } }","extensions":{"trace":{"id":"safe","id":"shadow"}}}` + "`" + `),
 		"unsupported":      []byte(` + "`" + `{"query":"{ posts { totalCount } }","unexpected":true}` + "`" + `),
 		"multi_operation":  []byte(` + "`" + `{"query":"query First { posts { totalCount } } query Second { comments { totalCount } }","operationName":"First"}` + "`" + `),
 		"invalid_op_name":  []byte(` + "`" + `{"query":"query Good { posts { totalCount } }","operationName":"1 Bad"}` + "`" + `),

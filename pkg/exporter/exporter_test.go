@@ -157,13 +157,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileNotContains(t, filepath.Join(out, "app", "http", "middleware", "rbac_support.go"), "pickle export:")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Target ORM: `gorm`")
 
-	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
-	assertNoGoFileContains(t, out, "pickle.")
-	assertNoGoFileContains(t, out, "PICKLE_")
-	assertNoGoFileContains(t, out, "RegisterPickleEndpoints")
-	assertNoGoFileContains(t, out, "/pickle/config/reload")
+	assertStandaloneNoPickleRuntime(t, out)
 	assertFileContains(t, filepath.Join(out, "go.sum"), "gorm.io/gorm")
-	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
 	writeExportedAuthBehaviorTest(t, out)
 	writeExportedSessionCSRFBehaviorTest(t, out)
 	writeExportedConfigBehaviorTest(t, out)
@@ -4871,9 +4866,8 @@ func TestExportLedgerCompiles(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "account_controller.go"), "Account{})")
 	assertPathMissing(t, filepath.Join(out, "integrity_test.go"))
 	assertCleanExportReport(t, out)
-	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
+	assertStandaloneNoPickleRuntime(t, out)
 	assertNoGoFileContains(t, out, "QueryAccount")
-	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
 	writeExportedIntegrityBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
@@ -4902,8 +4896,7 @@ func TestExportEncryptionLowersGORMHooks(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "encryption_support.go"), "func encryptDeterministic")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Encrypted and sealed columns with GORM encrypt/decrypt hooks")
 	assertCleanExportReport(t, out)
-	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
-	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
+	assertStandaloneNoPickleRuntime(t, out)
 	writeExportedEncryptionBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
@@ -4986,9 +4979,7 @@ func TestExportZeroGraphQLLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "http", "requests", "bindings.go"), "package requests")
 	assertFileContains(t, filepath.Join(out, "internal", "httpx", "httpx.go"), "func writeRouterNotFound")
 	assertCleanExportReport(t, out)
-	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
-	assertNoGoFileContains(t, out, "pickle.")
-	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
+	assertStandaloneNoPickleRuntime(t, out)
 	writeExportedZeroGraphQLEncryptedFilterTest(t, out)
 	writeExportedZeroGraphQLAPITargetBehaviorTest(t, out)
 	writeExportedZeroGraphQLAPIHTTPBehaviorTest(t, out)
@@ -5900,9 +5891,7 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone emitted Go GraphQL target backed by gqlgen")
 	assertFileNotContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Generated GraphQL package")
 	assertCleanExportReport(t, out)
-	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
-	assertNoGoFileContains(t, out, "pickle.")
-	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
+	assertStandaloneNoPickleRuntime(t, out)
 	writeExportedGraphQLModelVisibilityBehaviorTest(t, out)
 	writeExportedGraphQLAPITargetVisibilityBehaviorTest(t, out)
 	writeExportedGraphQLAPIHandlerRBACBehaviorTest(t, out)
@@ -6473,13 +6462,8 @@ func TestExportMonorepoCompiles(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "IdleTimeout:       120 * time.Second")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "MaxHeaderBytes:    1 << 20")
 	assertCleanExportReport(t, out)
-	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
-	assertNoGoFileContains(t, out, "pickle.")
-	assertNoGoFileContains(t, out, "PICKLE_")
-	assertNoGoFileContains(t, out, "RegisterPickleEndpoints")
-	assertNoGoFileContains(t, out, "/pickle/config/reload")
+	assertStandaloneNoPickleRuntime(t, out)
 	assertNoGoFileContains(t, out, "QueryOrder")
-	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
 	writeExportedMonorepoServerBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
@@ -7128,8 +7112,7 @@ func TestExportCronCompilesWithSchedulerSupport(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Cron job scheduler support with exported server startup wiring")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone command dispatch with embedded SQL migration commands")
 	assertCleanExportReport(t, out)
-	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
-	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
+	assertStandaloneNoPickleRuntime(t, out)
 	writeExportedCronBehaviorTests(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
@@ -7376,8 +7359,7 @@ func (m *AlterWidgetsTable_2026_04_01_100001) Down() {
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "20260320100000_create_users_table.up.sql"), `ON "users" ("email_encrypted")`)
 	assertFileNotContains(t, filepath.Join(out, "database", "migrations", "20260320100000_create_users_table.up.sql"), `ON "users" ("email")`)
 	assertCleanExportReport(t, out)
-	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
-	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
+	assertStandaloneNoPickleRuntime(t, out)
 
 	behaviorTest := `package migrations
 
@@ -7562,8 +7544,7 @@ func (p *ActionAPI_2026_06_05_100000) Down() {
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "`database/policies/graphql` `graphql_action_export_unsupported` - GraphQL controller action approveTransfer is not lowered by the standalone gqlgen export target")
 	assertFileNotContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "No unsupported export findings.")
 	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "approveTransfer")
-	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
-	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
+	assertStandaloneNoPickleRuntime(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
 
@@ -8561,6 +8542,16 @@ func assertNoGoFileContains(t *testing.T, root, needle string) {
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
+}
+
+func assertStandaloneNoPickleRuntime(t *testing.T, out string) {
+	t.Helper()
+	assertNoGoFileContains(t, out, "github.com/shortontech/pickle")
+	assertNoGoFileContains(t, out, "pickle.")
+	assertNoGoFileContains(t, out, "PICKLE_")
+	assertNoGoFileContains(t, out, "RegisterPickleEndpoints")
+	assertNoGoFileContains(t, out, "/pickle/config/reload")
+	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
 }
 
 func assertNoGoFilesUnder(t *testing.T, root string) {

@@ -804,6 +804,7 @@ type queryChain struct {
 	Filters      []queryFilter
 	Orders       []queryOrder
 	Preloads     []string
+	Selects      []string
 	Limit        ast.Expr
 	Offset       ast.Expr
 	Arg          ast.Expr
@@ -990,6 +991,17 @@ func buildQueryChain(model, dbRoot string, methods []struct {
 			if len(m.args) != 0 {
 				return qc, true, fmt.Errorf("SelectAll does not accept arguments")
 			}
+			qc.Selects = []string{"*"}
+		case m.name == "SelectPublic":
+			if len(m.args) != 0 {
+				return qc, true, fmt.Errorf("SelectPublic does not accept arguments")
+			}
+			qc.Selects = []string{"__visibility_public__"}
+		case m.name == "SelectOwner":
+			if len(m.args) != 0 {
+				return qc, true, fmt.Errorf("SelectOwner does not accept arguments")
+			}
+			qc.Selects = []string{"__visibility_owner__"}
 		case strings.HasPrefix(m.name, "OrderBy") && m.name != "OrderBy":
 			if len(m.args) != 1 {
 				return qc, true, fmt.Errorf("%s requires one argument", m.name)
@@ -1244,7 +1256,21 @@ func (e *exporter) rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[str
 		if len(call.Args) != 0 {
 			return nil, true, fmt.Errorf("%s does not accept arguments", sel.Sel.Name)
 		}
+		if sel.Sel.Name == "SelectAll" {
+			expr, err = parseExpr(fmt.Sprintf("%s.Select(%q)", id.Name, "*"))
+			break
+		}
 		return &ast.EmptyStmt{}, true, nil
+	case sel.Sel.Name == "SelectPublic" || sel.Sel.Name == "SelectOwner":
+		if len(call.Args) != 0 {
+			return nil, true, fmt.Errorf("%s does not accept arguments", sel.Sel.Name)
+		}
+		mode := strings.TrimPrefix(sel.Sel.Name, "Select")
+		cols, colErr := e.queryVisibilitySelectColumns(state.Model, mode)
+		if colErr != nil {
+			return nil, true, colErr
+		}
+		expr, err = parseExpr(fmt.Sprintf("%s.Select([]string{%s})", id.Name, quotedStringList(cols)))
 	case sel.Sel.Name == "First" || sel.Sel.Name == "All" || sel.Sel.Name == "Count" || sel.Sel.Name == "VerifyChain" || sel.Sel.Name == "VerifyRow" || strings.HasPrefix(sel.Sel.Name, "Sum") || strings.HasPrefix(sel.Sel.Name, "Avg"):
 		return nil, false, nil
 	default:
@@ -1259,6 +1285,9 @@ func (e *exporter) rewriteQueryVarMutation(call *ast.CallExpr, queryVars map[str
 func (e *exporter) gormExpr(q queryChain) (ast.Expr, error) {
 	if !e.models[q.Model] {
 		return nil, fmt.Errorf("unknown exported model %s", q.Model)
+	}
+	if err := e.resolveQueryChainSelects(&q); err != nil {
+		return nil, err
 	}
 	if q.lockRequiresTransaction() && !q.inTransaction() {
 		return e.lockOutsideTransactionExpr(q.Model, q.Terminal)
@@ -1331,6 +1360,9 @@ func (e *exporter) gormExpr(q queryChain) (ast.Expr, error) {
 func (e *exporter) gormBuilderExpr(q queryChain) (ast.Expr, error) {
 	if !e.models[q.Model] {
 		return nil, fmt.Errorf("unknown exported model %s", q.Model)
+	}
+	if err := e.resolveQueryChainSelects(&q); err != nil {
+		return nil, err
 	}
 	return parseExpr(e.gormChain(q))
 }
@@ -1517,6 +1549,52 @@ func (e *exporter) gormVarWhereExpr(model, varName, col, op string, args ...ast.
 	return parseExpr(fmt.Sprintf("%s.Where(%q, %s)", varName, col+" "+op+" ?", argStr))
 }
 
+func (e *exporter) queryVisibilitySelectColumns(model, mode string) ([]string, error) {
+	if mode == "All" {
+		return []string{"*"}, nil
+	}
+	table := e.schemaTables[model]
+	if table == nil {
+		return nil, fmt.Errorf("%s visibility selection requires schema metadata", model)
+	}
+	var cols []string
+	for _, col := range table.Columns {
+		switch mode {
+		case "Public":
+			if !col.IsPublic {
+				continue
+			}
+		case "Owner":
+			if !col.IsPublic && !col.IsOwnerSees {
+				continue
+			}
+		default:
+			return nil, fmt.Errorf("unsupported visibility selector %s", mode)
+		}
+		cols = append(cols, graphQLSelectColumnName(col))
+	}
+	if len(cols) == 0 {
+		return nil, fmt.Errorf("%s has no %s visibility columns", model, strings.ToLower(mode))
+	}
+	return cols, nil
+}
+
+func (e *exporter) resolveQueryChainSelects(q *queryChain) error {
+	if q == nil || len(q.Selects) != 1 || !strings.HasPrefix(q.Selects[0], "__visibility_") {
+		return nil
+	}
+	mode := "Public"
+	if q.Selects[0] == "__visibility_owner__" {
+		mode = "Owner"
+	}
+	cols, err := e.queryVisibilitySelectColumns(q.Model, mode)
+	if err != nil {
+		return err
+	}
+	q.Selects = cols
+	return nil
+}
+
 func gormVarLockExpr(varName, strength, options string) (ast.Expr, error) {
 	if strength == "" {
 		strength = "UPDATE"
@@ -1533,6 +1611,13 @@ func (e *exporter) gormChain(q queryChain) string {
 	chain := fmt.Sprintf("%s.Model(&models.%s{})", q.dbRoot(), q.Model)
 	if info, ok := e.integrityModels[q.Model]; ok && info.Immutable && !q.DeferLatest && !q.AllVersions && !q.hasVersionFilter() {
 		chain += fmt.Sprintf(".Where(%q)", latestVersionPredicate(info.Table.Name))
+	}
+	if len(q.Selects) > 0 {
+		if len(q.Selects) == 1 && q.Selects[0] == "*" {
+			chain += ".Select(\"*\")"
+		} else {
+			chain += fmt.Sprintf(".Select([]string{%s})", quotedStringList(q.Selects))
+		}
 	}
 	for _, f := range q.Filters {
 		col := f.Column

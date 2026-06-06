@@ -5262,20 +5262,21 @@ func (e *exporter) validateExportedActionSignatures(set *generator.ActionSet) er
 	if e == nil || e.project == nil || set == nil {
 		return nil
 	}
+	modelType := tableToStruct(set.Model)
 	for _, action := range set.Actions {
-		if err := e.validateExportedActionSignature(action); err != nil {
+		if err := e.validateExportedActionSignature(action, modelType); err != nil {
 			return err
 		}
 	}
 	for _, gate := range set.Gates {
-		if err := e.validateExportedGateSignature(gate); err != nil {
+		if err := e.validateExportedGateSignature(gate, modelType); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (e *exporter) validateExportedActionSignature(action generator.ActionDef) error {
+func (e *exporter) validateExportedActionSignature(action generator.ActionDef, modelType string) error {
 	path := filepath.Join(e.project.Dir, action.SourceFile)
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, path, nil, 0)
@@ -5287,7 +5288,7 @@ func (e *exporter) validateExportedActionSignature(action generator.ActionDef) e
 		if !ok || fn.Name.Name != action.Name || actionReceiverTypeName(fn.Recv) != action.StructName {
 			continue
 		}
-		if lenFieldList(fn.Type.Params) != 2 {
+		if lenFieldList(fn.Type.Params) != 2 || !validExportedActionParams(fn.Type.Params, modelType) {
 			return actionSignatureExportError(action.SourceFile, fset.Position(fn.Pos()).Line, action.Name)
 		}
 		results := fn.Type.Results
@@ -5308,7 +5309,7 @@ func (e *exporter) validateExportedActionSignature(action generator.ActionDef) e
 	return actionSignatureExportError(action.SourceFile, 0, action.Name)
 }
 
-func (e *exporter) validateExportedGateSignature(gate generator.GateDef) error {
+func (e *exporter) validateExportedGateSignature(gate generator.GateDef, modelType string) error {
 	path := filepath.Join(e.project.Dir, gate.SourceFile)
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, path, nil, 0)
@@ -5320,12 +5321,25 @@ func (e *exporter) validateExportedGateSignature(gate generator.GateDef) error {
 		if !ok || fn.Name.Name != gate.Name || fn.Recv != nil {
 			continue
 		}
-		if lenFieldList(fn.Type.Params) != 2 || lenFieldList(fn.Type.Results) != 1 || !isUUIDPointerType(fn.Type.Results.List[0].Type) {
+		if lenFieldList(fn.Type.Params) != 2 || !validExportedGateParams(fn.Type.Params, modelType) || lenFieldList(fn.Type.Results) != 1 || !isUUIDPointerType(fn.Type.Results.List[0].Type) {
 			return gateSignatureExportError(gate.SourceFile, fset.Position(fn.Pos()).Line, gate.Name)
 		}
 		return nil
 	}
 	return gateSignatureExportError(gate.SourceFile, 0, gate.Name)
+}
+
+func validExportedActionParams(params *ast.FieldList, modelType string) bool {
+	exprs := fieldListExprs(params)
+	return len(exprs) == 2 && isContextPointerType(exprs[0]) && isPointerToNamedType(exprs[1], modelType)
+}
+
+func validExportedGateParams(params *ast.FieldList, modelType string) bool {
+	exprs := fieldListExprs(params)
+	if len(exprs) != 2 || !isContextPointerType(exprs[0]) {
+		return false
+	}
+	return isPointerToNamedType(exprs[1], modelType) || isOwnerIDInterfaceType(exprs[1])
 }
 
 func actionSignatureExportError(file string, line int, action string) exportError {
@@ -5361,9 +5375,65 @@ func lenFieldList(list *ast.FieldList) int {
 	return total
 }
 
+func fieldListExprs(list *ast.FieldList) []ast.Expr {
+	if list == nil {
+		return nil
+	}
+	var exprs []ast.Expr
+	for _, field := range list.List {
+		count := len(field.Names)
+		if count == 0 {
+			count = 1
+		}
+		for i := 0; i < count; i++ {
+			exprs = append(exprs, field.Type)
+		}
+	}
+	return exprs
+}
+
 func isErrorType(expr ast.Expr) bool {
 	id, ok := expr.(*ast.Ident)
 	return ok && id.Name == "error"
+}
+
+func isContextPointerType(expr ast.Expr) bool {
+	return isPointerToNamedType(expr, "Context")
+}
+
+func isPointerToNamedType(expr ast.Expr, name string) bool {
+	ptr, ok := expr.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	return exprNamedType(ptr.X) == name
+}
+
+func exprNamedType(expr ast.Expr) string {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.SelectorExpr:
+		return t.Sel.Name
+	default:
+		return ""
+	}
+}
+
+func isOwnerIDInterfaceType(expr ast.Expr) bool {
+	iface, ok := expr.(*ast.InterfaceType)
+	if !ok || iface.Methods == nil || len(iface.Methods.List) != 1 {
+		return false
+	}
+	method := iface.Methods.List[0]
+	if len(method.Names) != 1 || method.Names[0].Name != "OwnerID" {
+		return false
+	}
+	fn, ok := method.Type.(*ast.FuncType)
+	if !ok || lenFieldList(fn.Params) != 0 || lenFieldList(fn.Results) != 1 {
+		return false
+	}
+	return exprNamedType(fn.Results.List[0].Type) == "string"
 }
 
 func isUUIDPointerType(expr ast.Expr) bool {

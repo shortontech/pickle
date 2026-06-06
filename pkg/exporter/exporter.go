@@ -4334,7 +4334,7 @@ const maxGraphQLAPIRelationshipDepth = 3
 const maxGraphQLAPIFields = 200
 const maxGraphQLAPIAliases = 25
 const maxGraphQLAPIInputNodes = 500
-const maxGraphQLAPIOperations = 8
+const maxGraphQLAPIOperations = 1
 
 type graphQLAPIRoleRow struct {
 	Slug    string

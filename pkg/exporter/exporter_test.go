@@ -5386,6 +5386,7 @@ func TestExportZeroGraphQLLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "Auth:        graphQLAPIAuthDirective")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "extension.FixedComplexityLimit")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "Complexity: graphQLAPIComplexityRoot()")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIOperations = 1")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "complexity_gen.go"), "root.User.Posts = func(childComplexity int) int")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "complexity_gen.go"), "graphQLAPIListComplexity(childComplexity, 1, min(100, maxGraphQLAPIComplexityPageSize))")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), `if contentType == "" {
@@ -6046,6 +6047,7 @@ func TestExportedGQLGenTargetHandlerRejectsUnsafeRequests(t *testing.T) {
 		"batched":          []byte(` + "`" + `[{"query":"{ posts { totalCount } }"}]` + "`" + `),
 		"duplicate_field":  []byte(` + "`" + `{"query":"{ posts { totalCount } }","query":"{ comments { totalCount } }"}` + "`" + `),
 		"unsupported":      []byte(` + "`" + `{"query":"{ posts { totalCount } }","unexpected":true}` + "`" + `),
+		"multi_operation":  []byte(` + "`" + `{"query":"query First { posts { totalCount } } query Second { comments { totalCount } }","operationName":"First"}` + "`" + `),
 		"invalid_op_name":  []byte(` + "`" + `{"query":"query Good { posts { totalCount } }","operationName":"1 Bad"}` + "`" + `),
 		"invalid_id":       []byte(` + "`" + `{"query":"query BadID($id: ID) { posts(filter: { id: { eq: $id } }) { totalCount } }","variables":{"id":"not-a-uuid-secret"}}` + "`" + `),
 		"introspection":    []byte(` + "`" + `{"query":"{ __schema { queryType { name } } }"}` + "`" + `),
@@ -6379,7 +6381,7 @@ func TestExportGraphQLSafetyLowersToGQLGenTarget(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "func validateGraphQLAPIRequestEnvelope")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIFields = 200")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIVariables = 64")
-	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIOperations = 8")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIOperations = 1")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIInputNodes = 500")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "const maxGraphQLAPIVariableNameBytes = 256")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "handler_gen.go"), "func validateGraphQLAPIVariables")

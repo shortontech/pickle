@@ -7717,9 +7717,14 @@ func TestExportFailsUnsupportedMigrationWithActionableKind(t *testing.T) {
 	}
 	ex := &exporter{project: &generator.Project{Layout: generator.Layout{MigrationsDir: migrationsDir}}}
 	_, err := ex.generateSQLMigrations(nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "add-column/index migrations are not lowered yet") {
-		t.Fatalf("expected actionable unsupported migration error, got %v", err)
+	if err == nil {
+		t.Fatal("generateSQLMigrations succeeded for unsupported migration")
 	}
+	assertContainsAll(t, err.Error(),
+		filepath.Join("database", "migrations", "2026_02_21_100000_add_email_to_users_table.go"),
+		"[migration_export_unsupported]",
+		"add-column/index migrations are not lowered yet",
+	)
 }
 
 func TestGenerateSQLMigrationsLowersCapturedOperations(t *testing.T) {
@@ -7764,6 +7769,27 @@ func TestGenerateSQLMigrationsLowersCapturedOperations(t *testing.T) {
 			t.Fatalf("down migration missing %q:\n%s", want, migrations[0].Down)
 		}
 	}
+}
+
+func TestGenerateSQLMigrationsReportsUnsupportedCapturedOperationBoundary(t *testing.T) {
+	ex := &exporter{migrations: []generator.MigrationOps{
+		{
+			Name: "RewriteUsers_2026_06_06_120000",
+			Up: []generator.MigrationOperation{
+				{Type: "rewrite_table", Table: "users"},
+			},
+		},
+	}}
+	_, err := ex.generateSQLMigrations(nil, nil)
+	if err == nil {
+		t.Fatal("generateSQLMigrations succeeded for unsupported captured operation")
+	}
+	assertContainsAll(t, err.Error(),
+		"database/migrations:",
+		"[migration_export_unsupported]",
+		"unsupported migration export for RewriteUsers_2026_06_06_120000",
+		"rewrite_table migrations are not lowered yet",
+	)
 }
 
 func TestCreateViewSQLUsesEncryptedStorageColumns(t *testing.T) {
@@ -8598,6 +8624,9 @@ func TestFindingCategoryClassifiesUnlowerableBoundariesAsUnsupported(t *testing.
 	}
 	if got := findingCategory("query_export_unsupported"); got != "unsupported" {
 		t.Fatalf("findingCategory(query_export_unsupported) = %q, want unsupported", got)
+	}
+	if got := findingCategory("migration_export_unsupported"); got != "unsupported" {
+		t.Fatalf("findingCategory(migration_export_unsupported) = %q, want unsupported", got)
 	}
 	for _, rule := range []string{
 		"actions_audit",

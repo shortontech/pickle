@@ -279,6 +279,14 @@ func queryExportError(path string, line int, message string) exportError {
 	}
 }
 
+func migrationExportError(location, name string, err error) exportError {
+	return exportError{
+		File:    location,
+		Rule:    "migration_export_unsupported",
+		Message: fmt.Sprintf("unsupported migration export for %s: %s", name, err),
+	}
+}
+
 func (e *exporter) prepareOutDir(force bool) error {
 	entries, err := os.ReadDir(e.outDir)
 	if err == nil && len(entries) > 0 && !force {
@@ -6683,11 +6691,11 @@ func (e *exporter) generateSQLMigrations(tables []*schema.Table, views []*schema
 		for _, migration := range e.migrations {
 			up, err := sqlForMigrationOps(migration.Up, tables...)
 			if err != nil {
-				return nil, fmt.Errorf("unsupported migration export for %s: %w", migration.Name, err)
+				return nil, migrationExportError("database/migrations", migration.Name, err)
 			}
 			down, err := sqlForMigrationOps(migration.Down, tables...)
 			if err != nil {
-				return nil, fmt.Errorf("unsupported migration export for %s: %w", migration.Name, err)
+				return nil, migrationExportError("database/migrations", migration.Name, err)
 			}
 			if migrationHasRawSQL(migration) {
 				e.result.Findings = append(e.result.Findings, Finding{File: "database/migrations", Rule: "raw_sql_migration", Message: fmt.Sprintf("migration %s contains raw SQL; exported statements need driver-specific review", migration.Name)})
@@ -6849,7 +6857,7 @@ func unsupportedMigrationError(fileName, operation string) error {
 	default:
 		kind = "unknown"
 	}
-	return fmt.Errorf("unsupported migration export for %s: %s migrations are not lowered yet", fileName, kind)
+	return migrationExportError(filepath.Join("database", "migrations", fileName), fileName, fmt.Errorf("%s migrations are not lowered yet", kind))
 }
 
 func migrationExportName(base string) string {
@@ -7539,7 +7547,7 @@ func (e *exporter) writeFindingSection(b *strings.Builder, title, category strin
 
 func findingCategory(rule string) string {
 	switch rule {
-	case "graphql_action_export_unsupported", "orm_export_unsupported", "query_export_unsupported":
+	case "graphql_action_export_unsupported", "migration_export_unsupported", "orm_export_unsupported", "query_export_unsupported":
 		return "unsupported"
 	case "rbac_policy_export":
 		return "partial"

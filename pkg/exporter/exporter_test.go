@@ -176,6 +176,37 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	runExported(t, out, "go", "test", "./...")
 }
 
+func TestExportPreservesCustomRouteVars(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
+	routePath := filepath.Join(projectDir, "routes", "web.go")
+	data, err := os.ReadFile(routePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewritten := strings.Replace(string(data), "var API = pickle.Routes", "var Web = pickle.Routes", 1)
+	if rewritten == string(data) {
+		t.Fatal("route fixture did not contain API route var")
+	}
+	if err := os.WriteFile(routePath, []byte(rewritten), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "exported")
+	if _, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	}); err != nil {
+		t.Fatalf("Export failed: %v", err)
+	}
+
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "routes.Web.RegisterRoutes(mux)")
+	assertFileNotContains(t, filepath.Join(out, "app", "commands", "support.go"), "routes.API.RegisterRoutes(mux)")
+	assertStandaloneNoPickleRuntime(t, out)
+	runExported(t, out, "go", "test", "./...")
+}
+
 func writeExportedConfigBehaviorTest(t *testing.T, out string) {
 	t.Helper()
 	testSrc := `package config

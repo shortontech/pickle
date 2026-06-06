@@ -4521,6 +4521,18 @@ func (e *exporter) hasCommands() bool {
 	return err == nil
 }
 
+func (e *exporter) exportedRouteVars() ([]string, error) {
+	routeVars, err := generator.ScanRouteVars(filepath.Join(e.project.Dir, "routes"))
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("scanning exported route vars: %w", err)
+	}
+	if len(routeVars) == 0 {
+		routeVars = []string{"API"}
+	}
+	sort.Strings(routeVars)
+	return routeVars, nil
+}
+
 func (e *exporter) writePolicySupport() error {
 	if !e.hasPolicySupport() {
 		return nil
@@ -5318,6 +5330,10 @@ func (e *exporter) generateCommandsSupport() ([]byte, error) {
 		return nil, fmt.Errorf("scanning exported user commands: %w", err)
 	}
 	sort.Strings(userCommands)
+	routeVars, err := e.exportedRouteVars()
+	if err != nil {
+		return nil, err
+	}
 	var b strings.Builder
 	b.WriteString("package commands\n\n")
 	b.WriteString("import (\n")
@@ -5543,8 +5559,10 @@ func Commands() []Command {
 
 func HTTPHandler() http.Handler {
 	mux := http.NewServeMux()
-	routes.API.RegisterRoutes(mux)
 `)
+	for _, routeVar := range routeVars {
+		fmt.Fprintf(&b, "\troutes.%s.RegisterRoutes(mux)\n", routeVar)
+	}
 	if hasGraphQL {
 		b.WriteString("\tmux.Handle(\"/graphql\", graphqlapi.Handler())\n")
 		b.WriteString("\tmux.Handle(\"/graphql/playground\", graphqlapi.PlaygroundHandler(\"/graphql\"))\n")
@@ -6169,6 +6187,10 @@ func (e *exporter) hasSchedule() bool {
 }
 
 func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL, hasSchedule bool) ([]byte, error) {
+	routeVars, err := e.exportedRouteVars()
+	if err != nil {
+		return nil, err
+	}
 	var b strings.Builder
 	b.WriteString("package main\n\n")
 	b.WriteString("import (\n")
@@ -6207,7 +6229,9 @@ func (e *exporter) generateServerMain(hasDatabaseConfig, hasGraphQL, hasSchedule
 		b.WriteString("\tgo schedule.Schedule.Start(ctx)\n")
 	}
 	b.WriteString("\tmux := http.NewServeMux()\n")
-	b.WriteString("\troutes.API.RegisterRoutes(mux)\n")
+	for _, routeVar := range routeVars {
+		fmt.Fprintf(&b, "\troutes.%s.RegisterRoutes(mux)\n", routeVar)
+	}
 	if hasGraphQL {
 		b.WriteString("\tmux.Handle(\"/graphql\", graphqlapi.Handler())\n")
 		b.WriteString("\tmux.Handle(\"/graphql/playground\", graphqlapi.PlaygroundHandler(\"/graphql\"))\n")

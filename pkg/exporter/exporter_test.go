@@ -8591,6 +8591,67 @@ func (p *ActionAPI_2026_06_05_100000) Down() {
 	runExported(t, out, "go", "test", "./...")
 }
 
+func TestExportReportsUnsupportedGraphQLControllerActionSignature(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
+	controllerPath := filepath.Join(projectDir, "app", "http", "controllers", "transfer_controller.go")
+	if err := os.WriteFile(controllerPath, []byte(`package controllers
+
+import (
+	"net/http"
+
+	pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
+)
+
+type TransferController struct{}
+
+func (c TransferController) Approve(ctx *pickle.Context, force bool) pickle.Response {
+	return ctx.JSON(http.StatusAccepted, map[string]any{"ok": force})
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policyPath := filepath.Join(projectDir, "database", "policies", "graphql", "2026_06_05_100000_actions.go")
+	if err := os.WriteFile(policyPath, []byte(`package graphql
+
+import "github.com/shortontech/pickle/testdata/basic-crud/app/http/controllers"
+
+type ActionAPI_2026_06_05_100000 struct {
+	GraphQLPolicy
+}
+
+func (p *ActionAPI_2026_06_05_100000) Up() {
+	p.ControllerAction("approveTransfer", controllers.TransferController{}.Approve)
+}
+
+func (p *ActionAPI_2026_06_05_100000) Down() {
+	p.RemoveAction("approveTransfer")
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "exported")
+	res, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err != nil {
+		t.Fatalf("Export failed: %v", err)
+	}
+	if !hasFinding(res.Findings, "graphql_action_export_unsupported") {
+		t.Fatalf("expected graphql_action_export_unsupported finding, got %+v", res.Findings)
+	}
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "`database/policies/graphql` `graphql_action_export_unsupported` - GraphQL controller action approveTransfer (controllers.TransferController{}.Approve) is not lowered by the standalone gqlgen export target")
+	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "approveTransfer")
+	assertFileNotContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "ApproveTransfer")
+	assertFileNotContains(t, filepath.Join(out, "database", "policies", "support.go"), "approveTransfer")
+	assertStandaloneNoPickleRuntime(t, out)
+	writeExportedUnsupportedGraphQLActionPolicyStateTest(t, out)
+	runExported(t, out, "go", "test", "./...")
+}
+
 func TestExportLowersSupportedGraphQLControllerActionsEndToEnd(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
 	controllerPath := filepath.Join(projectDir, "app", "http", "controllers", "transfer_controller.go")

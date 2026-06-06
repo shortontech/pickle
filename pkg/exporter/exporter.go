@@ -2889,6 +2889,9 @@ func (e *exporter) exportedGraphQLControllerActions() ([]exportedGraphQLControll
 	var unsupported []generator.DerivedAction
 	for _, action := range state.Actions {
 		lowered, ok := exportedGraphQLControllerActionFromDerived(action)
+		if ok {
+			ok = e.validExportedGraphQLControllerAction(lowered)
+		}
 		if !ok {
 			unsupported = append(unsupported, action)
 			continue
@@ -2931,6 +2934,40 @@ func exportedGraphQLControllerActionFromDerived(action generator.DerivedAction) 
 		Controller: controllerType.Sel.Name,
 		Method:     method.Sel.Name,
 	}, true
+}
+
+func (e *exporter) validExportedGraphQLControllerAction(action exportedGraphQLControllerAction) bool {
+	if e == nil || e.project == nil || action.Controller == "" || action.Method == "" {
+		return false
+	}
+	controllerDir := filepath.Join(e.project.Dir, "app", "http", "controllers")
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, controllerDir, func(fi fs.FileInfo) bool {
+		return !fi.IsDir() && strings.HasSuffix(fi.Name(), ".go") && !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		return false
+	}
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Name.Name != action.Method || actionReceiverTypeName(fn.Recv) != action.Controller {
+					continue
+				}
+				return validExportedGraphQLControllerMethodSignature(fn.Type)
+			}
+		}
+	}
+	return false
+}
+
+func validExportedGraphQLControllerMethodSignature(fn *ast.FuncType) bool {
+	return fn != nil &&
+		lenFieldList(fn.Params) == 1 &&
+		lenFieldList(fn.Results) == 1 &&
+		isContextPointerType(fn.Params.List[0].Type) &&
+		exprNamedType(fn.Results.List[0].Type) == "Response"
 }
 
 func validExportedGraphQLName(name string) bool {

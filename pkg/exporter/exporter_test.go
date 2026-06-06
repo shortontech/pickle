@@ -4043,6 +4043,43 @@ func TestExportedResponseWriteSetsSecureJSONHeaders(t *testing.T) {
 	}
 }
 
+func TestExportedResponseWriteFailsClosedOnEncodeError(t *testing.T) {
+	var logs bytes.Buffer
+	previousLogOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousLogOutput)
+
+	rec := httptest.NewRecorder()
+	httpx.Response{
+		StatusCode: http.StatusOK,
+		Body:      secretMarshalBody{},
+	}.Write(rec)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if rec.Body.String() != "{\"error\":\"internal server error\"}\n" {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+	for _, forbidden := range []string{"swordfish", "password", "json:", "MarshalJSON"} {
+		if strings.Contains(rec.Body.String(), forbidden) {
+			t.Fatalf("response leaked %q: %s", forbidden, rec.Body.String())
+		}
+		if strings.Contains(logs.String(), forbidden) {
+			t.Fatalf("log leaked %q: %s", forbidden, logs.String())
+		}
+	}
+	if !strings.Contains(logs.String(), "http response encode failed") {
+		t.Fatalf("log missing sanitized marker: %s", logs.String())
+	}
+}
+
 func TestExportedRateLimitMiddlewareDeniesAfterBurst(t *testing.T) {
 	t.Setenv("RATE_LIMIT", "false")
 	router := httpx.Routes(func(r *httpx.Router) {
@@ -4195,6 +4232,12 @@ type resourceListQuery struct {
 func (q *resourceListQuery) FetchResources(ownerID string) (any, error) {
 	q.ownerID = ownerID
 	return q.value, q.err
+}
+
+type secretMarshalBody struct{}
+
+func (secretMarshalBody) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("database password is swordfish")
 }
 
 func assertPanicDoesNotMentionPickle(t *testing.T, name string, fn func()) {

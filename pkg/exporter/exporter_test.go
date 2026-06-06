@@ -8062,6 +8062,75 @@ func (p *ActionAPI_2026_06_05_100000) Down() {
 	runExported(t, out, "go", "test", "./...")
 }
 
+func TestExportLowersSupportedGraphQLControllerActionsEndToEnd(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
+	controllerPath := filepath.Join(projectDir, "app", "http", "controllers", "transfer_controller.go")
+	if err := os.WriteFile(controllerPath, []byte(`package controllers
+
+import (
+	"net/http"
+
+	pickle "github.com/shortontech/pickle/testdata/basic-crud/app/http"
+)
+
+type TransferController struct{}
+
+func (c TransferController) Approve(ctx *pickle.Context) pickle.Response {
+	return ctx.JSON(http.StatusAccepted, map[string]any{
+		"ok": true,
+		"userId": ctx.Auth().UserID,
+		"role": ctx.Role(),
+	})
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policyPath := filepath.Join(projectDir, "database", "policies", "graphql", "2026_06_05_100000_actions.go")
+	if err := os.WriteFile(policyPath, []byte(`package graphql
+
+import "github.com/shortontech/pickle/testdata/basic-crud/app/http/controllers"
+
+type ActionAPI_2026_06_05_100000 struct {
+	GraphQLPolicy
+}
+
+func (p *ActionAPI_2026_06_05_100000) Up() {
+	p.ControllerAction("approveTransfer", controllers.TransferController{}.Approve)
+}
+
+func (p *ActionAPI_2026_06_05_100000) Down() {
+	p.RemoveAction("approveTransfer")
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "exported")
+	res, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err != nil {
+		t.Fatalf("Export failed: %v", err)
+	}
+	if hasFinding(res.Findings, "graphql_action_export_unsupported") {
+		t.Fatalf("did not expect graphql_action_export_unsupported finding, got %+v", res.Findings)
+	}
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Unsupported\n\nNo unsupported export findings.")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "scalar JSON")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "approveTransfer(input: JSON!): JSON! @auth")
+	assertFileContains(t, filepath.Join(out, "gqlgen.yml"), "map[string]interface{}")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *mutationResolver) ApproveTransfer")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "controllers.TransferController{}.Approve")
+	assertFileContains(t, filepath.Join(out, "database", "policies", "support.go"), `{Name: "approveTransfer"}`)
+	assertStandaloneNoPickleRuntime(t, out)
+	writeExportedSupportedGraphQLActionPolicyStateTest(t, out)
+	writeExportedSupportedGraphQLActionResolverTest(t, out)
+	runExported(t, out, "go", "test", "./...")
+}
+
 func writeExportedUnsupportedGraphQLActionPolicyStateTest(t *testing.T, out string) {
 	t.Helper()
 	testSrc := `package policies
@@ -8102,6 +8171,74 @@ func TestExportedPolicyStateOmitsUnsupportedGraphQLActions(t *testing.T) {
 	}
 }
 
+func writeExportedSupportedGraphQLActionPolicyStateTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package policies
+
+import (
+	"testing"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+func TestExportedPolicyStateSeedsSupportedGraphQLActions(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db, "sqlite"); err != nil {
+		t.Fatalf("policy migrate: %v", err)
+	}
+	var actionRows int64
+	if err := db.Table("graphql_actions").Where("name = ?", "approveTransfer").Count(&actionRows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if actionRows != 1 {
+		t.Fatalf("supported graphql action rows = %d, want 1", actionRows)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "database", "policies", "exported_supported_graphql_action_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedSupportedGraphQLActionResolverTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package resolver
+
+import (
+	"context"
+	"testing"
+)
+
+func TestExportedGraphQLControllerActionResolverCallsController(t *testing.T) {
+	mutations := &mutationResolver{Resolver: &Resolver{}}
+	ctx := WithGraphQLAPIAuthClaims(context.Background(), &GraphQLAPIAuthClaims{
+		UserID:     "user-1",
+		Role:       "viewer",
+		Roles:      []string{"tenant_admin"},
+		Manages:    true,
+		RBACLoaded: true,
+	})
+	got, err := mutations.ApproveTransfer(ctx, map[string]any{"note": "ship it"})
+	if err != nil {
+		t.Fatalf("approveTransfer: %v", err)
+	}
+	if got["ok"] != true || got["userId"] != "user-1" || got["role"] != "tenant_admin" {
+		t.Fatalf("approveTransfer response = %#v", got)
+	}
+	if _, err := mutations.ApproveTransfer(context.Background(), map[string]any{}); err == nil {
+		t.Fatal("approveTransfer without auth should fail")
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "resolver", "exported_controller_action_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExporterReportsGraphQLControllerActionsAsUnsupported(t *testing.T) {
 	dir := t.TempDir()
 	policyDir := filepath.Join(dir, "database", "policies", "graphql")
@@ -8111,7 +8248,7 @@ func TestExporterReportsGraphQLControllerActionsAsUnsupported(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(policyDir, "2026_06_05_100000_actions.go"), []byte(`package graphql
 
 func (p *API) Up() {
-	p.ControllerAction("approveTransfer", controllers.TransferController{}.Approve)
+	p.ControllerAction("approveTransfer", nil)
 }
 `), 0o644); err != nil {
 		t.Fatalf("write policy: %v", err)
@@ -8129,9 +8266,6 @@ func (p *API) Up() {
 	}
 	if got := ex.result.Findings[0].Message; !strings.Contains(got, "approveTransfer") {
 		t.Fatalf("finding message %q does not name controller action", got)
-	}
-	if got := ex.result.Findings[0].Message; !strings.Contains(got, "controllers.TransferController{}.Approve") {
-		t.Fatalf("finding message %q does not name controller action handler", got)
 	}
 }
 

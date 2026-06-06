@@ -2184,18 +2184,20 @@ func (e *exporter) writeGraphQLPackage(tables []*schema.Table, views []*schema.V
 	if schemaSDL == "" {
 		return fmt.Errorf("exported GraphQL schema SDL was not found")
 	}
-	if err := e.writeGraphQLTargetFiles(schemaSDL); err != nil {
+	supportedActions, _ := e.exportedGraphQLControllerActions()
+	schemaSDL = addGraphQLControllerActionSDL(schemaSDL, supportedActions)
+	if err := e.writeGraphQLTargetFiles(schemaSDL, supportedActions); err != nil {
 		return err
 	}
 	relationships := exportedGraphQLRelationships(tables)
 	relationshipBudgets := e.exportedGraphQLRelationshipBudgets()
-	if err := e.writeGraphQLAPIResolverTarget(schemaSDL, tables, relationships, relationshipBudgets); err != nil {
+	if err := e.writeGraphQLAPIResolverTarget(schemaSDL, tables, relationships, relationshipBudgets, supportedActions); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (e *exporter) writeGraphQLTargetFiles(schemaSDL string) error {
+func (e *exporter) writeGraphQLTargetFiles(schemaSDL string, actions []exportedGraphQLControllerAction) error {
 	schemaSDL = strings.TrimSpace(schemaSDL) + "\n"
 	if err := e.writeFile(filepath.Join("app", "graphqlapi", "schema.graphqls"), []byte(schemaSDL)); err != nil {
 		return err
@@ -2215,6 +2217,12 @@ func (e *exporter) writeGraphQLTargetFiles(schemaSDL string) error {
 	b.WriteString("  package: resolver\n\n")
 	b.WriteString("autobind:\n")
 	fmt.Fprintf(&b, "  - %s/app/models\n", e.modulePath)
+	if len(actions) > 0 {
+		b.WriteString("\nmodels:\n")
+		b.WriteString("  JSON:\n")
+		b.WriteString("    model:\n")
+		b.WriteString("      - map[string]interface{}\n")
+	}
 	if err := e.writeFile("gqlgen.yml", []byte(b.String())); err != nil {
 		return err
 	}
@@ -2224,16 +2232,21 @@ func (e *exporter) writeGraphQLTargetFiles(schemaSDL string) error {
 package tools
 
 import _ "github.com/99designs/gqlgen"
-`))
+	`))
 }
 
-func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*schema.Table, relationships []generator.SchemaRelationship, relationshipBudgets map[string]exportedGraphQLRelationshipBudget) error {
+func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*schema.Table, relationships []generator.SchemaRelationship, relationshipBudgets map[string]exportedGraphQLRelationshipBudget, actions []exportedGraphQLControllerAction) error {
 	exposed := graphQLTablesInSDL(schemaSDL, tables)
-	if len(exposed) == 0 {
+	if len(exposed) == 0 && len(actions) == 0 {
 		return nil
 	}
 	if err := e.writeGraphQLAPIHandlerTarget(); err != nil {
 		return err
+	}
+	if len(actions) > 0 {
+		if err := e.writeGraphQLAPIGeneratedJSONScalarTarget(); err != nil {
+			return err
+		}
 	}
 	if err := e.writeGraphQLAPIComplexityTarget(schemaSDL, exposed, relationships, relationshipBudgets); err != nil {
 		return err
@@ -2249,12 +2262,24 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 	if graphQLAPIMutationsNeedJSON(schemaSDL, exposed) {
 		b.WriteString("\t\"encoding/json\"\n")
 	}
-	b.WriteString("\t\"fmt\"\n")
-	b.WriteString("\t\"time\"\n\n")
-	b.WriteString("\t\"github.com/google/uuid\"\n")
+	if len(exposed) > 0 {
+		b.WriteString("\t\"fmt\"\n")
+		b.WriteString("\t\"time\"\n\n")
+		b.WriteString("\t\"github.com/google/uuid\"\n")
+	} else {
+		b.WriteString("\n")
+	}
+	if len(actions) > 0 {
+		fmt.Fprintf(&b, "\t\"%s/app/http/controllers\"\n", e.modulePath)
+	}
 	fmt.Fprintf(&b, "\t\"%s/app/graphqlapi/generated\"\n", e.modulePath)
-	fmt.Fprintf(&b, "\t\"%s/app/graphqlapi/model\"\n", e.modulePath)
-	fmt.Fprintf(&b, "\t\"%s/app/models\"\n", e.modulePath)
+	if len(exposed) > 0 {
+		fmt.Fprintf(&b, "\t\"%s/app/graphqlapi/model\"\n", e.modulePath)
+		fmt.Fprintf(&b, "\t\"%s/app/models\"\n", e.modulePath)
+	}
+	if len(actions) > 0 {
+		fmt.Fprintf(&b, "\t\"%s/internal/httpx\"\n", e.modulePath)
+	}
 	b.WriteString(")\n\n")
 	b.WriteString("type queryResolver struct{ *Resolver }\n")
 	if graphQLSDLHasMutationType(schemaSDL) {
@@ -2286,6 +2311,9 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 			writeGraphQLAPIObjectResolvers(&b, schemaSDL, tbl, exposed, relationships, relationshipBudgets)
 		}
 	}
+	for _, action := range actions {
+		writeGraphQLAPIControllerActionResolver(&b, action)
+	}
 	for _, tbl := range exposed {
 		if graphQLTableNeedsObjectResolver(schemaSDL, tbl, relationships) {
 			structName := tableToStruct(tbl.Name)
@@ -2309,18 +2337,34 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 	var support strings.Builder
 	support.WriteString("package resolver\n\n")
 	support.WriteString("import (\n")
+	if len(actions) > 0 {
+		support.WriteString("\t\"bytes\"\n")
+	}
 	support.WriteString("\t\"context\"\n")
+	if len(actions) > 0 {
+		support.WriteString("\t\"encoding/json\"\n")
+	}
 	support.WriteString("\t\"errors\"\n")
 	support.WriteString("\t\"fmt\"\n")
+	if len(actions) > 0 {
+		support.WriteString("\t\"net/http\"\n")
+		support.WriteString("\t\"net/http/httptest\"\n")
+	}
 	support.WriteString("\t\"strings\"\n")
 	support.WriteString("\t\"time\"\n\n")
 	support.WriteString("\t\"github.com/google/uuid\"\n")
 	support.WriteString("\t\"github.com/vektah/gqlparser/v2/gqlerror\"\n")
 	fmt.Fprintf(&support, "\t\"%s/app/graphqlapi/model\"\n", e.modulePath)
 	fmt.Fprintf(&support, "\t\"%s/app/models\"\n", e.modulePath)
+	if len(actions) > 0 {
+		fmt.Fprintf(&support, "\t\"%s/internal/httpx\"\n", e.modulePath)
+	}
 	support.WriteString("\t\"gorm.io/gorm\"\n")
 	support.WriteString(")\n\n")
 	writeGraphQLAPIResolverSupport(&support)
+	if len(actions) > 0 {
+		writeGraphQLAPIControllerActionSupport(&support)
+	}
 	for _, tbl := range exposed {
 		if graphQLSDLHasQueryField(schemaSDL, graphQLListFieldName(tbl)) {
 			writeGraphQLAPIFilterApplier(&support, tbl)
@@ -2331,6 +2375,34 @@ func (e *exporter) writeGraphQLAPIResolverTarget(schemaSDL string, tables []*sch
 		return fmt.Errorf("formatting exported gqlgen resolver support: %w", err)
 	}
 	return e.writeFile(filepath.Join("app", "graphqlapi", "resolver", "support_gen.go"), formattedSupport)
+}
+
+func (e *exporter) writeGraphQLAPIGeneratedJSONScalarTarget() error {
+	src := `package generated
+
+import (
+	"context"
+
+	"github.com/99designs/gqlgen/graphql"
+	"github.com/vektah/gqlparser/v2/ast"
+)
+
+func (ec *executionContext) unmarshalInputJSON(ctx context.Context, v any) (map[string]any, error) {
+	_ = ctx
+	return graphql.UnmarshalMap(v)
+}
+
+func (ec *executionContext) _JSON(ctx context.Context, sel ast.SelectionSet, v map[string]any) graphql.Marshaler {
+	_ = ctx
+	_ = sel
+	return graphql.MarshalMap(v)
+}
+`
+	formatted, err := format.Source([]byte(src))
+	if err != nil {
+		return fmt.Errorf("formatting exported gqlgen JSON scalar target: %w", err)
+	}
+	return e.writeFile(filepath.Join("app", "graphqlapi", "generated", "json_scalar_gen.go"), formatted)
 }
 
 func (e *exporter) writeGraphQLAPIHandlerTarget() error {
@@ -2402,14 +2474,16 @@ func (e *exporter) writeGraphQLAPIComplexityTarget(schemaSDL string, tables []*s
 	}
 	b.WriteString("\treturn root\n")
 	b.WriteString("}\n\n")
-	b.WriteString("func graphQLAPIPageInputLimit(page *model.PageInput, maxLimit int) int {\n")
-	b.WriteString("\tlimit := defaultGraphQLAPIComplexityPageSize\n")
-	b.WriteString("\tif page != nil {\n")
-	b.WriteString("\t\tif page.First != nil {\n\t\t\tlimit = *page.First\n\t\t} else if page.Last != nil {\n\t\t\tlimit = *page.Last\n\t\t}\n")
-	b.WriteString("\t}\n")
-	b.WriteString("\tif limit <= 0 || limit > maxLimit {\n\t\treturn maxGraphQLAPIComplexity + 1\n\t}\n")
-	b.WriteString("\treturn limit\n")
-	b.WriteString("}\n\n")
+	if usesModel {
+		b.WriteString("func graphQLAPIPageInputLimit(page *model.PageInput, maxLimit int) int {\n")
+		b.WriteString("\tlimit := defaultGraphQLAPIComplexityPageSize\n")
+		b.WriteString("\tif page != nil {\n")
+		b.WriteString("\t\tif page.First != nil {\n\t\t\tlimit = *page.First\n\t\t} else if page.Last != nil {\n\t\t\tlimit = *page.Last\n\t\t}\n")
+		b.WriteString("\t}\n")
+		b.WriteString("\tif limit <= 0 || limit > maxLimit {\n\t\treturn maxGraphQLAPIComplexity + 1\n\t}\n")
+		b.WriteString("\treturn limit\n")
+		b.WriteString("}\n\n")
+	}
 	b.WriteString("func graphQLAPIListComplexity(childComplexity, baseCost, limit int) int {\n")
 	b.WriteString("\tif baseCost <= 0 {\n\t\tbaseCost = 1\n\t}\n")
 	b.WriteString("\tif limit <= 0 {\n\t\treturn maxGraphQLAPIComplexity + 1\n\t}\n")
@@ -2456,18 +2530,19 @@ func graphQLAPIAuthCanManage(claims *GraphQLAPIAuthClaims) bool {
 	return claims != nil && (claims.Manages || (!claims.RBACLoaded && claims.Role == "admin"))
 }
 
-func graphQLAPIBadInput(message string) *gqlerror.Error {
+func graphQLAPIResolverError(message, code string) *gqlerror.Error {
 	return &gqlerror.Error{
 		Message:    message,
-		Extensions: map[string]any{"code": "BAD_USER_INPUT"},
+		Extensions: map[string]any{"code": code},
 	}
 }
 
+func graphQLAPIBadInput(message string) *gqlerror.Error {
+	return graphQLAPIResolverError(message, "BAD_USER_INPUT")
+}
+
 func graphQLAPIUnauthenticated(message string) *gqlerror.Error {
-	return &gqlerror.Error{
-		Message:    message,
-		Extensions: map[string]any{"code": "UNAUTHENTICATED"},
-	}
+	return graphQLAPIResolverError(message, "UNAUTHENTICATED")
 }
 
 func graphQLAPIRecordNotFound(err error) bool {
@@ -2586,6 +2661,111 @@ func gqlgenSortParts(sort string) (string, string) {
 `)
 }
 
+func writeGraphQLAPIControllerActionResolver(b *strings.Builder, action exportedGraphQLControllerAction) {
+	methodName := snakeToPascal(action.Name)
+	fmt.Fprintf(b, "func (r *mutationResolver) %s(ctx context.Context, input map[string]any) (map[string]any, error) {\n", methodName)
+	fmt.Fprintf(b, "\treturn graphQLAPIControllerAction(ctx, %q, input, func(actionCtx *httpx.Context) httpx.Response {\n", action.Name)
+	fmt.Fprintf(b, "\t\treturn controllers.%s{}.%s(actionCtx)\n", action.Controller, action.Method)
+	b.WriteString("\t})\n")
+	b.WriteString("}\n\n")
+}
+
+func writeGraphQLAPIControllerActionSupport(b *strings.Builder) {
+	b.WriteString(`type graphQLAPIControllerActionHandler func(*httpx.Context) httpx.Response
+
+func graphQLAPIControllerAction(ctx context.Context, action string, input map[string]any, handler graphQLAPIControllerActionHandler) (map[string]any, error) {
+	claims := GraphQLAPIAuthFromContext(ctx)
+	if claims == nil {
+		return nil, graphQLAPIUnauthenticated(action+": authentication required")
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		return nil, graphQLAPIBadInput(action+": invalid input")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/graphql/actions/"+action, bytes.NewReader(body))
+	if err != nil {
+		return nil, graphQLAPIResolverError("internal server error", "INTERNAL_SERVER_ERROR")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	actionCtx := httpx.NewContextWithResponse(recorder, req)
+	actionCtx.SetAuth(&httpx.AuthInfo{UserID: claims.UserID, Role: claims.Role})
+	var roles []httpx.RoleInfo
+	for _, role := range claims.Roles {
+		roles = append(roles, httpx.RoleInfo{Slug: role, Manages: claims.Manages})
+	}
+	if len(roles) == 0 && claims.Role != "" {
+		roles = append(roles, httpx.RoleInfo{Slug: claims.Role, Manages: claims.Manages})
+	}
+	if claims.RBACLoaded || len(roles) > 0 {
+		actionCtx.SetRoles(roles)
+	}
+	resp := handler(actionCtx)
+	status := resp.Status
+	if status == 0 {
+		status = resp.StatusCode
+	}
+	if status == 0 {
+		status = http.StatusOK
+	}
+	if status < 200 || status >= 300 {
+		return nil, graphQLAPIControllerActionStatusError(action, status)
+	}
+	return graphQLAPIMapFromBody(resp.Body), nil
+}
+
+func graphQLAPIControllerActionStatusError(action string, status int) error {
+	switch status {
+	case http.StatusUnauthorized:
+		return graphQLAPIUnauthenticated(action + ": unauthenticated")
+	case http.StatusForbidden:
+		return graphQLAPIResolverError(action+": forbidden", "FORBIDDEN")
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return graphQLAPIBadInput(action + ": invalid input")
+	default:
+		return graphQLAPIResolverError(action+": failed", "INTERNAL_SERVER_ERROR")
+	}
+}
+
+func graphQLAPIMapFromBody(body any) map[string]any {
+	switch v := body.(type) {
+	case nil:
+		return map[string]any{}
+	case map[string]any:
+		return v
+	case map[string]string:
+		out := map[string]any{}
+		for key, value := range v {
+			out[key] = value
+		}
+		return out
+	default:
+		return map[string]any{"data": graphQLAPIJSONValue(v)}
+	}
+}
+
+func graphQLAPIJSONValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := map[string]any{}
+		for key, child := range v {
+			out[key] = graphQLAPIJSONValue(child)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, child := range v {
+			out[i] = graphQLAPIJSONValue(child)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+`)
+}
+
 func graphQLTablesInSDL(schemaSDL string, tables []*schema.Table) []*schema.Table {
 	var out []*schema.Table
 	for _, tbl := range tables {
@@ -2621,6 +2801,119 @@ func graphQLAPIMutationsNeedJSON(schemaSDL string, tables []*schema.Table) bool 
 		}
 	}
 	return false
+}
+
+type exportedGraphQLControllerAction struct {
+	Name       string
+	Handler    string
+	Controller string
+	Method     string
+}
+
+func (e *exporter) exportedGraphQLControllerActions() ([]exportedGraphQLControllerAction, []generator.DerivedAction) {
+	if !e.hasGraphQLPolicies() {
+		return nil, nil
+	}
+	state := generator.DeriveGraphQLStateFromDir(filepath.Join(e.project.Dir, "database", "policies", "graphql"))
+	var supported []exportedGraphQLControllerAction
+	var unsupported []generator.DerivedAction
+	for _, action := range state.Actions {
+		lowered, ok := exportedGraphQLControllerActionFromDerived(action)
+		if !ok {
+			unsupported = append(unsupported, action)
+			continue
+		}
+		supported = append(supported, lowered)
+	}
+	return supported, unsupported
+}
+
+func exportedGraphQLControllerActionFromDerived(action generator.DerivedAction) (exportedGraphQLControllerAction, bool) {
+	if !validExportedGraphQLName(action.Name) || action.Handler == "" || action.Handler == "nil" {
+		return exportedGraphQLControllerAction{}, false
+	}
+	expr, err := parser.ParseExpr(action.Handler)
+	if err != nil {
+		return exportedGraphQLControllerAction{}, false
+	}
+	method, ok := expr.(*ast.SelectorExpr)
+	if !ok {
+		return exportedGraphQLControllerAction{}, false
+	}
+	composite, ok := method.X.(*ast.CompositeLit)
+	if !ok || len(composite.Elts) != 0 {
+		return exportedGraphQLControllerAction{}, false
+	}
+	controllerType, ok := composite.Type.(*ast.SelectorExpr)
+	if !ok {
+		return exportedGraphQLControllerAction{}, false
+	}
+	pkg, ok := controllerType.X.(*ast.Ident)
+	if !ok || pkg.Name != "controllers" {
+		return exportedGraphQLControllerAction{}, false
+	}
+	if !ast.IsExported(controllerType.Sel.Name) || !ast.IsExported(method.Sel.Name) {
+		return exportedGraphQLControllerAction{}, false
+	}
+	return exportedGraphQLControllerAction{
+		Name:       action.Name,
+		Handler:    action.Handler,
+		Controller: controllerType.Sel.Name,
+		Method:     method.Sel.Name,
+	}, true
+}
+
+func validExportedGraphQLName(name string) bool {
+	for i, r := range name {
+		if i == 0 {
+			if r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				continue
+			}
+			return false
+		}
+		if r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		return false
+	}
+	return name != ""
+}
+
+func addGraphQLControllerActionSDL(schemaSDL string, actions []exportedGraphQLControllerAction) string {
+	if len(actions) == 0 {
+		return schemaSDL
+	}
+	schemaSDL = strings.TrimSpace(schemaSDL)
+	if !strings.Contains(schemaSDL, "scalar JSON") {
+		if strings.Contains(schemaSDL, "scalar DateTime\n") {
+			schemaSDL = strings.Replace(schemaSDL, "scalar DateTime\n", "scalar DateTime\nscalar JSON\n", 1)
+		} else {
+			schemaSDL = "scalar JSON\n\n" + schemaSDL
+		}
+	}
+	var fields strings.Builder
+	for _, action := range actions {
+		if graphQLSDLHasMutationField(schemaSDL, action.Name) {
+			continue
+		}
+		fmt.Fprintf(&fields, "  %s(input: JSON!): JSON! @auth\n", action.Name)
+	}
+	if fields.Len() == 0 {
+		return schemaSDL + "\n"
+	}
+	if !graphQLSDLHasMutationType(schemaSDL) {
+		return schemaSDL + "\n\ntype Mutation {\n" + fields.String() + "}\n"
+	}
+	start := strings.Index(schemaSDL, "type Mutation {")
+	if start < 0 {
+		return schemaSDL + "\n"
+	}
+	closeRel := strings.Index(schemaSDL[start:], "\n}")
+	if closeRel < 0 {
+		return schemaSDL + "\n"
+	}
+	insertAt := start + closeRel
+	return schemaSDL[:insertAt] + "\n" + fields.String() + schemaSDL[insertAt:] + "\n"
 }
 
 func graphQLListFieldName(tbl *schema.Table) string {
@@ -5290,8 +5583,10 @@ func (e *exporter) generatePolicySupport() ([]byte, error) {
 		}
 	}
 	var graphQLState generator.DerivedGraphQLState
+	var graphQLActions []exportedGraphQLControllerAction
 	if e.hasGraphQLPolicies() {
 		graphQLState = generator.DeriveGraphQLStateFromDir(filepath.Join(e.project.Dir, "database", "policies", "graphql"))
+		graphQLActions, _ = e.exportedGraphQLControllerActions()
 		entries, err := generator.ScanGraphQLPolicyFiles(filepath.Join(e.project.Dir, "database", "policies", "graphql"))
 		if err == nil {
 			for _, entry := range entries {
@@ -5376,8 +5671,9 @@ var graphQLExposureSeeds = []graphQLExposureSeed{
 
 var graphQLActionSeeds = []graphQLActionSeed{
 `)
-	// ControllerAction policies are reported as unsupported until the exporter
-	// can lower them into the standalone gqlgen schema and resolver target.
+	for _, action := range graphQLActions {
+		fmt.Fprintf(&b, "\t{Name: %q},\n", action.Name)
+	}
 	b.WriteString(`}
 
 var rolePolicyIDs = []string{
@@ -7057,8 +7353,8 @@ func (e *exporter) addGraphQLActionFindings() {
 	if e.result == nil || !e.hasGraphQLPolicies() {
 		return
 	}
-	state := generator.DeriveGraphQLStateFromDir(filepath.Join(e.project.Dir, "database", "policies", "graphql"))
-	for _, action := range state.Actions {
+	_, unsupported := e.exportedGraphQLControllerActions()
+	for _, action := range unsupported {
 		message := fmt.Sprintf("GraphQL controller action %s is not lowered by the standalone gqlgen export target", action.Name)
 		if action.Handler != "" && action.Handler != "nil" {
 			message = fmt.Sprintf("GraphQL controller action %s (%s) is not lowered by the standalone gqlgen export target", action.Name, action.Handler)
@@ -8131,6 +8427,7 @@ type RoleInfo struct { Slug string; Manages bool }
 type Context struct { request *http.Request; response http.ResponseWriter; auth *AuthInfo; params map[string]string; roles []string; rolesLoaded bool; isAdmin bool }
 
 func NewContext(r *http.Request) *Context { return &Context{request: r, params: map[string]string{}} }
+func NewContextWithResponse(w http.ResponseWriter, r *http.Request) *Context { ctx := NewContext(r); ctx.response = w; return ctx }
 func (c *Context) Request() *http.Request { if c == nil { return nil }; return c.request }
 func (c *Context) ResponseWriter() http.ResponseWriter { if c == nil { return nil }; return c.response }
 func (c *Context) Param(name string) string { if c == nil { return "" }; value, ok := c.params[name]; if !ok { panic("route parameter is missing: " + name) }; return value }

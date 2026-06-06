@@ -91,6 +91,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileNotContains(t, filepath.Join(out, "app", "commands", "support.go"), "log.Fatal(err)")
 	assertFileNotContains(t, filepath.Join(out, "app", "commands", "support.go"), "failed to unwrap database handle")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "support.go"), "func (r *Runner) Migrate(entries []MigrationEntry) error")
+	assertFileContains(t, filepath.Join(out, "database", "migrations", "support.go"), "migration VARCHAR(255) NOT NULL UNIQUE")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "support.go"), `return fmt.Errorf("fresh rollback %s: %w", entries[i].ID, err)`)
 	assertFileNotContains(t, filepath.Join(out, "database", "migrations", "support.go"), `_ = r.execMigrationFile(entries[i].DownFile)`)
 	assertFileContains(t, filepath.Join(out, "app", "http", "auth", "jwt", "jwt.go"), "crypto/hmac")
@@ -2475,6 +2476,25 @@ func TestExportedMigrationFailuresAreAtomic(t *testing.T) {
 	}
 	assertSQLiteTableExists(t, db, "atomic_rollback")
 	assertMigrationRowCount(t, db, successThenFailingRollback.ID, 1)
+}
+
+func TestExportedMigrationTableEnforcesUniqueMigrationIDs(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := migrations.NewRunner(db, "sqlite")
+	if err := runner.Migrate(migrations.Registry[:1]); err != nil {
+		t.Fatalf("migrate first entry: %v", err)
+	}
+	if err := runner.Migrate(migrations.Registry[:1]); err != nil {
+		t.Fatalf("repeat migrate should be idempotent: %v", err)
+	}
+	assertMigrationRowCount(t, db, migrations.Registry[0].ID, 1)
+	if err := db.Exec("INSERT INTO migrations (migration, batch) VALUES (?, ?)", migrations.Registry[0].ID, 999).Error; err == nil {
+		t.Fatal("migration table accepted duplicate migration id")
+	}
+	assertMigrationRowCount(t, db, migrations.Registry[0].ID, 1)
 }
 
 func TestExportedMigrationFailureDoesNotLeakStatementText(t *testing.T) {

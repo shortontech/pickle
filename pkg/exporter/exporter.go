@@ -6835,19 +6835,19 @@ func migrationsTableSQL(driver string) string {
 	case "pgsql", "postgres":
 		return ` + "`" + `CREATE TABLE IF NOT EXISTS migrations (
 			id SERIAL PRIMARY KEY,
-			migration VARCHAR(255) NOT NULL,
+			migration VARCHAR(255) NOT NULL UNIQUE,
 			batch INTEGER NOT NULL
 		)` + "`" + `
 	case "mysql":
 		return ` + "`" + `CREATE TABLE IF NOT EXISTS migrations (
 			id INTEGER PRIMARY KEY AUTO_INCREMENT,
-			migration VARCHAR(255) NOT NULL,
+			migration VARCHAR(255) NOT NULL UNIQUE,
 			batch INTEGER NOT NULL
 		)` + "`" + `
 	default:
 		return ` + "`" + `CREATE TABLE IF NOT EXISTS migrations (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		migration VARCHAR(255) NOT NULL,
+		migration VARCHAR(255) NOT NULL UNIQUE,
 		batch INTEGER NOT NULL
 	)` + "`" + `
 	}

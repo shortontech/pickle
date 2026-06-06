@@ -2431,20 +2431,84 @@ func (e *exporter) writeGraphQLAPIGeneratedJSONScalarTarget() error {
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/99designs/gqlgen/graphql"
 	"github.com/vektah/gqlparser/v2/ast"
+	"github.com/vektah/gqlparser/v2/gqlerror"
 )
+
+const maxGraphQLAPIJSONScalarNameBytes = 256
+const maxGraphQLAPIJSONScalarDepth = 8
+const maxGraphQLAPIJSONScalarCollectionItems = 256
+const maxGraphQLAPIJSONScalarNodes = 500
+const maxGraphQLAPIJSONScalarStringBytes = 4096
 
 func (ec *executionContext) unmarshalInputJSON(ctx context.Context, v any) (map[string]any, error) {
 	_ = ctx
-	return graphql.UnmarshalMap(v)
+	out, err := graphql.UnmarshalMap(v)
+	if err != nil {
+		return nil, err
+	}
+	nodes := 0
+	if !validGraphQLAPIJSONScalarValue(out, 0, &nodes) {
+		return nil, graphQLAPIJSONScalarError()
+	}
+	return out, nil
 }
 
 func (ec *executionContext) _JSON(ctx context.Context, sel ast.SelectionSet, v map[string]any) graphql.Marshaler {
 	_ = ctx
 	_ = sel
 	return graphql.MarshalMap(v)
+}
+
+func graphQLAPIJSONScalarError() *gqlerror.Error {
+	return &gqlerror.Error{
+		Message:    "GraphQL JSON scalar exceeds safety limits",
+		Extensions: map[string]any{"code": "BAD_USER_INPUT"},
+	}
+}
+
+func validGraphQLAPIJSONScalarValue(value any, depth int, nodes *int) bool {
+	if depth > maxGraphQLAPIJSONScalarDepth || nodes == nil {
+		return false
+	}
+	*nodes = *nodes + 1
+	if *nodes > maxGraphQLAPIJSONScalarNodes {
+		return false
+	}
+	switch v := value.(type) {
+	case string:
+		return len(v) <= maxGraphQLAPIJSONScalarStringBytes
+	case fmt.Stringer:
+		return len(v.String()) <= maxGraphQLAPIJSONScalarStringBytes
+	case []any:
+		if len(v) > maxGraphQLAPIJSONScalarCollectionItems {
+			return false
+		}
+		for _, item := range v {
+			if !validGraphQLAPIJSONScalarValue(item, depth+1, nodes) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		if len(v) > maxGraphQLAPIJSONScalarCollectionItems {
+			return false
+		}
+		for key, item := range v {
+			if len(key) > maxGraphQLAPIJSONScalarNameBytes {
+				return false
+			}
+			if !validGraphQLAPIJSONScalarValue(item, depth+1, nodes) {
+				return false
+			}
+		}
+		return true
+	default:
+		return true
+	}
 }
 `
 	formatted, err := format.Source([]byte(src))

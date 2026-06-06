@@ -9284,12 +9284,14 @@ func (p *ActionAPI_2026_06_05_100000) Down() {
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "scalar JSON")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "approveTransfer(input: JSON!): JSON! @auth")
 	assertFileContains(t, filepath.Join(out, "gqlgen.yml"), "map[string]interface{}")
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "generated", "json_scalar_gen.go"), "func validGraphQLAPIJSONScalarValue")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "func (r *mutationResolver) ApproveTransfer")
 	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "resolver", "schema.resolvers.go"), "controllers.TransferController{}.Approve")
 	assertFileContains(t, filepath.Join(out, "database", "policies", "support.go"), `{Name: "approveTransfer"}`)
 	assertStandaloneNoPickleRuntime(t, out)
 	writeExportedSupportedGraphQLActionPolicyStateTest(t, out)
 	writeExportedSupportedGraphQLActionResolverTest(t, out)
+	writeExportedSupportedGraphQLActionJSONScalarTest(t, out)
 	runExported(t, out, "go", "test", "./...")
 }
 
@@ -9501,6 +9503,41 @@ func isControllerActionInternalOutput(err error) bool {
 }
 `
 	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "resolver", "exported_controller_action_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExportedSupportedGraphQLActionJSONScalarTest(t *testing.T, out string) {
+	t.Helper()
+	testSrc := `package generated
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/vektah/gqlparser/v2/gqlerror"
+)
+
+func TestExportedGraphQLJSONScalarRejectsUnsafeInput(t *testing.T) {
+	ec := &executionContext{}
+	if got, err := ec.unmarshalInputJSON(context.Background(), map[string]any{"ok": "yes"}); err != nil || got["ok"] != "yes" {
+		t.Fatalf("safe JSON scalar got=%#v err=%v", got, err)
+	}
+	if _, err := ec.unmarshalInputJSON(context.Background(), map[string]any{"secret": strings.Repeat("x", maxGraphQLAPIJSONScalarStringBytes+1)}); !isJSONScalarBadInput(err) {
+		t.Fatalf("oversized JSON scalar error = %v, want BAD_USER_INPUT", err)
+	}
+	if _, err := ec.unmarshalInputJSON(context.Background(), map[string]any{"nested": map[string]any{"a": map[string]any{"b": map[string]any{"c": map[string]any{"d": map[string]any{"e": map[string]any{"f": map[string]any{"g": map[string]any{"h": map[string]any{"i": "too deep"}}}}}}}}}}); !isJSONScalarBadInput(err) {
+		t.Fatalf("deep JSON scalar error = %v, want BAD_USER_INPUT", err)
+	}
+}
+
+func isJSONScalarBadInput(err error) bool {
+	gqlErr, ok := err.(*gqlerror.Error)
+	return ok && gqlErr.Extensions["code"] == "BAD_USER_INPUT" && gqlErr.Message == "GraphQL JSON scalar exceeds safety limits"
+}
+`
+	if err := os.WriteFile(filepath.Join(out, "app", "graphqlapi", "generated", "json_scalar_test.go"), []byte(testSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -9972,6 +9972,9 @@ var csrfNonceReader io.Reader = rand.Reader
 
 const maxSessionCookieNameBytes = 64
 const maxSessionTTLSeconds = 365 * 24 * 60 * 60
+const maxSessionKeyBytes = 128
+const maxSessionPayloadBytes = 8192
+const maxSessionPayloadKeys = 64
 
 type Driver struct {
 	db *sql.DB
@@ -10081,6 +10084,9 @@ func Get(ctx *httpx.Context, key string) (string, error) {
 	if d.db == nil {
 		return "", errors.New("session: database not configured")
 	}
+	if len(key) > maxSessionKeyBytes {
+		return "", errors.New("session: invalid session key")
+	}
 	sessionID, err := ctx.Cookie(d.cookieName)
 	if err != nil {
 		return "", errors.New("session: no session cookie")
@@ -10103,8 +10109,14 @@ func Get(ctx *httpx.Context, key string) (string, error) {
 	if !payloadRaw.Valid || payloadRaw.String == "" {
 		return "", nil
 	}
+	if len(payloadRaw.String) > maxSessionPayloadBytes {
+		return "", errors.New("session: invalid session payload")
+	}
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(payloadRaw.String), &payload); err != nil {
+		return "", errors.New("session: invalid session payload")
+	}
+	if !validSessionPayload(payload) {
 		return "", errors.New("session: invalid session payload")
 	}
 	val, ok := payload[key]
@@ -10129,6 +10141,9 @@ func Put(ctx *httpx.Context, key string, value any) error {
 	if key == "" {
 		return errors.New("session: key must not be empty")
 	}
+	if len(key) > maxSessionKeyBytes {
+		return errors.New("session: invalid session key")
+	}
 	sessionID, err := ctx.Cookie(d.cookieName)
 	if err != nil {
 		return errors.New("session: no session cookie")
@@ -10150,14 +10165,26 @@ func Put(ctx *httpx.Context, key string, value any) error {
 	}
 	payload := map[string]any{}
 	if payloadRaw.Valid && payloadRaw.String != "" {
+		if len(payloadRaw.String) > maxSessionPayloadBytes {
+			return errors.New("session: invalid session payload")
+		}
 		if err := json.Unmarshal([]byte(payloadRaw.String), &payload); err != nil {
 			return errors.New("session: invalid session payload")
 		}
+		if !validSessionPayload(payload) {
+			return errors.New("session: invalid session payload")
+		}
+	}
+	if _, exists := payload[key]; !exists && len(payload) >= maxSessionPayloadKeys {
+		return errors.New("session: payload too large")
 	}
 	payload[key] = value
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return errors.New("session: invalid session value")
+	}
+	if len(data) > maxSessionPayloadBytes {
+		return errors.New("session: payload too large")
 	}
 	res, err := d.db.Exec(bindPlaceholders(d.driver, "UPDATE sessions SET payload = ?, updated_at = ? WHERE id = ?"), string(data), time.Now().UTC(), sessionID)
 	if err != nil {
@@ -10167,6 +10194,18 @@ func Put(ctx *httpx.Context, key string, value any) error {
 		return errors.New("session: invalid or expired session")
 	}
 	return nil
+}
+
+func validSessionPayload(payload map[string]any) bool {
+	if len(payload) > maxSessionPayloadKeys {
+		return false
+	}
+	for key := range payload {
+		if key == "" || len(key) > maxSessionKeyBytes {
+			return false
+		}
+	}
+	return true
 }
 
 func CSRF(ctx *httpx.Context, next func() httpx.Response) httpx.Response {

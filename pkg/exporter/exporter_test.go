@@ -1767,6 +1767,69 @@ func TestExportedSessionPayloadErrorsAreSanitized(t *testing.T) {
 	if err := Put(validCtx, "secret", make(chan int)); err == nil || err.Error() != "session: invalid session value" || strings.Contains(err.Error(), "chan") || strings.Contains(err.Error(), "json:") {
 		t.Fatalf("Put unsupported value error = %v, want sanitized invalid session value", err)
 	}
+	if err := Put(validCtx, strings.Repeat("k", 129), "value"); err == nil || err.Error() != "session: invalid session key" || strings.Contains(err.Error(), strings.Repeat("k", 64)) {
+		t.Fatalf("Put oversized key error = %v, want sanitized invalid key", err)
+	}
+	if _, err := Get(validCtx, strings.Repeat("k", 129)); err == nil || err.Error() != "session: invalid session key" || strings.Contains(err.Error(), strings.Repeat("k", 64)) {
+		t.Fatalf("Get oversized key error = %v, want sanitized invalid key", err)
+	}
+	if err := Put(validCtx, "blob", strings.Repeat("x", 9000)); err == nil || err.Error() != "session: payload too large" || strings.Contains(err.Error(), strings.Repeat("x", 64)) {
+		t.Fatalf("Put oversized value error = %v, want sanitized payload too large", err)
+	}
+	var payload string
+	if err := db.QueryRow("SELECT payload FROM sessions WHERE id = ?", validSessionID).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload != "{}" {
+		t.Fatalf("rejected session writes mutated payload to %q, want {}", payload)
+	}
+
+	fullSessionID := "66666666-6666-4666-8666-666666666666"
+	fullPayload := sessionPayloadWithKeys(64)
+	if _, err := db.Exec("INSERT INTO sessions (id, user_id, role, payload, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", fullSessionID, "user-1", "member", fullPayload, time.Now().Add(time.Hour), time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	fullCtx := httpx.NewContext(requestWithSession(http.MethodPost, fullSessionID))
+	if err := Put(fullCtx, "overflow", "value"); err == nil || err.Error() != "session: payload too large" || strings.Contains(err.Error(), "overflow") {
+		t.Fatalf("Put full payload error = %v, want sanitized payload too large", err)
+	}
+	if err := db.QueryRow("SELECT payload FROM sessions WHERE id = ?", fullSessionID).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload != fullPayload {
+		t.Fatalf("full payload changed after rejected Put")
+	}
+
+	oversizedPayloadSessionID := "77777777-7777-4777-8777-777777777777"
+	if _, err := db.Exec("INSERT INTO sessions (id, user_id, role, payload, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", oversizedPayloadSessionID, "user-1", "member", ` + "`" + `{"secret":"` + "`" + `+strings.Repeat("x", 9000)+` + "`" + `"}` + "`" + `, time.Now().Add(time.Hour), time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	oversizedPayloadCtx := httpx.NewContext(requestWithSession(http.MethodGet, oversizedPayloadSessionID))
+	if _, err := Get(oversizedPayloadCtx, "secret"); err == nil || err.Error() != "session: invalid session payload" || strings.Contains(err.Error(), strings.Repeat("x", 64)) {
+		t.Fatalf("Get oversized payload error = %v, want sanitized invalid payload", err)
+	}
+	if err := Put(oversizedPayloadCtx, "secret", "updated"); err == nil || err.Error() != "session: invalid session payload" || strings.Contains(err.Error(), strings.Repeat("x", 64)) {
+		t.Fatalf("Put oversized payload error = %v, want sanitized invalid payload", err)
+	}
+}
+
+func sessionPayloadWithKeys(keys int) string {
+	var b strings.Builder
+	b.WriteString("{")
+	for i := 0; i < keys; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(` + "`" + `"k` + "`" + `)
+		if i < 10 {
+			b.WriteString("0")
+		}
+		b.WriteString(string(rune('0' + i/10)))
+		b.WriteString(string(rune('0' + i%10)))
+		b.WriteString(` + "`" + `":"v"` + "`" + `)
+	}
+	b.WriteString("}")
+	return b.String()
 }
 
 func TestExportedSessionCreateDestroyDatabaseErrorsAreSanitized(t *testing.T) {

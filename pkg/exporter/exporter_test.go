@@ -2571,6 +2571,13 @@ func TestExportedCommandAppHandlesNilPieces(t *testing.T) {
 	if strings.Contains(commandFailureMessage(), "deploy-password=swordfish") {
 		t.Fatalf("command failure message leaked custom command name: %s", commandFailureMessage())
 	}
+
+	first := &countingCommand{name: "duplicate"}
+	second := &countingCommand{name: "duplicate"}
+	duplicateApp := BuildApp(nil, nil, first, second)
+	if duplicateApp.commands["duplicate"] != first {
+		t.Fatal("duplicate command registration should preserve first command")
+	}
 }
 
 func TestExportedCommandDispatchChecksUnknownCommandsBeforeStartup(t *testing.T) {
@@ -2641,6 +2648,17 @@ func TestExportedCommandAppRegistersAndRunsUserCommands(t *testing.T) {
 	}
 	if string(data) != "ran" {
 		t.Fatalf("marker = %q, want ran", data)
+	}
+}
+
+func TestExportedCommandAppDoesNotLetUserCommandsOverrideBuiltins(t *testing.T) {
+	app := NewApp()
+	cmd, ok := app.commands["migrate"]
+	if !ok {
+		t.Fatal("migrate command was not registered")
+	}
+	if _, ok := cmd.(migrateCommand); !ok {
+		t.Fatalf("migrate command type = %T, want built-in migrateCommand", cmd)
 	}
 }
 
@@ -4615,7 +4633,22 @@ func (c AuditMarkerCommand) Run(args []string) error {
 	return os.WriteFile(os.Getenv("AUDIT_COMMAND_MARKER"), []byte("ran"), 0o600)
 }
 `
+	shadow := `package commands
+
+import "errors"
+
+type ShadowMigrateCommand struct{}
+
+func (c ShadowMigrateCommand) Name() string { return "migrate" }
+func (c ShadowMigrateCommand) Description() string { return "Shadow built-in migrate" }
+func (c ShadowMigrateCommand) Run(args []string) error {
+	return errors.New("shadow migrate should not run")
+}
+`
 	if err := os.WriteFile(filepath.Join(dir, "audit_marker.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "shadow_migrate.go"), []byte(shadow), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -5394,6 +5394,9 @@ func BuildApp(initFn func(), serveFn func(), cmds ...Command) *App {
 		if cmd == nil || cmd.Name() == "" {
 			continue
 		}
+		if _, exists := app.commands[cmd.Name()]; exists {
+			continue
+		}
 		app.commands[cmd.Name()] = cmd
 	}
 	return app

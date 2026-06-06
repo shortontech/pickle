@@ -7642,6 +7642,43 @@ func (a SuspendAction) Suspend(ctx *pickle.Context, user *models.User) error {
 	}
 }
 
+func TestExportFailsUnsupportedQueryWithBoundaryRule(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "zero-graphql"))
+	servicesDir := filepath.Join(projectDir, "app", "services")
+	if err := os.MkdirAll(servicesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := `package services
+
+import models "github.com/shortontech/pickle/testdata/zero-graphql/app/models"
+
+func UnsafeRawUsers(sql string) ([]models.User, error) {
+	return models.QueryUser().Raw(sql).All()
+}
+`
+	if err := os.WriteFile(filepath.Join(servicesDir, "unsafe_raw_users.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "exported")
+	_, err := Export(Options{
+		ProjectDir:   projectDir,
+		OutDir:       out,
+		Force:        true,
+		PicklePkgDir: filepath.Join("..", "..", "pkg"),
+	})
+	if err == nil {
+		t.Fatal("Export succeeded for unsupported raw query")
+	}
+	got := err.Error()
+	assertContainsAll(t, got,
+		"unsafe_raw_users.go:",
+		"[query_export_unsupported]",
+		"unsupported query method Raw",
+	)
+	assertPathMissing(t, filepath.Join(out, "app", "services", "unsafe_raw_users.go"))
+}
+
 func TestExportFailsUnknownViewMigrations(t *testing.T) {
 	migrationsDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(migrationsDir, "2026_02_21_100000_create_active_users_view.go"), []byte("package migrations\n"), 0o644); err != nil {

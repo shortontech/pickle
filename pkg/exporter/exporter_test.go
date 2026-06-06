@@ -138,7 +138,10 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_ban_gate_gen.go"), `HasAnyRole("admin")`)
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "func (m *User) Ban")
 	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "func (m *User) Promote")
-	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "CanBan(ctx, m)")
+	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "func AuthorizeBan")
+	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "func AuthorizeView")
+	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "AuthorizeBan(ctx, m)")
+	assertFileContains(t, filepath.Join(out, "app", "models", "user_actions.go"), "roleID, err := AuthorizeBan(ctx, m)")
 	assertFileContains(t, filepath.Join(out, "app", "models", "action_audit_support.go"), "func runAuditedAction")
 	assertFileContains(t, filepath.Join(out, "app", "models", "action_audit_support.go"), "func auditDatabaseError() error")
 	assertFileContains(t, filepath.Join(out, "app", "models", "action_audit_support.go"), "var errAuditUserID = errors.New(\"audit user id\")")
@@ -1878,6 +1881,17 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 	}()
 
 	user := &models.User{ID: userID, Name: "before"}
+	authorizedRoleID, err := models.AuthorizeBan(ctx, user)
+	if err != nil {
+		t.Fatalf("authorize ban: %v", err)
+	}
+	if authorizedRoleID == nil || *authorizedRoleID == uuid.Nil {
+		t.Fatalf("authorize ban role id = %v, want non-nil audit role id", authorizedRoleID)
+	}
+	if viewRoleID, err := models.AuthorizeView(ctx, user); err != nil || viewRoleID == nil || *viewRoleID == uuid.Nil {
+		t.Fatalf("authorize standalone view = %v, %v; want non-nil role id", viewRoleID, err)
+	}
+
 	if err := user.Ban(ctx, models.BanAction{Reason: "banned"}); err != nil {
 		t.Fatalf("ban: %v", err)
 	}
@@ -2028,6 +2042,9 @@ func TestExportedActionsPersistAuditRowsTransactionally(t *testing.T) {
 
 	deniedCtx := httpx.NewContext(req)
 	deniedCtx.SetAuth(&httpx.AuthInfo{UserID: uuid.New().String(), Role: "viewer"})
+	if roleID, err := models.AuthorizeBan(deniedCtx, user); !errors.Is(err, models.ErrUnauthorized) || roleID != nil {
+		t.Fatalf("denied authorize ban = %v, %v; want nil ErrUnauthorized", roleID, err)
+	}
 	if err := user.Ban(deniedCtx, models.BanAction{Reason: "denied"}); !errors.Is(err, models.ErrUnauthorized) {
 		t.Fatalf("denied ban error = %v, want ErrUnauthorized", err)
 	}

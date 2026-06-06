@@ -5449,8 +5449,21 @@ func (e *exporter) generateActionModelWiring(set *generator.ActionSet) ([]byte, 
 	var b strings.Builder
 	b.WriteString("package models\n\n")
 	b.WriteString("import (\n")
+	b.WriteString("\t\"github.com/google/uuid\"\n")
 	b.WriteString(fmt.Sprintf("\t\"%s/internal/httpx\"\n", e.modulePath))
 	b.WriteString(")\n\n")
+	seenGates := map[string]bool{}
+	for _, gate := range set.Gates {
+		if seenGates[gate.ActionName] {
+			continue
+		}
+		seenGates[gate.ActionName] = true
+		fmt.Fprintf(&b, "func Authorize%s(ctx *httpx.Context, m *%s) (*uuid.UUID, error) {\n", gate.ActionName, structName)
+		fmt.Fprintf(&b, "\troleID := Can%s(ctx, m)\n", gate.ActionName)
+		b.WriteString("\tif roleID == nil {\n\t\treturn nil, ErrUnauthorized\n\t}\n")
+		b.WriteString("\treturn roleID, nil\n")
+		b.WriteString("}\n\n")
+	}
 	for _, action := range set.Actions {
 		resultType := action.ResultType
 		b.WriteString(fmt.Sprintf("func (m *%s) %s(ctx *httpx.Context, action %s) ", structName, action.Name, action.StructName))
@@ -5459,18 +5472,18 @@ func (e *exporter) generateActionModelWiring(set *generator.ActionSet) ([]byte, 
 		} else {
 			b.WriteString("error {\n")
 		}
-		b.WriteString(fmt.Sprintf("\troleID := Can%s(ctx, m)\n", action.Name))
-		b.WriteString("\tif roleID == nil {\n")
+		b.WriteString(fmt.Sprintf("\troleID, err := Authorize%s(ctx, m)\n", action.Name))
+		b.WriteString("\tif err != nil {\n")
 		b.WriteString(fmt.Sprintf("\t\tAuditDenied(ctx, %q, %q, m.ID, \"gate denied\")\n", action.Name, structName))
 		if action.HasResult {
-			b.WriteString("\t\treturn nil, ErrUnauthorized\n")
+			b.WriteString("\t\treturn nil, err\n")
 		} else {
-			b.WriteString("\t\treturn ErrUnauthorized\n")
+			b.WriteString("\t\treturn err\n")
 		}
 		b.WriteString("\t}\n")
 		if action.HasResult {
 			b.WriteString(fmt.Sprintf("\tvar result %s\n", resultType))
-			b.WriteString(fmt.Sprintf("\terr := runAuditedAction(ctx, %q, %q, m.ID, actionVersionID(m), roleID, func() error {\n", structName, action.Name))
+			b.WriteString(fmt.Sprintf("\terr = runAuditedAction(ctx, %q, %q, m.ID, actionVersionID(m), roleID, func() error {\n", structName, action.Name))
 			b.WriteString(fmt.Sprintf("\t\tvar execErr error\n\t\tresult, execErr = action.%s(ctx, m)\n\t\treturn execErr\n\t})\n", action.Name))
 			b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n")
 			b.WriteString("\treturn result, nil\n")

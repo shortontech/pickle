@@ -5423,7 +5423,6 @@ func (a *App) run(args []string) error {
 	if len(args) > 0 {
 		cmd, ok := a.commands[args[0]]
 		if !ok {
-			a.PrintCommands()
 			return fmt.Errorf("%s", unknownCommandMessage())
 		}
 		if a.initFn != nil {

@@ -2756,7 +2756,7 @@ func TestExportedServerBinaryRejectsUnknownCommandBeforeStartup(t *testing.T) {
 	if !strings.Contains(text, "unknown command") {
 		t.Fatalf("unknown command output = %s, want sanitized marker", text)
 	}
-	for _, leak := range []string{"swordfish", "missing-password", "database startup failed", "no such file", "/definitely/missing"} {
+	for _, leak := range []string{"swordfish", "missing-password", "database startup failed", "no such file", "/definitely/missing", "Available commands", "audit:marker", "Shadow built-in", "migrate:rollback"} {
 		if strings.Contains(text, leak) {
 			t.Fatalf("unknown command output leaked %q: %s", leak, text)
 		}

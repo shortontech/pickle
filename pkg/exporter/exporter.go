@@ -339,7 +339,6 @@ func shouldSkipDir(rel string) bool {
 		".claude":           true,
 		"app/models":        true,
 		"app/graphql":       true,
-		"app/commands":      true,
 		"app/http/auth":     true,
 		"database/policies": true,
 		"database/actions":  true,
@@ -5314,6 +5313,11 @@ func (e *exporter) generateCommandsSupport() ([]byte, error) {
 	hasGraphQL := e.hasGraphQLPackage()
 	hasSchedule := e.hasSchedule()
 	hasPolicies := e.hasPolicySupport()
+	userCommands, err := generator.ScanCommands(e.project.Layout.CommandsDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("scanning exported user commands: %w", err)
+	}
+	sort.Strings(userCommands)
 	var b strings.Builder
 	b.WriteString("package commands\n\n")
 	b.WriteString("import (\n")
@@ -5525,7 +5529,12 @@ func BuiltinCommands() []Command {
 }
 
 func UserCommands() []Command {
-	return []Command{}
+	return []Command{
+`)
+	for _, cmd := range userCommands {
+		fmt.Fprintf(&b, "\t\t%s{},\n", cmd)
+	}
+	b.WriteString(`	}
 }
 
 func Commands() []Command {

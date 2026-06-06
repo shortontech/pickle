@@ -15,6 +15,7 @@ import (
 func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
 	writeTestAction(t, projectDir)
+	writeTestCommand(t, projectDir)
 	out := filepath.Join(t.TempDir(), "exported")
 	res, err := Export(Options{
 		ProjectDir:   projectDir,
@@ -73,6 +74,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "config", "app.go"), "func app() AppConfig")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "commands.NewApp().Run(os.Args[1:])")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "func BuiltinCommands() []Command")
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "AuditMarkerCommand{}")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "func HTTPHandler() http.Handler")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "routes.API.RegisterRoutes(mux)")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), `mux.HandleFunc("/", exportedNotFound)`)
@@ -2490,6 +2492,8 @@ func countWhere(t *testing.T, db *sql.DB, table, where string) int {
 	securityTestSrc := `package commands
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -2581,6 +2585,31 @@ func TestExportedCommandDispatchInitializesKnownCommandsAndServer(t *testing.T) 
 	}
 	if initialized != 2 || command.runs != 1 || served != 1 {
 		t.Fatalf("server mode initialized/runs/served = %d/%d/%d, want 2/1/1", initialized, command.runs, served)
+	}
+}
+
+func TestExportedCommandAppRegistersAndRunsUserCommands(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "custom-command.sqlite")
+	markerPath := filepath.Join(t.TempDir(), "audit-marker.txt")
+	t.Setenv("DB_CONNECTION", "sqlite")
+	t.Setenv("DB_DATABASE", dbPath)
+	t.Setenv("JWT_SECRET", "0123456789abcdef0123456789abcdef")
+	t.Setenv("APP_ENCRYPTION_KEY", "12345678901234567890123456789012")
+	t.Setenv("AUDIT_COMMAND_MARKER", markerPath)
+
+	app := NewApp()
+	if _, ok := app.commands["audit:marker"]; !ok {
+		t.Fatalf("exported app did not register user command; commands = %#v", app.commands)
+	}
+	if err := app.run([]string{"audit:marker"}); err != nil {
+		t.Fatalf("user command failed: %v", err)
+	}
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if string(data) != "ran" {
+		t.Fatalf("marker = %q, want ran", data)
 	}
 }
 
@@ -4533,6 +4562,29 @@ func UseBanAction() models.User { return models.User{} }
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(projectDir, "app", "services", "action_call.go"), []byte(callSite), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeTestCommand(t *testing.T, projectDir string) {
+	t.Helper()
+	dir := filepath.Join(projectDir, "app", "commands")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := `package commands
+
+import "os"
+
+type AuditMarkerCommand struct{}
+
+func (c AuditMarkerCommand) Name() string { return "audit:marker" }
+func (c AuditMarkerCommand) Description() string { return "Write audit marker" }
+func (c AuditMarkerCommand) Run(args []string) error {
+	return os.WriteFile(os.Getenv("AUDIT_COMMAND_MARKER"), []byte("ran"), 0o600)
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "audit_marker.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

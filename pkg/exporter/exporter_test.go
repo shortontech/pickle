@@ -4664,6 +4664,17 @@ func writeTestScope(t *testing.T, projectDir, modelDir, filename, src string) {
 	}
 }
 
+func writeTestService(t *testing.T, projectDir, filename, src string) {
+	t.Helper()
+	dir := filepath.Join(projectDir, "app", "services")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, filename), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeExportedCustomScopeBehaviorTest(t *testing.T, out string) {
 	t.Helper()
 	testSrc := `package models_test
@@ -4703,6 +4714,20 @@ func TestExportedCustomScopeFiltersWithStandaloneQuerySupport(t *testing.T) {
 	}
 	if len(sessions) != 1 || sessions[0].ID != "admin" {
 		t.Fatalf("Admin scope returned %+v, want only admin session", sessions)
+	}
+
+	err = models.WithTransaction(func(tx *models.Tx) error {
+		txSessions, err := tx.QuerySession().Admin().ExpiresAfter(now.Add(-time.Minute)).All()
+		if err != nil {
+			return err
+		}
+		if len(txSessions) != 1 || txSessions[0].ID != "admin" {
+			t.Fatalf("transaction Admin scope returned %+v, want only admin session", txSessions)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 `
@@ -5117,6 +5142,27 @@ func ExpiresAfter(q *models.SessionScopeBuilder, since time.Time) *models.Sessio
 	return q.WhereExpiresAtAfter(since)
 }
 `)
+	writeTestService(t, projectDir, "scoped_tx.go", `package services
+
+import (
+	"time"
+
+	"github.com/shortontech/pickle/testdata/encryption-test/app/models"
+)
+
+func CountAdminSessionsInTransaction() (int, error) {
+	count := 0
+	err := models.WithTransaction(func(tx *models.Tx) error {
+		sessions, err := tx.QuerySession().Admin().ExpiresAfter(time.Now().Add(-time.Hour)).All()
+		if err != nil {
+			return err
+		}
+		count = len(sessions)
+		return nil
+	})
+	return count, err
+}
+`)
 	out := filepath.Join(t.TempDir(), "exported")
 	res, err := Export(Options{
 		ProjectDir:   projectDir,
@@ -5133,11 +5179,13 @@ func ExpiresAfter(q *models.SessionScopeBuilder, since time.Time) *models.Sessio
 
 	assertFileContains(t, filepath.Join(out, "app", "models", "query_support.go"), "type SessionScopeBuilder struct")
 	assertFileContains(t, filepath.Join(out, "app", "models", "query_support.go"), "func QuerySession() *SessionQuery")
+	assertFileContains(t, filepath.Join(out, "app", "models", "query_support.go"), "func (tx *Tx) QuerySession() *SessionQuery")
 	assertFileContains(t, filepath.Join(out, "app", "models", "query_support.go"), "func (sb *SessionScopeBuilder) WhereRole(value any) *SessionScopeBuilder")
 	assertFileContains(t, filepath.Join(out, "app", "models", "custom_scopes_gen.go"), "func (q *SessionQuery) Admin() *SessionQuery")
 	assertFileContains(t, filepath.Join(out, "app", "models", "custom_scopes_gen.go"), "func (q *SessionQuery) ExpiresAfter(since time.Time) *SessionQuery")
 	assertFileContains(t, filepath.Join(out, "app", "models", "custom_scopes_gen.go"), "func sessionScopeAdmin(q *SessionScopeBuilder) *SessionScopeBuilder")
 	assertFileContains(t, filepath.Join(out, "app", "models", "custom_scopes_gen.go"), `"time"`)
+	assertFileContains(t, filepath.Join(out, "app", "services", "scoped_tx.go"), "tx.QuerySession().Admin().ExpiresAfter")
 	assertFileContains(t, filepath.Join(out, "database", "scopes", "session", "admin.go"), `"encryption-test/app/models"`)
 	assertPathMissing(t, filepath.Join(out, "gqlgen.yml"))
 	assertFileNotContains(t, filepath.Join(out, "go.mod"), "github.com/99designs/gqlgen")
@@ -8540,6 +8588,35 @@ func Claim(status string) error {
 			t.Fatalf("rewritten source retained %q:\n%s", unexpected, got)
 		}
 	}
+}
+
+func TestRewritePreservesTransactionCustomScopeQueries(t *testing.T) {
+	ex := &exporter{
+		sourceModule: "example.com/app",
+		modulePath:   "exported-app",
+		models:       map[string]bool{"Job": true},
+		scopes: map[string][]generator.ScopeDef{
+			"job": {{Name: "Ready"}},
+		},
+	}
+	src := []byte(`package controllers
+
+import "example.com/app/app/models"
+
+func Claim() error {
+	return models.WithTransaction(func(tx *models.Tx) error {
+		jobs, err := tx.QueryJob().Ready().All()
+		_ = jobs
+		return err
+	})
+}
+`)
+	out, err := ex.rewriteGoFile("controller.go", src)
+	if err != nil {
+		t.Fatalf("rewriteGoFile: %v", err)
+	}
+	got := string(out)
+	assertContainsAll(t, got, "tx.QueryJob().Ready().All()")
 }
 
 func TestRewriteQueryShareNoWaitLockClause(t *testing.T) {

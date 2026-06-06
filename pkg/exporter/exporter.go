@@ -784,6 +784,11 @@ func queryCallModel(call *ast.CallExpr) (string, bool) {
 		if id, ok := sel.X.(*ast.Ident); ok && id.Name == "models" && strings.HasPrefix(sel.Sel.Name, "Query") {
 			return strings.TrimPrefix(sel.Sel.Name, "Query"), true
 		}
+		if id, ok := sel.X.(*ast.Ident); ok && strings.HasPrefix(sel.Sel.Name, "Query") {
+			if _, ok := queryRootDB(id.Name); ok {
+				return strings.TrimPrefix(sel.Sel.Name, "Query"), true
+			}
+		}
 		if rootCall, ok := sel.X.(*ast.CallExpr); ok {
 			cur = rootCall
 			continue
@@ -3301,6 +3306,9 @@ func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns
 	})
 	b.WriteString(fmt.Sprintf("type %s struct { db *gorm.DB }\n\n", queryName))
 	b.WriteString(fmt.Sprintf("func Query%s() *%s { return &%s{db: DB.Model(&%s{})} }\n\n", structName, queryName, queryName, structName))
+	b.WriteString(fmt.Sprintf("func (tx *Tx) Query%s() *%s {\n", structName, queryName))
+	b.WriteString(fmt.Sprintf("\treturn &%s{db: tx.DB.Model(&%s{})}\n", queryName, structName))
+	b.WriteString("}\n")
 	b.WriteString(fmt.Sprintf("func (q *%s) SelectPublic() *%s { q.db = q.db.Select([]string{%s}); return q }\n", queryName, queryName, quotedStringList(publicCols)))
 	b.WriteString(fmt.Sprintf("func (q *%s) SelectOwner() *%s { q.db = q.db.Select([]string{%s}); return q }\n", queryName, queryName, quotedStringList(ownerCols)))
 	b.WriteString(fmt.Sprintf("func (q *%s) SelectAll() *%s { q.db = q.db.Select(\"*\"); return q }\n", queryName, queryName))

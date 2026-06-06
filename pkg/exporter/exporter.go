@@ -4533,6 +4533,18 @@ func (e *exporter) exportedRouteVars() ([]string, error) {
 	return routeVars, nil
 }
 
+func exportedServiceRouteVars(svc generator.ServiceLayout) ([]string, error) {
+	routeVars, err := generator.ScanRouteVars(filepath.Join(svc.Dir, "routes"))
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("scanning exported route vars for service %s: %w", svc.Name, err)
+	}
+	if len(routeVars) == 0 {
+		routeVars = []string{"API"}
+	}
+	sort.Strings(routeVars)
+	return routeVars, nil
+}
+
 func (e *exporter) writePolicySupport() error {
 	if !e.hasPolicySupport() {
 		return nil
@@ -6299,13 +6311,24 @@ func (e *exporter) generateMultiServiceServerMain(hasDatabaseConfig, hasSchedule
 	}
 	b.WriteString("\tmux := http.NewServeMux()\n")
 	for i, svc := range e.project.Services {
+		routeVars, err := exportedServiceRouteVars(svc)
+		if err != nil {
+			return nil, err
+		}
 		prefix := "/" + strings.Trim(svc.Name, "/") + "/"
 		if i == 0 && svc.Name == "api" {
-			b.WriteString(fmt.Sprintf("\t%sRoutes.API.RegisterRoutes(mux)\n", safeImportAlias(svc.Name)))
+			for _, routeVar := range routeVars {
+				fmt.Fprintf(&b, "\t%sRoutes.%s.RegisterRoutes(mux)\n", safeImportAlias(svc.Name), routeVar)
+			}
 			continue
 		}
 		stripPrefix := strings.TrimSuffix(prefix, "/")
-		b.WriteString(fmt.Sprintf("\tmux.Handle(%q, http.StripPrefix(%q, %sRoutes.API))\n", prefix, stripPrefix, safeImportAlias(svc.Name)))
+		serviceMux := safeImportAlias(svc.Name) + "Mux"
+		fmt.Fprintf(&b, "\t%s := http.NewServeMux()\n", serviceMux)
+		for _, routeVar := range routeVars {
+			fmt.Fprintf(&b, "\t%sRoutes.%s.RegisterRoutes(%s)\n", safeImportAlias(svc.Name), routeVar, serviceMux)
+		}
+		b.WriteString(fmt.Sprintf("\tmux.Handle(%q, http.StripPrefix(%q, %s))\n", prefix, stripPrefix, serviceMux))
 	}
 	b.WriteString("\tmux.HandleFunc(\"/\", exportedNotFound)\n")
 	b.WriteString("\taddr := \":\" + config.App.Port\n")

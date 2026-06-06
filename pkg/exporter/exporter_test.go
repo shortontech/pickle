@@ -6542,8 +6542,20 @@ func TestExportedGQLGenTargetTopLevelComplexityValidatesPageInput(t *testing.T) 
 
 func TestExportMonorepoCompiles(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "monorepo"))
+	workerRoutePath := filepath.Join(projectDir, "services", "worker", "routes", "web.go")
+	workerRoutesData, err := os.ReadFile(workerRoutePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerRoutesSource := strings.Replace(string(workerRoutesData), "var API = pickle.Routes", "var Worker = pickle.Routes", 1)
+	if workerRoutesSource == string(workerRoutesData) {
+		t.Fatal("worker route fixture did not contain API route var")
+	}
+	if err := os.WriteFile(workerRoutePath, []byte(workerRoutesSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	out := filepath.Join(t.TempDir(), "exported")
-	_, err := Export(Options{
+	_, err = Export(Options{
 		ProjectDir:   projectDir,
 		OutDir:       out,
 		Force:        true,
@@ -6560,7 +6572,9 @@ func TestExportMonorepoCompiles(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "apiRoutes")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "workerRoutes")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "apiRoutes.API.RegisterRoutes(mux)")
-	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `http.StripPrefix("/worker", workerRoutes.API)`)
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "workerRoutes.Worker.RegisterRoutes(workerMux)")
+	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `http.StripPrefix("/worker", workerMux)`)
+	assertFileNotContains(t, filepath.Join(out, "cmd", "server", "main.go"), "workerRoutes.API")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), `mux.HandleFunc("/", exportedNotFound)`)
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "func exportedNotFound")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "ReadHeaderTimeout: 10 * time.Second")
@@ -6618,7 +6632,9 @@ func TestExportedMultiServiceServerMountsServiceLocalRoutes(t *testing.T) {
 
 	mux := http.NewServeMux()
 	apiRoutes.API.RegisterRoutes(mux)
-	mux.Handle("/worker/", http.StripPrefix("/worker", workerRoutes.API))
+	workerMux := http.NewServeMux()
+	workerRoutes.Worker.RegisterRoutes(workerMux)
+	mux.Handle("/worker/", http.StripPrefix("/worker", workerMux))
 	mux.HandleFunc("/", exportedNotFound)
 
 	usersRec := httptest.NewRecorder()

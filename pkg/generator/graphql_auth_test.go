@@ -406,6 +406,34 @@ func (p *PublicAPI) Up() {
 	}
 }
 
+func TestDeriveGraphQLStateControllerActionHandler(t *testing.T) {
+	dir := t.TempDir()
+	src := `package graphql
+
+type ActionAPI struct { GraphQLPolicy }
+
+func (p *ActionAPI) Up() {
+	p.ControllerAction("approveTransfer", controllers.TransferController{}.Approve)
+	p.ControllerAction("legacyAction", nil)
+	p.RemoveAction("legacyAction")
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "2026_06_02_100000_action_api.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	state := DeriveGraphQLStateFromDir(dir)
+	if len(state.Actions) != 1 {
+		t.Fatalf("expected 1 action, got %#v", state.Actions)
+	}
+	if state.Actions[0].Name != "approveTransfer" {
+		t.Fatalf("action name = %q, want approveTransfer", state.Actions[0].Name)
+	}
+	if state.Actions[0].Handler != "controllers.TransferController{}.Approve" {
+		t.Fatalf("action handler = %q", state.Actions[0].Handler)
+	}
+}
+
 func TestGraphQLPolicyRelationshipsInferForeignKeysAndStayOptIn(t *testing.T) {
 	users := &schema.Table{Name: "users"}
 	users.UUID("id").PrimaryKey()

@@ -8111,7 +8111,7 @@ func TestExporterReportsGraphQLControllerActionsAsUnsupported(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(policyDir, "2026_06_05_100000_actions.go"), []byte(`package graphql
 
 func (p *API) Up() {
-	p.ControllerAction("approveTransfer", nil)
+	p.ControllerAction("approveTransfer", controllers.TransferController{}.Approve)
 }
 `), 0o644); err != nil {
 		t.Fatalf("write policy: %v", err)
@@ -8129,6 +8129,9 @@ func (p *API) Up() {
 	}
 	if got := ex.result.Findings[0].Message; !strings.Contains(got, "approveTransfer") {
 		t.Fatalf("finding message %q does not name controller action", got)
+	}
+	if got := ex.result.Findings[0].Message; !strings.Contains(got, "controllers.TransferController{}.Approve") {
+		t.Fatalf("finding message %q does not name controller action handler", got)
 	}
 }
 

@@ -7059,10 +7059,14 @@ func (e *exporter) addGraphQLActionFindings() {
 	}
 	state := generator.DeriveGraphQLStateFromDir(filepath.Join(e.project.Dir, "database", "policies", "graphql"))
 	for _, action := range state.Actions {
+		message := fmt.Sprintf("GraphQL controller action %s is not lowered by the standalone gqlgen export target", action.Name)
+		if action.Handler != "" && action.Handler != "nil" {
+			message = fmt.Sprintf("GraphQL controller action %s (%s) is not lowered by the standalone gqlgen export target", action.Name, action.Handler)
+		}
 		e.result.Findings = append(e.result.Findings, Finding{
 			File:    filepath.Join("database", "policies", "graphql"),
 			Rule:    "graphql_action_export_unsupported",
-			Message: fmt.Sprintf("GraphQL controller action %s is not lowered by the standalone gqlgen export target", action.Name),
+			Message: message,
 		})
 	}
 }

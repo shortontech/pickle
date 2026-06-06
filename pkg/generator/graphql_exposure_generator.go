@@ -26,7 +26,8 @@ type DerivedExposure struct {
 
 // DerivedAction represents a registered custom controller action.
 type DerivedAction struct {
-	Name string
+	Name    string
+	Handler string
 }
 
 // DerivedRelationshipExposure is optional relationship budget metadata derived
@@ -205,7 +206,7 @@ var (
 	reExposeDir        = regexp.MustCompile(`(?m)\.Expose\("([^"]+)"`)
 	reAlterExposeDir   = regexp.MustCompile(`(?m)\.AlterExpose\("([^"]+)"`)
 	reUnexposeDir      = regexp.MustCompile(`(?m)\.Unexpose\("([^"]+)"\)`)
-	reControllerAction = regexp.MustCompile(`(?m)\.ControllerAction\("([^"]+)"`)
+	reControllerAction = regexp.MustCompile(`(?m)\.ControllerAction\("([^"]+)"(?:\s*,\s*([^)\n]+))?\)`)
 	reRemoveAction     = regexp.MustCompile(`(?m)\.RemoveAction\("([^"]+)"\)`)
 	reExposeOps        = regexp.MustCompile(`e\.(List|Show|Create|Update|Delete)\(\)`)
 	reRemoveOps        = regexp.MustCompile(`e\.(RemoveList|RemoveShow|RemoveCreate|RemoveUpdate|RemoveDelete)\(\)`)
@@ -239,7 +240,7 @@ func DeriveGraphQLStateFromDir(dir string) DerivedGraphQLState {
 
 	exposures := map[string]map[string]bool{} // model -> ops
 	relationships := map[string]map[string]DerivedRelationshipExposure{}
-	actions := map[string]bool{}
+	actions := map[string]DerivedAction{}
 	var modelOrder []string
 
 	for _, fname := range files {
@@ -311,7 +312,11 @@ func DeriveGraphQLStateFromDir(dir string) DerivedGraphQLState {
 
 		// Process ControllerAction calls
 		for _, match := range reControllerAction.FindAllStringSubmatch(src, -1) {
-			actions[match[1]] = true
+			action := DerivedAction{Name: match[1]}
+			if len(match) > 2 {
+				action.Handler = strings.TrimSpace(match[2])
+			}
+			actions[action.Name] = action
 		}
 
 		// Process RemoveAction calls
@@ -339,8 +344,8 @@ func DeriveGraphQLStateFromDir(dir string) DerivedGraphQLState {
 			state.Exposures = append(state.Exposures, exp)
 		}
 	}
-	for name := range actions {
-		state.Actions = append(state.Actions, DerivedAction{Name: name})
+	for _, action := range actions {
+		state.Actions = append(state.Actions, action)
 	}
 	sort.Slice(state.Actions, func(i, j int) bool {
 		return state.Actions[i].Name < state.Actions[j].Name

@@ -9205,6 +9205,9 @@ func RateLimit(rps, burst int) MiddlewareFunc {
 	store := newRateLimiterStore(float64(rps), burst)
 	go cleanupRateLimiter(store)
 	return func(ctx *Context, next func() Response) Response {
+		if next == nil {
+			return Response{StatusCode: http.StatusInternalServerError, Body: map[string]string{"error": "internal server error"}}
+		}
 		if !store.enabled { return next() }
 		key := clientIP(ctx.Request())
 		bucket, ok := store.allow(key)
@@ -9228,6 +9231,9 @@ func (c *AuthRateLimitConfig) KeyFunc(fn func(*Context) string) *AuthRateLimitCo
 func (c *AuthRateLimitConfig) Tiers(tiers map[string]RateTier) *AuthRateLimitConfig { c.tiers = tiers; return c }
 func (c *AuthRateLimitConfig) Middleware() MiddlewareFunc {
 	return func(ctx *Context, next func() Response) Response {
+		if next == nil {
+			return Response{StatusCode: http.StatusInternalServerError, Body: map[string]string{"error": "internal server error"}}
+		}
 		key := ""
 		if ctx.Auth().UserID != "" { key = ctx.Auth().UserID }
 		if key == "" && c.keyFunc != nil { key = c.keyFunc(ctx) }

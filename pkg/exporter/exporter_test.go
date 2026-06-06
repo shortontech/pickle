@@ -4138,6 +4138,7 @@ func assertPanicDoesNotMentionPickle(t *testing.T, name string, fn func()) {
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -4310,6 +4311,28 @@ func TestExportedAuthRateLimitHandlesNilContext(t *testing.T) {
 	}
 	if events[0].Layer != "auth" || events[0].Path != "" || events[0].Key != "" {
 		t.Fatalf("nil context auth rate limit event = %#v", events[0])
+	}
+}
+
+func TestExportedRateLimitMiddlewareNilNextFailsClosed(t *testing.T) {
+	resetTrustedProxyStateForTest()
+	t.Setenv("RATE_LIMIT", "false")
+
+	for name, resp := range map[string]Response{
+		"ip":       RateLimit(1, 1)(NewContext(requestFrom("192.0.2.10:1234", "")), nil),
+		"disabled": RateLimit(0, 1)(NewContext(requestFrom("192.0.2.11:1234", "")), nil),
+		"auth":     AuthRateLimit().RPS(1).Burst(1).Middleware()(NewContext(requestFrom("192.0.2.12:1234", "")), nil),
+	} {
+		if resp.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("%s status = %d, want 500", name, resp.StatusCode)
+		}
+		body, ok := resp.Body.(map[string]string)
+		if !ok || body["error"] != "internal server error" {
+			t.Fatalf("%s body = %#v, want sanitized internal server error", name, resp.Body)
+		}
+		if strings.Contains(body["error"], "panic") || strings.Contains(body["error"], "nil pointer") || strings.Contains(body["error"], "192.0.2") {
+			t.Fatalf("%s leaked internal detail: %#v", name, body)
+		}
 	}
 }
 

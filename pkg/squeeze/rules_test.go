@@ -502,6 +502,49 @@ func Handler() {
 	}
 }
 
+// ---- Rule: raw_sql ----
+
+func TestRuleRawSQL_IgnoresContextQuery(t *testing.T) {
+	// ctx.Query reads a URL query param (returns string); it is not database/sql.
+	src := `package controllers
+func Handler() {
+	provErr := ctx.Query("error")
+	code, state := ctx.Query("code"), ctx.Query("state")
+	_, _, _ = provErr, code, state
+}`
+	m := method(t, src)
+	ctx := &AnalysisContext{
+		Methods: map[string]*ControllerMethod{"C.Handler": m},
+	}
+	if findings := ruleRawSQL(ctx); len(findings) != 0 {
+		t.Errorf("expected 0 findings for ctx.Query, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestRuleRawSQL_FlagsRealRawSQL(t *testing.T) {
+	// Genuine raw SQL on a DB/tx handle — and on a handle obtained from ctx.DB()
+	// (receiver is ctx.DB(), a CallExpr, not the bare ctx ident) — must still fire.
+	src := `package controllers
+func Handler() {
+	db.Query("SELECT 1")
+	tx.Exec("DELETE FROM users")
+	ctx.DB().QueryRow("SELECT count(*)")
+}`
+	m := method(t, src)
+	ctx := &AnalysisContext{
+		Methods: map[string]*ControllerMethod{"C.Handler": m},
+	}
+	findings := ruleRawSQL(ctx)
+	if len(findings) != 3 {
+		t.Fatalf("expected 3 raw_sql findings, got %d: %+v", len(findings), findings)
+	}
+	for _, f := range findings {
+		if f.Severity != SeverityError {
+			t.Errorf("expected error severity, got %s", f.Severity)
+		}
+	}
+}
+
 // ---- Rule: no_recover ----
 
 func TestRuleNoRecover_FlagsInController(t *testing.T) {

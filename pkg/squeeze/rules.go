@@ -1610,6 +1610,14 @@ func ruleRawSQL(ctx *AnalysisContext) []Finding {
 			if !ok || !sqlMethods[sel.Sel.Name] {
 				return true
 			}
+			// The Pickle request context exposes Query(name) for reading URL query
+			// params (returns a string), which collides by name with database/sql's
+			// Query. A call on the bare `ctx` identifier is never raw SQL — a real
+			// query obtains a DB/tx handle first (db.Query, tx.Exec, ctx.DB().Query),
+			// where sel.X is not the bare `ctx` ident.
+			if recv, ok := sel.X.(*ast.Ident); ok && recv.Name == "ctx" {
+				return true
+			}
 			msg := "raw SQL via " + sel.Sel.Name + "() — use the generated query builder instead"
 			if via != "" {
 				msg = "raw SQL via " + sel.Sel.Name + "() in " + via + " — use the generated query builder instead"

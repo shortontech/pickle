@@ -295,7 +295,7 @@ func parseRoute(method string, call *ast.CallExpr, parentPrefix string, parentMW
 		ControllerType: ctrlType,
 		MethodName:     methodName,
 		HandlerPackage: handlerPkg,
-		Middleware:      allMW,
+		Middleware:     allMW,
 		File:           file,
 		Line:           fset.Position(call.Pos()).Line,
 	}, true
@@ -311,18 +311,40 @@ func extractStringLit(expr ast.Expr) string {
 }
 
 // extractMiddlewareName extracts the middleware function name from an expression.
-// Handles: middleware.Auth → "Auth", middleware.RequireRole("admin") → "RequireRole"
+// Handles: middleware.Auth → "Auth", middleware.RequireRole("admin") → "RequireRole".
+// It also unwraps the pickle.MiddlewareFunc(x) / MiddlewareFunc(x) conversion the
+// router forces, classifying by the inner expression: pickle.MiddlewareFunc(session.CSRF) → "CSRF".
 func extractMiddlewareName(expr ast.Expr) string {
 	switch e := expr.(type) {
 	case *ast.SelectorExpr:
 		return e.Sel.Name
 	case *ast.CallExpr:
+		// Unwrap a single-arg MiddlewareFunc(x) / pickle.MiddlewareFunc(x) conversion
+		// and classify by the inner expression. Genuine constructor middleware such as
+		// pickle.RateLimit(1, 5) is left untouched.
+		if len(e.Args) == 1 && isMiddlewareFuncConversion(e.Fun) {
+			return extractMiddlewareName(e.Args[0])
+		}
 		// Parameterized middleware like middleware.RequireRole("admin")
 		if sel, ok := e.Fun.(*ast.SelectorExpr); ok {
 			return sel.Sel.Name
 		}
 	}
 	return ""
+}
+
+// isMiddlewareFuncConversion reports whether fun refers to the MiddlewareFunc type,
+// either as a bare identifier (MiddlewareFunc) or pickle-qualified (pickle.MiddlewareFunc).
+func isMiddlewareFuncConversion(fun ast.Expr) bool {
+	switch f := fun.(type) {
+	case *ast.Ident:
+		return f.Name == "MiddlewareFunc"
+	case *ast.SelectorExpr:
+		if pkg, ok := f.X.(*ast.Ident); ok && pkg.Name == "pickle" {
+			return f.Sel.Name == "MiddlewareFunc"
+		}
+	}
+	return false
 }
 
 // extractHandlerRef extracts controller type, method name, and package qualifier from a handler expression.

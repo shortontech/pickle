@@ -5417,12 +5417,31 @@ func TestExportedEncryptedColumnsRoundTrip(t *testing.T) {
 		t.Fatalf("decrypted fields mismatch: %#v", found)
 	}
 
-	other := &models.User{ID: uuid.New(), Name: "Grace", Email: "ada@example.com", ApiKey: "api-secret", PrivateKey: "private-secret"}
+	// A second user with the same email is rejected: deterministic encryption
+	// means equal plaintext yields equal ciphertext, so the unique constraint on
+	// email_encrypted enforces plaintext uniqueness.
+	dup := &models.User{ID: uuid.New(), Name: "Mallory", Email: "ada@example.com", ApiKey: "api-secret", PrivateKey: "private-secret"}
+	if err := db.Create(dup).Error; err == nil {
+		t.Fatal("duplicate encrypted email should violate the unique constraint on email_encrypted")
+	}
+
+	// Determinism (what makes equality search on email_encrypted work): the same
+	// plaintext always encrypts to the same ciphertext. Verified directly via the
+	// filter-value helper so we don't need a duplicate row.
+	encEmail, err := models.EncryptDeterministicFilterValue("ada@example.com")
+	if err != nil {
+		t.Fatalf("encrypt email filter value: %v", err)
+	}
+	if s, ok := encEmail.(string); !ok || s != user.EmailEncrypted {
+		t.Fatalf("encrypted email should be deterministic for equality search")
+	}
+
+	// Sealed encryption is non-deterministic: a distinct row with the same sealed
+	// plaintext produces different ciphertext. Uses a distinct email so the unique
+	// constraint above is satisfied.
+	other := &models.User{ID: uuid.New(), Name: "Grace", Email: "grace@example.com", ApiKey: "api-secret", PrivateKey: "private-secret"}
 	if err := db.Create(other).Error; err != nil {
 		t.Fatalf("second create: %v", err)
-	}
-	if other.EmailEncrypted != user.EmailEncrypted {
-		t.Fatalf("encrypted email should be deterministic for equality search")
 	}
 	if other.PrivateKeyEncrypted == user.PrivateKeyEncrypted {
 		t.Fatalf("sealed private key should be non-deterministic")

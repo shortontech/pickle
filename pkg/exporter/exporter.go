@@ -7722,8 +7722,15 @@ func createTableSQL(table *schema.Table) string {
 
 func sqlStorageColumns(col *schema.Column) []*schema.Column {
 	if col.IsEncrypted || col.IsSealed {
+		primary := encryptedStorageColumn(col, col.Name+"_encrypted", col.IsNullable)
+		// Deterministic (.Encrypted()) columns keep uniqueness on the ciphertext
+		// column: equal plaintext yields equal ciphertext (AES-SIV). Sealed columns
+		// are non-deterministic, so uniqueness is meaningless and stays dropped.
+		if col.IsEncrypted && col.IsUnique {
+			primary.IsUnique = true
+		}
 		return []*schema.Column{
-			encryptedStorageColumn(col, col.Name+"_encrypted", col.IsNullable),
+			primary,
 			encryptedStorageColumn(col, col.Name+"_encrypted_v2", true),
 		}
 	}
@@ -8446,10 +8453,14 @@ func generateModelFile(table *schema.Table) ([]byte, error) {
 			plainName := snakeToPascal(col.Name)
 			encryptedName := snakeToPascal(col.Name + "_encrypted")
 			v2Name := snakeToPascal(col.Name + "_encrypted_v2")
+			// Derive the GORM tags from the same storage-column expansion the DDL
+			// uses, so the ciphertext column's uniqueIndex tag matches the emitted
+			// UNIQUE constraint (deterministic .Encrypted() only).
+			storage := sqlStorageColumns(col)
 			mi.Fields = append(mi.Fields,
 				modelField{Name: plainName, Type: goType, JSON: jsonTag(col), GORM: "-"},
-				modelField{Name: encryptedName, Type: encryptedStorageType(col), JSON: "-", GORM: gormTag(encryptedStorageColumn(col, col.Name+"_encrypted", col.IsNullable))},
-				modelField{Name: v2Name, Type: "*string", JSON: "-", GORM: gormTag(encryptedStorageColumn(col, col.Name+"_encrypted_v2", true))},
+				modelField{Name: encryptedName, Type: encryptedStorageType(col), JSON: "-", GORM: gormTag(storage[0])},
+				modelField{Name: v2Name, Type: "*string", JSON: "-", GORM: gormTag(storage[1])},
 			)
 			mi.EncryptedFields = append(mi.EncryptedFields, encryptedModelField{
 				Field:         plainName,

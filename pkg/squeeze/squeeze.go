@@ -102,8 +102,35 @@ func Analyze(projectDir string) (*AnalysisContext, error) {
 	}, nil
 }
 
-// Run executes all enabled squeeze rules against the project and returns findings.
+// RunOptions tunes a squeeze run.
+type RunOptions struct {
+	// NoSuppress disables //squeeze:ignore directives: suppressed findings are
+	// kept in the result (Suppressed still reports how many matched a directive).
+	NoSuppress bool
+}
+
+// RunResult is the outcome of a squeeze run.
+type RunResult struct {
+	// Findings are the findings to report (with suppressed ones removed unless
+	// NoSuppress was set).
+	Findings []Finding
+	// Suppressed is the number of findings silenced by //squeeze:ignore directives.
+	Suppressed int
+}
+
+// Run executes all enabled squeeze rules against the project and returns the
+// surviving findings, honoring //squeeze:ignore directives.
 func Run(projectDir string) ([]Finding, error) {
+	res, err := RunWithOptions(projectDir, RunOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return res.Findings, nil
+}
+
+// RunWithOptions executes all enabled squeeze rules and applies suppression
+// directives according to opts.
+func RunWithOptions(projectDir string, opts RunOptions) (*RunResult, error) {
 	actx, err := Analyze(projectDir)
 	if err != nil {
 		return nil, err
@@ -118,7 +145,7 @@ func Run(projectDir string) ([]Finding, error) {
 		findings = append(findings, rule(actx)...)
 	}
 
-	// 9. Sort by file + line
+	// Sort by file + line
 	sort.Slice(findings, func(i, j int) bool {
 		if findings[i].File != findings[j].File {
 			return findings[i].File < findings[j].File
@@ -126,7 +153,18 @@ func Run(projectDir string) ([]Finding, error) {
 		return findings[i].Line < findings[j].Line
 	})
 
-	return findings, nil
+	// Apply //squeeze:ignore directives. Suppressions are surfaced via the
+	// Suppressed count so they can't hide silently.
+	sups := collectSuppressions(uniqueFindingFiles(findings), actx.ProjectDir)
+	kept, suppressed := applySuppressions(findings, sups)
+
+	result := &RunResult{Suppressed: len(suppressed)}
+	if opts.NoSuppress {
+		result.Findings = findings
+	} else {
+		result.Findings = kept
+	}
+	return result, nil
 }
 
 var (

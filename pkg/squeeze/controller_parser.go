@@ -89,39 +89,84 @@ func (cc CallChain) HasSegmentWithAuthArgTainted(prefix string, authVars map[str
 	return false
 }
 
-// FindAuthTaintedVars walks a method body and finds local variables assigned from expressions
-// that contain ctx.Auth(). For example:
+// FindAuthTaintedVars walks a method body and finds local variables that carry an
+// auth-derived value. A variable is tainted when its RHS:
 //
-//	authID, err := uuid.Parse(ctx.Auth().UserID)
+//   - contains a literal ctx.Auth() call, e.g. authID := ctx.Auth().UserID, or
+//   - is (or is a field access on) an already-tainted variable, e.g.
+//     info := ctx.Auth(); id := info.UserID, or
+//   - is a single-argument pass-through call whose argument is auth-tainted, e.g.
+//     info := ctx.Auth(); id, err := uuid.Parse(info.UserID)
+//     (also string(x), strings.ToLower(x), etc.).
 //
-// returns {"authID": true}.
+// Taint is propagated to a fixpoint so it flows through chains of assignments
+// regardless of the order in which they are visited. Over-tainting here only
+// reduces false positives on the ownership/read scoping rules (the safe
+// direction), so the pass-through is intentionally kept to single-argument
+// calls to avoid tainting the whole world.
 func FindAuthTaintedVars(body *ast.BlockStmt) map[string]bool {
 	vars := make(map[string]bool)
-	ast.Inspect(body, func(n ast.Node) bool {
-		assign, ok := n.(*ast.AssignStmt)
-		if !ok {
-			return true
-		}
-		// Check if any RHS expression contains ctx.Auth()
-		hasAuth := false
-		for _, rhs := range assign.Rhs {
-			if exprContainsAuthCall(rhs) {
-				hasAuth = true
-				break
+	for {
+		changed := false
+		ast.Inspect(body, func(n ast.Node) bool {
+			assign, ok := n.(*ast.AssignStmt)
+			if !ok {
+				return true
 			}
-		}
-		if !hasAuth {
-			return true
-		}
-		// Taint the first LHS identifier (the value, not the error)
-		for _, lhs := range assign.Lhs {
-			if ident, ok := lhs.(*ast.Ident); ok && ident.Name != "err" && ident.Name != "_" {
-				vars[ident.Name] = true
+			// Check whether any RHS expression yields an auth-derived value.
+			hasAuth := false
+			for _, rhs := range assign.Rhs {
+				if exprIsAuthTaintedValue(rhs, vars) {
+					hasAuth = true
+					break
+				}
 			}
+			if !hasAuth {
+				return true
+			}
+			// Taint the value identifier(s) (never the error or blank).
+			for _, lhs := range assign.Lhs {
+				if ident, ok := lhs.(*ast.Ident); ok && ident.Name != "err" && ident.Name != "_" {
+					if !vars[ident.Name] {
+						vars[ident.Name] = true
+						changed = true
+					}
+				}
+			}
+			return true
+		})
+		if !changed {
+			break
 		}
-		return true
-	})
+	}
 	return vars
+}
+
+// exprIsAuthTaintedValue reports whether expr evaluates to an auth-derived value,
+// given the set of variable names already known to be auth-tainted. It matches:
+//
+//   - any expression containing a literal ctx.Auth() call,
+//   - a bare tainted variable (info),
+//   - a field access on a tainted variable (info.UserID),
+//   - a single-argument pass-through call whose sole argument is auth-tainted
+//     (uuid.Parse(info.UserID), string(info.UserID), strings.ToLower(info.UserID)).
+func exprIsAuthTaintedValue(expr ast.Expr, authVars map[string]bool) bool {
+	if exprContainsAuthCall(expr) {
+		return true
+	}
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return authVars[e.Name]
+	case *ast.SelectorExpr:
+		// Field access like info.UserID — tainted if the base is a tainted var.
+		return exprIsAuthVar(e.X, authVars)
+	case *ast.CallExpr:
+		// Single-argument pass-through call: taint flows from the argument.
+		if len(e.Args) == 1 {
+			return exprIsAuthTaintedValue(e.Args[0], authVars)
+		}
+	}
+	return false
 }
 
 // exprIsAuthVar checks if an expression is (or contains) one of the auth-tainted variable names.
@@ -304,7 +349,7 @@ func FindBuiltinCalls(body *ast.BlockStmt, fset *token.FileSet, name string) []i
 
 // FindMustParseCalls finds uuid.MustParse calls and categorizes them by argument type.
 type MustParseCall struct {
-	Line       int
+	Line        int
 	HasCtxParam bool // argument contains ctx.Param(...)
 	HasCtxAuth  bool // argument contains ctx.Auth()
 }
@@ -407,7 +452,7 @@ func parseCompositeLit(cl *ast.CompositeLit, fset *token.FileSet) (CompositeLitI
 
 // FindCtxJSONCalls finds ctx.JSON(status, payload) calls and returns info about the payload.
 type CtxJSONCall struct {
-	Line       int
+	Line        int
 	PayloadExpr ast.Expr
 }
 

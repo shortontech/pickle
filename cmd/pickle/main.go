@@ -898,6 +898,7 @@ func cmdGraphQLSchema() {
 func cmdSqueeze() {
 	projectDir := "."
 	hard := false
+	noSuppress := false
 	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--project" && i+1 < len(args) {
@@ -905,15 +906,18 @@ func cmdSqueeze() {
 			i++
 		} else if args[i] == "--hard" {
 			hard = true
+		} else if args[i] == "--no-suppress" {
+			noSuppress = true
 		}
 	}
 
 	fmt.Println("\nAnalyzing Pickle project...")
-	findings, err := squeeze.Run(projectDir)
+	result, err := squeeze.RunWithOptions(projectDir, squeeze.RunOptions{NoSuppress: noSuppress})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
 		os.Exit(1)
 	}
+	findings := result.Findings
 
 	// In --hard mode, promote all warnings to errors
 	if hard {
@@ -924,6 +928,9 @@ func cmdSqueeze() {
 
 	if len(findings) == 0 {
 		fmt.Println("No findings.")
+		if result.Suppressed > 0 {
+			fmt.Printf("suppressed: %d\n", result.Suppressed)
+		}
 		return
 	}
 
@@ -946,7 +953,7 @@ func cmdSqueeze() {
 		fmt.Printf("    %sline %d\033[0m [%s] %s\n", color, f.Line, f.Rule, f.Message)
 	}
 
-	fmt.Printf("\nFound %d error(s), %d warning(s)\n", errors, warnings)
+	fmt.Printf("\nFound %d error(s), %d warning(s), suppressed: %d\n", errors, warnings, result.Suppressed)
 	if errors > 0 {
 		os.Exit(1)
 	}

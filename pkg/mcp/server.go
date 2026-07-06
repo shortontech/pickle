@@ -19,8 +19,8 @@ import (
 
 // Server wraps the MCP server with Pickle project context.
 type Server struct {
-	project    *generator.Project
-	server     *mcp.Server
+	project      *generator.Project
+	server       *mcp.Server
 	picklePkgDir string
 }
 
@@ -406,12 +406,16 @@ func (s *Server) generate(_ context.Context, _ *mcp.CallToolRequest, _ any) (*mc
 }
 
 func (s *Server) squeeze(_ context.Context, _ *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
-	findings, err := squeeze.Run(s.project.Dir)
+	result, err := squeeze.RunWithOptions(s.project.Dir, squeeze.RunOptions{})
 	if err != nil {
 		return errResult("squeeze failed: " + err.Error()), nil, nil
 	}
+	findings := result.Findings
 
 	if len(findings) == 0 {
+		if result.Suppressed > 0 {
+			return textResult(fmt.Sprintf("No findings.\nsuppressed: %d\n", result.Suppressed)), nil, nil
+		}
 		return textResult("No findings."), nil, nil
 	}
 
@@ -425,7 +429,7 @@ func (s *Server) squeeze(_ context.Context, _ *mcp.CallToolRequest, _ any) (*mcp
 		}
 		fmt.Fprintf(&b, "%s\n", f)
 	}
-	fmt.Fprintf(&b, "\nFound %d error(s), %d warning(s)\n", errors, warnings)
+	fmt.Fprintf(&b, "\nFound %d error(s), %d warning(s), suppressed: %d\n", errors, warnings, result.Suppressed)
 	return textResult(b.String()), nil, nil
 }
 

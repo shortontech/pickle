@@ -1260,6 +1260,87 @@ func Handler() {
 	}
 }
 
+// FindAuthTaintedVars must propagate taint through a single-argument pass-through
+// call such as uuid.Parse(info.UserID) — otherwise session self-reads are flagged
+// as IDOR false positives (spec 060).
+func TestFindAuthTaintedVars_ThroughUUIDParse(t *testing.T) {
+	src := `package controllers
+import "uuid"
+func Handler() {
+	info := ctx.Auth()
+	id, err := uuid.Parse(info.UserID)
+	_ = err
+	_ = id
+}`
+	m := method(t, src)
+	vars := FindAuthTaintedVars(m.Body)
+	if !vars["info"] {
+		t.Error("expected info (ctx.Auth()) to be tainted")
+	}
+	if !vars["id"] {
+		t.Error("expected id to be tainted through uuid.Parse(info.UserID) pass-through")
+	}
+	if vars["err"] {
+		t.Error("err should not be tainted")
+	}
+}
+
+// A session self-read that derives the id from ctx.Auth() via uuid.Parse must NOT
+// be flagged by read_scoping (the spec-060 repro).
+func TestRuleReadScoping_PassesSessionSelfReadThroughUUIDParse(t *testing.T) {
+	src := `package controllers
+import (
+	"uuid"
+	"models"
+)
+func Handler() {
+	info := ctx.Auth()
+	id, _ := uuid.Parse(info.UserID)
+	user, _ := models.QueryUser().WhereID(id).First()
+	_ = user
+}`
+	m := method(t, src)
+	ctx := &AnalysisContext{
+		Config: defaultConfig(),
+		Methods: map[string]*ControllerMethod{
+			"AuthController.Session": m,
+		},
+		Routes: []AnalyzedRoute{
+			{Method: "GET", Path: "/auth/session", ControllerType: "AuthController", MethodName: "Session", Middleware: []string{"Auth"}},
+		},
+	}
+	findings := ruleReadScoping(ctx)
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings for session self-read, got %d", len(findings))
+	}
+}
+
+// A genuine IDOR — WhereID(ctx.Query("id")) with a client-supplied id — must STILL
+// fire. Guards against over-tainting swallowing real bugs.
+func TestRuleReadScoping_FlagsGenuineIDOR(t *testing.T) {
+	src := `package controllers
+import "models"
+func Handler() {
+	id := ctx.Query("id")
+	user, _ := models.QueryUser().WhereID(id).First()
+	_ = user
+}`
+	m := method(t, src)
+	ctx := &AnalysisContext{
+		Config: defaultConfig(),
+		Methods: map[string]*ControllerMethod{
+			"UserController.Show": m,
+		},
+		Routes: []AnalyzedRoute{
+			{Method: "GET", Path: "/users/:id", ControllerType: "UserController", MethodName: "Show", Middleware: []string{"Auth"}},
+		},
+	}
+	findings := ruleReadScoping(ctx)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for client-supplied id (IDOR), got %d", len(findings))
+	}
+}
+
 // ---- Rule: unbounded_query ----
 
 func TestRuleUnboundedQuery_FlagsAllWithoutLimit(t *testing.T) {

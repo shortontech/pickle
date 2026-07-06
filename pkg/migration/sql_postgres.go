@@ -25,7 +25,7 @@ func (g *postgresGenerator) CreateTable(t *Table) string {
 	compositePK := len(pkCols) > 1
 
 	var cols []string
-	for _, col := range t.Columns {
+	for _, col := range expandColumns(t.Columns) {
 		cols = append(cols, g.columnDefWithPK(col, compositePK))
 	}
 

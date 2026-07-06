@@ -164,7 +164,7 @@ func (r *Runner) opsToSQL(op Operation) []string {
 		tmp := &Table{}
 		op.ColumnDef(tmp)
 		var out []string
-		for _, col := range tmp.Columns {
+		for _, col := range expandColumns(tmp.Columns) {
 			out = append(out, r.Generator.AddColumn(op.Table, col))
 		}
 		return out

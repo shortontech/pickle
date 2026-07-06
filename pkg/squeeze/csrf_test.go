@@ -1,6 +1,9 @@
 package squeeze
 
 import (
+	"go/parser"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -113,6 +116,106 @@ func TestCsrfMissing_AllStateChangingMethods(t *testing.T) {
 	findings := ruleCsrfMissing(ctx)
 	if len(findings) != 4 {
 		t.Fatalf("expected 4 findings, got %d", len(findings))
+	}
+}
+
+// mwName parses a middleware expression and returns the classified name.
+func mwName(t *testing.T, src string) string {
+	t.Helper()
+	expr, err := parser.ParseExpr(src)
+	if err != nil {
+		t.Fatalf("parsing %q: %v", src, err)
+	}
+	return extractMiddlewareName(expr)
+}
+
+func TestExtractMiddlewareName_UnwrapsMiddlewareFunc(t *testing.T) {
+	cases := []struct {
+		src  string
+		want string
+	}{
+		// pickle-qualified MiddlewareFunc conversion — the form the router forces.
+		{"pickle.MiddlewareFunc(session.CSRF)", "CSRF"},
+		// Bare (unqualified) MiddlewareFunc conversion.
+		{"MiddlewareFunc(session.CSRF)", "CSRF"},
+		// Selector middleware.
+		{"middleware.Auth", "Auth"},
+		// Constructor middleware must still classify by constructor name.
+		{"pickle.RateLimit(1, 5)", "RateLimit"},
+		{"middleware.RequireRole(\"admin\")", "RequireRole"},
+	}
+	for _, tc := range cases {
+		if got := mwName(t, tc.src); got != tc.want {
+			t.Errorf("extractMiddlewareName(%q) = %q, want %q", tc.src, got, tc.want)
+		}
+	}
+}
+
+func TestCsrfMissing_PassesWithMiddlewareFuncCSRF(t *testing.T) {
+	// pickle.MiddlewareFunc(session.CSRF) applied to a group must protect the route.
+	dir := t.TempDir()
+	routesSrc := `package routes
+
+import (
+	pickle "myapp/app/http"
+	"myapp/app/http/controllers"
+	"myapp/session"
+)
+
+var API = pickle.Routes(func(r *pickle.Router) {
+	r.Group("/secure", func(r *pickle.Router) {
+		r.Post("/transfers", controllers.TransferController{}.Store)
+	}, pickle.MiddlewareFunc(session.CSRF))
+})
+`
+	if err := os.WriteFile(filepath.Join(dir, "web.go"), []byte(routesSrc), 0644); err != nil {
+		t.Fatalf("writing routes: %v", err)
+	}
+
+	routes, err := ParseRoutes(dir)
+	if err != nil {
+		t.Fatalf("ParseRoutes: %v", err)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(routes))
+	}
+	if len(routes[0].Middleware) != 1 || routes[0].Middleware[0] != "CSRF" {
+		t.Fatalf("expected middleware [CSRF], got %v", routes[0].Middleware)
+	}
+
+	ctx := &AnalysisContext{
+		Methods: csrfMethodsWithSession(t),
+		Routes:  routes,
+	}
+	if findings := ruleCsrfMissing(ctx); len(findings) != 0 {
+		t.Fatalf("expected 0 findings with MiddlewareFunc(session.CSRF), got %d", len(findings))
+	}
+}
+
+func TestCsrfMissing_PassesWithBareMiddlewareFuncCSRF(t *testing.T) {
+	// Bare (unqualified) MiddlewareFunc(session.CSRF) must also protect the route.
+	ctx := &AnalysisContext{
+		Methods: csrfMethodsWithSession(t),
+		Routes: []AnalyzedRoute{
+			{Method: "POST", Path: "/transfers", Middleware: []string{mwName(t, "MiddlewareFunc(session.CSRF)")}, File: "routes/web.go", Line: 15},
+		},
+	}
+	if findings := ruleCsrfMissing(ctx); len(findings) != 0 {
+		t.Fatalf("expected 0 findings with bare MiddlewareFunc(session.CSRF), got %d", len(findings))
+	}
+}
+
+func TestCsrfMissing_FlagsWithNonCSRFMiddlewareFunc(t *testing.T) {
+	// A route whose only middleware is a non-CSRF constructor still fires csrf_missing.
+	ctx := &AnalysisContext{
+		Methods: csrfMethodsWithSession(t),
+		Routes: []AnalyzedRoute{
+			{Method: "POST", Path: "/transfers", Middleware: []string{mwName(t, "pickle.RateLimit(1, 5)")}, File: "routes/web.go", Line: 15},
+		},
+	}
+	findings := ruleCsrfMissing(ctx)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding with only RateLimit middleware, got %d", len(findings))
 	}
 }
 

@@ -542,6 +542,7 @@ func ruleReadScoping(ctx *AnalysisContext) []Finding {
 		chains := ExtractCallChainsRecursive(method.Body, method.Fset, ctx.FuncRegistry, authVars)
 
 		hasOwnershipScope := false
+		hasQueryRead := false
 		for _, chain := range chains {
 			chainNames := chain.Names()
 			isQueryChain := false
@@ -554,6 +555,8 @@ func ruleReadScoping(ctx *AnalysisContext) []Finding {
 			if !isQueryChain {
 				continue
 			}
+			// The handler performs a read; only reads can be an IDOR.
+			hasQueryRead = true
 
 			if chain.HasSegmentWithAuthArgTainted("Where", authVars) {
 				hasOwnershipScope = true
@@ -566,7 +569,9 @@ func ruleReadScoping(ctx *AnalysisContext) []Finding {
 			}
 		}
 
-		if !hasOwnershipScope {
+		// A handler that never reads the database has nothing to scope — flagging
+		// it (e.g. a redirect-only or token-minting GET) is a false positive.
+		if hasQueryRead && !hasOwnershipScope {
 			findings = append(findings, Finding{
 				Rule:     "read_scoping",
 				Severity: SeverityError,

@@ -1233,6 +1233,34 @@ func Handler() {
 	}
 }
 
+func TestRuleReadScoping_SkipsHandlerWithNoRead(t *testing.T) {
+	// Authed GET that performs no database read (mints state and redirects) has
+	// no read to scope and no IDOR surface — it must not be flagged.
+	src := `package controllers
+func Handler() {
+	uid, err := authUUID(ctx)
+	if err != nil {
+		return ctx.Unauthorized("no")
+	}
+	name := ctx.Param("provider")
+	state, _ := providers.SignState(uid.String(), name)
+	return redirect(providers.AuthorizeURL(name, state))
+}`
+	m := method(t, src)
+	ctx := &AnalysisContext{
+		Config: defaultConfig(),
+		Methods: map[string]*ControllerMethod{
+			"ConnectionsController.Start": m,
+		},
+		Routes: []AnalyzedRoute{
+			{Method: "GET", Path: "/connections/:provider/start", ControllerType: "ConnectionsController", MethodName: "Start", Middleware: []string{"Auth"}},
+		},
+	}
+	if findings := ruleReadScoping(ctx); len(findings) != 0 {
+		t.Errorf("expected 0 findings for no-read handler, got %d: %+v", len(findings), findings)
+	}
+}
+
 func TestRuleReadScoping_PassesWithOwnershipWhere(t *testing.T) {
 	src := `package controllers
 import "models"

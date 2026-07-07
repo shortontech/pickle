@@ -104,8 +104,9 @@ func GenerateModel(table *schema.Table, packageName string) ([]byte, error) {
 	type encFieldInfo struct {
 		FieldName     string // Go field name (e.g. "Email")
 		SnakeName     string // original column name (e.g. "email")
-		GoType        string // Go type (e.g. "string")
+		GoType        string // Go type (e.g. "string" or "*string" when nullable)
 		Deterministic bool   // true = AES-SIV (.Encrypted()), false = AES-GCM (.Sealed())
+		Nullable      bool   // true = the plaintext field is a pointer (*string); NULL stays NULL
 	}
 	var encFields []encFieldInfo
 
@@ -157,6 +158,7 @@ func GenerateModel(table *schema.Table, packageName string) ([]byte, error) {
 				SnakeName:     col.Name,
 				GoType:        goType,
 				Deterministic: col.IsEncrypted,
+				Nullable:      col.IsNullable,
 			})
 		} else {
 			fields = append(fields, fieldData{
@@ -173,7 +175,8 @@ func GenerateModel(table *schema.Table, packageName string) ([]byte, error) {
 		imports["time"] = true
 	}
 
-	// Encrypted/sealed fields need fmt for Sprint in Marshal
+	// Encrypted/sealed fields need fmt for Sprint in Marshal (both nullable and
+	// non-nullable branches).
 	if len(encFields) > 0 {
 		imports["fmt"] = true
 	}
@@ -250,8 +253,17 @@ func GenerateModel(table *schema.Table, packageName string) ([]byte, error) {
 			buf.WriteString(fmt.Sprintf("\t\t\tColumn:        %q,\n", ef.SnakeName+"_encrypted"))
 			buf.WriteString(fmt.Sprintf("\t\t\tColumnV2:      %q,\n", ef.SnakeName+"_encrypted_v2"))
 			buf.WriteString(fmt.Sprintf("\t\t\tDeterministic: %v,\n", ef.Deterministic))
-			marshalExpr := fmt.Sprintf("return []byte(fmt.Sprint(%s.%s)), nil", receiver, ef.FieldName)
-			unmarshalExpr := fmt.Sprintf("%s.%s = string(b); return nil", receiver, ef.FieldName)
+			// A nullable plaintext field is a pointer (e.g. *string). NULL stays
+			// NULL: a nil pointer marshals to nil bytes (no ciphertext written),
+			// and unmarshal allocates a new value to point at.
+			var marshalExpr, unmarshalExpr string
+			if ef.Nullable {
+				marshalExpr = fmt.Sprintf("if %s.%s == nil { return nil, nil }; return []byte(fmt.Sprint(*%s.%s)), nil", receiver, ef.FieldName, receiver, ef.FieldName)
+				unmarshalExpr = fmt.Sprintf("s := string(b); %s.%s = &s; return nil", receiver, ef.FieldName)
+			} else {
+				marshalExpr = fmt.Sprintf("return []byte(fmt.Sprint(%s.%s)), nil", receiver, ef.FieldName)
+				unmarshalExpr = fmt.Sprintf("%s.%s = string(b); return nil", receiver, ef.FieldName)
+			}
 			buf.WriteString(fmt.Sprintf("\t\t\tMarshal:       func() ([]byte, error) { %s },\n", marshalExpr))
 			buf.WriteString(fmt.Sprintf("\t\t\tUnmarshal:     func(b []byte) error { %s },\n", unmarshalExpr))
 			buf.WriteString(fmt.Sprintf("\t\t},\n"))

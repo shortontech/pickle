@@ -96,6 +96,59 @@ func TestGenerateModelNullableFields(t *testing.T) {
 	}
 }
 
+func TestGenerateModelNullableEncryptedFields(t *testing.T) {
+	// A nullable .Sealed()/.Encrypted() column produces a pointer plaintext field
+	// (*string). The generated Marshal/Unmarshal closures must be type-correct for
+	// the pointer (regression: they used to emit `field = string(b)` on a *string,
+	// which fails to compile).
+	tbl := &schema.Table{Name: "connections"}
+	tbl.UUID("id").PrimaryKey()
+	tbl.Text("access_token").NotNull().Sealed()   // non-nullable -> string
+	tbl.Text("refresh_token").Nullable().Sealed() // nullable -> *string
+	tbl.Timestamps()
+
+	out, err := GenerateModel(tbl, "models")
+	if err != nil {
+		t.Fatalf("GenerateModel: %v", err)
+	}
+	src := string(out)
+
+	fset := token.NewFileSet()
+	if _, err := parser.ParseFile(fset, "connection.go", src, 0); err != nil {
+		t.Fatalf("generated code does not parse: %v\n%s", err, src)
+	}
+
+	// Nullable plaintext field is a pointer.
+	if !strings.Contains(src, "RefreshToken            *string") &&
+		!strings.Contains(src, "RefreshToken  *string") {
+		// tolerate gofmt alignment differences
+		if !strings.Contains(src, "*string") {
+			t.Errorf("expected *string plaintext field for nullable sealed column\n%s", src)
+		}
+	}
+
+	// Nullable Unmarshal must allocate and take the address — never assign a
+	// string directly to the *string field.
+	if !strings.Contains(src, "c.RefreshToken = &s") {
+		t.Errorf("nullable Unmarshal should allocate (&s), got:\n%s", src)
+	}
+	if strings.Contains(src, "c.RefreshToken = string(b)") {
+		t.Errorf("nullable Unmarshal assigns string to *string (won't compile):\n%s", src)
+	}
+	// Nullable Marshal must nil-check (NULL stays NULL) and deref the pointer.
+	if !strings.Contains(src, "if c.RefreshToken == nil {") {
+		t.Errorf("nullable Marshal should nil-check the pointer, got:\n%s", src)
+	}
+	if !strings.Contains(src, "fmt.Sprint(*c.RefreshToken)") {
+		t.Errorf("nullable Marshal should deref the pointer, got:\n%s", src)
+	}
+
+	// Non-nullable path unchanged.
+	if !strings.Contains(src, "c.AccessToken = string(b)") {
+		t.Errorf("non-nullable Unmarshal should assign string directly, got:\n%s", src)
+	}
+}
+
 func TestGenerateModelDecimal(t *testing.T) {
 	tbl := &schema.Table{Name: "transfers"}
 	tbl.Decimal("amount", 18, 2).NotNull()

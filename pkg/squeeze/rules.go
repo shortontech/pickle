@@ -1428,11 +1428,25 @@ func ruleEncryptedMissingKeyConfig(ctx *AnalysisContext) []Finding {
 		return nil
 	}
 
-	// Check if config/database.go contains CurrentKeyEnv
-	dbConfig := filepath.Join(ctx.ProjectDir, "config", "database.go")
-	data, err := os.ReadFile(dbConfig)
-	if err == nil && strings.Contains(string(data), "CurrentKeyEnv") {
-		return nil
+	// A configured key path can appear two ways:
+	//   1. The generated config loader (config/pickle_gen.go) reads the
+	//      PICKLE_ENCRYPTION_KEY env var into cfg.EncryptionKey — this is what
+	//      `pickle generate` scaffolds for every project, so it is the normal
+	//      signal that encryption is wired up.
+	//   2. A hand-authored Encryption.CurrentKeyEnv declaration in
+	//      config/database.go (documented config API).
+	// Only warn when neither is present — i.e. the project has no key-loading
+	// code at all. Checking only for the hand-authored CurrentKeyEnv produced a
+	// false positive on every generated project (the marker is never emitted).
+	for _, name := range []string{"pickle_gen.go", "database.go"} {
+		data, err := os.ReadFile(filepath.Join(ctx.ProjectDir, "config", name))
+		if err != nil {
+			continue
+		}
+		s := string(data)
+		if strings.Contains(s, "PICKLE_ENCRYPTION_KEY") || strings.Contains(s, "CurrentKeyEnv") {
+			return nil
+		}
 	}
 
 	var findings []Finding
@@ -1444,7 +1458,7 @@ func ruleEncryptedMissingKeyConfig(ctx *AnalysisContext) []Finding {
 					Severity: SeverityWarning,
 					File:     "",
 					Line:     0,
-					Message:  `table "` + table.Name + `" has .Encrypted() or .Sealed() columns — ensure Encryption.CurrentKeyEnv is configured in config/database.go`,
+					Message:  `table "` + table.Name + `" has .Encrypted() or .Sealed() columns but no encryption key is configured — set PICKLE_ENCRYPTION_KEY (the generated config loader reads it at startup)`,
 				})
 				break
 			}

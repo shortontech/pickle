@@ -2,6 +2,8 @@ package squeeze
 
 import (
 	"go/ast"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/shortontech/pickle/pkg/generator"
@@ -801,6 +803,84 @@ func TestRuleSensitiveFieldEncryption_NonSensitive(t *testing.T) {
 	findings := ruleSensitiveFieldEncryption(ctx)
 	if len(findings) != 0 {
 		t.Errorf("expected 0 findings for non-sensitive column, got %d", len(findings))
+	}
+}
+
+// ---- Rule: encrypted_missing_key_config ----
+
+// writeConfigProject creates a temp project dir with config/<name> holding body.
+func writeConfigProject(t *testing.T, name, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if name != "" {
+		if err := os.WriteFile(filepath.Join(dir, "config", name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func encryptedTableCtx(projectDir string) *AnalysisContext {
+	return &AnalysisContext{
+		ProjectDir: projectDir,
+		Tables: []*schema.Table{
+			{
+				Name:    "connections",
+				Columns: []*schema.Column{{Name: "access_token", IsSealed: true}},
+			},
+		},
+	}
+}
+
+// The generated config loader reads PICKLE_ENCRYPTION_KEY — that is the normal
+// signal a key is wired up, so the rule must NOT fire (regression: it only
+// looked for a hand-authored CurrentKeyEnv, which the generator never emits).
+func TestRuleEncryptedMissingKeyConfig_PassesWithGeneratedLoader(t *testing.T) {
+	dir := writeConfigProject(t, "pickle_gen.go",
+		`package config
+		func buildRuntimeConfig() { os.Getenv("PICKLE_ENCRYPTION_KEY") }`)
+	if f := ruleEncryptedMissingKeyConfig(encryptedTableCtx(dir)); len(f) != 0 {
+		t.Errorf("expected 0 findings when PICKLE_ENCRYPTION_KEY is wired, got %d: %+v", len(f), f)
+	}
+}
+
+// A hand-authored Encryption.CurrentKeyEnv in database.go is still honored.
+func TestRuleEncryptedMissingKeyConfig_PassesWithCurrentKeyEnv(t *testing.T) {
+	dir := writeConfigProject(t, "database.go",
+		`package config
+		var Database = DatabaseConfig{Encryption: EncryptionConfig{CurrentKeyEnv: "K"}}`)
+	if f := ruleEncryptedMissingKeyConfig(encryptedTableCtx(dir)); len(f) != 0 {
+		t.Errorf("expected 0 findings when CurrentKeyEnv is declared, got %d", len(f))
+	}
+}
+
+// No key-loading code at all -> genuine finding.
+func TestRuleEncryptedMissingKeyConfig_FlagsWhenNoKeyConfig(t *testing.T) {
+	dir := writeConfigProject(t, "database.go", `package config
+		var Database = DatabaseConfig{}`)
+	f := ruleEncryptedMissingKeyConfig(encryptedTableCtx(dir))
+	if len(f) != 1 {
+		t.Fatalf("expected 1 finding when key config absent, got %d", len(f))
+	}
+	if f[0].Rule != "encrypted_missing_key_config" {
+		t.Errorf("wrong rule: %s", f[0].Rule)
+	}
+}
+
+// No encrypted/sealed columns -> never fires, regardless of config.
+func TestRuleEncryptedMissingKeyConfig_NoEncryptedColumns(t *testing.T) {
+	dir := writeConfigProject(t, "database.go", `package config`)
+	ctx := &AnalysisContext{
+		ProjectDir: dir,
+		Tables: []*schema.Table{
+			{Name: "posts", Columns: []*schema.Column{{Name: "title"}}},
+		},
+	}
+	if f := ruleEncryptedMissingKeyConfig(ctx); len(f) != 0 {
+		t.Errorf("expected 0 findings with no encrypted columns, got %d", len(f))
 	}
 }
 

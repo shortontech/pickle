@@ -235,9 +235,14 @@ var enumFields = map[string]bool{
 }
 
 // sensitiveExactNames are field names that are inherently sensitive.
+//
+// Note: email is deliberately NOT here. Email is a contact identifier, not a
+// secret or regulated PII — it is commonly stored plaintext and looked up by
+// value (e.g. login WhereEmail()). Treating it as an encrypt-at-rest gap is a
+// false positive outside domains like healthcare. Secrets (passwords, tokens,
+// keys) and regulated PII (SSN, card, CVV, PIN, DOB) remain flagged.
 var sensitiveExactNames = map[string]bool{
 	"password":      true,
-	"email":         true,
 	"ssn":           true,
 	"access_token":  true,
 	"api_key":       true,

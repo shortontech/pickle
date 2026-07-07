@@ -749,7 +749,7 @@ func TestRuleSensitiveFieldEncryption_FlagsUnencrypted(t *testing.T) {
 			{
 				Name: "users",
 				Columns: []*schema.Column{
-					{Name: "email", IsEncrypted: false},
+					{Name: "ssn", IsEncrypted: false},
 				},
 			},
 		},
@@ -769,7 +769,7 @@ func TestRuleSensitiveFieldEncryption_PassesEncrypted(t *testing.T) {
 			{
 				Name: "users",
 				Columns: []*schema.Column{
-					{Name: "email", IsEncrypted: true},
+					{Name: "ssn", IsEncrypted: true},
 				},
 			},
 		},
@@ -777,6 +777,25 @@ func TestRuleSensitiveFieldEncryption_PassesEncrypted(t *testing.T) {
 	findings := ruleSensitiveFieldEncryption(ctx)
 	if len(findings) != 0 {
 		t.Errorf("expected 0 findings for encrypted column, got %d", len(findings))
+	}
+}
+
+// Email is a contact identifier, not a secret — it must not be flagged as an
+// encrypt-at-rest gap (looked up by value at login; plaintext is normal).
+func TestRuleSensitiveFieldEncryption_EmailNotSensitive(t *testing.T) {
+	if isSensitiveColumn("email") {
+		t.Error("email should not be classified as a sensitive field")
+	}
+	ctx := &AnalysisContext{
+		Tables: []*schema.Table{
+			{
+				Name:    "users",
+				Columns: []*schema.Column{{Name: "email", IsEncrypted: false}},
+			},
+		},
+	}
+	if findings := ruleSensitiveFieldEncryption(ctx); len(findings) != 0 {
+		t.Errorf("expected 0 findings for plaintext email, got %d", len(findings))
 	}
 }
 
@@ -1681,7 +1700,7 @@ func TestAllRules_ContainsExpectedRules(t *testing.T) {
 
 func TestIsSensitiveColumn_ExactNames(t *testing.T) {
 	exactNames := []string{
-		"password", "email", "ssn", "access_token", "api_key",
+		"password", "ssn", "access_token", "api_key",
 		"session_key", "refresh_token", "secret", "private_key",
 		"credit_card", "card_number", "cvv", "pin", "date_of_birth",
 		"phone", "phone_number",
@@ -1793,7 +1812,7 @@ func TestRuleGraphQLPublicSensitive(t *testing.T) {
 			{
 				Name: "users",
 				Columns: []*schema.Column{
-					{Name: "email", IsPublic: true},
+					{Name: "ssn", IsPublic: true},
 				},
 			},
 		},

@@ -306,6 +306,26 @@ func GenerateSeedRowWith(table *Table, overrides map[string]any, base SeedValueC
 		row[column.Name] = value
 	}
 	for _, column := range table.Columns {
+		if _, exists := row[column.Name]; exists || !isSeedPrimaryKey(table, column.Name) {
+			continue
+		}
+		ctx := base
+		ctx.Column = column.Name
+		stream := newSeedStream(ctx)
+		switch column.Type {
+		case UUID:
+			value, err := SeedValue(&SeedSpec{Kind: "uuid"}, ctx)
+			if err != nil {
+				return nil, fmt.Errorf("seed %s.%s: %w", table.Name, column.Name, err)
+			}
+			row[column.Name] = value
+		case Integer:
+			row[column.Name] = int(1 + stream.uint64()%2_000_000_000)
+		case BigInteger:
+			row[column.Name] = int64(1 + stream.uint64()%9_000_000_000_000_000_000)
+		}
+	}
+	for _, column := range table.Columns {
 		if _, exists := row[column.Name]; exists || column.Seeder == nil || column.Seeder.Kind != "password" {
 			continue
 		}
@@ -343,6 +363,20 @@ func GenerateSeedRowWith(table *Table, overrides map[string]any, base SeedValueC
 		row[column.Name] = cast
 	}
 	return row, nil
+}
+
+func isSeedPrimaryKey(table *Table, column string) bool {
+	for _, candidate := range table.Columns {
+		if candidate.Name == column && candidate.IsPrimaryKey {
+			return true
+		}
+	}
+	for _, candidate := range table.CompositePrimaryKeys {
+		if candidate == column {
+			return true
+		}
+	}
+	return false
 }
 
 func seedPasswordPart(value any) string {

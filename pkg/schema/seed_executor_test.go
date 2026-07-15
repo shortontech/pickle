@@ -194,3 +194,20 @@ func TestCustomFieldSeederMustBeRegistered(t *testing.T) {
 		t.Fatal("expected missing custom seeder error")
 	}
 }
+
+func TestPlanSeedGraphPropagatesGeneratedParentIdentity(t *testing.T) {
+	parents := &Table{Name: "users", Columns: []*Column{{Name: "id", Type: BigInteger, IsPrimaryKey: true, HasDefault: true}, {Name: "name", Type: String}}}
+	children := &Table{Name: "contacts", Columns: []*Column{{Name: "id", Type: BigInteger, IsPrimaryKey: true, HasDefault: true}, {Name: "user_id", Type: BigInteger, ForeignKeyTable: "users", ForeignKeyColumn: "id"}, {Name: "label", Type: String}}}
+	graph := &SeedGraph{Nodes: []SeedNode{
+		{ID: 1, Seeder: NewRowSeederRef("UserSeeder", "users"), Count: FixedCount(1), Values: map[string]any{"name": "Ada"}},
+		{ID: 2, Seeder: NewRowSeederRef("ContactSeeder", "contacts"), Count: FixedCount(1), ParentNodeID: 1, Values: map[string]any{"label": "work"}},
+	}}
+	rows, err := PlanSeedGraph(graph, []*Table{parents, children}, SeedExecutionOptions{Scenario: "CRM", RootSeed: 42})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentID := rows[0].Values["id"]
+	if parentID == nil || rows[1].Values["user_id"] != parentID {
+		t.Fatalf("generated identity did not propagate: %#v", rows)
+	}
+}

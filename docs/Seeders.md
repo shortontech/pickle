@@ -144,6 +144,12 @@ func (CRMSeeder) Seed(graph *SeedGraph) {
 relationships require an explicit local column selector. Composite foreign
 keys always propagate as complete ordered tuples.
 
+When a primary-key column is omitted, Pickle generates a deterministic UUID,
+integer, or bigint identity before planning dependent rows. This allows child
+foreign keys—including complete composite identities—to be resolved before
+the transaction without relying on driver-specific sequence-return behavior.
+Explicit row or scenario identities still take precedence.
+
 ## Execution guarantees
 
 Each root scenario receives an explicit 64-bit seed. Pickle derives separate

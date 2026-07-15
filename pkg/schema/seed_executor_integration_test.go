@@ -30,12 +30,12 @@ func TestSeedExecutorSQLiteEndToEnd(t *testing.T) {
 	}
 
 	users := &Table{Name: "users", Columns: []*Column{
-		{Name: "id", Type: BigInteger}, {Name: "first_name", Type: String}, {Name: "last_name", Type: String},
+		{Name: "id", Type: BigInteger, IsPrimaryKey: true, HasDefault: true}, {Name: "first_name", Type: String}, {Name: "last_name", Type: String},
 		{Name: "email", Type: String},
 		{Name: "password_hash", Type: String, Seeder: &SeedSpec{Kind: "password", Fields: []string{"first_name", "last_name", "id"}}},
 	}}
 	contacts := &Table{Name: "contacts", Columns: []*Column{
-		{Name: "id", Type: BigInteger},
+		{Name: "id", Type: BigInteger, IsPrimaryKey: true, HasDefault: true},
 		{Name: "user_id", Type: BigInteger, ForeignKeyTable: "users", ForeignKeyColumn: "id"},
 		{Name: "label", Type: String},
 	}}
@@ -136,5 +136,31 @@ func TestSeedExecutorSQLiteEndToEnd(t *testing.T) {
 	}
 	if rolledBackUsers != 0 || rolledBackContacts != 0 {
 		t.Fatalf("partial rollback rows: users=%d contacts=%d", rolledBackUsers, rolledBackContacts)
+	}
+
+	generatedGraph := &SeedGraph{Nodes: []SeedNode{
+		{ID: 1, Seeder: NewRowSeederRef("GeneratedUserSeeder", "users"), Count: FixedCount(1), Values: map[string]any{}},
+		{ID: 2, Seeder: NewRowSeederRef("GeneratedContactSeeder", "contacts"), Count: FixedCount(1), ParentNodeID: 1, Values: map[string]any{}},
+	}}
+	generatedResolver := func(name string, _ SeedValueContext) (any, bool, error) {
+		switch name {
+		case "GeneratedUserSeeder":
+			return map[string]any{"first_name": "Margaret", "last_name": "Hamilton", "email": "margaret@example.test"}, true, nil
+		case "GeneratedContactSeeder":
+			return map[string]any{"label": "generated identity"}, true, nil
+		default:
+			return nil, false, nil
+		}
+	}
+	generatedOptions := SeedExecutionOptions{Scenario: "GeneratedIdentitySeeder", RootSeed: 99, Environment: "test", Driver: "sqlite", SeederResolver: generatedResolver, PasswordHasher: hasher}
+	if _, err := executor.Run(context.Background(), generatedGraph, generatedOptions); err != nil {
+		t.Fatal(err)
+	}
+	var generatedUserID, generatedContactUserID int64
+	if err := db.QueryRow(`SELECT u.id, c.user_id FROM users u JOIN contacts c ON c.user_id = u.id WHERE u.email = 'margaret@example.test'`).Scan(&generatedUserID, &generatedContactUserID); err != nil {
+		t.Fatal(err)
+	}
+	if generatedUserID == 0 || generatedContactUserID != generatedUserID {
+		t.Fatalf("database rows did not share generated identity: user=%d contact=%d", generatedUserID, generatedContactUserID)
 	}
 }

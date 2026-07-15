@@ -156,4 +156,26 @@ func TestGenerateSeedRowValidatesAndCastsOverrides(t *testing.T) {
 	}
 }
 
+func TestGenerateSeedRowCreatesDeterministicFrameworkIdentities(t *testing.T) {
+	table := &Table{Name: "records", CompositePrimaryKeys: []string{"tenant_id", "id"}, Columns: []*Column{
+		{Name: "tenant_id", Type: BigInteger, HasDefault: true},
+		{Name: "id", Type: BigInteger, HasDefault: true},
+		{Name: "public_id", Type: UUID, IsPrimaryKey: true, HasDefault: true},
+	}}
+	ctx := SeedValueContext{RootSeed: 8675309, Scenario: "CRM", NodePath: "RecordSeeder/0"}
+	first, err := GenerateSeedRow(table, nil, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := GenerateSeedRow(table, nil, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"tenant_id", "id", "public_id"} {
+		if first[column] == nil || first[column] != second[column] {
+			t.Fatalf("identity %s: %#v != %#v", column, first[column], second[column])
+		}
+	}
+}
+
 func valueKey(value any) string { return fmt.Sprintf("%#v", value) }

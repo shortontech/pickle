@@ -43,6 +43,70 @@ func TestForeignKey(t *testing.T) {
 	}
 }
 
+func TestFieldSeederMetadata(t *testing.T) {
+	table := &Table{Name: "contacts"}
+	first := table.String("first_name").SeedFirstName(EnUS)
+	phone := table.String("phone").Nullable().SeedPhoneNumber(UnitedStates).SeedNull(0.2)
+	if first.Seeder == nil || first.Seeder.Kind != "first_name" || strings.Join(first.Seeder.Arguments, ",") != "en-US" {
+		t.Fatalf("first-name seeder = %#v", first.Seeder)
+	}
+	if phone.Seeder == nil || phone.Seeder.Kind != "phone_number" || phone.Seeder.NullWeight != 0.2 {
+		t.Fatalf("phone seeder = %#v", phone.Seeder)
+	}
+}
+
+func TestPasswordSeederComposite(t *testing.T) {
+	migration := &Migration{}
+	migration.CreateTable("users", func(table *Table) {
+		table.Integer("id").PrimaryKey()
+		table.String("first_name").SeedFirstName()
+		table.String("last_name").SeedLastName()
+		table.String("password_hash").SeedPassword([]string{"first_name", "last_name", "id"})
+	})
+	password := migration.Operations[0].TableDef.Columns[3]
+	if password.Seeder == nil || strings.Join(password.Seeder.Fields, ",") != "first_name,last_name,id" {
+		t.Fatalf("password seeder = %#v", password.Seeder)
+	}
+}
+
+func TestPasswordSeederRejectsUnknownField(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected unknown seed field panic")
+		}
+	}()
+	migration := &Migration{}
+	migration.CreateTable("users", func(table *Table) {
+		table.String("password_hash").SeedPassword([]string{"missing"})
+	})
+}
+
+func TestFieldSeederTypeValidation(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected incompatible seeder panic")
+		}
+	}()
+	(&Column{Name: "age", Type: Integer}).SeedEmail()
+}
+
+func TestAlterTableRecordsSeederMetadataOnly(t *testing.T) {
+	migration := &Migration{}
+	migration.AlterTable("contacts", func(table *Table) {
+		table.AlterColumn("phone").SeedPhoneNumber(Canada)
+		table.AlterColumn("company_name").DropSeeder()
+	})
+	if len(migration.Operations) != 2 {
+		t.Fatalf("operations = %#v", migration.Operations)
+	}
+	if migration.Operations[0].Type != OpAlterColumnMetadata || migration.Operations[0].MetadataColumn.Seeder.Kind != "phone_number" {
+		t.Fatalf("first operation = %#v", migration.Operations[0])
+	}
+	if migration.Operations[1].MetadataColumn.Seeder.Kind != "none" {
+		t.Fatalf("drop operation = %#v", migration.Operations[1])
+	}
+}
+
 func TestDecimalPrecision(t *testing.T) {
 	tbl := &Table{Name: "transfers"}
 	tbl.Decimal("amount", 18, 2).NotNull()

@@ -7650,6 +7650,8 @@ func sqlForMigrationOp(op generator.MigrationOperation, tableByName map[string]*
 			return "", fmt.Errorf("raw_sql operation missing SQL")
 		}
 		return strings.TrimRight(strings.TrimSpace(op.SQL), ";"), nil
+	case "alter_column_metadata":
+		return "", nil // seed metadata has no database DDL
 	default:
 		return "", fmt.Errorf("%s migrations are not lowered yet", op.Type)
 	}

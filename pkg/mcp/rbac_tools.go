@@ -490,6 +490,9 @@ func enhanceSchemaWithVisibility(tbl *schema.Table, graphqlModels []GraphQLModel
 		if c.IsOwnerColumn {
 			attrs = append(attrs, "OWNER")
 		}
+		if c.Seeder != nil {
+			attrs = append(attrs, formatSeedSpec(c.Seeder))
+		}
 
 		// visible_to roles
 		if len(c.VisibleTo) > 0 {

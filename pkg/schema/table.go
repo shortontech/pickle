@@ -77,10 +77,23 @@ type Table struct {
 	Indexes              []*Index
 	ForeignKeys          []*ForeignKey
 	Relationships        []*Relationship
-	IsImmutable          bool     // set by Immutable() — versioned, (id, version_id) composite PK
-	IsAppendOnly         bool     // set by AppendOnly() — insert-only, single id PK, no updates/deletes
-	HasSoftDelete        bool     // set by SoftDeletes() — adds deleted_at nullable column
-	CompositePrimaryKeys []string // set by PrimaryKey() — explicit composite PK columns
+	IsImmutable          bool      // set by Immutable() — versioned, (id, version_id) composite PK
+	IsAppendOnly         bool      // set by AppendOnly() — insert-only, single id PK, no updates/deletes
+	HasSoftDelete        bool      // set by SoftDeletes() — adds deleted_at nullable column
+	CompositePrimaryKeys []string  // set by PrimaryKey() — explicit composite PK columns
+	AlteredColumns       []*Column // metadata-only column changes emitted by AlterTable
+}
+
+// AlterColumn selects an existing column for a metadata-only alteration.
+// It is valid only inside Migration.AlterTable. Seed declarations currently
+// use this path; it never emits column DDL.
+func (t *Table) AlterColumn(name string) *Column {
+	if name == "" {
+		panic("pickle: AlterColumn requires a column name")
+	}
+	c := &Column{Name: name, Type: ColumnType(-1)}
+	t.AlteredColumns = append(t.AlteredColumns, c)
+	return c
 }
 
 // ForeignKey declares a table-level foreign-key constraint. It is primarily

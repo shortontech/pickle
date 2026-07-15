@@ -165,26 +165,35 @@ type inspectorForeignKeyInfo struct {
 }
 
 type inspectorColumnInfo struct {
-	Name             string          `json:"name"`
-	Type             string          `json:"type"`
-	GoType           string          `json:"go_type"`
-	Nullable         bool            `json:"nullable"`
-	PrimaryKey       bool            `json:"primary_key,omitempty"`
-	Unique           bool            `json:"unique,omitempty"`
-	Default          any             `json:"default,omitempty"`
-	HasDefault       bool            `json:"has_default,omitempty"`
-	ForeignKeyTable  string          `json:"foreign_key_table,omitempty"`
-	ForeignKeyColumn string          `json:"foreign_key_column,omitempty"`
-	Length           int             `json:"length,omitempty"`
-	Precision        int             `json:"precision,omitempty"`
-	Scale            int             `json:"scale,omitempty"`
-	Public           bool            `json:"public,omitempty"`
-	OwnerSees        bool            `json:"owner_sees,omitempty"`
-	OwnerColumn      bool            `json:"owner_column,omitempty"`
-	VisibleTo        map[string]bool `json:"visible_to,omitempty"`
-	Encrypted        bool            `json:"encrypted,omitempty"`
-	Sealed           bool            `json:"sealed,omitempty"`
-	UnsafePublic     bool            `json:"unsafe_public,omitempty"`
+	Name             string             `json:"name"`
+	Type             string             `json:"type"`
+	GoType           string             `json:"go_type"`
+	Nullable         bool               `json:"nullable"`
+	PrimaryKey       bool               `json:"primary_key,omitempty"`
+	Unique           bool               `json:"unique,omitempty"`
+	Default          any                `json:"default,omitempty"`
+	HasDefault       bool               `json:"has_default,omitempty"`
+	ForeignKeyTable  string             `json:"foreign_key_table,omitempty"`
+	ForeignKeyColumn string             `json:"foreign_key_column,omitempty"`
+	Length           int                `json:"length,omitempty"`
+	Precision        int                `json:"precision,omitempty"`
+	Scale            int                `json:"scale,omitempty"`
+	Public           bool               `json:"public,omitempty"`
+	OwnerSees        bool               `json:"owner_sees,omitempty"`
+	OwnerColumn      bool               `json:"owner_column,omitempty"`
+	VisibleTo        map[string]bool    `json:"visible_to,omitempty"`
+	Encrypted        bool               `json:"encrypted,omitempty"`
+	Sealed           bool               `json:"sealed,omitempty"`
+	UnsafePublic     bool               `json:"unsafe_public,omitempty"`
+	Seeder           *inspectorSeedInfo `json:"seeder,omitempty"`
+}
+
+type inspectorSeedInfo struct {
+	Kind       string   `json:"kind"`
+	Arguments  []string `json:"arguments,omitempty"`
+	Fields     []string `json:"fields,omitempty"`
+	Reference  string   `json:"reference,omitempty"`
+	NullWeight float64  `json:"null_weight,omitempty"`
 }
 
 type inspectorIndexInfo struct {
@@ -444,6 +453,9 @@ func convertInspectorColumn(ci inspectorColumnInfo, owner string) (*schema.Colum
 	if ci.HasDefault || ci.Default != nil {
 		col.DefaultValue = ci.Default
 	}
+	if ci.Seeder != nil {
+		col.Seeder = &schema.SeedSpec{Kind: ci.Seeder.Kind, Arguments: ci.Seeder.Arguments, Fields: ci.Seeder.Fields, Reference: ci.Seeder.Reference, NullWeight: ci.Seeder.NullWeight}
+	}
 	return col, nil
 }
 
@@ -494,6 +506,14 @@ func convertInspectorOperations(in []inspectorOperationInfo) ([]MigrationOperati
 	for _, oi := range in {
 		op := MigrationOperation{Type: oi.Type, Table: oi.Table, OldName: oi.OldName, NewName: oi.NewName, ColumnName: oi.ColumnName, SQL: oi.SQL}
 		for _, ci := range oi.Columns {
+			if oi.Type == "alter_column_metadata" && ci.Type == "" {
+				col := &schema.Column{Name: ci.Name}
+				if ci.Seeder != nil {
+					col.Seeder = &schema.SeedSpec{Kind: ci.Seeder.Kind, Arguments: ci.Seeder.Arguments, Fields: ci.Seeder.Fields, Reference: ci.Seeder.Reference, NullWeight: ci.Seeder.NullWeight}
+				}
+				op.Columns = append(op.Columns, col)
+				continue
+			}
 			col, err := convertInspectorColumn(ci, oi.Table)
 			if err != nil {
 				return nil, err

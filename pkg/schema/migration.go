@@ -22,20 +22,22 @@ const (
 	OpCreateView
 	OpDropView
 	OpRawSQL
+	OpAlterColumnMetadata
 )
 
 // Operation records a single schema change.
 type Operation struct {
-	Type         TableOperation
-	Table        string
-	TableDef     *Table
-	ViewDef      *View
-	Index        *Index
-	NewName      string // for rename operations
-	OldName      string // for rename operations
-	ColumnName   string // for drop/rename column
-	ColumnDef    func(*Table)
-	SQL          string // for RawSQL operations
+	Type           TableOperation
+	Table          string
+	TableDef       *Table
+	ViewDef        *View
+	Index          *Index
+	NewName        string // for rename operations
+	OldName        string // for rename operations
+	ColumnName     string // for drop/rename column
+	ColumnDef      func(*Table)
+	SQL            string  // for RawSQL operations
+	MetadataColumn *Column // metadata-only alteration; emits no DDL
 }
 
 // Migration is the base type embedded by all migration structs.
@@ -50,6 +52,7 @@ func (m *Migration) CreateTable(name string, fn func(*Table)) {
 	}
 	t := &Table{Name: name}
 	fn(t)
+	validateTableSeeders(t)
 	m.Operations = append(m.Operations, Operation{
 		Type:     OpCreateTable,
 		Table:    name,
@@ -137,6 +140,14 @@ func (m *Migration) AlterTable(name string, fn func(*Table)) {
 			ColumnDef: func(tmp *Table) {
 				tmp.Columns = append(tmp.Columns, col)
 			},
+		})
+	}
+	for _, col := range t.AlteredColumns {
+		m.Operations = append(m.Operations, Operation{
+			Type:           OpAlterColumnMetadata,
+			Table:          name,
+			ColumnName:     col.Name,
+			MetadataColumn: col,
 		})
 	}
 	// Flatten nested relationships

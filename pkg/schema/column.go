@@ -20,10 +20,11 @@ type Column struct {
 	IsEncrypted      bool
 	IsSealed         bool
 	IsUnsafePublic   bool
-	OnDeleteAction   string          // e.g. "CASCADE", "SET NULL" — appended to FK constraint
-	FKMetadataOnly   bool // FK is for ORM relationship metadata only; no SQL REFERENCES constraint
+	OnDeleteAction   string            // e.g. "CASCADE", "SET NULL" — appended to FK constraint
+	FKMetadataOnly   bool              // FK is for ORM relationship metadata only; no SQL REFERENCES constraint
 	VisibleTo        map[string]bool   // role slugs that can see this column
 	VisibleToSource  map[string]string // role slug → migration ID that added the annotation
+	Seeder           *SeedSpec         // fake-data metadata; never emitted as database DDL
 }
 
 func (c *Column) PrimaryKey() *Column {

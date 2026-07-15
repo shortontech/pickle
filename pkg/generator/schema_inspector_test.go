@@ -50,6 +50,34 @@ func TestGenerateSchemaInspector(t *testing.T) {
 	if !strings.Contains(src, `ForeignKeys`) || !strings.Contains(src, `[]foreignKeyInfo`) || !strings.Contains(src, `ReferencedColumns: fk.ReferencedColumns`) {
 		t.Errorf("missing composite foreign-key serialization\n%s", src)
 	}
+	if !strings.Contains(src, `Seeder           *seedInfo`) || !strings.Contains(src, `col.Seeder.Kind`) || !strings.Contains(src, `OpAlterColumnMetadata`) {
+		t.Errorf("missing field-seeder metadata serialization\n%s", src)
+	}
+}
+
+func TestConvertInspectorColumnPreservesSeeder(t *testing.T) {
+	column, err := convertInspectorColumn(inspectorColumnInfo{
+		Name: "password_hash", Type: "string", Seeder: &inspectorSeedInfo{Kind: "password", Fields: []string{"first_name", "last_name", "id"}},
+	}, "users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if column.Seeder == nil || column.Seeder.Kind != "password" || strings.Join(column.Seeder.Fields, ",") != "first_name,last_name,id" {
+		t.Fatalf("seeder = %#v", column.Seeder)
+	}
+}
+
+func TestConvertInspectorMetadataOperationPreservesSeeder(t *testing.T) {
+	ops, err := convertInspectorOperations([]inspectorOperationInfo{{
+		Type: "alter_column_metadata", Table: "contacts", ColumnName: "phone",
+		Columns: []inspectorColumnInfo{{Name: "phone", Seeder: &inspectorSeedInfo{Kind: "phone_number", Arguments: []string{"CA"}}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 1 || len(ops[0].Columns) != 1 || ops[0].Columns[0].Seeder == nil || ops[0].Columns[0].Seeder.Kind != "phone_number" {
+		t.Fatalf("operations = %#v", ops)
+	}
 }
 
 func TestConvertInspectorTablePreservesCompositeForeignKeys(t *testing.T) {

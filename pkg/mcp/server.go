@@ -464,6 +464,9 @@ func formatTable(t *schema.Table) string {
 		if c.IsOwnerColumn {
 			attrs = append(attrs, "OWNER")
 		}
+		if c.Seeder != nil {
+			attrs = append(attrs, formatSeedSpec(c.Seeder))
+		}
 
 		attrStr := ""
 		if len(attrs) > 0 {
@@ -473,6 +476,21 @@ func formatTable(t *schema.Table) string {
 	}
 	writeCompositeKeyTuples(&b, t)
 	return b.String()
+}
+
+func formatSeedSpec(seed *schema.SeedSpec) string {
+	if seed == nil {
+		return ""
+	}
+	detail := seed.Kind
+	if seed.Reference != "" {
+		detail += ":" + seed.Reference
+	} else if len(seed.Fields) > 0 {
+		detail += ":" + strings.Join(seed.Fields, "+")
+	} else if len(seed.Arguments) > 0 {
+		detail += ":" + strings.Join(seed.Arguments, ",")
+	}
+	return "SEED(" + detail + ")"
 }
 
 func formatRoutes(routes []squeeze.AnalyzedRoute, methods map[string]*squeeze.ControllerMethod, requests []generator.RequestDef) string {

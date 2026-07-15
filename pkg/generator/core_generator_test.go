@@ -90,6 +90,11 @@ func TestGenerateCoreSchema(t *testing.T) {
 			t.Errorf("missing composite foreign-key API %q", want)
 		}
 	}
+	for _, want := range []string{"type SeedSpec struct", "func (c *Column) SeedFirstName(", "func (c *Column) SeedPassword(", "func (t *Table) AlterColumn(", "OpAlterColumnMetadata"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("missing field-seeder API %q", want)
+		}
+	}
 }
 
 func TestGenerateCoreMigrationCompositeForeignKeysAcrossDrivers(t *testing.T) {

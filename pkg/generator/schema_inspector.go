@@ -44,6 +44,15 @@ type columnInfo struct {
 	Encrypted        bool            ` + "`" + `json:"encrypted,omitempty"` + "`" + `
 	Sealed           bool            ` + "`" + `json:"sealed,omitempty"` + "`" + `
 	UnsafePublic     bool            ` + "`" + `json:"unsafe_public,omitempty"` + "`" + `
+	Seeder           *seedInfo       ` + "`" + `json:"seeder,omitempty"` + "`" + `
+}
+
+type seedInfo struct {
+	Kind       string   ` + "`" + `json:"kind"` + "`" + `
+	Arguments  []string ` + "`" + `json:"arguments,omitempty"` + "`" + `
+	Fields     []string ` + "`" + `json:"fields,omitempty"` + "`" + `
+	Reference  string   ` + "`" + `json:"reference,omitempty"` + "`" + `
+	NullWeight float64  ` + "`" + `json:"null_weight,omitempty"` + "`" + `
 }
 
 type tableInfo struct {
@@ -174,7 +183,7 @@ func columnToInfo(col *{{ .TypesPkg }}.Column) columnInfo {
 	if col.IsNullable && goType != "[]byte" {
 		goType = "*" + goType
 	}
-	return columnInfo{
+	info := columnInfo{
 		Name:             col.Name,
 		Type:             typeNames[col.Type],
 		GoType:           goType,
@@ -196,6 +205,10 @@ func columnToInfo(col *{{ .TypesPkg }}.Column) columnInfo {
 		Sealed:           col.IsSealed,
 		UnsafePublic:     col.IsUnsafePublic,
 	}
+	if col.Seeder != nil {
+		info.Seeder = &seedInfo{Kind: col.Seeder.Kind, Arguments: col.Seeder.Arguments, Fields: col.Seeder.Fields, Reference: col.Seeder.Reference, NullWeight: col.Seeder.NullWeight}
+	}
+	return info
 }
 
 func tableToInfo(t *{{ .TypesPkg }}.Table, conn string) *tableInfo {
@@ -311,6 +324,15 @@ func operationsToInfo(ops []{{ .TypesPkg }}.Operation, tables map[string]*tableI
 			info.Type = "drop_view"
 		case {{ .TypesPkg }}.OpRawSQL:
 			info.Type = "raw_sql"
+		case {{ .TypesPkg }}.OpAlterColumnMetadata:
+			info.Type = "alter_column_metadata"
+			if op.MetadataColumn != nil {
+				seedColumn := columnInfo{Name: op.ColumnName}
+				if op.MetadataColumn.Seeder != nil {
+					seedColumn.Seeder = &seedInfo{Kind: op.MetadataColumn.Seeder.Kind, Arguments: op.MetadataColumn.Seeder.Arguments, Fields: op.MetadataColumn.Seeder.Fields, Reference: op.MetadataColumn.Seeder.Reference, NullWeight: op.MetadataColumn.Seeder.NullWeight}
+				}
+				info.Columns = append(info.Columns, seedColumn)
+			}
 		}
 		out = append(out, info)
 	}
@@ -343,6 +365,19 @@ func processOps(ops []{{ .TypesPkg }}.Operation, tables map[string]*tableInfo, o
 			*viewOrder = append(*viewOrder, op.ViewDef.Name)
 		case {{ .TypesPkg }}.OpDropView:
 			delete(views, op.Table)
+		case {{ .TypesPkg }}.OpAlterColumnMetadata:
+			if ti, ok := tables[op.Table]; ok && op.MetadataColumn != nil {
+				for i := range ti.Columns {
+					if ti.Columns[i].Name == op.ColumnName {
+						if op.MetadataColumn.Seeder != nil && op.MetadataColumn.Seeder.Kind == "none" {
+							ti.Columns[i].Seeder = nil
+						} else if op.MetadataColumn.Seeder != nil {
+							ti.Columns[i].Seeder = &seedInfo{Kind: op.MetadataColumn.Seeder.Kind, Arguments: op.MetadataColumn.Seeder.Arguments, Fields: op.MetadataColumn.Seeder.Fields, Reference: op.MetadataColumn.Seeder.Reference, NullWeight: op.MetadataColumn.Seeder.NullWeight}
+						}
+						break
+					}
+				}
+			}
 		}
 	}
 }

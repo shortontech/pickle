@@ -157,6 +157,15 @@ func TestFormatTable_Basic(t *testing.T) {
 		}
 	})
 
+	t.Run("field seeder", func(t *testing.T) {
+		col := &schema.Column{Name: "password_hash", Seeder: &schema.SeedSpec{Kind: "password", Fields: []string{"first_name", "last_name", "id"}}}
+		tbl := &schema.Table{Name: "users", Columns: []*schema.Column{col}}
+		out := formatTable(tbl)
+		if !strings.Contains(out, "SEED(password:first_name+last_name+id)") {
+			t.Errorf("expected password seed metadata, got: %s", out)
+		}
+	})
+
 	t.Run("no attributes when plain column", func(t *testing.T) {
 		col := &schema.Column{Name: "notes", IsNullable: true}
 		tbl := &schema.Table{Name: "t", Columns: []*schema.Column{col}}

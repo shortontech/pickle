@@ -320,6 +320,9 @@ Available in `Up()` and `Down()`:
 | `m.AddUniqueIndex(table, columns...)` | Add a unique index |
 | `m.RenameTable(old, new)` | Rename a table |
 
+Field seeders are also versioned migration metadata. They describe fake-data
+providers without emitting DDL; see [Seeders](Seeders.md).
+
 ## Running migrations
 
 ```bash

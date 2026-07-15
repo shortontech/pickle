@@ -11,12 +11,13 @@ import (
 
 // testIntegrityModel simulates a generated model with db tags.
 type testIntegrityModel struct {
-	ID       [16]byte `db:"id"`
-	RowHash  []byte   `db:"row_hash"`
-	PrevHash []byte   `db:"prev_hash"`
-	Name     string   `db:"name"`
-	Amount   int64    `db:"amount"`
-	Active   bool     `db:"active"`
+	ID       [16]byte  `db:"id"`
+	RowHash  []byte    `db:"row_hash"`
+	PrevHash []byte    `db:"prev_hash"`
+	Name     string    `db:"name"`
+	Amount   int64     `db:"amount"`
+	Active   bool      `db:"active"`
+	Created  time.Time `db:"created_at"`
 }
 
 var testColumns = []ColumnMeta{
@@ -26,6 +27,7 @@ var testColumns = []ColumnMeta{
 	{Name: "name", TypeTag: typeTagString},
 	{Name: "amount", TypeTag: typeTagInteger},
 	{Name: "active", TypeTag: typeTagBoolean},
+	{Name: "created_at", TypeTag: typeTagTimestamp},
 }
 
 func TestCanonicalSerializeExcludesHashColumns(t *testing.T) {
@@ -175,6 +177,30 @@ func TestSerializeFieldTimestamp(t *testing.T) {
 	// type tag + 8 bytes + delimiter
 	if buf.Len() != 1+8+1 {
 		t.Errorf("timestamp serialization: expected 10 bytes, got %d", buf.Len())
+	}
+}
+
+func TestTimestampHashMatchesPostgresMicrosecondPrecision(t *testing.T) {
+	original := time.Date(2026, 7, 15, 12, 34, 56, 123456789, time.FixedZone("offset", -7*60*60))
+	stored := original.UTC().Truncate(time.Microsecond)
+
+	beforeInsert := &testIntegrityModel{Name: "message", Created: original}
+	afterRead := &testIntegrityModel{Name: "message", Created: stored}
+	beforeHash := computeRowHash(GenesisHash, beforeInsert, testColumns)
+	afterHash := computeRowHash(GenesisHash, afterRead, testColumns)
+	if !bytes.Equal(beforeHash, afterHash) {
+		t.Fatalf("timestamp hash changed after PostgreSQL precision normalization: before=%x after=%x", beforeHash, afterHash)
+	}
+
+	rawHash := computeRowHashFromRaw(GenesisHash, map[string]any{
+		"id":         [16]byte{},
+		"name":       "message",
+		"amount":     int64(0),
+		"active":     false,
+		"created_at": stored,
+	}, testColumns)
+	if !bytes.Equal(beforeHash, rawHash) {
+		t.Fatalf("struct and database-row timestamp hashes differ: struct=%x raw=%x", beforeHash, rawHash)
 	}
 }
 

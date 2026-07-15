@@ -20,7 +20,7 @@ const (
 	typeTagBigInt    byte = 0x04
 	typeTagDecimal   byte = 0x05
 	typeTagBoolean   byte = 0x06
-	typeTagTimestamp  byte = 0x07
+	typeTagTimestamp byte = 0x07
 	typeTagJSONB     byte = 0x08
 	typeTagBinary    byte = 0x09
 	typeTagDate      byte = 0x0A
@@ -140,10 +140,12 @@ func serializeField(buf *bytes.Buffer, field reflect.Value, typeTag byte) {
 		}
 
 	case typeTagTimestamp:
-		// time.Time → Unix nanoseconds UTC
+		// PostgreSQL stores TIMESTAMP/TIMESTAMPTZ at microsecond precision.
+		// Canonicalize before hashing so the pre-insert value and the value read
+		// back for verification produce identical bytes.
 		if t, ok := field.Interface().(time.Time); ok {
 			var b [8]byte
-			binary.BigEndian.PutUint64(b[:], uint64(t.UTC().UnixNano()))
+			binary.BigEndian.PutUint64(b[:], uint64(canonicalIntegrityTime(t).UnixNano()))
 			buf.Write(b[:])
 		}
 
@@ -368,7 +370,7 @@ func serializeRawValue(buf *bytes.Buffer, val any, typeTag byte) {
 		switch v := val.(type) {
 		case time.Time:
 			var b [8]byte
-			binary.BigEndian.PutUint64(b[:], uint64(v.UTC().UnixNano()))
+			binary.BigEndian.PutUint64(b[:], uint64(canonicalIntegrityTime(v).UnixNano()))
 			buf.Write(b[:])
 		}
 
@@ -411,6 +413,10 @@ func serializeRawValue(buf *bytes.Buffer, val any, typeTag byte) {
 			buf.WriteString(v)
 		}
 	}
+}
+
+func canonicalIntegrityTime(value time.Time) time.Time {
+	return value.UTC().Truncate(time.Microsecond)
 }
 
 // parseUUIDBytes parses a UUID string (with or without hyphens) into 16 bytes.

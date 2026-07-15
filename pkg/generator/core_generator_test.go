@@ -57,6 +57,12 @@ func TestGenerateCoreQuery(t *testing.T) {
 	if !strings.Contains(src, "type QueryBuilder[") {
 		t.Error("missing QueryBuilder")
 	}
+	if !strings.Contains(src, "canonicalIntegrityTime(t).UnixNano()") || !strings.Contains(src, "Truncate(time.Microsecond)") {
+		t.Error("generated integrity hashing does not canonicalize PostgreSQL timestamp precision")
+	}
+	if strings.Contains(src, "MAX(version_id)") {
+		t.Error("generated immutable query still uses unsupported PostgreSQL MAX(uuid)")
+	}
 }
 
 func TestGenerateCoreGraphQLIncludesResourceIDScalarRuntime(t *testing.T) {

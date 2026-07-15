@@ -11402,9 +11402,13 @@ func canonicalIntegrityBytes(record any, columns []string) []byte {
 		if field.Kind() == reflect.Ptr {
 			field = field.Elem()
 		}
-		data, err := json.Marshal(field.Interface())
+		value := field.Interface()
+		if timestamp, ok := value.(time.Time); ok {
+			value = timestamp.UTC().Truncate(time.Microsecond)
+		}
+		data, err := json.Marshal(value)
 		if err != nil {
-			data = []byte(fmt.Sprint(field.Interface()))
+			data = []byte(fmt.Sprint(value))
 		}
 		out = append(out, data...)
 		out = append(out, 0)

@@ -5782,6 +5782,7 @@ func TestExportLedgerCompiles(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "app", "models", "integrity_support.go"), "func CreateAccount(record *Account) error")
 	assertFileContains(t, filepath.Join(out, "app", "models", "integrity_support.go"), "func VerifyTransactionChain() error")
 	assertFileContains(t, filepath.Join(out, "app", "models", "integrity_support.go"), "func integrityDatabaseError() error")
+	assertFileContains(t, filepath.Join(out, "app", "models", "integrity_support.go"), "timestamp.UTC().Truncate(time.Microsecond)")
 	assertFileNotContains(t, filepath.Join(out, "app", "models", "integrity_support.go"), "return db.Create(record).Error")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "integrity_verify.go"), "models.VerifyTransactionRow(tx)")
 	assertFileContains(t, filepath.Join(out, "app", "http", "controllers", "integrity_verify.go"), "models.VerifyTransactionChain()")

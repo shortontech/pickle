@@ -45,6 +45,8 @@ func AllRules() map[string]Rule {
 		"read_scoping":                         ruleReadScoping,
 		"enum_validation":                      ruleEnumValidation,
 		"uuid_error_handling":                  ruleUUIDErrorHandling,
+		"resource_id_uuid_parser":              ruleResourceIDUUIDParser,
+		"resource_id_unscoped":                 ruleResourceIDUnscoped,
 		"public_projection":                    rulePublicProjection,
 		"required_fields":                      ruleRequiredFields,
 		"unbounded_query":                      ruleUnboundedQuery,

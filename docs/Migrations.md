@@ -118,6 +118,19 @@ Supported referential actions are `CASCADE`, `RESTRICT`, `NO ACTION`,
 
 ## Ownership & visibility
 
+For scope-local records, keep the real composite integer identity in the
+schema even when the HTTP boundary exposes a `ResourceID`:
+
+```go
+t.BigInteger("organization_id").NotNull()
+t.BigInteger("record_id").NotNull()
+t.PrimaryKey("organization_id", "record_id")
+```
+
+Related tables must reference the complete tuple in the same declaration
+order. Encoding these values as a ResourceID does not replace the composite
+foreign key or authorize cross-scope access.
+
 Declare field visibility tiers and row ownership directly in your migration. Pickle generates `PublicResponse` and `OwnerResponse` structs, a `Serialize` function, and a `WhereOwnedBy` query scope.
 
 ```go

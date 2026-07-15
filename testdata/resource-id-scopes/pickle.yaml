@@ -1,0 +1,4 @@
+squeeze:
+  rules:
+    resource_id_uuid_parser: true
+    resource_id_unscoped: true

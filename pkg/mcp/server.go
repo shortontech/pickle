@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -172,12 +173,11 @@ func (s *Server) schemaShow(_ context.Context, _ *mcp.CallToolRequest, input tab
 }
 
 func (s *Server) routesList(_ context.Context, _ *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
-	routesFile := s.project.Dir + "/routes/web.go"
-	data, err := os.ReadFile(routesFile)
+	analysis, err := squeeze.Analyze(s.project.Dir)
 	if err != nil {
-		return errResult("could not read routes/web.go: " + err.Error()), nil, nil
+		return errResult("could not analyze routes: " + err.Error()), nil, nil
 	}
-	return textResult(string(data)), nil, nil
+	return textResult(formatRoutes(analysis.Routes, analysis.Methods, analysis.Requests)), nil, nil
 }
 
 type requestInput struct {
@@ -471,24 +471,44 @@ func formatTable(t *schema.Table) string {
 		}
 		fmt.Fprintf(&b, "  %s %s%s\n", c.Name, c.Type, attrStr)
 	}
-	var primaryKeys []string
-	for _, c := range t.Columns {
-		if c.IsPrimaryKey {
-			primaryKeys = append(primaryKeys, c.Name)
+	writeCompositeKeyTuples(&b, t)
+	return b.String()
+}
+
+func formatRoutes(routes []squeeze.AnalyzedRoute, methods map[string]*squeeze.ControllerMethod, requests []generator.RequestDef) string {
+	var b strings.Builder
+	for _, route := range routes {
+		fmt.Fprintf(&b, "%s %s -> %s.%s\n", route.Method, route.Path, route.ControllerType, route.MethodName)
+		method := methods[route.ControllerType+"."+route.MethodName]
+		if method == nil {
+			continue
 		}
-	}
-	if len(primaryKeys) > 1 {
-		fmt.Fprintf(&b, "  PRIMARY KEY (%s)\n", strings.Join(primaryKeys, ", "))
-	}
-	for _, fk := range t.ForeignKeys {
-		fmt.Fprintf(&b, "  FOREIGN KEY (%s) → %s (%s)", strings.Join(fk.Columns, ", "), fk.ReferencedTable, strings.Join(fk.ReferencedColumns, ", "))
-		if fk.OnDeleteAction != "" {
-			fmt.Fprintf(&b, " ON DELETE %s", fk.OnDeleteAction)
+		origins := squeeze.FindResourceIDOrigins(method.Body, requests)
+		var params []string
+		for name := range origins.Params {
+			if strings.Contains(route.Path, ":"+name) {
+				params = append(params, name)
+			}
 		}
-		if fk.OnUpdateAction != "" {
-			fmt.Fprintf(&b, " ON UPDATE %s", fk.OnUpdateAction)
+		sort.Strings(params)
+		for _, name := range params {
+			fmt.Fprintf(&b, "  param %s ResourceID\n", name)
 		}
-		b.WriteByte('\n')
+		var requestVars []string
+		for variable := range origins.RequestVar {
+			requestVars = append(requestVars, variable)
+		}
+		sort.Strings(requestVars)
+		for _, variable := range requestVars {
+			var fields []string
+			for field := range origins.RequestVar[variable] {
+				fields = append(fields, field)
+			}
+			sort.Strings(fields)
+			for _, field := range fields {
+				fmt.Fprintf(&b, "  request %s.%s ResourceID\n", variable, field)
+			}
+		}
 	}
 	return b.String()
 }

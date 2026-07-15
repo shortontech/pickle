@@ -507,5 +507,32 @@ func enhanceSchemaWithVisibility(tbl *schema.Table, graphqlModels []GraphQLModel
 		}
 		fmt.Fprintf(&b, "  %s %s%s\n", c.Name, c.Type, attrStr)
 	}
+	writeCompositeKeyTuples(&b, tbl)
 	return b.String()
+}
+
+func writeCompositeKeyTuples(b *strings.Builder, tbl *schema.Table) {
+	var primaryKeys []string
+	if len(tbl.CompositePrimaryKeys) > 0 {
+		primaryKeys = append(primaryKeys, tbl.CompositePrimaryKeys...)
+	} else {
+		for _, column := range tbl.Columns {
+			if column.IsPrimaryKey {
+				primaryKeys = append(primaryKeys, column.Name)
+			}
+		}
+	}
+	if len(primaryKeys) > 1 {
+		fmt.Fprintf(b, "  PRIMARY KEY (%s)\n", strings.Join(primaryKeys, ", "))
+	}
+	for _, fk := range tbl.ForeignKeys {
+		fmt.Fprintf(b, "  FOREIGN KEY (%s) → %s (%s)", strings.Join(fk.Columns, ", "), fk.ReferencedTable, strings.Join(fk.ReferencedColumns, ", "))
+		if fk.OnDeleteAction != "" {
+			fmt.Fprintf(b, " ON DELETE %s", fk.OnDeleteAction)
+		}
+		if fk.OnUpdateAction != "" {
+			fmt.Fprintf(b, " ON UPDATE %s", fk.OnUpdateAction)
+		}
+		b.WriteByte('\n')
+	}
 }

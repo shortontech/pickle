@@ -1,6 +1,9 @@
 package picklemcp
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"strings"
@@ -8,6 +11,7 @@ import (
 
 	"github.com/shortontech/pickle/pkg/generator"
 	"github.com/shortontech/pickle/pkg/schema"
+	"github.com/shortontech/pickle/pkg/squeeze"
 )
 
 // --- textResult / errResult ---
@@ -455,6 +459,32 @@ func TestRoutesListHandler(t *testing.T) {
 	}
 	if len(result.Content) == 0 {
 		t.Fatal("expected non-empty routes content")
+	}
+}
+
+func TestFormatRoutesLabelsProvenResourceIDs(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "party_controller.go", `package controllers
+func (c PartyController) Show(ctx *Context) {
+	parts, _ := ctx.ParamResourceIDParts("party_id")
+	req, _ := requests.BindMovePartyRequest(ctx.Request())
+	_, _ = parts, req
+}`, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	method := file.Decls[0].(*ast.FuncDecl)
+	routes := []squeeze.AnalyzedRoute{{Method: "GET", Path: "/parties/:party_id", ControllerType: "PartyController", MethodName: "Show"}}
+	methods := map[string]*squeeze.ControllerMethod{"PartyController.Show": {Body: method.Body, Fset: fset}}
+	requests := []generator.RequestDef{{Name: "MovePartyRequest", Fields: []generator.RequestField{{Name: "TargetID", IsResourceID: true}}}}
+	out := formatRoutes(routes, methods, requests)
+	for _, want := range []string{"param party_id ResourceID", "request req.TargetID ResourceID"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "UUID") {
+		t.Fatalf("ResourceID metadata mislabeled as UUID:\n%s", out)
 	}
 }
 

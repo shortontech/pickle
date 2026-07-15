@@ -11,6 +11,23 @@ pickle squeeze --project ./myapp/     # analyze a specific project
 
 Squeeze reads `pickle.yaml` for middleware classification and rule toggles.
 
+### ResourceID rules
+
+`resource_id_uuid_parser` is an error when `uuid.Parse`, `uuid.MustParse`, or
+`ctx.ParamUUID` receives a value Squeeze has positively identified as a Pickle
+`ResourceID`. Origins come from `ParamResourceID`, `ParamResourceIDParts`, or a
+typed request field. Variable names alone never establish the type.
+
+`resource_id_unscoped` is an error when a proven
+`ResourceIDParts.RecordID` queries the local half of a two-column composite
+primary key without the matching `ResourceIDParts.ScopeID` predicate. The rule
+is deliberately narrow: it does not infer scope from unrelated integers or
+names containing `id`.
+
+Fix both findings by keeping the value at the ResourceID boundary, comparing
+the decoded scope with trusted authority, and querying with both scope and
+record predicates. Successful decoding proves syntax, not authorization.
+
 ## Configuration
 
 ```yaml

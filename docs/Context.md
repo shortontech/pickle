@@ -53,7 +53,9 @@ party, err := models.QueryParty().
 The canonical spelling is 32 lowercase hexadecimal digits with hyphens in the
 usual 8-4-4-4-12 shape. It is not an RFC UUID: do not pass it to `uuid.Parse`,
 store it in a UUID column, or treat successful decoding as permission. The
-authoritative database values remain the two integer columns.
+fixed representation provides convenience and mild obscurity, not encryption,
+authentication, or authorization. The authoritative database values remain
+the two integer columns.
 
 ## Authentication
 

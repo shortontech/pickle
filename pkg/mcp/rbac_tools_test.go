@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/shortontech/pickle/pkg/generator"
+	"github.com/shortontech/pickle/pkg/schema"
 )
 
 // --- DeriveRBACState ---
@@ -324,6 +325,21 @@ func TestSchemaShow_IncludesGraphQLExposure(t *testing.T) {
 	}
 	if result.IsError {
 		t.Fatalf("schemaShow returned error")
+	}
+}
+
+func TestEnhancedSchemaIncludesCompositeTuplesInOrder(t *testing.T) {
+	table := &schema.Table{Name: "parties", CompositePrimaryKeys: []string{"organization_id", "party_id"}, ForeignKeys: []*schema.ForeignKey{{
+		Columns: []string{"organization_id", "parent_id"}, ReferencedTable: "parties", ReferencedColumns: []string{"organization_id", "party_id"},
+	}}}
+	out := enhanceSchemaWithVisibility(table, nil)
+	for _, want := range []string{
+		"PRIMARY KEY (organization_id, party_id)",
+		"FOREIGN KEY (organization_id, parent_id) → parties (organization_id, party_id)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
 	}
 }
 

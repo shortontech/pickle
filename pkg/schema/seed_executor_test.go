@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -112,5 +113,47 @@ func TestValidateSeedEnvironment(t *testing.T) {
 	}
 	if err := ValidateSeedEnvironment("production", false, "", true); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSeedRepeatPoliciesGenerateDriverSQL(t *testing.T) {
+	row := SeedPlannedRow{Table: "users", Values: map[string]any{"email": "ada@example.test", "name": "Ada"}, UniqueBy: []string{"email"}, Updates: []string{"name"}}
+	tests := []struct {
+		name, driver string
+		policy       SeedPolicy
+		want         string
+	}{
+		{"postgres ignore", "postgres", InsertOrIgnore, `ON CONFLICT ("email") DO NOTHING`},
+		{"sqlite upsert", "sqlite", Upsert, `ON CONFLICT ("email") DO UPDATE SET "name" = excluded."name"`},
+		{"mysql ignore", "mysql", InsertOrIgnore, "INSERT IGNORE INTO"},
+		{"mysql upsert", "mysql", Upsert, "ON DUPLICATE KEY UPDATE `name` = VALUES(`name`)"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			query, _, err := seedInsertSQL(test.driver, row, SeedExecutionOptions{Policy: test.policy})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(query, test.want) {
+				t.Fatalf("query %q missing %q", query, test.want)
+			}
+		})
+	}
+}
+
+func TestSeedRepeatPolicyRequiresExplicitIdentity(t *testing.T) {
+	rows := []SeedPlannedRow{{Table: "users", Values: map[string]any{"email": "ada@example.test"}}}
+	if err := validateSeedRepeatPolicy(rows, SeedExecutionOptions{Policy: InsertOrIgnore}); err == nil {
+		t.Fatal("expected missing identity error")
+	}
+	rows[0].UniqueBy = []string{"email"}
+	if err := validateSeedRepeatPolicy(rows, SeedExecutionOptions{Policy: Upsert}); err == nil {
+		t.Fatal("expected missing update allowlist error")
+	}
+}
+
+func TestReplaceScenarioRequiresProvenance(t *testing.T) {
+	if err := validateSeedRepeatPolicy(nil, SeedExecutionOptions{Policy: ReplaceScenario}); err == nil {
+		t.Fatal("expected provenance error")
 	}
 }

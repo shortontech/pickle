@@ -312,10 +312,10 @@ func (c dbSeedCommand) Run(args []string) error {
 		*rootSeed = int64(binary.BigEndian.Uint64(raw[:]))
 	}
 	fmt.Printf("Seed: %d\n", *rootSeed)
-	graph, err := seeders.Graph(scenario)
+	definition, err := seeders.Resolve(scenario)
 	if err != nil { return err }
 	executor := migrations.SeedExecutor{DB: models.DB, Tables: seeders.Tables()}
-	result, err := executor.Run(context.Background(), graph, migrations.SeedExecutionOptions{
+	result, err := executor.Run(context.Background(), definition.Graph, migrations.SeedExecutionOptions{
 		Scenario: scenario,
 		RootSeed: *rootSeed,
 		Environment: os.Getenv("APP_ENV"),
@@ -323,6 +323,7 @@ func (c dbSeedCommand) Run(args []string) error {
 		ConfirmEnvironment: *confirmEnvironment,
 		DryRun: *dryRun,
 		Driver: config.Database.Connection().Driver,
+		Policy: definition.Policy,
 		PasswordHasher: func(value string) (string, error) {
 			hash, err := bcrypt.GenerateFromPassword([]byte(value), bcrypt.DefaultCost)
 			return string(hash), err

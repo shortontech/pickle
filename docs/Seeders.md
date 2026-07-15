@@ -146,3 +146,27 @@ pickle db:seed CRMSeeder --seed 8675309
 pickle db:seed --list
 pickle db:seed CRMSeeder --dry-run
 ```
+
+## Repeat policies
+
+Root scenarios are insert-only unless they explicitly declare otherwise:
+
+```go
+func (CRMSeeder) Policy() SeedPolicy { return Upsert }
+
+func (CRMSeeder) Seed(graph *SeedGraph) {
+    graph.Create(UserSeeder).
+        UniqueBy("email").
+        Update("first_name", "last_name", "time_zone")
+}
+```
+
+`InsertOrIgnore` and `Upsert` require `UniqueBy` on every affected row node;
+Pickle never guesses a primary key or unique constraint. `Upsert` additionally
+requires an explicit `Update` allowlist, and identity columns cannot appear in
+that allowlist. SQL generation uses `ON CONFLICT` for PostgreSQL and SQLite and
+the corresponding `INSERT IGNORE` or `ON DUPLICATE KEY UPDATE` forms for MySQL.
+
+`ReplaceScenario` remains unavailable unless generated seed provenance is
+explicitly enabled. Pickle rejects it instead of approximating destructive
+replacement from ordinary application columns.

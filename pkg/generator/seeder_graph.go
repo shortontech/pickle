@@ -35,6 +35,16 @@ func ValidateSeedGraph(graph *schema.SeedGraph, tables []*schema.Table) ([]Resol
 				return nil, fmt.Errorf("seeder %s overrides unknown column %s.%s", node.Seeder.Name, node.Seeder.Table, column)
 			}
 		}
+		for _, column := range append(append([]string(nil), node.UniqueColumns...), node.UpdateColumns...) {
+			if !tableHasColumn(tableByName[node.Seeder.Table], column) {
+				return nil, fmt.Errorf("seeder %s repeat policy references unknown column %s.%s", node.Seeder.Name, node.Seeder.Table, column)
+			}
+		}
+		for _, column := range node.UpdateColumns {
+			if containsSeedColumn(node.UniqueColumns, column) {
+				return nil, fmt.Errorf("seeder %s cannot update identity column %s", node.Seeder.Name, column)
+			}
+		}
 		nodeByID[node.ID] = node
 	}
 

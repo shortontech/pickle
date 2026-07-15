@@ -16,7 +16,7 @@ func TestGenerateSeederGlue(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(source)
-	for _, expected := range []string{"CRMSeeder", "func Graph", "func Tables", `Kind: "first_name"`} {
+	for _, expected := range []string{"CRMSeeder", "func Resolve", "func Graph", "policyScenario", "func Tables", `Kind: "first_name"`} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("generated glue missing %q:\n%s", expected, text)
 		}

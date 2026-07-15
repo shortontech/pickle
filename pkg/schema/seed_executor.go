@@ -28,6 +28,10 @@ type SeedExecutionOptions struct {
 	ConfirmEnvironment string
 	DryRun             bool
 	Driver             string
+	Policy             SeedPolicy
+	UniqueBy           []string
+	UpdateColumns      []string
+	ProvenanceEnabled  bool
 	PasswordHasher     func(string) (string, error)
 }
 
@@ -40,6 +44,8 @@ type SeedPlannedRow struct {
 	Table      string
 	Values     map[string]any
 	Sensitive  map[string]bool
+	UniqueBy   []string
+	Updates    []string
 }
 
 // SeedExecutionResult describes what was planned or inserted.
@@ -72,6 +78,9 @@ func (e SeedExecutor) Run(ctx context.Context, graph *SeedGraph, options SeedExe
 	if err != nil {
 		return nil, fmt.Errorf("seed scenario %s: %w", options.Scenario, err)
 	}
+	if err := validateSeedRepeatPolicy(rows, options); err != nil {
+		return nil, fmt.Errorf("seed scenario %s: %w", options.Scenario, err)
+	}
 	result := &SeedExecutionResult{Scenario: options.Scenario, RootSeed: options.RootSeed, Rows: rows, DryRun: options.DryRun}
 	if options.DryRun {
 		return result, nil
@@ -90,7 +99,10 @@ func (e SeedExecutor) Run(ctx context.Context, graph *SeedGraph, options SeedExe
 		}
 	}()
 	for _, row := range rows {
-		query, arguments := seedInsertSQL(options.Driver, row)
+		query, arguments, err := seedInsertSQL(options.Driver, row, options)
+		if err != nil {
+			return nil, fmt.Errorf("seed scenario %s path %s row %d table %s: %w", options.Scenario, row.NodePath, row.RowOrdinal, row.Table, err)
+		}
 		if _, err := tx.ExecContext(ctx, query, arguments...); err != nil {
 			return nil, fmt.Errorf("seed scenario %s path %s row %d table %s: insert failed: %w", options.Scenario, row.NodePath, row.RowOrdinal, row.Table, err)
 		}
@@ -232,7 +244,7 @@ func planSeedNode(node SeedNode, tables map[string]*Table, rowsByNode map[int][]
 				values[column.Name] = hash
 				sensitive[column.Name] = true
 			}
-			rows = append(rows, SeedPlannedRow{NodeID: node.ID, NodePath: path, RowOrdinal: ordinal, Table: table.Name, Values: values, Sensitive: sensitive})
+			rows = append(rows, SeedPlannedRow{NodeID: node.ID, NodePath: path, RowOrdinal: ordinal, Table: table.Name, Values: values, Sensitive: sensitive, UniqueBy: append([]string(nil), node.UniqueColumns...), Updates: append([]string(nil), node.UpdateColumns...)})
 			ordinal++
 		}
 	}
@@ -272,7 +284,7 @@ func resolveExecutionRelationship(child *Table, parentTable, through string) (*F
 	return matches[0], nil
 }
 
-func seedInsertSQL(driver string, row SeedPlannedRow) (string, []any) {
+func seedInsertSQL(driver string, row SeedPlannedRow, options SeedExecutionOptions) (string, []any, error) {
 	columns := make([]string, 0, len(row.Values))
 	for column := range row.Values {
 		columns = append(columns, column)
@@ -288,7 +300,97 @@ func seedInsertSQL(driver string, row SeedPlannedRow) (string, []any) {
 			placeholders[index] = "?"
 		}
 	}
-	return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", seedQuoteIdentifier(driver, row.Table), seedQuotedColumns(driver, columns), strings.Join(placeholders, ", ")), arguments
+	verb := "INSERT INTO"
+	policy := options.Policy
+	if policy == "" {
+		policy = InsertOnly
+	}
+	if policy == InsertOrIgnore && driver == "mysql" {
+		verb = "INSERT IGNORE INTO"
+	}
+	query := fmt.Sprintf("%s %s (%s) VALUES (%s)", verb, seedQuoteIdentifier(driver, row.Table), seedQuotedColumns(driver, columns), strings.Join(placeholders, ", "))
+	uniqueBy := row.UniqueBy
+	if len(uniqueBy) == 0 {
+		uniqueBy = options.UniqueBy
+	}
+	updateColumns := row.Updates
+	if len(updateColumns) == 0 {
+		updateColumns = options.UpdateColumns
+	}
+	identity := seedQuotedColumns(driver, uniqueBy)
+	switch policy {
+	case InsertOnly:
+	case InsertOrIgnore:
+		if driver != "mysql" {
+			query += " ON CONFLICT (" + identity + ") DO NOTHING"
+		}
+	case Upsert:
+		updates := make([]string, len(updateColumns))
+		for index, column := range updateColumns {
+			quoted := seedQuoteIdentifier(driver, column)
+			if driver == "mysql" {
+				updates[index] = quoted + " = VALUES(" + quoted + ")"
+			} else {
+				updates[index] = quoted + " = excluded." + quoted
+			}
+		}
+		if driver == "mysql" {
+			query += " ON DUPLICATE KEY UPDATE " + strings.Join(updates, ", ")
+		} else {
+			query += " ON CONFLICT (" + identity + ") DO UPDATE SET " + strings.Join(updates, ", ")
+		}
+	case ReplaceScenario:
+		return "", nil, errors.New("replace-scenario execution requires generated provenance support")
+	default:
+		return "", nil, fmt.Errorf("unknown seed repeat policy %q", policy)
+	}
+	return query, arguments, nil
+}
+
+func validateSeedRepeatPolicy(rows []SeedPlannedRow, options SeedExecutionOptions) error {
+	policy := options.Policy
+	if policy == "" || policy == InsertOnly {
+		return nil
+	}
+	if policy == ReplaceScenario {
+		if !options.ProvenanceEnabled {
+			return errors.New("replace-scenario policy requires explicitly enabled seed provenance")
+		}
+		return errors.New("replace-scenario policy is not available until provenance tables are generated")
+	}
+	if policy != InsertOrIgnore && policy != Upsert {
+		return fmt.Errorf("unknown seed repeat policy %q", policy)
+	}
+	for _, row := range rows {
+		uniqueBy := row.UniqueBy
+		if len(uniqueBy) == 0 {
+			uniqueBy = options.UniqueBy
+		}
+		updates := row.Updates
+		if len(updates) == 0 {
+			updates = options.UpdateColumns
+		}
+		if len(uniqueBy) == 0 {
+			return fmt.Errorf("%s policy requires an explicit UniqueBy identity for table %s", policy, row.Table)
+		}
+		if policy == Upsert && len(updates) == 0 {
+			return fmt.Errorf("upsert policy requires an explicit update column allowlist for table %s", row.Table)
+		}
+		for _, column := range uniqueBy {
+			if _, exists := row.Values[column]; !exists {
+				return fmt.Errorf("repeat identity column %s is missing from table %s row", column, row.Table)
+			}
+		}
+		for _, column := range updates {
+			if _, exists := row.Values[column]; !exists {
+				return fmt.Errorf("upsert column %s is missing from table %s row", column, row.Table)
+			}
+			if seedContains(uniqueBy, column) {
+				return fmt.Errorf("upsert column %s cannot also be part of UniqueBy", column)
+			}
+		}
+	}
+	return nil
 }
 
 func seedQuoteIdentifier(driver, value string) string {

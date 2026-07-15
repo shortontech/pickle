@@ -23,12 +23,14 @@ type SeedCount struct{ Min, Max int }
 
 // SeedNode is one declarative row-production node.
 type SeedNode struct {
-	ID           int
-	Seeder       SeederRef
-	Count        SeedCount
-	ParentNodeID int
-	Through      string
-	Values       map[string]any
+	ID            int
+	Seeder        SeederRef
+	Count         SeedCount
+	ParentNodeID  int
+	Through       string
+	Values        map[string]any
+	UniqueColumns []string
+	UpdateColumns []string
 }
 
 // SeedGraph records scenario intent for validation and generated execution.
@@ -119,6 +121,34 @@ func (b *SeedNodeBuilder) With(column string, value any) *SeedNodeBuilder {
 	return b
 }
 
+// UniqueBy declares the stable conflict identity for this row node.
+func (b *SeedNodeBuilder) UniqueBy(columns ...string) *SeedNodeBuilder {
+	if len(columns) == 0 {
+		panic("pickle: UniqueBy requires at least one column")
+	}
+	for _, column := range columns {
+		if column == "" || seedGraphContains(b.node().UniqueColumns, column) {
+			panic("pickle: UniqueBy columns must be non-empty and unique")
+		}
+		b.node().UniqueColumns = append(b.node().UniqueColumns, column)
+	}
+	return b
+}
+
+// Update permits only the named columns to change under an Upsert policy.
+func (b *SeedNodeBuilder) Update(columns ...string) *SeedNodeBuilder {
+	if len(columns) == 0 {
+		panic("pickle: Update requires at least one column")
+	}
+	for _, column := range columns {
+		if column == "" || seedGraphContains(b.node().UpdateColumns, column) {
+			panic("pickle: Update columns must be non-empty and unique")
+		}
+		b.node().UpdateColumns = append(b.node().UpdateColumns, column)
+	}
+	return b
+}
+
 func (b *SeedNodeBuilder) One() SeedRecord {
 	if b.node().Count.Min != 1 || b.node().Count.Max != 1 {
 		panic("pickle: One requires an exact count of one")
@@ -136,4 +166,13 @@ func NewRowSeederRef(name, table string) SeederRef {
 		panic("pickle: row seeder name and table must not be empty")
 	}
 	return SeederRef{Name: name, Table: table}
+}
+
+func seedGraphContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

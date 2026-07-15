@@ -121,3 +121,20 @@ func (CRMSeeder) Seed(graph *SeedGraph) {
 `For` resolves the foreign key from migration metadata. Ambiguous
 relationships require an explicit local column selector. Composite foreign
 keys always propagate as complete ordered tuples.
+
+## Execution guarantees
+
+Each root scenario receives an explicit 64-bit seed. Pickle derives separate
+random streams from the scenario name, graph path, row ordinal, column, and
+retry number. Adding an unrelated field therefore does not reshuffle existing
+fixture values.
+
+Before insertion, Pickle resolves counts, relationships, overrides, field
+providers, and password composites. Password composites are bcrypt-hashed and
+marked sensitive before any SQL is issued. The root scenario then runs in one
+transaction; an insertion failure rolls the whole scenario back.
+
+Mutation is enabled by default only in `local`, `development`, and `test`.
+Other environments require both `--force` and an exact
+`--confirm-environment` value. Dry runs are non-mutating and may be planned in
+any environment.

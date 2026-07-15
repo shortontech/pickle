@@ -1,0 +1,340 @@
+package schema
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+)
+
+// SeedPolicy controls how a root scenario behaves when it is repeated.
+type SeedPolicy string
+
+const (
+	InsertOnly      SeedPolicy = "insert_only"
+	InsertOrIgnore  SeedPolicy = "insert_or_ignore"
+	Upsert          SeedPolicy = "upsert"
+	ReplaceScenario SeedPolicy = "replace_scenario"
+)
+
+// SeedExecutionOptions controls one root scenario execution.
+type SeedExecutionOptions struct {
+	Scenario           string
+	RootSeed           int64
+	Environment        string
+	Force              bool
+	ConfirmEnvironment string
+	DryRun             bool
+	Driver             string
+	PasswordHasher     func(string) (string, error)
+}
+
+// SeedPlannedRow is a resolved row in insertion order. Password values are
+// always redacted; Values contains the application-supplied insertion values.
+type SeedPlannedRow struct {
+	NodeID     int
+	NodePath   string
+	RowOrdinal int
+	Table      string
+	Values     map[string]any
+	Sensitive  map[string]bool
+}
+
+// SeedExecutionResult describes what was planned or inserted.
+type SeedExecutionResult struct {
+	Scenario string
+	RootSeed int64
+	Rows     []SeedPlannedRow
+	DryRun   bool
+}
+
+// SeedExecutor expands and inserts one validated scenario graph.
+type SeedExecutor struct {
+	DB     *sql.DB
+	Tables []*Table
+}
+
+// Run validates safety before planning. Mutating runs use one transaction and
+// roll back the entire root scenario after any insertion failure.
+func (e SeedExecutor) Run(ctx context.Context, graph *SeedGraph, options SeedExecutionOptions) (*SeedExecutionResult, error) {
+	if graph == nil {
+		return nil, errors.New("seed graph is nil")
+	}
+	if strings.TrimSpace(options.Scenario) == "" {
+		return nil, errors.New("seed scenario name is required")
+	}
+	if err := ValidateSeedEnvironment(options.Environment, options.Force, options.ConfirmEnvironment, options.DryRun); err != nil {
+		return nil, err
+	}
+	rows, err := PlanSeedGraph(graph, e.Tables, options)
+	if err != nil {
+		return nil, fmt.Errorf("seed scenario %s: %w", options.Scenario, err)
+	}
+	result := &SeedExecutionResult{Scenario: options.Scenario, RootSeed: options.RootSeed, Rows: rows, DryRun: options.DryRun}
+	if options.DryRun {
+		return result, nil
+	}
+	if e.DB == nil {
+		return nil, errors.New("seed database is not configured")
+	}
+	tx, err := e.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("seed scenario %s: begin transaction: %w", options.Scenario, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	for _, row := range rows {
+		query, arguments := seedInsertSQL(options.Driver, row)
+		if _, err := tx.ExecContext(ctx, query, arguments...); err != nil {
+			return nil, fmt.Errorf("seed scenario %s path %s row %d table %s: insert failed: %w", options.Scenario, row.NodePath, row.RowOrdinal, row.Table, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("seed scenario %s: commit: %w", options.Scenario, err)
+	}
+	committed = true
+	return result, nil
+}
+
+// ValidateSeedEnvironment permits mutation in development-like environments.
+// Every other environment requires both explicit confirmation flags.
+func ValidateSeedEnvironment(environment string, force bool, confirmation string, dryRun bool) error {
+	if dryRun {
+		return nil
+	}
+	environment = strings.ToLower(strings.TrimSpace(environment))
+	switch environment {
+	case "local", "development", "test":
+		return nil
+	}
+	if environment == "" {
+		environment = "unknown"
+	}
+	if !force || confirmation != environment {
+		return fmt.Errorf("seeding environment %q requires --force --confirm-environment %s", environment, environment)
+	}
+	return nil
+}
+
+// PlanSeedGraph resolves counts, parent edges, field providers, composites, and
+// hashing without touching the database.
+func PlanSeedGraph(graph *SeedGraph, tables []*Table, options SeedExecutionOptions) ([]SeedPlannedRow, error) {
+	tableByName := make(map[string]*Table, len(tables))
+	for _, table := range tables {
+		tableByName[table.Name] = table
+	}
+	nodeByID := make(map[int]SeedNode, len(graph.Nodes))
+	for _, node := range graph.Nodes {
+		if node.ID < 1 || nodeByID[node.ID].ID != 0 {
+			return nil, fmt.Errorf("invalid or duplicate seed node id %d", node.ID)
+		}
+		if tableByName[node.Seeder.Table] == nil {
+			return nil, fmt.Errorf("seeder %s targets unknown table %q", node.Seeder.Name, node.Seeder.Table)
+		}
+		if node.Count.Min < 0 || node.Count.Max < node.Count.Min {
+			return nil, fmt.Errorf("seeder %s has invalid count range", node.Seeder.Name)
+		}
+		nodeByID[node.ID] = node
+	}
+	if err := validateExecutionCycles(graph.Nodes, nodeByID); err != nil {
+		return nil, err
+	}
+
+	hasher := options.PasswordHasher
+	if hasher == nil {
+		hasher = func(string) (string, error) {
+			return "", errors.New("password hasher is not configured")
+		}
+	}
+	rowsByNode := map[int][]SeedPlannedRow{}
+	var planned []SeedPlannedRow
+	remaining := append([]SeedNode(nil), graph.Nodes...)
+	for len(remaining) > 0 {
+		progress := false
+		next := remaining[:0]
+		for _, node := range remaining {
+			if node.ParentNodeID != 0 {
+				if _, ready := rowsByNode[node.ParentNodeID]; !ready {
+					next = append(next, node)
+					continue
+				}
+			}
+			produced, err := planSeedNode(node, tableByName, rowsByNode, options, hasher)
+			if err != nil {
+				return nil, err
+			}
+			rowsByNode[node.ID] = produced
+			planned = append(planned, produced...)
+			progress = true
+		}
+		if !progress {
+			return nil, errors.New("seed graph contains unresolved parent nodes")
+		}
+		remaining = next
+	}
+	return planned, nil
+}
+
+func planSeedNode(node SeedNode, tables map[string]*Table, rowsByNode map[int][]SeedPlannedRow, options SeedExecutionOptions, hasher func(string) (string, error)) ([]SeedPlannedRow, error) {
+	table := tables[node.Seeder.Table]
+	parents := []SeedPlannedRow{{}}
+	var relationship *ForeignKey
+	if node.ParentNodeID != 0 {
+		parents = rowsByNode[node.ParentNodeID]
+		if len(parents) > 0 {
+			var err error
+			relationship, err = resolveExecutionRelationship(table, parents[0].Table, node.Through)
+			if err != nil {
+				return nil, fmt.Errorf("seeder %s: %w", node.Seeder.Name, err)
+			}
+		}
+	}
+	var rows []SeedPlannedRow
+	ordinal := 0
+	for parentIndex, parent := range parents {
+		count := seedNodeCount(node, options, parentIndex)
+		for index := 0; index < count; index++ {
+			path := fmt.Sprintf("%s/%d", node.Seeder.Name, ordinal)
+			overrides := cloneSeedValues(node.Values)
+			if relationship != nil {
+				for position, column := range relationship.Columns {
+					value, exists := parent.Values[relationship.ReferencedColumns[position]]
+					if !exists {
+						return nil, fmt.Errorf("seeder %s path %s: parent %s has no value for relationship column %s", node.Seeder.Name, path, parent.Table, relationship.ReferencedColumns[position])
+					}
+					overrides[column] = value
+				}
+			}
+			base := SeedValueContext{RootSeed: options.RootSeed, Scenario: options.Scenario, NodePath: path, RowOrdinal: ordinal}
+			values, err := GenerateSeedRow(table, overrides, base)
+			if err != nil {
+				return nil, fmt.Errorf("seeder %s path %s row %d: %w", node.Seeder.Name, path, ordinal, err)
+			}
+			sensitive := map[string]bool{}
+			for _, column := range table.Columns {
+				if column.Seeder == nil || column.Seeder.Kind != "password" {
+					continue
+				}
+				plain, ok := values[column.Name].(string)
+				if !ok {
+					return nil, fmt.Errorf("seeder %s path %s row %d column %s: password composite is not text", node.Seeder.Name, path, ordinal, column.Name)
+				}
+				hash, err := hasher(plain)
+				if err != nil {
+					return nil, fmt.Errorf("seeder %s path %s row %d column %s: password hashing failed", node.Seeder.Name, path, ordinal, column.Name)
+				}
+				values[column.Name] = hash
+				sensitive[column.Name] = true
+			}
+			rows = append(rows, SeedPlannedRow{NodeID: node.ID, NodePath: path, RowOrdinal: ordinal, Table: table.Name, Values: values, Sensitive: sensitive})
+			ordinal++
+		}
+	}
+	return rows, nil
+}
+
+func seedNodeCount(node SeedNode, options SeedExecutionOptions, parentOrdinal int) int {
+	if node.Count.Min == node.Count.Max {
+		return node.Count.Min
+	}
+	ctx := SeedValueContext{RootSeed: options.RootSeed, Scenario: options.Scenario, NodePath: node.Seeder.Name, RowOrdinal: parentOrdinal, Column: "__count"}
+	stream := newSeedStream(ctx)
+	return node.Count.Min + stream.index(node.Count.Max-node.Count.Min+1)
+}
+
+func resolveExecutionRelationship(child *Table, parentTable, through string) (*ForeignKey, error) {
+	var matches []*ForeignKey
+	for _, fk := range child.ForeignKeys {
+		if fk.ReferencedTable == parentTable && (through == "" || through == strings.Join(fk.Columns, ",") || seedContains(fk.Columns, through)) {
+			matches = append(matches, fk)
+		}
+	}
+	for _, column := range child.Columns {
+		if column.ForeignKeyTable == parentTable && (through == "" || through == column.Name) {
+			matches = append(matches, &ForeignKey{Columns: []string{column.Name}, ReferencedTable: parentTable, ReferencedColumns: []string{column.ForeignKeyColumn}})
+		}
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no relationship from %s to %s", child.Name, parentTable)
+	}
+	if len(matches) > 1 {
+		return nil, fmt.Errorf("ambiguous relationship from %s to %s; specify Through", child.Name, parentTable)
+	}
+	if len(matches[0].Columns) != len(matches[0].ReferencedColumns) {
+		return nil, errors.New("incomplete composite relationship")
+	}
+	return matches[0], nil
+}
+
+func seedInsertSQL(driver string, row SeedPlannedRow) (string, []any) {
+	columns := make([]string, 0, len(row.Values))
+	for column := range row.Values {
+		columns = append(columns, column)
+	}
+	sort.Strings(columns)
+	arguments := make([]any, len(columns))
+	placeholders := make([]string, len(columns))
+	for index, column := range columns {
+		arguments[index] = row.Values[column]
+		if driver == "pgsql" || driver == "postgres" {
+			placeholders[index] = fmt.Sprintf("$%d", index+1)
+		} else {
+			placeholders[index] = "?"
+		}
+	}
+	return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", seedQuoteIdentifier(driver, row.Table), seedQuotedColumns(driver, columns), strings.Join(placeholders, ", ")), arguments
+}
+
+func seedQuoteIdentifier(driver, value string) string {
+	if driver == "mysql" {
+		return "`" + strings.ReplaceAll(value, "`", "``") + "`"
+	}
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
+
+func seedQuotedColumns(driver string, columns []string) string {
+	quoted := make([]string, len(columns))
+	for index, column := range columns {
+		quoted[index] = seedQuoteIdentifier(driver, column)
+	}
+	return strings.Join(quoted, ", ")
+}
+
+func cloneSeedValues(values map[string]any) map[string]any {
+	clone := make(map[string]any, len(values))
+	for key, value := range values {
+		clone[key] = value
+	}
+	return clone
+}
+
+func seedContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func validateExecutionCycles(nodes []SeedNode, byID map[int]SeedNode) error {
+	for _, node := range nodes {
+		seen := map[int]bool{}
+		for id := node.ID; id != 0; id = byID[id].ParentNodeID {
+			if seen[id] {
+				return fmt.Errorf("seed graph contains a relationship cycle at node %d", id)
+			}
+			seen[id] = true
+			if byID[id].ID == 0 {
+				return fmt.Errorf("seed node %d references missing parent", id)
+			}
+		}
+	}
+	return nil
+}

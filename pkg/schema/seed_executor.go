@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 )
@@ -33,6 +34,7 @@ type SeedExecutionOptions struct {
 	UpdateColumns      []string
 	ProvenanceEnabled  bool
 	PasswordHasher     func(string) (string, error)
+	SeederResolver     func(string, SeedValueContext) (value any, found bool, err error)
 }
 
 // SeedPlannedRow is a resolved row in insertion order. Password values are
@@ -214,6 +216,22 @@ func planSeedNode(node SeedNode, tables map[string]*Table, rowsByNode map[int][]
 		for index := 0; index < count; index++ {
 			path := fmt.Sprintf("%s/%d", node.Seeder.Name, ordinal)
 			overrides := cloneSeedValues(node.Values)
+			base := SeedValueContext{RootSeed: options.RootSeed, Scenario: options.Scenario, NodePath: path, RowOrdinal: ordinal}
+			if options.SeederResolver != nil {
+				seeded, found, err := options.SeederResolver(node.Seeder.Name, base)
+				if err != nil {
+					return nil, fmt.Errorf("seeder %s path %s row %d: custom row seeder failed: %w", node.Seeder.Name, path, ordinal, err)
+				}
+				if found {
+					values, err := seedStructValues(seeded)
+					if err != nil {
+						return nil, fmt.Errorf("seeder %s path %s row %d: %w", node.Seeder.Name, path, ordinal, err)
+					}
+					for column, value := range values {
+						overrides[column] = value
+					}
+				}
+			}
 			if relationship != nil {
 				for position, column := range relationship.Columns {
 					value, exists := parent.Values[relationship.ReferencedColumns[position]]
@@ -223,8 +241,7 @@ func planSeedNode(node SeedNode, tables map[string]*Table, rowsByNode map[int][]
 					overrides[column] = value
 				}
 			}
-			base := SeedValueContext{RootSeed: options.RootSeed, Scenario: options.Scenario, NodePath: path, RowOrdinal: ordinal}
-			values, err := GenerateSeedRow(table, overrides, base)
+			values, err := GenerateSeedRowWith(table, overrides, base, options.SeederResolver)
 			if err != nil {
 				return nil, fmt.Errorf("seeder %s path %s row %d: %w", node.Seeder.Name, path, ordinal, err)
 			}
@@ -249,6 +266,60 @@ func planSeedNode(node SeedNode, tables map[string]*Table, rowsByNode map[int][]
 		}
 	}
 	return rows, nil
+}
+
+func seedStructValues(value any) (map[string]any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if values, ok := value.(map[string]any); ok {
+		return cloneSeedValues(values), nil
+	}
+	reflected := reflect.ValueOf(value)
+	if reflected.Kind() == reflect.Pointer {
+		if reflected.IsNil() {
+			return nil, nil
+		}
+		reflected = reflected.Elem()
+	}
+	if reflected.Kind() != reflect.Struct {
+		return nil, fmt.Errorf("custom row seeder must return a struct or map[string]any")
+	}
+	typeInfo := reflected.Type()
+	values := map[string]any{}
+	for index := 0; index < reflected.NumField(); index++ {
+		field := typeInfo.Field(index)
+		if !field.IsExported() {
+			continue
+		}
+		name := strings.Split(field.Tag.Get("db"), ",")[0]
+		if name == "" {
+			name = strings.Split(field.Tag.Get("json"), ",")[0]
+		}
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			name = seedSnakeCase(field.Name)
+		}
+		values[name] = reflected.Field(index).Interface()
+	}
+	return values, nil
+}
+
+func seedSnakeCase(value string) string {
+	var out strings.Builder
+	for index, char := range value {
+		if char >= 'A' && char <= 'Z' {
+			if index > 0 {
+				out.WriteByte('_')
+			}
+			out.WriteByte(byte(char - 'A' + 'a'))
+		} else {
+			out.WriteRune(char)
+		}
+	}
+	return out.String()
 }
 
 func seedNodeCount(node SeedNode, options SeedExecutionOptions, parentOrdinal int) int {

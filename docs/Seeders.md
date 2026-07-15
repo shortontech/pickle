@@ -92,8 +92,24 @@ t.String("role").Seed(RoleSeeder)
 ```
 
 Pickle verifies that the declared return type matches the destination column.
-Scenario and custom provider discovery are covered by the scenario seeder
-generation layer.
+Discovered `Seed(ctx *SeedValueContext) T` methods are registered into the
+compiled application. Pickle calls them with the same deterministic context as
+built-in providers and casts their return value to the migration column type.
+
+The same dispatch supports row seeders. A row seeder may return a struct with
+`db` or `json` tags, or a `map[string]any`; those values become row overrides
+before relationship values and migration field providers are resolved:
+
+```go
+type ContactSeed struct {
+    FirstName string `db:"first_name"`
+    LastName  string `db:"last_name"`
+}
+
+func (ContactSeeder) Seed(ctx *SeedValueContext) ContactSeed {
+    return ContactSeed{FirstName: "Ada", LastName: "Lovelace"}
+}
+```
 
 ## Resolution precedence
 

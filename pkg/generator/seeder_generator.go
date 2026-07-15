@@ -14,12 +14,16 @@ import (
 // types already generated into the project's migrations package.
 func GenerateSeederGlue(packageName, migrationsImport string, definitions []SeederDefinition, tables []*schema.Table) ([]byte, error) {
 	var scenarios []SeederDefinition
+	var valueSeeders []SeederDefinition
 	for _, definition := range definitions {
 		if definition.Kind == "scenario" {
 			scenarios = append(scenarios, definition)
+		} else if definition.Kind == "row" {
+			valueSeeders = append(valueSeeders, definition)
 		}
 	}
 	sort.Slice(scenarios, func(i, j int) bool { return scenarios[i].Name < scenarios[j].Name })
+	sort.Slice(valueSeeders, func(i, j int) bool { return valueSeeders[i].Name < valueSeeders[j].Name })
 	tables = append([]*schema.Table(nil), tables...)
 	sort.Slice(tables, func(i, j int) bool { return tables[i].Name < tables[j].Name })
 
@@ -37,6 +41,11 @@ func GenerateSeederGlue(packageName, migrationsImport string, definitions []Seed
 	out.WriteString("func Names() []string {\n\tnames := make([]string, 0, len(scenarioFactories))\n\tfor name := range scenarioFactories { names = append(names, name) }\n\tsort.Strings(names)\n\treturn names\n}\n\n")
 	out.WriteString("func Resolve(name string) (*Definition, error) {\n\tfactory := scenarioFactories[name]\n\tif factory == nil { return nil, fmt.Errorf(\"unknown seed scenario %q\", name) }\n\tscenario := factory()\n\tgraph := &seed.SeedGraph{}\n\tscenario.Seed(graph)\n\tpolicy := seed.InsertOnly\n\tif declared, ok := scenario.(policyScenario); ok { policy = declared.Policy() }\n\treturn &Definition{Name: name, Graph: graph, Policy: policy}, nil\n}\n\n")
 	out.WriteString("func Graph(name string) (*seed.SeedGraph, error) {\n\tdefinition, err := Resolve(name)\n\tif err != nil { return nil, err }\n\treturn definition.Graph, nil\n}\n\n")
+	out.WriteString("func ResolveValue(name string, context seed.SeedValueContext) (any, bool, error) {\n\tswitch name {\n")
+	for _, definition := range valueSeeders {
+		fmt.Fprintf(&out, "\tcase %q:\n\t\treturn (&%s{}).Seed(&context), true, nil\n", definition.Name, definition.Name)
+	}
+	out.WriteString("\tdefault:\n\t\treturn nil, false, nil\n\t}\n}\n\n")
 	out.WriteString("func Tables() []*seed.Table {\n\treturn []*seed.Table{\n")
 	for _, table := range tables {
 		fmt.Fprintf(&out, "\t\t{Name: %q, Columns: []*seed.Column{\n", table.Name)

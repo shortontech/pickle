@@ -332,6 +332,7 @@ func (c dbSeedCommand) Run(args []string) error {
 		DryRun: *dryRun,
 		Driver: config.Database.Connection().Driver,
 		Policy: definition.Policy,
+		SeederResolver: seeders.ResolveValue,
 		PasswordHasher: func(value string) (string, error) {
 			hash, err := bcrypt.GenerateFromPassword([]byte(value), bcrypt.DefaultCost)
 			return string(hash), err

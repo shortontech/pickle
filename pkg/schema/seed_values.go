@@ -265,6 +265,11 @@ func SeedValue(spec *SeedSpec, ctx SeedValueContext) (any, error) {
 // passwords last. The returned password is plaintext; generated SQL execution
 // hashes it immediately before insertion.
 func GenerateSeedRow(table *Table, overrides map[string]any, base SeedValueContext) (map[string]any, error) {
+	return GenerateSeedRowWith(table, overrides, base, nil)
+}
+
+// GenerateSeedRowWith additionally resolves custom migration field seeders.
+func GenerateSeedRowWith(table *Table, overrides map[string]any, base SeedValueContext, resolver func(string, SeedValueContext) (any, bool, error)) (map[string]any, error) {
 	row := make(map[string]any, len(table.Columns))
 	for key, value := range overrides {
 		row[key] = value
@@ -275,7 +280,20 @@ func GenerateSeedRow(table *Table, overrides map[string]any, base SeedValueConte
 		}
 		ctx := base
 		ctx.Column = column.Name
-		value, err := SeedValue(column.Seeder, ctx)
+		var value any
+		var err error
+		if column.Seeder.Kind == "custom" || column.Seeder.Kind == "json" {
+			if resolver == nil {
+				return nil, fmt.Errorf("seed %s.%s: custom seeder %q is not registered", table.Name, column.Name, column.Seeder.Reference)
+			}
+			var found bool
+			value, found, err = resolver(column.Seeder.Reference, ctx)
+			if err == nil && !found {
+				err = fmt.Errorf("custom seeder %q is not registered", column.Seeder.Reference)
+			}
+		} else {
+			value, err = SeedValue(column.Seeder, ctx)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("seed %s.%s: %w", table.Name, column.Name, err)
 		}

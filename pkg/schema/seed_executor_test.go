@@ -157,3 +157,40 @@ func TestReplaceScenarioRequiresProvenance(t *testing.T) {
 		t.Fatal("expected provenance error")
 	}
 }
+
+func TestPlanSeedGraphUsesCustomRowAndFieldSeeders(t *testing.T) {
+	type userSeed struct {
+		ID        int64  `db:"id"`
+		FirstName string `json:"first_name"`
+	}
+	table := &Table{Name: "users", Columns: []*Column{
+		{Name: "id", Type: BigInteger},
+		{Name: "first_name", Type: String},
+		{Name: "role", Type: String, Seeder: &SeedSpec{Kind: "custom", Reference: "RoleSeeder"}},
+	}}
+	graph := &SeedGraph{Nodes: []SeedNode{{ID: 1, Seeder: NewRowSeederRef("UserSeeder", "users"), Count: FixedCount(1), Values: map[string]any{}}}}
+	resolver := func(name string, _ SeedValueContext) (any, bool, error) {
+		switch name {
+		case "UserSeeder":
+			return userSeed{ID: 7, FirstName: "Ada"}, true, nil
+		case "RoleSeeder":
+			return "admin", true, nil
+		default:
+			return nil, false, nil
+		}
+	}
+	rows, err := PlanSeedGraph(graph, []*Table{table}, SeedExecutionOptions{Scenario: "CRM", SeederResolver: resolver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Values["id"] != int64(7) || rows[0].Values["first_name"] != "Ada" || rows[0].Values["role"] != "admin" {
+		t.Fatalf("custom seeded row = %#v", rows)
+	}
+}
+
+func TestCustomFieldSeederMustBeRegistered(t *testing.T) {
+	table := &Table{Name: "users", Columns: []*Column{{Name: "role", Type: String, Seeder: &SeedSpec{Kind: "custom", Reference: "RoleSeeder"}}}}
+	if _, err := GenerateSeedRow(table, nil, SeedValueContext{}); err == nil {
+		t.Fatal("expected missing custom seeder error")
+	}
+}

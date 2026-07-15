@@ -1,0 +1,279 @@
+package schema
+
+import (
+	"crypto/sha256"
+	"encoding/binary"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// SeedValueContext identifies one generated field. Each field receives its own
+// stable random stream, so adding an unrelated field does not reshuffle rows.
+type SeedValueContext struct {
+	RootSeed   int64
+	Scenario   string
+	NodePath   string
+	RowOrdinal int
+	Column     string
+	Retry      int
+}
+
+// SeedValue generates one application-supplied value from migration metadata.
+// Password seeders are resolved by GenerateSeedRow because they depend on
+// other fields in the same row.
+func SeedValue(spec *SeedSpec, ctx SeedValueContext) (any, error) {
+	if spec == nil || spec.Kind == "none" {
+		return nil, fmt.Errorf("no field seeder declared")
+	}
+	r := newSeedStream(ctx)
+	if spec.NullWeight > 0 && r.fraction() < spec.NullWeight {
+		return nil, nil
+	}
+	arg := func(index int) (string, error) {
+		if index >= len(spec.Arguments) {
+			return "", fmt.Errorf("seeder %s is missing argument %d", spec.Kind, index+1)
+		}
+		return spec.Arguments[index], nil
+	}
+	choose := func(values []string) (any, error) {
+		if len(values) == 0 {
+			return nil, fmt.Errorf("seeder %s has no choices", spec.Kind)
+		}
+		return values[r.index(len(values))], nil
+	}
+
+	switch spec.Kind {
+	case "value":
+		return arg(0)
+	case "values", "random_string_in":
+		return choose(spec.Arguments)
+	case "random_string":
+		value, err := arg(0)
+		if err != nil {
+			return nil, err
+		}
+		length, err := strconv.Atoi(value)
+		if err != nil || length < 1 {
+			return nil, fmt.Errorf("invalid random string length %q", value)
+		}
+		const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+		var out strings.Builder
+		for i := 0; i < length; i++ {
+			out.WriteByte(alphabet[r.index(len(alphabet))])
+		}
+		return out.String(), nil
+	case "integer", "big_integer":
+		minText, err := arg(0)
+		if err != nil {
+			return nil, err
+		}
+		maxText, err := arg(1)
+		if err != nil {
+			return nil, err
+		}
+		min, err := strconv.ParseInt(minText, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		max, err := strconv.ParseInt(maxText, 10, 64)
+		if err != nil || max < min {
+			return nil, fmt.Errorf("invalid integer seed range")
+		}
+		value := min + int64(r.uint64()%uint64(max-min+1))
+		if spec.Kind == "integer" {
+			return int(value), nil
+		}
+		return value, nil
+	case "boolean":
+		return r.uint64()%2 == 0, nil
+	case "boolean_weighted":
+		weightText, err := arg(0)
+		if err != nil {
+			return nil, err
+		}
+		weight, err := strconv.ParseFloat(weightText, 64)
+		if err != nil {
+			return nil, err
+		}
+		return r.fraction() < weight, nil
+	case "uuid":
+		bytes := r.bytes(16)
+		bytes[6] = (bytes[6] & 0x0f) | 0x40
+		bytes[8] = (bytes[8] & 0x3f) | 0x80
+		return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", bytes[:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:]), nil
+	case "bytes":
+		lengthText, err := arg(0)
+		if err != nil {
+			return nil, err
+		}
+		length, err := strconv.Atoi(lengthText)
+		if err != nil || length < 1 {
+			return nil, fmt.Errorf("invalid byte seed length")
+		}
+		return r.bytes(length), nil
+	case "first_name":
+		return choose([]string{"Ada", "Grace", "Linus", "Margaret", "Ken", "Barbara", "Edsger", "Radia"})
+	case "last_name":
+		return choose([]string{"Lovelace", "Hopper", "Torvalds", "Hamilton", "Thompson", "Liskov", "Dijkstra", "Perlman"})
+	case "full_name":
+		first, _ := choose([]string{"Ada", "Grace", "Linus", "Margaret", "Ken", "Barbara"})
+		last, _ := choose([]string{"Lovelace", "Hopper", "Torvalds", "Hamilton", "Thompson", "Liskov"})
+		return first.(string) + " " + last.(string), nil
+	case "email", "safe_email":
+		return fmt.Sprintf("user%d@example.test", r.uint64()%1_000_000), nil
+	case "username":
+		return fmt.Sprintf("user%d", r.uint64()%1_000_000), nil
+	case "phone_number":
+		return fmt.Sprintf("+1-555-%03d-%04d", r.uint64()%1000, r.uint64()%10000), nil
+	case "company_name":
+		return choose([]string{"Acme Labs", "Northstar Works", "Copper Systems", "Juniper Studio"})
+	case "company_suffix":
+		return choose([]string{"LLC", "Inc.", "Ltd.", "Co."})
+	case "department":
+		return choose([]string{"Engineering", "Sales", "Support", "Operations", "Finance"})
+	case "job_title":
+		return choose([]string{"Engineer", "Designer", "Manager", "Analyst", "Specialist"})
+	case "industry":
+		return choose([]string{"Software", "Healthcare", "Finance", "Manufacturing", "Education"})
+	case "time_zone":
+		return choose([]string{"America/Los_Angeles", "America/New_York", "Europe/London", "Asia/Tokyo"})
+	case "country":
+		return choose([]string{"United States", "Canada"})
+	case "country_code":
+		return choose([]string{"US", "CA"})
+	case "locale":
+		return choose([]string{"en-US", "en-CA"})
+	case "domain_name":
+		return fmt.Sprintf("example%d.test", r.uint64()%10000), nil
+	case "url":
+		return fmt.Sprintf("https://example%d.test", r.uint64()%10000), nil
+	case "ipv4":
+		return fmt.Sprintf("192.0.2.%d", 1+r.uint64()%254), nil
+	case "ipv6":
+		return fmt.Sprintf("2001:db8::%x", 1+r.uint64()%65535), nil
+	case "postal_code":
+		return fmt.Sprintf("%05d", r.uint64()%100000), nil
+	case "city":
+		return choose([]string{"Portland", "Austin", "Toronto", "Seattle", "Boston"})
+	case "state":
+		return choose([]string{"California", "Oregon", "Texas", "Ontario", "Washington"})
+	case "street_address":
+		return fmt.Sprintf("%d Pickle Lane", 1+r.uint64()%9999), nil
+	case "currency_code":
+		return choose([]string{"USD", "CAD", "EUR", "GBP"})
+	case "date_between", "time_between":
+		startText, err := arg(0)
+		if err != nil {
+			return nil, err
+		}
+		endText, err := arg(1)
+		if err != nil {
+			return nil, err
+		}
+		start, err := parseSeedTime(startText)
+		if err != nil {
+			return nil, err
+		}
+		end, err := parseSeedTime(endText)
+		if err != nil || end.Before(start) {
+			return nil, fmt.Errorf("invalid time seed range")
+		}
+		span := end.Sub(start)
+		if span == 0 {
+			return start, nil
+		}
+		return start.Add(time.Duration(r.uint64() % uint64(span))), nil
+	case "password":
+		return nil, fmt.Errorf("password seeders require row context")
+	case "custom", "json":
+		return nil, fmt.Errorf("custom seeder %q must be invoked by generated application code", spec.Reference)
+	default:
+		return nil, fmt.Errorf("unsupported field seeder %q", spec.Kind)
+	}
+}
+
+// GenerateSeedRow resolves independent fields first and ordered composite
+// passwords last. The returned password is plaintext; generated SQL execution
+// hashes it immediately before insertion.
+func GenerateSeedRow(table *Table, overrides map[string]any, base SeedValueContext) (map[string]any, error) {
+	row := make(map[string]any, len(table.Columns))
+	for key, value := range overrides {
+		row[key] = value
+	}
+	for _, column := range table.Columns {
+		if _, exists := row[column.Name]; exists || column.Seeder == nil || column.Seeder.Kind == "password" {
+			continue
+		}
+		ctx := base
+		ctx.Column = column.Name
+		value, err := SeedValue(column.Seeder, ctx)
+		if err != nil {
+			return nil, fmt.Errorf("seed %s.%s: %w", table.Name, column.Name, err)
+		}
+		row[column.Name] = value
+	}
+	for _, column := range table.Columns {
+		if _, exists := row[column.Name]; exists || column.Seeder == nil || column.Seeder.Kind != "password" {
+			continue
+		}
+		parts := make([]string, len(column.Seeder.Fields))
+		for index, field := range column.Seeder.Fields {
+			value, exists := row[field]
+			if !exists {
+				return nil, fmt.Errorf("seed %s.%s: composite field %q has no value", table.Name, column.Name, field)
+			}
+			parts[index] = seedPasswordPart(value)
+		}
+		row[column.Name] = strings.ToLower(strings.Join(parts, "-"))
+	}
+	return row, nil
+}
+
+func seedPasswordPart(value any) string {
+	part := strings.TrimSpace(fmt.Sprint(value))
+	part = strings.ToLower(strings.Join(strings.Fields(part), "-"))
+	return part
+}
+
+func parseSeedTime(value string) (time.Time, error) {
+	for _, layout := range []string{time.RFC3339, time.DateOnly, time.TimeOnly} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("invalid seed time %q", value)
+}
+
+type seedStream struct {
+	key     [32]byte
+	counter uint64
+}
+
+func newSeedStream(ctx SeedValueContext) *seedStream {
+	identity := fmt.Sprintf("pickle-seed-v1\x00%d\x00%s\x00%s\x00%d\x00%s\x00%d", ctx.RootSeed, ctx.Scenario, ctx.NodePath, ctx.RowOrdinal, ctx.Column, ctx.Retry)
+	return &seedStream{key: sha256.Sum256([]byte(identity))}
+}
+
+func (r *seedStream) uint64() uint64 {
+	var counter [8]byte
+	binary.BigEndian.PutUint64(counter[:], r.counter)
+	r.counter++
+	block := sha256.Sum256(append(r.key[:], counter[:]...))
+	return binary.BigEndian.Uint64(block[:8])
+}
+func (r *seedStream) index(length int) int { return int(r.uint64() % uint64(length)) }
+func (r *seedStream) fraction() float64    { return float64(r.uint64()>>11) / (1 << 53) }
+func (r *seedStream) bytes(length int) []byte {
+	out := make([]byte, length)
+	for offset := 0; offset < length; {
+		value := r.uint64()
+		for i := 0; i < 8 && offset < length; i++ {
+			out[offset] = byte(value)
+			value >>= 8
+			offset++
+		}
+	}
+	return out
+}

@@ -18,7 +18,7 @@ func TestPlanSeedGraphExpandsRelationshipsAndHashesPasswords(t *testing.T) {
 		{Name: "password_hash", Type: String, Seeder: &SeedSpec{Kind: "password", Fields: []string{"first_name", "last_name", "id"}}},
 	}}
 	contacts := &Table{Name: "contacts", Columns: []*Column{
-		{Name: "id", Type: BigInteger},
+		{Name: "id", Type: BigInteger, HasDefault: true},
 		{Name: "user_id", Type: BigInteger, ForeignKeyTable: "users", ForeignKeyColumn: "id"},
 		{Name: "email", Type: String, Seeder: &SeedSpec{Kind: "safe_email"}},
 	}}
@@ -50,8 +50,8 @@ func TestPlanSeedGraphExpandsRelationshipsAndHashesPasswords(t *testing.T) {
 }
 
 func TestPlanSeedGraphFlowsCompositeForeignKey(t *testing.T) {
-	parents := &Table{Name: "organizations", Columns: []*Column{{Name: "tenant_id"}, {Name: "id"}}}
-	children := &Table{Name: "contacts", Columns: []*Column{{Name: "tenant_id"}, {Name: "organization_id"}}, ForeignKeys: []*ForeignKey{{
+	parents := &Table{Name: "organizations", Columns: []*Column{{Name: "tenant_id", Type: BigInteger}, {Name: "id", Type: BigInteger}}}
+	children := &Table{Name: "contacts", Columns: []*Column{{Name: "tenant_id", Type: BigInteger}, {Name: "organization_id", Type: BigInteger}}, ForeignKeys: []*ForeignKey{{
 		Columns: []string{"tenant_id", "organization_id"}, ReferencedTable: "organizations", ReferencedColumns: []string{"tenant_id", "id"},
 	}}}
 	graph := &SeedGraph{Nodes: []SeedNode{

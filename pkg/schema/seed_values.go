@@ -319,6 +319,29 @@ func GenerateSeedRowWith(table *Table, overrides map[string]any, base SeedValueC
 		}
 		row[column.Name] = strings.ToLower(strings.Join(parts, "-"))
 	}
+	columns := make(map[string]*Column, len(table.Columns))
+	for _, column := range table.Columns {
+		columns[column.Name] = column
+	}
+	for name := range row {
+		if columns[name] == nil {
+			return nil, fmt.Errorf("seed %s: value supplied for unknown column %q", table.Name, name)
+		}
+	}
+	for _, column := range table.Columns {
+		value, exists := row[column.Name]
+		if !exists {
+			if !column.IsNullable && !column.HasDefault {
+				return nil, fmt.Errorf("seed %s.%s: required column has no value source", table.Name, column.Name)
+			}
+			continue
+		}
+		cast, err := castSeedValue(column.Type, value)
+		if err != nil {
+			return nil, fmt.Errorf("seed %s.%s: %w", table.Name, column.Name, err)
+		}
+		row[column.Name] = cast
+	}
 	return row, nil
 }
 

@@ -139,4 +139,21 @@ func TestGenerateSeedRowRejectsInvalidCustomJSON(t *testing.T) {
 	}
 }
 
+func TestGenerateSeedRowValidatesAndCastsOverrides(t *testing.T) {
+	table := &Table{Name: "examples", Columns: []*Column{{Name: "count", Type: BigInteger}}}
+	row, err := GenerateSeedRow(table, map[string]any{"count": "42"}, SeedValueContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row["count"] != int64(42) {
+		t.Fatalf("override = %#v", row["count"])
+	}
+	if _, err := GenerateSeedRow(table, nil, SeedValueContext{}); err == nil {
+		t.Fatal("expected missing required value error")
+	}
+	if _, err := GenerateSeedRow(table, map[string]any{"count": 1, "typo": true}, SeedValueContext{}); err == nil {
+		t.Fatal("expected unknown override error")
+	}
+}
+
 func valueKey(value any) string { return fmt.Sprintf("%#v", value) }

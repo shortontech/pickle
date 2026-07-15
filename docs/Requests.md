@@ -28,10 +28,36 @@ Pickle uses `github.com/go-playground/validator/v10` for struct validation. Comm
 | `max=N` | Maximum length or value |
 | `oneof=a b c` | Must be one of the listed values |
 | `uuid` | Must be valid UUID |
+| `resource_id` | Must be a canonical Pickle Resource ID |
 | `url` | Must be valid URL |
 | `omitempty` | Skip validation if field is zero value |
 
 Combine with commas: `validate:"required,email"`, `validate:"required,min=1,max=100"`.
+
+## Resource ID fields
+
+Requests can bind Pickle's two-integer boundary identifier directly. Import the
+generated HTTP package using its declared `pickle` package name:
+
+```go
+package requests
+
+import pickle "example.com/myapp/app/http"
+
+type AddNoteRequest struct {
+    PartyID  pickle.ResourceID  `json:"party_id" validate:"required,resource_id"`
+    ParentID *pickle.ResourceID `json:"parent_id" validate:"omitempty,resource_id"`
+}
+```
+
+Resource ID fields accept canonical JSON strings only. Numbers, objects,
+arrays, `null` for a required value, uppercase spellings, and malformed values
+produce the normal field-level `BindingError`. Optional pointer fields accept
+`null` and remain `nil`.
+
+Binding validates syntax only. Controllers must compare
+`req.PartyID.Parts().ScopeID` with trusted authority and query using both
+decoded integer components.
 
 ## Generated binding
 

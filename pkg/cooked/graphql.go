@@ -19,6 +19,26 @@ type AuthClaims struct {
 	Role   string
 }
 
+// CoerceResourceIDInput applies GraphQL ResourceID scalar input semantics.
+// GraphQL values must arrive as canonical strings; numeric coercion is never
+// accepted.
+func CoerceResourceIDInput(value any) (ResourceID, error) {
+	text, ok := value.(string)
+	if !ok {
+		return ResourceID{}, fmt.Errorf("%w: GraphQL ResourceID input must be a string", ErrMalformedResourceID)
+	}
+	return ParseResourceID(text)
+}
+
+// MarshalGraphQLResourceID applies GraphQL ResourceID scalar output semantics.
+func MarshalGraphQLResourceID(id ResourceID) (string, error) {
+	text, err := id.MarshalText()
+	if err != nil {
+		return "", err
+	}
+	return string(text), nil
+}
+
 // ResolveContext carries auth, variables, and dataloaders for a single GraphQL request.
 type ResolveContext struct {
 	auth       *AuthClaims

@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,11 +26,11 @@ func TestScanRequests(t *testing.T) {
 	want := []string{"CreatePostRequest", "CreateUserRequest", "LoginRequest", "UpdatePostRequest", "UpdateUserRequest"}
 	// Filter to only *Request types we expect
 	wantNames := map[string]bool{
-		"CreatePostRequest":  true,
-		"CreateUserRequest":  true,
-		"LoginRequest":       true,
-		"UpdatePostRequest":  true,
-		"UpdateUserRequest":  true,
+		"CreatePostRequest": true,
+		"CreateUserRequest": true,
+		"LoginRequest":      true,
+		"UpdatePostRequest": true,
+		"UpdateUserRequest": true,
 	}
 	for _, r := range requests {
 		if !wantNames[r.Name] {
@@ -114,6 +115,69 @@ func TestGenerateBindings(t *testing.T) {
 	}
 
 	t.Logf("generated %d bytes", len(out))
+}
+
+func TestGenerateBindingsResourceIDFields(t *testing.T) {
+	requests := []RequestDef{{
+		Name: "AddNoteRequest",
+		Fields: []RequestField{
+			{Name: "PartyID", Type: "pickle.ResourceID", JSONTag: "party_id", Validate: "required,resource_id", IsResourceID: true, ImportAlias: "pickle", ImportPath: "example.com/app/http"},
+			{Name: "ParentID", Type: "*pickle.ResourceID", JSONTag: "parent_id", Validate: "omitempty,resource_id", IsResourceID: true, ImportAlias: "pickle", ImportPath: "example.com/app/http"},
+		},
+	}}
+	out, err := GenerateBindings(requests, "requests")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(out)
+	for _, want := range []string{
+		`RegisterValidation("resource_id"`,
+		`pickle "example.com/app/http"`,
+		`rawFields["party_id"]`,
+		`var value pickle.ResourceID`,
+		`rawFields["parent_id"]`,
+		`var value *pickle.ResourceID`,
+		`Message: "must be a valid Resource ID"`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated binding missing %q\n%s", want, src)
+		}
+	}
+}
+
+func TestScanRequestsIdentifiesResourceIDTypes(t *testing.T) {
+	for _, typeName := range []string{"ResourceID", "*ResourceID", "pickle.ResourceID", "*pickle.ResourceID"} {
+		if !isResourceIDType(typeName) {
+			t.Errorf("isResourceIDType(%q) = false", typeName)
+		}
+	}
+	for _, typeName := range []string{"uuid.UUID", "string", "[]ResourceID"} {
+		if isResourceIDType(typeName) {
+			t.Errorf("isResourceIDType(%q) = true", typeName)
+		}
+	}
+}
+
+func TestScanRequestsResolvesResourceIDImport(t *testing.T) {
+	dir := t.TempDir()
+	source := `package requests
+
+import pickle "example.com/crm/app/http"
+
+type AddNoteRequest struct {
+	PartyID pickle.ResourceID ` + "`" + `json:"party_id" validate:"required,resource_id"` + "`" + `
+}`
+	if err := os.WriteFile(filepath.Join(dir, "add_note.go"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	requests, err := ScanRequests(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	field := requests[0].Fields[0]
+	if !field.IsResourceID || field.ImportAlias != "pickle" || field.ImportPath != "example.com/crm/app/http" {
+		t.Fatalf("field metadata = %+v", field)
+	}
 }
 
 func TestExtractTag(t *testing.T) {

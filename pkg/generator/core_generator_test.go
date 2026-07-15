@@ -59,6 +59,20 @@ func TestGenerateCoreQuery(t *testing.T) {
 	}
 }
 
+func TestGenerateCoreGraphQLIncludesResourceIDScalarRuntime(t *testing.T) {
+	src := string(GenerateCoreGraphQL("graphql"))
+	for _, want := range []string{
+		"type ResourceID struct",
+		"func ParseResourceID(",
+		"func CoerceResourceIDInput(",
+		"func MarshalGraphQLResourceID(",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated GraphQL runtime missing %q", want)
+		}
+	}
+}
+
 func TestGenerateCoreSchema(t *testing.T) {
 	src := string(GenerateCoreSchema("migrations"))
 

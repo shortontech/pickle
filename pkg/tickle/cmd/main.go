@@ -37,7 +37,7 @@ var templates = []struct {
 	{
 		srcDir: "pkg/cooked",
 		output: "pkg/generator/embed_graphql.go",
-		only:   map[string]bool{"graphql.go": true},
+		only:   map[string]bool{"graphql.go": true, "resource_id.go": true},
 	},
 	{
 		srcDir: "pkg/cooked",

@@ -10,6 +10,18 @@ import (
 // from the matching request struct. Key format: "CreateUserInput.Name" → "required,min=1,max=255".
 type RequestValidationMap map[string]string
 
+// HasResourceIDFields reports whether any request declares ResourceID input.
+func HasResourceIDFields(requests []RequestDef) bool {
+	for _, request := range requests {
+		for _, field := range request.Fields {
+			if field.IsResourceID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // BuildRequestValidationMap builds a map from request defs to validation tags
 // for GraphQL input types. Matches CreateXxxRequest → CreateXxxInput, UpdateXxxRequest → UpdateXxxInput.
 func BuildRequestValidationMap(requests []RequestDef) RequestValidationMap {

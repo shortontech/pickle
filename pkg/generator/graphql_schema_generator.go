@@ -73,6 +73,9 @@ func BuildSDLWithPlans(plans []GraphQLModelPlan, relationships []SchemaRelations
 
 	// Custom scalars
 	b.WriteString("scalar DateTime\n\n")
+	if HasResourceIDFields(requests) {
+		b.WriteString("scalar ResourceID\n\n")
+	}
 
 	// Auth directives
 	b.WriteString("directive @public on FIELD_DEFINITION\n")

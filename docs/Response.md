@@ -58,6 +58,30 @@ type Response struct {
 
 The router calls `resp.Write(w)` automatically — you never call it yourself. It marshals the body to JSON, sets headers, and writes the status code.
 
+## Computed Resource IDs
+
+Resource IDs are response projections, not database columns. Construct them
+from the model's authoritative scope and record integers:
+
+```go
+type PartyResponse struct {
+    ID   pickle.ResourceID `json:"id"`
+    Name string            `json:"name"`
+}
+
+func NewPartyResponse(model *models.Party) (PartyResponse, error) {
+    id, err := pickle.NewResourceID(model.OrganizationID, model.PartyID)
+    if err != nil {
+        return PartyResponse{}, err
+    }
+    return PartyResponse{ID: id, Name: model.Name}, nil
+}
+```
+
+JSON serialization emits the canonical lowercase string. Keep the underlying
+integer fields in models, SQL, analytics, foreign keys, and authorization
+checks; do not add a UUID or text column for the projection.
+
 ## Method reference
 
 | Method | Returns | Description |

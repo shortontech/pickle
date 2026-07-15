@@ -35,6 +35,28 @@ Every table becomes a GraphQL type. Every column becomes a field. Relationships 
 | `JSONB` | `JSON` (custom scalar) |
 | `Binary` | excluded |
 
+### ResourceID scalar
+
+When a request contract declares a `ResourceID` field, Pickle adds a distinct
+`ResourceID` scalar to the generated SDL and includes strict scalar coercion in
+the generated GraphQL runtime:
+
+```go
+id, err := CoerceResourceIDInput(value) // strings only
+wire, err := MarshalGraphQLResourceID(id)
+```
+
+The scalar accepts canonical lowercase strings only and never coerces integers.
+It is separate from GraphQL `ID` and Pickle's UUID handling.
+
+Resource IDs project two integer columns rather than replacing one model
+column. Consequently, zero-controller CRUD generation does not automatically
+map a `ResourceID` scalar to a model field. A resolver using the scalar must
+decode both parts, compare scope against trusted authority, and issue both
+integer predicates. Automatic projection requires explicit authority metadata
+and is intentionally deferred rather than generating an unsafe record-only
+query.
+
 ### Nullability
 
 - `.NotNull()` → `String!`

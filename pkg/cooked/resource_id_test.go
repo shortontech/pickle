@@ -157,3 +157,23 @@ func TestContextResourceIDParams(t *testing.T) {
 		t.Fatalf("ParamResourceIDParts = %+v, %v", parts, err)
 	}
 }
+
+func TestGraphQLResourceIDScalarCoercion(t *testing.T) {
+	id, _ := NewResourceID(5, 8)
+	parsed, err := CoerceResourceIDInput(id.String())
+	if err != nil || parsed != id {
+		t.Fatalf("string coercion = %v, %v", parsed, err)
+	}
+	for _, value := range []any{123, 1.5, true, nil, []any{id.String()}} {
+		if _, err := CoerceResourceIDInput(value); !errors.Is(err, ErrMalformedResourceID) {
+			t.Errorf("CoerceResourceIDInput(%T) error = %v", value, err)
+		}
+	}
+	if _, err := CoerceResourceIDInput("00000000-0000-0000-0000-000000000000"); !errors.Is(err, ErrInvalidResourceIDParts) {
+		t.Fatalf("zero scalar error = %v", err)
+	}
+	marshaled, err := MarshalGraphQLResourceID(id)
+	if err != nil || marshaled != id.String() {
+		t.Fatalf("scalar output = %q, %v", marshaled, err)
+	}
+}

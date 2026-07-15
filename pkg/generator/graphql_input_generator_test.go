@@ -27,6 +27,16 @@ func TestBuildRequestValidationMap(t *testing.T) {
 	}
 }
 
+func TestHasResourceIDFields(t *testing.T) {
+	if HasResourceIDFields(nil) {
+		t.Fatal("nil requests should not require ResourceID scalar")
+	}
+	requests := []RequestDef{{Name: "CreateNoteRequest", Fields: []RequestField{{Name: "PartyID", IsResourceID: true}}}}
+	if !HasResourceIDFields(requests) {
+		t.Fatal("ResourceID request field was not detected")
+	}
+}
+
 func TestExtractEnums(t *testing.T) {
 	requests := []RequestDef{
 		{
@@ -108,6 +118,17 @@ func TestBuildSDLWithReadOnlyPlansOmitsEmptyMutationRoot(t *testing.T) {
 	}
 	if !strings.Contains(sdl, "type Query") {
 		t.Fatalf("expected query root:\n%s", sdl)
+	}
+}
+
+func TestBuildSDLDeclaresResourceIDScalarForRequests(t *testing.T) {
+	requests := []RequestDef{{Name: "CreateNoteRequest", Fields: []RequestField{{Name: "PartyID", IsResourceID: true}}}}
+	sdl := BuildSDLWithPlans(nil, nil, requests)
+	if !strings.Contains(sdl, "scalar ResourceID") {
+		t.Fatalf("ResourceID scalar missing:\n%s", sdl)
+	}
+	if strings.Count(sdl, "scalar ResourceID") != 1 {
+		t.Fatalf("ResourceID scalar declared more than once:\n%s", sdl)
 	}
 }
 

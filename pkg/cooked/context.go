@@ -70,6 +70,21 @@ func (c *Context) ParamUUID(name string) (uuid.UUID, error) {
 	return uuid.Parse(c.Param(name))
 }
 
+// ParamResourceID returns a URL path parameter parsed as a strict ResourceID.
+func (c *Context) ParamResourceID(name string) (ResourceID, error) {
+	return ParseResourceID(c.Param(name))
+}
+
+// ParamResourceIDParts parses a URL path parameter and returns both integer
+// components. Decoding does not authorize the scope or access the database.
+func (c *Context) ParamResourceIDParts(name string) (ResourceIDParts, error) {
+	id, err := c.ParamResourceID(name)
+	if err != nil {
+		return ResourceIDParts{}, err
+	}
+	return id.Parts(), nil
+}
+
 // Cookie returns the value of the named cookie, or an error if not present.
 func (c *Context) Cookie(name string) (string, error) {
 	cookie, err := c.request.Cookie(name)
@@ -237,8 +252,8 @@ func (c *Context) BadRequest(msg string) Response {
 
 // RoleInfo describes a user's role membership, used by SetRoles.
 type RoleInfo struct {
-	Slug     string
-	Manages  bool
+	Slug    string
+	Manages bool
 }
 
 // SetRoles stores the user's role memberships on the context.

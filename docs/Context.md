@@ -23,6 +23,38 @@ csrfToken, err := ctx.Cookie("csrf_token")
 req := ctx.Request()
 ```
 
+### Resource ID parameters
+
+Pickle's `ResourceID` is a strict, non-UUID boundary value containing two
+signed 64-bit integers. Parse a route parameter lexically or decode both parts:
+
+```go
+id, err := ctx.ParamResourceID("party_id")
+if err != nil {
+    return ctx.BadRequest("invalid party ID")
+}
+
+parts, err := ctx.ParamResourceIDParts("party_id")
+if err != nil {
+    return ctx.BadRequest("invalid party ID")
+}
+
+// Decoding is not authorization. Compare against trusted authority first.
+if parts.ScopeID != authority.OrganizationID {
+    return ctx.Forbidden("not found")
+}
+
+party, err := models.QueryParty().
+    WhereOrganizationID(parts.ScopeID).
+    WherePartyID(parts.RecordID).
+    First()
+```
+
+The canonical spelling is 32 lowercase hexadecimal digits with hyphens in the
+usual 8-4-4-4-12 shape. It is not an RFC UUID: do not pass it to `uuid.Parse`,
+store it in a UUID column, or treat successful decoding as permission. The
+authoritative database values remain the two integer columns.
+
 ## Authentication
 
 Auth middleware calls `ctx.SetAuth(claims)` to store the authenticated user. Controllers read it back with `ctx.Auth()`.
@@ -105,6 +137,9 @@ All JSON responses set `Content-Type: application/json` automatically.
 | `Request()` | `*http.Request` | Underlying HTTP request |
 | `ResponseWriter()` | `http.ResponseWriter` | Underlying response writer |
 | `Param(name)` | `string` | URL path parameter by name |
+| `ParamUUID(name)` | `uuid.UUID, error` | Parse a UUID route parameter |
+| `ParamResourceID(name)` | `ResourceID, error` | Strictly parse a Resource ID route parameter |
+| `ParamResourceIDParts(name)` | `ResourceIDParts, error` | Parse and return its scope and record integers |
 | `Query(name)` | `string` | Query string parameter by name |
 | `BearerToken()` | `string` | Token from `Authorization: Bearer` header |
 | `Cookie(name)` | `string, error` | Cookie value by name |

@@ -17,6 +17,8 @@ func TestGenerateCoreHTTP(t *testing.T) {
 
 	for _, want := range []string{
 		"type Context struct",
+		"type ResourceID struct",
+		"type ResourceIDParts struct",
 		"type Response struct",
 		"type Router struct",
 		"type Route struct",
@@ -26,6 +28,9 @@ func TestGenerateCoreHTTP(t *testing.T) {
 		"func RunMiddleware(",
 		"func Routes(",
 		"func NewContext(",
+		"func ParseResourceID(",
+		"func (c *Context) ParamResourceID(",
+		"func (c *Context) ParamResourceIDParts(",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("missing %q in output", want)

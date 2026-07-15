@@ -53,6 +53,9 @@ func TestGenerateSchemaInspector(t *testing.T) {
 	if !strings.Contains(src, `Seeder           *seedInfo`) || !strings.Contains(src, `col.Seeder.Kind`) || !strings.Contains(src, `OpAlterColumnMetadata`) {
 		t.Errorf("missing field-seeder metadata serialization\n%s", src)
 	}
+	if !strings.Contains(src, `case migrations.OpAddColumn:`) || !strings.Contains(src, `ti.Columns = append(ti.Columns, columnToInfo(col))`) {
+		t.Errorf("schema replay does not apply columns from later migrations\n%s", src)
+	}
 }
 
 func TestConvertInspectorColumnPreservesSeeder(t *testing.T) {

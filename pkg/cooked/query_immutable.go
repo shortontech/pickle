@@ -315,13 +315,13 @@ func (q *ImmutableQueryBuilder[T]) buildSelect(limit int) (string, []any) {
 		b.WriteString(strings.Join(prefixed, ", "))
 		b.WriteString(" FROM ")
 		b.WriteString(q.table)
-		b.WriteString(" t WHERE t.version_id = (SELECT MAX(version_id) FROM ")
+		b.WriteString(" t WHERE t.version_id = (SELECT version_id FROM ")
 		b.WriteString(q.table)
 		b.WriteString(" WHERE id = t.id")
 		if q.softDeletes {
 			b.WriteString(" AND deleted_at IS NULL")
 		}
-		b.WriteString(")")
+		b.WriteString(" ORDER BY version_id DESC LIMIT 1)")
 
 		var extra []string
 		for _, c := range q.conditions {
@@ -372,13 +372,13 @@ func (q *ImmutableQueryBuilder[T]) buildCount() (string, []any) {
 
 	b.WriteString("SELECT COUNT(*) FROM (SELECT t.id FROM ")
 	b.WriteString(q.table)
-	b.WriteString(" t WHERE t.version_id = (SELECT MAX(version_id) FROM ")
+	b.WriteString(" t WHERE t.version_id = (SELECT version_id FROM ")
 	b.WriteString(q.table)
 	b.WriteString(" WHERE id = t.id")
 	if q.softDeletes {
 		b.WriteString(" AND deleted_at IS NULL")
 	}
-	b.WriteString(")")
+	b.WriteString(" ORDER BY version_id DESC LIMIT 1)")
 
 	var extra []string
 	for _, c := range q.conditions {
@@ -405,13 +405,13 @@ func (q *ImmutableQueryBuilder[T]) buildAggregate(fn, column string) (string, []
 
 	b.WriteString(fmt.Sprintf("SELECT %s(_dedup.%s) FROM (SELECT t.%s FROM ", fn, column, column))
 	b.WriteString(q.table)
-	b.WriteString(" t WHERE t.version_id = (SELECT MAX(version_id) FROM ")
+	b.WriteString(" t WHERE t.version_id = (SELECT version_id FROM ")
 	b.WriteString(q.table)
 	b.WriteString(" WHERE id = t.id")
 	if q.softDeletes {
 		b.WriteString(" AND deleted_at IS NULL")
 	}
-	b.WriteString(")")
+	b.WriteString(" ORDER BY version_id DESC LIMIT 1)")
 
 	var extra []string
 	for _, c := range q.conditions {

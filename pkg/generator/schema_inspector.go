@@ -352,6 +352,14 @@ func processOps(ops []{{ .TypesPkg }}.Operation, tables map[string]*tableInfo, o
 			}
 		case {{ .TypesPkg }}.OpDropTableIfExists:
 			delete(tables, op.Table)
+		case {{ .TypesPkg }}.OpAddColumn:
+			if ti, ok := tables[op.Table]; ok && op.ColumnDef != nil {
+				t := &{{ .TypesPkg }}.Table{Name: op.Table}
+				op.ColumnDef(t)
+				for _, col := range t.Columns {
+					ti.Columns = append(ti.Columns, columnToInfo(col))
+				}
+			}
 		case {{ .TypesPkg }}.OpAddIndex, {{ .TypesPkg }}.OpAddUniqueIndex:
 			if ti, ok := tables[op.Table]; ok {
 				ti.Indexes = append(ti.Indexes, indexInfo{

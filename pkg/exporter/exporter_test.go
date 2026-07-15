@@ -10622,8 +10622,11 @@ func Current(accountID string) ([]models.Transaction, error) {
 		`q := models.DB.Model(&models.`,
 		`Transaction{})`,
 		`q = q.Where("account_id = ?", accountID`,
-		`version_id = (SELECT MAX(version_id) FROM transactions latest WHERE latest.id = transactions.id)`,
+		`version_id = (SELECT latest.version_id FROM transactions latest WHERE latest.id = transactions.id ORDER BY latest.version_id DESC LIMIT 1)`,
 	)
+	if strings.Contains(got, "MAX(version_id)") {
+		t.Fatalf("rewritten PostgreSQL query uses unsupported MAX(uuid):\n%s", got)
+	}
 	if strings.Contains(got, "QueryTransaction") {
 		t.Fatalf("rewritten source retained Pickle query method:\n%s", got)
 	}

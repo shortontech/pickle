@@ -89,6 +89,26 @@ func TestImmutableQueryBuilderLockForUpdate(t *testing.T) {
 	}
 }
 
+func TestImmutableQueryBuilderLatestVersionDoesNotAggregateUUID(t *testing.T) {
+	q := ImmutableQuery[testModel]("accounts", false)
+	selectQuery, _ := q.buildSelect(0)
+	countQuery, _ := q.buildCount()
+	aggregateQuery, _ := q.buildAggregate("SUM", "balance")
+
+	for name, query := range map[string]string{
+		"select":    selectQuery,
+		"count":     countQuery,
+		"aggregate": aggregateQuery,
+	} {
+		if strings.Contains(query, "MAX(version_id)") {
+			t.Errorf("%s query uses unsupported PostgreSQL MAX(uuid): %s", name, query)
+		}
+		if !strings.Contains(query, "ORDER BY version_id DESC LIMIT 1") {
+			t.Errorf("%s query does not select the latest UUID by ordering: %s", name, query)
+		}
+	}
+}
+
 func TestImmutableQueryBuilderLockOutsideTransaction(t *testing.T) {
 	q := ImmutableQuery[testModel]("accounts", false)
 	q.Lock()

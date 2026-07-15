@@ -1839,7 +1839,7 @@ func (e *exporter) gormChain(q queryChain) string {
 }
 
 func latestVersionPredicate(table string) string {
-	return "version_id = (SELECT MAX(version_id) FROM " + table + " latest WHERE latest.id = " + table + ".id)"
+	return "version_id = (SELECT latest.version_id FROM " + table + " latest WHERE latest.id = " + table + ".id ORDER BY latest.version_id DESC LIMIT 1)"
 }
 
 func (q queryChain) hasVersionFilter() bool {

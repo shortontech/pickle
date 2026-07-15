@@ -48,10 +48,10 @@ type QueryBuilder[T any] struct {
 	eagerLoads   []string
 	selectedCols []string
 	visibility   visibilityMode
-	tx           *sql.Tx       // transaction connection (nil = use global DB)
-	lockMode     string        // "", "FOR UPDATE", "FOR SHARE"
-	lockOpt      string        // "", "SKIP LOCKED", "NOWAIT"
-	lockTimeout  time.Duration // per-query lock timeout (0 = use server default)
+	tx           *sql.Tx            // transaction connection (nil = use global DB)
+	lockMode     string             // "", "FOR UPDATE", "FOR SHARE"
+	lockOpt      string             // "", "SKIP LOCKED", "NOWAIT"
+	lockTimeout  time.Duration      // per-query lock timeout (0 = use server default)
 	managedConn  *ManagedConnection // tracked for Release() after query completes
 }
 
@@ -286,6 +286,14 @@ func (q *QueryBuilder[T]) releaseConn() {
 // setTx associates this query builder with a transaction.
 func (q *QueryBuilder[T]) setTx(tx *sql.Tx) {
 	q.tx = tx
+}
+
+// UseTransaction associates this query with an existing transaction. This is
+// intended for application-managed transactions that install request-local
+// database state (for example PostgreSQL RLS settings) before building queries.
+func (q *QueryBuilder[T]) UseTransaction(tx *sql.Tx) *QueryBuilder[T] {
+	q.setTx(tx)
+	return q
 }
 
 // Lock adds FOR UPDATE to the query. Must be used inside a Transaction.

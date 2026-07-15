@@ -139,6 +139,14 @@ func (q *ImmutableQueryBuilder[T]) setTx(tx *sql.Tx) {
 	q.tx = tx
 }
 
+// UseTransaction associates this query with an existing transaction. This is
+// intended for application-managed transactions that install request-local
+// database state before building queries.
+func (q *ImmutableQueryBuilder[T]) UseTransaction(tx *sql.Tx) *ImmutableQueryBuilder[T] {
+	q.setTx(tx)
+	return q
+}
+
 // Lock adds FOR UPDATE to the query. Must be used inside a Transaction.
 func (q *ImmutableQueryBuilder[T]) Lock() *ImmutableQueryBuilder[T] {
 	q.lockMode = "FOR UPDATE"

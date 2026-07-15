@@ -319,6 +319,12 @@ Available in `Up()` and `Down()`:
 | `m.AddIndex(table, columns...)` | Add an index |
 | `m.AddUniqueIndex(table, columns...)` | Add a unique index |
 | `m.RenameTable(old, new)` | Rename a table |
+| `m.RawSQL(sql)` | Execute explicitly declared SQL through the migration transaction |
+
+`RawSQL` is intended for database-native invariants that the schema DSL cannot
+express, such as PostgreSQL row-level-security policies. It executes in both
+`Up()` and `Down()` and propagates database errors. Raw SQL remains a manual
+review boundary; never construct it from request or other untrusted input.
 
 Field seeders are also versioned migration metadata. They describe fake-data
 providers without emitting DDL; see [Seeders](Seeders.md).

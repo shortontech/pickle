@@ -174,6 +174,8 @@ func (r *Runner) opsToSQL(op Operation) []string {
 		return []string{r.Generator.RenameColumn(op.Table, op.OldName, op.NewName)}
 	case OpAddIndex, OpAddUniqueIndex:
 		return []string{r.Generator.AddIndex(op.Index)}
+	case OpRawSQL:
+		return []string{op.SQL}
 	}
 	return nil
 }

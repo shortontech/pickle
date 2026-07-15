@@ -7717,6 +7717,22 @@ func createTableSQL(table *schema.Table) string {
 	if len(pk) > 1 {
 		cols = append(cols, "\tPRIMARY KEY ("+strings.Join(pk, ", ")+")")
 	}
+	for _, fk := range table.ForeignKeys {
+		local := make([]string, len(fk.Columns))
+		referenced := make([]string, len(fk.ReferencedColumns))
+		for i := range fk.Columns {
+			local[i] = quoteIdent(fk.Columns[i])
+			referenced[i] = quoteIdent(fk.ReferencedColumns[i])
+		}
+		constraint := "\tFOREIGN KEY (" + strings.Join(local, ", ") + ") REFERENCES " + quoteIdent(fk.ReferencedTable) + " (" + strings.Join(referenced, ", ") + ")"
+		if fk.OnDeleteAction != "" {
+			constraint += " ON DELETE " + fk.OnDeleteAction
+		}
+		if fk.OnUpdateAction != "" {
+			constraint += " ON UPDATE " + fk.OnUpdateAction
+		}
+		cols = append(cols, constraint)
+	}
 	return "CREATE TABLE " + quoteIdent(table.Name) + " (\n" + strings.Join(cols, ",\n") + "\n)"
 }
 

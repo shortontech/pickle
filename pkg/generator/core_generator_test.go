@@ -66,4 +66,25 @@ func TestGenerateCoreSchema(t *testing.T) {
 	if !strings.Contains(src, "type Table struct") {
 		t.Error("missing Table type")
 	}
+	for _, want := range []string{"type ForeignKey struct", "ForeignKeys", "func (t *Table) ForeignKey(", "func (f *ForeignKey) OnUpdate("} {
+		if !strings.Contains(src, want) {
+			t.Errorf("missing composite foreign-key API %q", want)
+		}
+	}
+}
+
+func TestGenerateCoreMigrationCompositeForeignKeysAcrossDrivers(t *testing.T) {
+	src := string(GenerateCoreMigration("migrations"))
+	for _, want := range []string{
+		`FOREIGN KEY (`,
+		`ON DELETE `,
+		`ON UPDATE `,
+		`mysqlQI(fk.Columns[i])`,
+		`qi(fk.Columns[i])`,
+		`sqliteQI(fk.Columns[i])`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated migration runtime missing %q", want)
+		}
+	}
 }

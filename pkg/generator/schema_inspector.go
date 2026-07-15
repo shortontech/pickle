@@ -51,9 +51,18 @@ type tableInfo struct {
 	Connection  string       ` + "`" + `json:"connection,omitempty"` + "`" + `
 	Columns     []columnInfo ` + "`" + `json:"columns"` + "`" + `
 	Indexes     []indexInfo  ` + "`" + `json:"indexes,omitempty"` + "`" + `
+	ForeignKeys []foreignKeyInfo ` + "`" + `json:"foreign_keys,omitempty"` + "`" + `
 	IsImmutable   bool       ` + "`" + `json:"is_immutable,omitempty"` + "`" + `
 	IsAppendOnly  bool       ` + "`" + `json:"is_append_only,omitempty"` + "`" + `
 	HasSoftDelete bool       ` + "`" + `json:"has_soft_delete,omitempty"` + "`" + `
+}
+
+type foreignKeyInfo struct {
+	Columns           []string ` + "`" + `json:"columns"` + "`" + `
+	ReferencedTable   string   ` + "`" + `json:"referenced_table"` + "`" + `
+	ReferencedColumns []string ` + "`" + `json:"referenced_columns"` + "`" + `
+	OnDeleteAction    string   ` + "`" + `json:"on_delete,omitempty"` + "`" + `
+	OnUpdateAction    string   ` + "`" + `json:"on_update,omitempty"` + "`" + `
 }
 
 type indexInfo struct {
@@ -199,6 +208,13 @@ func tableToInfo(t *{{ .TypesPkg }}.Table, conn string) *tableInfo {
 	}
 	for _, col := range t.Columns {
 		ti.Columns = append(ti.Columns, columnToInfo(col))
+	}
+	for _, fk := range t.ForeignKeys {
+		ti.ForeignKeys = append(ti.ForeignKeys, foreignKeyInfo{
+			Columns: fk.Columns, ReferencedTable: fk.ReferencedTable,
+			ReferencedColumns: fk.ReferencedColumns,
+			OnDeleteAction: fk.OnDeleteAction, OnUpdateAction: fk.OnUpdateAction,
+		})
 	}
 	return ti
 }
@@ -372,6 +388,20 @@ func printTable(ti tableInfo) {
 				unique = " (unique)"
 			}
 			fmt.Printf("    %v%s\n", idx.Columns, unique)
+		}
+	}
+	if len(ti.ForeignKeys) > 0 {
+		fmt.Println()
+		fmt.Println("  Foreign keys:")
+		for _, fk := range ti.ForeignKeys {
+			fmt.Printf("    (%s) -> %s (%s)", strings.Join(fk.Columns, ", "), fk.ReferencedTable, strings.Join(fk.ReferencedColumns, ", "))
+			if fk.OnDeleteAction != "" {
+				fmt.Printf(" ON DELETE %s", fk.OnDeleteAction)
+			}
+			if fk.OnUpdateAction != "" {
+				fmt.Printf(" ON UPDATE %s", fk.OnUpdateAction)
+			}
+			fmt.Println()
 		}
 	}
 	fmt.Println()

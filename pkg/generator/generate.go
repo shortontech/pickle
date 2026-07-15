@@ -146,13 +146,22 @@ func ScanMigrationStructs(migrationsDir string) ([]string, error) {
 
 // inspectorTableInfo mirrors the JSON output from the schema inspector program.
 type inspectorTableInfo struct {
-	Name          string                `json:"name"`
-	Connection    string                `json:"connection,omitempty"`
-	Columns       []inspectorColumnInfo `json:"columns"`
-	Indexes       []inspectorIndexInfo  `json:"indexes,omitempty"`
-	IsImmutable   bool                  `json:"is_immutable,omitempty"`
-	IsAppendOnly  bool                  `json:"is_append_only,omitempty"`
-	HasSoftDelete bool                  `json:"has_soft_delete,omitempty"`
+	Name          string                    `json:"name"`
+	Connection    string                    `json:"connection,omitempty"`
+	Columns       []inspectorColumnInfo     `json:"columns"`
+	Indexes       []inspectorIndexInfo      `json:"indexes,omitempty"`
+	ForeignKeys   []inspectorForeignKeyInfo `json:"foreign_keys,omitempty"`
+	IsImmutable   bool                      `json:"is_immutable,omitempty"`
+	IsAppendOnly  bool                      `json:"is_append_only,omitempty"`
+	HasSoftDelete bool                      `json:"has_soft_delete,omitempty"`
+}
+
+type inspectorForeignKeyInfo struct {
+	Columns           []string `json:"columns"`
+	ReferencedTable   string   `json:"referenced_table"`
+	ReferencedColumns []string `json:"referenced_columns"`
+	OnDeleteAction    string   `json:"on_delete,omitempty"`
+	OnUpdateAction    string   `json:"on_update,omitempty"`
 }
 
 type inspectorColumnInfo struct {
@@ -449,6 +458,13 @@ func convertInspectorTable(ti inspectorTableInfo) (*schema.Table, error) {
 	}
 	for _, ii := range ti.Indexes {
 		t.Indexes = append(t.Indexes, &schema.Index{Table: ti.Name, Columns: ii.Columns, Unique: ii.Unique})
+	}
+	for _, fi := range ti.ForeignKeys {
+		t.ForeignKeys = append(t.ForeignKeys, &schema.ForeignKey{
+			Columns: fi.Columns, ReferencedTable: fi.ReferencedTable,
+			ReferencedColumns: fi.ReferencedColumns,
+			OnDeleteAction:    fi.OnDeleteAction, OnUpdateAction: fi.OnUpdateAction,
+		})
 	}
 	return t, nil
 }

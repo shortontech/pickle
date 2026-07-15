@@ -47,6 +47,33 @@ func TestGenerateSchemaInspector(t *testing.T) {
 	if !strings.Contains(src, `VisibleTo:        col.VisibleTo`) {
 		t.Errorf("missing visible-to role column serialization\n%s", src)
 	}
+	if !strings.Contains(src, `ForeignKeys`) || !strings.Contains(src, `[]foreignKeyInfo`) || !strings.Contains(src, `ReferencedColumns: fk.ReferencedColumns`) {
+		t.Errorf("missing composite foreign-key serialization\n%s", src)
+	}
+}
+
+func TestConvertInspectorTablePreservesCompositeForeignKeys(t *testing.T) {
+	table, err := convertInspectorTable(inspectorTableInfo{
+		Name: "notes",
+		Columns: []inspectorColumnInfo{
+			{Name: "organization_id", Type: "biginteger"},
+			{Name: "party_id", Type: "biginteger"},
+		},
+		ForeignKeys: []inspectorForeignKeyInfo{{
+			Columns: []string{"organization_id", "party_id"}, ReferencedTable: "parties",
+			ReferencedColumns: []string{"organization_id", "party_id"},
+			OnDeleteAction:    "CASCADE", OnUpdateAction: "RESTRICT",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(table.ForeignKeys) != 1 || strings.Join(table.ForeignKeys[0].Columns, ",") != "organization_id,party_id" {
+		t.Fatalf("foreign keys = %+v", table.ForeignKeys)
+	}
+	if table.ForeignKeys[0].OnDeleteAction != "CASCADE" || table.ForeignKeys[0].OnUpdateAction != "RESTRICT" {
+		t.Fatalf("foreign key actions = %+v", table.ForeignKeys[0])
+	}
 }
 
 func TestGenerateSchemaInspectorSortsByTimestamp(t *testing.T) {

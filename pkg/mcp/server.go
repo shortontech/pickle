@@ -471,6 +471,25 @@ func formatTable(t *schema.Table) string {
 		}
 		fmt.Fprintf(&b, "  %s %s%s\n", c.Name, c.Type, attrStr)
 	}
+	var primaryKeys []string
+	for _, c := range t.Columns {
+		if c.IsPrimaryKey {
+			primaryKeys = append(primaryKeys, c.Name)
+		}
+	}
+	if len(primaryKeys) > 1 {
+		fmt.Fprintf(&b, "  PRIMARY KEY (%s)\n", strings.Join(primaryKeys, ", "))
+	}
+	for _, fk := range t.ForeignKeys {
+		fmt.Fprintf(&b, "  FOREIGN KEY (%s) → %s (%s)", strings.Join(fk.Columns, ", "), fk.ReferencedTable, strings.Join(fk.ReferencedColumns, ", "))
+		if fk.OnDeleteAction != "" {
+			fmt.Fprintf(&b, " ON DELETE %s", fk.OnDeleteAction)
+		}
+		if fk.OnUpdateAction != "" {
+			fmt.Fprintf(&b, " ON UPDATE %s", fk.OnUpdateAction)
+		}
+		b.WriteByte('\n')
+	}
 	return b.String()
 }
 

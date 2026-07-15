@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -87,6 +88,67 @@ func TestMigrationCreateTable(t *testing.T) {
 	}
 	if len(op.TableDef.Columns) != 2 {
 		t.Errorf("expected 2 columns, got %d", len(op.TableDef.Columns))
+	}
+}
+
+func TestCompositeForeignKey(t *testing.T) {
+	table := &Table{Name: "notes"}
+	table.BigInteger("organization_id")
+	table.BigInteger("party_id")
+	fk := table.ForeignKey(
+		[]string{"organization_id", "party_id"},
+		"parties",
+		[]string{"organization_id", "party_id"},
+	).OnDelete("cascade").OnUpdate("no   action")
+
+	if len(table.ForeignKeys) != 1 || table.ForeignKeys[0] != fk {
+		t.Fatalf("foreign keys = %+v, want one declared constraint", table.ForeignKeys)
+	}
+	if fk.OnDeleteAction != "CASCADE" || fk.OnUpdateAction != "NO ACTION" {
+		t.Fatalf("actions = %q/%q, want CASCADE/NO ACTION", fk.OnDeleteAction, fk.OnUpdateAction)
+	}
+	if got := strings.Join(fk.Columns, ","); got != "organization_id,party_id" {
+		t.Fatalf("columns = %q", got)
+	}
+}
+
+func TestCompositeForeignKeyValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func(*Table)
+	}{
+		{"empty", func(tbl *Table) { tbl.ForeignKey(nil, "parties", nil) }},
+		{"mismatched", func(tbl *Table) {
+			tbl.ForeignKey([]string{"organization_id"}, "parties", []string{"organization_id", "party_id"})
+		}},
+		{"empty table", func(tbl *Table) { tbl.ForeignKey([]string{"organization_id"}, "", []string{"organization_id"}) }},
+		{"unknown local", func(tbl *Table) { tbl.ForeignKey([]string{"missing"}, "parties", []string{"id"}) }},
+		{"duplicate local", func(tbl *Table) {
+			tbl.ForeignKey([]string{"organization_id", "organization_id"}, "parties", []string{"organization_id", "party_id"})
+		}},
+		{"duplicate referenced", func(tbl *Table) {
+			tbl.ForeignKey([]string{"organization_id", "party_id"}, "parties", []string{"id", "id"})
+		}},
+		{"invalid action", func(tbl *Table) {
+			tbl.ForeignKey([]string{"organization_id"}, "parties", []string{"organization_id"}).OnDelete("explode")
+		}},
+		{"duplicate declaration", func(tbl *Table) {
+			tbl.ForeignKey([]string{"organization_id"}, "parties", []string{"organization_id"})
+			tbl.ForeignKey([]string{"organization_id"}, "parties", []string{"organization_id"})
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tbl := &Table{Name: "notes"}
+			tbl.BigInteger("organization_id")
+			tbl.BigInteger("party_id")
+			defer func() {
+				if recover() == nil {
+					t.Fatal("expected panic")
+				}
+			}()
+			tt.fn(tbl)
+		})
 	}
 }
 

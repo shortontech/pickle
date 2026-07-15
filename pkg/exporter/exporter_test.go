@@ -5058,6 +5058,23 @@ func TestCreateTableSQLUsesTableLevelCompositePrimaryKeyOnly(t *testing.T) {
 	}
 }
 
+func TestCreateTableSQLCompositeForeignKey(t *testing.T) {
+	table := &schema.Table{Name: "notes", Columns: []*schema.Column{
+		{Name: "organization_id", Type: schema.BigInteger, IsPrimaryKey: true},
+		{Name: "party_id", Type: schema.BigInteger, IsPrimaryKey: true},
+	}, ForeignKeys: []*schema.ForeignKey{{
+		Columns: []string{"organization_id", "party_id"}, ReferencedTable: "parties",
+		ReferencedColumns: []string{"organization_id", "party_id"},
+		OnDeleteAction:    "CASCADE", OnUpdateAction: "RESTRICT",
+	}}}
+
+	sql := createTableSQL(table)
+	want := `FOREIGN KEY ("organization_id", "party_id") REFERENCES "parties" ("organization_id", "party_id") ON DELETE CASCADE ON UPDATE RESTRICT`
+	if !strings.Contains(sql, want) {
+		t.Fatalf("create table SQL missing composite foreign key:\n%s", sql)
+	}
+}
+
 func writeTestAction(t *testing.T, projectDir string) {
 	t.Helper()
 	dir := filepath.Join(projectDir, "database", "actions", "user")

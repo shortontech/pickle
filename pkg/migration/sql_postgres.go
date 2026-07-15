@@ -37,8 +37,28 @@ func (g *postgresGenerator) CreateTable(t *Table) string {
 		}
 		cols = append(cols, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(quotedPKs, ", ")))
 	}
+	for _, fk := range t.ForeignKeys {
+		cols = append(cols, postgresForeignKey(fk))
+	}
 
 	return fmt.Sprintf("CREATE TABLE %s (\n\t%s\n)", qi(t.Name), strings.Join(cols, ",\n\t"))
+}
+
+func postgresForeignKey(fk *ForeignKey) string {
+	local := make([]string, len(fk.Columns))
+	referenced := make([]string, len(fk.ReferencedColumns))
+	for i := range fk.Columns {
+		local[i] = qi(fk.Columns[i])
+		referenced[i] = qi(fk.ReferencedColumns[i])
+	}
+	constraint := fmt.Sprintf("FOREIGN KEY (%s) REFERENCES %s (%s)", strings.Join(local, ", "), qi(fk.ReferencedTable), strings.Join(referenced, ", "))
+	if fk.OnDeleteAction != "" {
+		constraint += " ON DELETE " + fk.OnDeleteAction
+	}
+	if fk.OnUpdateAction != "" {
+		constraint += " ON UPDATE " + fk.OnUpdateAction
+	}
+	return constraint
 }
 
 func (g *postgresGenerator) columnDef(col *Column) string {

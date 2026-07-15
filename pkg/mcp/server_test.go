@@ -109,6 +109,23 @@ func TestFormatTable_Basic(t *testing.T) {
 		}
 	})
 
+	t.Run("composite keys", func(t *testing.T) {
+		tbl := &schema.Table{Name: "notes", Columns: []*schema.Column{
+			{Name: "organization_id", Type: schema.BigInteger, IsPrimaryKey: true},
+			{Name: "party_id", Type: schema.BigInteger, IsPrimaryKey: true},
+		}, ForeignKeys: []*schema.ForeignKey{{
+			Columns: []string{"organization_id", "party_id"}, ReferencedTable: "parties",
+			ReferencedColumns: []string{"organization_id", "party_id"}, OnDeleteAction: "CASCADE",
+		}}}
+		out := formatTable(tbl)
+		if !strings.Contains(out, "PRIMARY KEY (organization_id, party_id)") {
+			t.Errorf("missing composite primary key: %s", out)
+		}
+		if !strings.Contains(out, "FOREIGN KEY (organization_id, party_id) → parties (organization_id, party_id) ON DELETE CASCADE") {
+			t.Errorf("missing composite foreign key: %s", out)
+		}
+	})
+
 	t.Run("public column", func(t *testing.T) {
 		col := &schema.Column{Name: "title", IsPublic: true}
 		tbl := &schema.Table{Name: "t", Columns: []*schema.Column{col}}

@@ -1,5 +1,7 @@
 package schema
 
+import "strings"
+
 // RelationshipType distinguishes HasMany from HasOne.
 type RelationshipType int
 
@@ -18,6 +20,45 @@ type Relationship struct {
 	IsTopLevel   bool   // .TopLevelModel() — generate at models/ not models/parent/
 }
 
+// ForeignKey is a table-level foreign-key constraint. Table-level metadata is
+// used for compound relationships; single-column Column.ForeignKey remains
+// supported for the common case.
+type ForeignKey struct {
+	Columns           []string
+	ReferencedTable   string
+	ReferencedColumns []string
+	OnDeleteAction    string
+	OnUpdateAction    string
+}
+
+var validReferentialActions = map[string]bool{
+	"CASCADE":     true,
+	"RESTRICT":    true,
+	"NO ACTION":   true,
+	"SET NULL":    true,
+	"SET DEFAULT": true,
+}
+
+func normalizeReferentialAction(action string) string {
+	action = strings.Join(strings.Fields(strings.ToUpper(action)), " ")
+	if !validReferentialActions[action] {
+		panic("pickle: invalid referential action \"" + action + "\"")
+	}
+	return action
+}
+
+// OnDelete sets the ON DELETE action for this table-level foreign key.
+func (f *ForeignKey) OnDelete(action string) *ForeignKey {
+	f.OnDeleteAction = normalizeReferentialAction(action)
+	return f
+}
+
+// OnUpdate sets the ON UPDATE action for this table-level foreign key.
+func (f *ForeignKey) OnUpdate(action string) *ForeignKey {
+	f.OnUpdateAction = normalizeReferentialAction(action)
+	return f
+}
+
 func (r *Relationship) Collection() *Relationship {
 	r.IsCollection = true
 	return r
@@ -34,11 +75,78 @@ type Table struct {
 	Connection           string // database connection name ("" = default)
 	Columns              []*Column
 	Indexes              []*Index
+	ForeignKeys          []*ForeignKey
 	Relationships        []*Relationship
 	IsImmutable          bool     // set by Immutable() — versioned, (id, version_id) composite PK
 	IsAppendOnly         bool     // set by AppendOnly() — insert-only, single id PK, no updates/deletes
 	HasSoftDelete        bool     // set by SoftDeletes() — adds deleted_at nullable column
 	CompositePrimaryKeys []string // set by PrimaryKey() — explicit composite PK columns
+}
+
+// ForeignKey declares a table-level foreign-key constraint. It is primarily
+// intended for compound keys; column order is preserved in generated SQL and
+// schema metadata.
+func (t *Table) ForeignKey(columns []string, referencedTable string, referencedColumns []string) *ForeignKey {
+	if len(columns) == 0 || len(referencedColumns) == 0 {
+		panic("pickle: foreign key column lists must not be empty")
+	}
+	if len(columns) != len(referencedColumns) {
+		panic("pickle: foreign key source and referenced column counts must match")
+	}
+	if referencedTable == "" {
+		panic("pickle: foreign key referenced table must not be empty")
+	}
+
+	localColumns := make(map[string]bool, len(t.Columns))
+	for _, col := range t.Columns {
+		localColumns[col.Name] = true
+	}
+	seenLocal := make(map[string]bool, len(columns))
+	seenReferenced := make(map[string]bool, len(referencedColumns))
+	for i, column := range columns {
+		if column == "" || !localColumns[column] {
+			panic("pickle: ForeignKey references unknown column \"" + column + "\" on table \"" + t.Name + "\"")
+		}
+		if seenLocal[column] {
+			panic("pickle: ForeignKey contains duplicate local column \"" + column + "\"")
+		}
+		seenLocal[column] = true
+
+		referencedColumn := referencedColumns[i]
+		if referencedColumn == "" {
+			panic("pickle: foreign key referenced column must not be empty")
+		}
+		if seenReferenced[referencedColumn] {
+			panic("pickle: ForeignKey contains duplicate referenced column \"" + referencedColumn + "\"")
+		}
+		seenReferenced[referencedColumn] = true
+	}
+
+	for _, existing := range t.ForeignKeys {
+		if existing.ReferencedTable == referencedTable && stringSlicesEqual(existing.Columns, columns) && stringSlicesEqual(existing.ReferencedColumns, referencedColumns) {
+			panic("pickle: duplicate foreign key declaration on table \"" + t.Name + "\"")
+		}
+	}
+
+	fk := &ForeignKey{
+		Columns:           append([]string(nil), columns...),
+		ReferencedTable:   referencedTable,
+		ReferencedColumns: append([]string(nil), referencedColumns...),
+	}
+	t.ForeignKeys = append(t.ForeignKeys, fk)
+	return fk
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (t *Table) addColumn(name string, colType ColumnType) *Column {

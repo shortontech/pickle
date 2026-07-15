@@ -81,6 +81,41 @@ t.Text("notes").Nullable()
 | `.Sealed()` | Mark as write-only encrypted — can be verified but never retrieved in plaintext. See [Encryption](Encryption.md) |
 | `.UnsafePublic()` | Acknowledge that a sensitive field is intentionally `.Public()` |
 
+## Composite keys and foreign keys
+
+Declare a compound primary key after adding its columns, then use a table-level
+foreign key to preserve the same boundary in dependent tables:
+
+```go
+m.CreateTable("parties", func(t *Table) {
+    t.BigInteger("organization_id").NotNull()
+    t.BigInteger("party_id").NotNull()
+    t.String("name").NotNull()
+    t.PrimaryKey("organization_id", "party_id")
+})
+
+m.CreateTable("notes", func(t *Table) {
+    t.BigInteger("organization_id").NotNull()
+    t.BigInteger("party_id").NotNull()
+    t.BigInteger("note_id").NotNull()
+    t.PrimaryKey("organization_id", "note_id")
+
+    t.ForeignKey(
+        []string{"organization_id", "party_id"},
+        "parties",
+        []string{"organization_id", "party_id"},
+    ).OnDelete("CASCADE").OnUpdate("RESTRICT")
+})
+```
+
+Pickle preserves column order and emits a table-level constraint on PostgreSQL,
+MySQL, and SQLite. Source and referenced lists must be nonempty and have equal
+lengths. Local columns must already exist and columns may not be repeated.
+
+Supported referential actions are `CASCADE`, `RESTRICT`, `NO ACTION`,
+`SET NULL`, and `SET DEFAULT`. The existing single-column
+`.ForeignKey(table, column)` modifier remains available and unchanged.
+
 ## Ownership & visibility
 
 Declare field visibility tiers and row ownership directly in your migration. Pickle generates `PublicResponse` and `OwnerResponse` structs, a `Serialize` function, and a `WhereOwnedBy` query scope.

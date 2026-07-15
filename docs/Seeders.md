@@ -37,9 +37,15 @@ do not add a runtime dependency on Pickle.
 | Locale | `SeedLocale`, `SeedTimeZone`, `SeedCountryCode` |
 | Time | `SeedDateBetween`, `SeedTimeBetween`, `SeedPastTime`, `SeedFutureTime` |
 | Text | `SeedWords`, `SeedSentence`, `SeedParagraph` |
+| Commerce | `SeedProductName`, `SeedMoney`, `SeedCurrencyCode` |
+| Network | `SeedIPv4`, `SeedIPv6`, `SeedUserAgent` |
 
 Provider arguments use typed country and locale markers such as
 `UnitedStates`, `Canada`, and `EnUS`.
+
+Bounded relative-time providers use Pickle's versioned deterministic time
+anchor rather than the wall clock. Reusing the same root seed therefore
+reproduces the same timestamps on a later day or another machine.
 
 ## Predictable seeded passwords
 

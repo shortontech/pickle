@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 	"time"
@@ -86,6 +87,27 @@ func SeedValue(spec *SeedSpec, ctx SeedValueContext) (any, error) {
 			return int(value), nil
 		}
 		return value, nil
+	case "decimal", "money":
+		minText, err := arg(0)
+		if err != nil {
+			return nil, err
+		}
+		maxText, err := arg(1)
+		if err != nil {
+			return nil, err
+		}
+		scale := 2
+		if spec.Kind == "decimal" {
+			scaleText, err := arg(2)
+			if err != nil {
+				return nil, err
+			}
+			scale, err = strconv.Atoi(scaleText)
+			if err != nil || scale < 0 {
+				return nil, fmt.Errorf("invalid decimal scale %q", scaleText)
+			}
+		}
+		return seedDecimalBetween(minText, maxText, scale, r)
 	case "boolean":
 		return r.uint64()%2 == 0, nil
 	case "boolean_weighted":
@@ -161,6 +183,36 @@ func SeedValue(spec *SeedSpec, ctx SeedValueContext) (any, error) {
 		return choose([]string{"California", "Oregon", "Texas", "Ontario", "Washington"})
 	case "street_address":
 		return fmt.Sprintf("%d Pickle Lane", 1+r.uint64()%9999), nil
+	case "user_agent":
+		return choose([]string{"Mozilla/5.0 (Seed; Linux x86_64) AppleWebKit/537.36", "PickleSeeder/1.0", "Mozilla/5.0 (Seed; Mac OS X) Gecko/20100101"})
+	case "product_name":
+		adjective, _ := choose([]string{"Compact", "Artisan", "Classic", "Bright", "Durable"})
+		noun, _ := choose([]string{"Notebook", "Lantern", "Backpack", "Mug", "Keyboard"})
+		return adjective.(string) + " " + noun.(string), nil
+	case "words", "sentence", "paragraph":
+		countText, err := arg(0)
+		if err != nil {
+			return nil, err
+		}
+		count, err := strconv.Atoi(countText)
+		if err != nil || count < 1 {
+			return nil, fmt.Errorf("invalid %s count", spec.Kind)
+		}
+		if spec.Kind == "paragraph" {
+			sentences := make([]string, count)
+			for index := range sentences {
+				sentences[index] = seedSentence(8+r.index(8), r)
+			}
+			return strings.Join(sentences, " "), nil
+		}
+		if spec.Kind == "sentence" {
+			return seedSentence(count, r), nil
+		}
+		words := make([]string, count)
+		for index := range words {
+			words[index] = seedWord(r)
+		}
+		return strings.Join(words, " "), nil
 	case "currency_code":
 		return choose([]string{"USD", "CAD", "EUR", "GBP"})
 	case "date_between", "time_between":
@@ -185,6 +237,21 @@ func SeedValue(spec *SeedSpec, ctx SeedValueContext) (any, error) {
 			return start, nil
 		}
 		return start.Add(time.Duration(r.uint64() % uint64(span))), nil
+	case "past_time", "future_time":
+		distanceText, err := arg(0)
+		if err != nil {
+			return nil, err
+		}
+		distance, err := time.ParseDuration(distanceText)
+		if err != nil || distance <= 0 {
+			return nil, fmt.Errorf("invalid time distance %q", distanceText)
+		}
+		anchor := time.Date(2024, time.January, 1, 0, 0, 0, 0, time.UTC)
+		offset := time.Duration(r.uint64() % uint64(distance))
+		if spec.Kind == "past_time" {
+			return anchor.Add(-offset), nil
+		}
+		return anchor.Add(offset), nil
 	case "password":
 		return nil, fmt.Errorf("password seeders require row context")
 	case "custom", "json":
@@ -209,6 +276,10 @@ func GenerateSeedRow(table *Table, overrides map[string]any, base SeedValueConte
 		ctx := base
 		ctx.Column = column.Name
 		value, err := SeedValue(column.Seeder, ctx)
+		if err != nil {
+			return nil, fmt.Errorf("seed %s.%s: %w", table.Name, column.Name, err)
+		}
+		value, err = castSeedValue(column.Type, value)
 		if err != nil {
 			return nil, fmt.Errorf("seed %s.%s: %w", table.Name, column.Name, err)
 		}
@@ -244,6 +315,92 @@ func parseSeedTime(value string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("invalid seed time %q", value)
+}
+
+func seedDecimalBetween(minText, maxText string, scale int, stream *seedStream) (string, error) {
+	min, ok := new(big.Rat).SetString(minText)
+	if !ok {
+		return "", fmt.Errorf("invalid decimal minimum %q", minText)
+	}
+	max, ok := new(big.Rat).SetString(maxText)
+	if !ok || max.Cmp(min) < 0 {
+		return "", fmt.Errorf("invalid decimal maximum %q", maxText)
+	}
+	factor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(scale)), nil)
+	toScaled := func(value *big.Rat) *big.Int {
+		scaled := new(big.Rat).Mul(value, new(big.Rat).SetInt(factor))
+		return new(big.Int).Quo(scaled.Num(), scaled.Denom())
+	}
+	minInt, maxInt := toScaled(min), toScaled(max)
+	span := new(big.Int).Sub(maxInt, minInt)
+	span.Add(span, big.NewInt(1))
+	choice := new(big.Int).SetUint64(stream.uint64())
+	choice.Mod(choice, span)
+	choice.Add(choice, minInt)
+	negative := choice.Sign() < 0
+	abs := new(big.Int).Abs(choice)
+	digits := abs.String()
+	for len(digits) <= scale {
+		digits = "0" + digits
+	}
+	if scale > 0 {
+		digits = digits[:len(digits)-scale] + "." + digits[len(digits)-scale:]
+	}
+	if negative {
+		digits = "-" + digits
+	}
+	return digits, nil
+}
+
+var seedWords = []string{"amber", "bridge", "cedar", "delta", "ember", "field", "garden", "harbor", "island", "juniper", "kindle", "lantern", "meadow", "north", "olive", "pepper", "quiet", "river", "salt", "timber"}
+
+func seedWord(stream *seedStream) string { return seedWords[stream.index(len(seedWords))] }
+
+func seedSentence(count int, stream *seedStream) string {
+	words := make([]string, count)
+	for index := range words {
+		words[index] = seedWord(stream)
+	}
+	words[0] = strings.ToUpper(words[0][:1]) + words[0][1:]
+	return strings.Join(words, " ") + "."
+}
+
+func castSeedValue(columnType ColumnType, value any) (any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	text, isText := value.(string)
+	if !isText {
+		return value, nil
+	}
+	switch columnType {
+	case Integer:
+		parsed, err := strconv.Atoi(text)
+		if err != nil {
+			return nil, fmt.Errorf("cannot cast %q to integer", text)
+		}
+		return parsed, nil
+	case BigInteger:
+		parsed, err := strconv.ParseInt(text, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("cannot cast %q to big integer", text)
+		}
+		return parsed, nil
+	case Boolean:
+		parsed, err := strconv.ParseBool(text)
+		if err != nil {
+			return nil, fmt.Errorf("cannot cast %q to boolean", text)
+		}
+		return parsed, nil
+	case Date, Timestamp, Time:
+		parsed, err := parseSeedTime(text)
+		if err != nil {
+			return nil, err
+		}
+		return parsed, nil
+	default:
+		return value, nil
+	}
 }
 
 type seedStream struct {

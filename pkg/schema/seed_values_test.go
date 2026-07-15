@@ -1,6 +1,10 @@
 package schema
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+	"time"
+)
 
 func TestSeedValueStableSubstreams(t *testing.T) {
 	ctx := SeedValueContext{RootSeed: 8675309, Scenario: "CRMSeeder", NodePath: "users", RowOrdinal: 0, Column: "first_name"}
@@ -50,3 +54,57 @@ func TestGenerateSeedRowRequiresCompositeFields(t *testing.T) {
 		t.Fatal("expected missing composite field error")
 	}
 }
+
+func TestSeedValueSupportsEveryBuiltInProvider(t *testing.T) {
+	tests := []SeedSpec{
+		{Kind: "value", Arguments: []string{"fixed"}}, {Kind: "values", Arguments: []string{"a"}},
+		{Kind: "random_string", Arguments: []string{"8"}}, {Kind: "random_string_in", Arguments: []string{"a"}},
+		{Kind: "integer", Arguments: []string{"1", "9"}}, {Kind: "big_integer", Arguments: []string{"1", "9"}},
+		{Kind: "decimal", Arguments: []string{"1.25", "9.75", "2"}}, {Kind: "money", Arguments: []string{"1", "9"}},
+		{Kind: "boolean"}, {Kind: "boolean_weighted", Arguments: []string{"0.5"}}, {Kind: "uuid"}, {Kind: "bytes", Arguments: []string{"8"}},
+		{Kind: "first_name"}, {Kind: "last_name"}, {Kind: "full_name"}, {Kind: "username"}, {Kind: "job_title"}, {Kind: "department"},
+		{Kind: "company_name"}, {Kind: "company_suffix"}, {Kind: "industry"}, {Kind: "email"}, {Kind: "safe_email"}, {Kind: "domain_name"},
+		{Kind: "url"}, {Kind: "ipv4"}, {Kind: "ipv6"}, {Kind: "user_agent"}, {Kind: "phone_number"}, {Kind: "street_address"},
+		{Kind: "city"}, {Kind: "state"}, {Kind: "postal_code"}, {Kind: "country"}, {Kind: "country_code"}, {Kind: "locale"}, {Kind: "time_zone"},
+		{Kind: "date_between", Arguments: []string{"2024-01-01", "2024-12-31"}}, {Kind: "time_between", Arguments: []string{"09:00:00", "17:00:00"}},
+		{Kind: "past_time", Arguments: []string{"720h"}}, {Kind: "future_time", Arguments: []string{"720h"}},
+		{Kind: "sentence", Arguments: []string{"8"}}, {Kind: "paragraph", Arguments: []string{"3"}}, {Kind: "words", Arguments: []string{"5"}},
+		{Kind: "product_name"}, {Kind: "currency_code"},
+	}
+	ctx := SeedValueContext{RootSeed: 7, Scenario: "Coverage", NodePath: "node", RowOrdinal: 1, Column: "field"}
+	for _, test := range tests {
+		t.Run(test.Kind, func(t *testing.T) {
+			first, err := SeedValue(&test, ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := SeedValue(&test, ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if valueKey(first) != valueKey(second) {
+				t.Fatalf("provider is not deterministic: %#v != %#v", first, second)
+			}
+		})
+	}
+}
+
+func TestGenerateSeedRowCastsFixedValues(t *testing.T) {
+	table := &Table{Name: "examples", Columns: []*Column{
+		{Name: "count", Type: Integer, Seeder: &SeedSpec{Kind: "value", Arguments: []string{"42"}}},
+		{Name: "enabled", Type: Boolean, Seeder: &SeedSpec{Kind: "value", Arguments: []string{"true"}}},
+		{Name: "at", Type: Timestamp, Seeder: &SeedSpec{Kind: "value", Arguments: []string{"2024-01-02T03:04:05Z"}}},
+	}}
+	row, err := GenerateSeedRow(table, nil, SeedValueContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row["count"] != 42 || row["enabled"] != true {
+		t.Fatalf("casts = %#v", row)
+	}
+	if _, ok := row["at"].(time.Time); !ok {
+		t.Fatalf("timestamp = %#v", row["at"])
+	}
+}
+
+func valueKey(value any) string { return fmt.Sprintf("%#v", value) }

@@ -1,8 +1,10 @@
 package generator
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
+	goformat "go/format"
 	"go/parser"
 	"go/token"
 	"os"
@@ -19,6 +21,16 @@ type SeederDefinition struct {
 	Table      string
 	ReturnType string
 	File       string
+	Policy     string
+	GraphCalls []SeederGraphCall
+}
+
+// SeederGraphCall is safe static scenario metadata. Value-bearing With calls
+// are deliberately excluded so read-only tooling cannot expose seed secrets.
+type SeederGraphCall struct {
+	Method    string
+	Arguments []string
+	Line      int
 }
 
 // ScanSeeders discovers exported Seed methods in database/seeders.
@@ -41,6 +53,17 @@ func ScanSeeders(dir string) ([]SeederDefinition, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parsing %s: %w", path, err)
 		}
+		policies := map[string]string{}
+		for _, declaration := range file.Decls {
+			fn, ok := declaration.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != "Policy" || fn.Recv == nil || fn.Body == nil || len(fn.Body.List) != 1 {
+				continue
+			}
+			name := receiverTypeNameForSeeder(fn.Recv)
+			if statement, ok := fn.Body.List[0].(*ast.ReturnStmt); ok && len(statement.Results) == 1 {
+				policies[name] = seederExprText(fset, statement.Results[0])
+			}
+		}
 		for _, declaration := range file.Decls {
 			fn, ok := declaration.(*ast.FuncDecl)
 			if !ok || fn.Name.Name != "Seed" || fn.Recv == nil {
@@ -53,6 +76,8 @@ func ScanSeeders(dir string) ([]SeederDefinition, error) {
 			definition := SeederDefinition{Name: name, File: path}
 			if fn.Type.Results == nil || len(fn.Type.Results.List) == 0 {
 				definition.Kind = "scenario"
+				definition.Policy = policies[name]
+				definition.GraphCalls = scanSeederGraphCalls(fset, fn.Body)
 			} else if len(fn.Type.Results.List) == 1 {
 				definition.Kind = "row"
 				definition.ReturnType = exprString(fn.Type.Results.List[0].Type)
@@ -66,6 +91,45 @@ func ScanSeeders(dir string) ([]SeederDefinition, error) {
 	}
 	sort.Slice(definitions, func(i, j int) bool { return definitions[i].Name < definitions[j].Name })
 	return definitions, nil
+}
+
+func scanSeederGraphCalls(fset *token.FileSet, body *ast.BlockStmt) []SeederGraphCall {
+	if body == nil {
+		return nil
+	}
+	allowed := map[string]bool{"Create": true, "CreateN": true, "For": true, "ForEach": true, "Between": true, "UniqueBy": true, "Update": true}
+	var calls []SeederGraphCall
+	ast.Inspect(body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || !allowed[selector.Sel.Name] {
+			return true
+		}
+		arguments := make([]string, len(call.Args))
+		for index, argument := range call.Args {
+			arguments[index] = seederExprText(fset, argument)
+		}
+		calls = append(calls, SeederGraphCall{Method: selector.Sel.Name, Arguments: arguments, Line: fset.Position(call.Pos()).Line})
+		return true
+	})
+	sort.SliceStable(calls, func(i, j int) bool {
+		if calls[i].Line != calls[j].Line {
+			return calls[i].Line < calls[j].Line
+		}
+		return calls[i].Method < calls[j].Method
+	})
+	return calls
+}
+
+func seederExprText(fset *token.FileSet, expression ast.Expr) string {
+	var out bytes.Buffer
+	if err := goformat.Node(&out, fset, expression); err != nil {
+		return "?"
+	}
+	return out.String()
 }
 
 func receiverTypeNameForSeeder(fields *ast.FieldList) string {

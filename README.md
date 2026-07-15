@@ -132,6 +132,7 @@ Pickle ships an MCP server that gives AI agents queryable access to your project
 ```
 pickle schema:show transfers    → exact table structure with visibility annotations
 pickle routes:list              → every endpoint, middleware, request class
+pickle seeders:list             → root scenarios, graph shape, and safe dry-run plans
 pickle roles:list               → all RBAC roles with permissions
 pickle roles:show admin         → single role with column visibility and action grants
 pickle graphql:list             → exposed GraphQL models with operations

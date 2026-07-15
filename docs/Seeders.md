@@ -175,3 +175,16 @@ the corresponding `INSERT IGNORE` or `ON DUPLICATE KEY UPDATE` forms for MySQL.
 `ReplaceScenario` remains unavailable unless generated seed provenance is
 explicitly enabled. Pickle rejects it instead of approximating destructive
 replacement from ordinary application columns.
+
+## MCP visibility
+
+The read-only MCP surface exposes:
+
+- `seeders_list` — root scenarios and row seeders;
+- `seeders_show` — source, target, repeat policy, and redacted graph calls;
+- `seeders_plan` — deterministic seed metadata, declared counts and
+  relationships, repeat identities, and migration field providers.
+
+`seeders_plan` never opens the database or inserts rows. Value-bearing `With`
+calls and password composite fields are omitted or redacted. The compiled
+`db:seed --dry-run` command remains the authoritative fully expanded plan.

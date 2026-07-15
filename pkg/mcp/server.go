@@ -79,6 +79,21 @@ func (s *Server) registerTools() {
 	}, s.migrationsList)
 
 	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "seeders_list",
+		Description: "List compiled root scenarios and row seeders without executing them.",
+	}, s.seedersList)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "seeders_show",
+		Description: "Show one seeder's kind, source, repeat policy, and redacted graph declarations.",
+	}, s.seedersShow)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "seeders_plan",
+		Description: "Build a read-only static seed plan with graph counts, relationships, identities, and field providers. Never inserts rows.",
+	}, s.seedersPlan)
+
+	mcp.AddTool(s.server, &mcp.Tool{
 		Name:        "auth_drivers",
 		Description: "List configured auth drivers.",
 	}, s.authDrivers)
@@ -221,6 +236,78 @@ func (s *Server) migrationsList(_ context.Context, _ *mcp.CallToolRequest, _ any
 		b.WriteString("\n")
 	}
 	return textResult(b.String()), nil, nil
+}
+
+type seederInput struct {
+	Name string `json:"name,omitempty"`
+	Seed int64  `json:"seed,omitempty"`
+}
+
+func (s *Server) scanSeeders() ([]generator.SeederDefinition, error) {
+	return generator.ScanSeeders(filepath.Join(s.project.Dir, "database", "seeders"))
+}
+
+func (s *Server) seedersList(_ context.Context, _ *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+	definitions, err := s.scanSeeders()
+	if err != nil {
+		return errResult("scanning seeders: " + err.Error()), nil, nil
+	}
+	if len(definitions) == 0 {
+		return textResult("No seeders defined."), nil, nil
+	}
+	var out strings.Builder
+	for _, definition := range definitions {
+		fmt.Fprintf(&out, "%s (%s)", definition.Name, definition.Kind)
+		if definition.Table != "" {
+			fmt.Fprintf(&out, " -> %s", definition.Table)
+		}
+		if definition.Policy != "" {
+			fmt.Fprintf(&out, " policy:%s", definition.Policy)
+		}
+		out.WriteByte('\n')
+	}
+	return textResult(out.String()), nil, nil
+}
+
+func (s *Server) seedersShow(_ context.Context, _ *mcp.CallToolRequest, input seederInput) (*mcp.CallToolResult, any, error) {
+	if input.Name == "" {
+		return errResult("name is required"), nil, nil
+	}
+	definitions, err := s.scanSeeders()
+	if err != nil {
+		return errResult("scanning seeders: " + err.Error()), nil, nil
+	}
+	for _, definition := range definitions {
+		if definition.Name == input.Name {
+			return textResult(formatSeederDefinition(definition, s.project.Dir)), nil, nil
+		}
+	}
+	return errResult(fmt.Sprintf("seeder %q not found", input.Name)), nil, nil
+}
+
+func (s *Server) seedersPlan(_ context.Context, _ *mcp.CallToolRequest, input seederInput) (*mcp.CallToolResult, any, error) {
+	if input.Name == "" {
+		return errResult("name is required"), nil, nil
+	}
+	definitions, err := s.scanSeeders()
+	if err != nil {
+		return errResult("scanning seeders: " + err.Error()), nil, nil
+	}
+	var scenario *generator.SeederDefinition
+	for index := range definitions {
+		if definitions[index].Name == input.Name && definitions[index].Kind == "scenario" {
+			scenario = &definitions[index]
+			break
+		}
+	}
+	if scenario == nil {
+		return errResult(fmt.Sprintf("root seed scenario %q not found", input.Name)), nil, nil
+	}
+	tables, _, _, err := generator.RunSchemaInspector(s.project)
+	if err != nil {
+		return errResult("schema inspection failed: " + err.Error()), nil, nil
+	}
+	return textResult(formatSeederPlan(*scenario, tables, input.Seed, s.project.Dir)), nil, nil
 }
 
 func (s *Server) authDrivers(_ context.Context, _ *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
@@ -491,6 +578,80 @@ func formatSeedSpec(seed *schema.SeedSpec) string {
 		detail += ":" + strings.Join(seed.Arguments, ",")
 	}
 	return "SEED(" + detail + ")"
+}
+
+func formatSeederDefinition(definition generator.SeederDefinition, projectDir string) string {
+	var out strings.Builder
+	fmt.Fprintf(&out, "## %s\n", definition.Name)
+	fmt.Fprintf(&out, "kind: %s\n", definition.Kind)
+	if definition.Table != "" {
+		fmt.Fprintf(&out, "table: %s\n", definition.Table)
+	}
+	if definition.ReturnType != "" {
+		fmt.Fprintf(&out, "returns: %s\n", definition.ReturnType)
+	}
+	policy := definition.Policy
+	if policy == "" && definition.Kind == "scenario" {
+		policy = "InsertOnly"
+	}
+	if policy != "" {
+		fmt.Fprintf(&out, "policy: %s\n", policy)
+	}
+	if relative, err := filepath.Rel(projectDir, definition.File); err == nil {
+		fmt.Fprintf(&out, "source: %s\n", relative)
+	}
+	if len(definition.GraphCalls) > 0 {
+		out.WriteString("graph:\n")
+		for _, call := range definition.GraphCalls {
+			fmt.Fprintf(&out, "  line %d: %s(%s)\n", call.Line, call.Method, strings.Join(call.Arguments, ", "))
+		}
+	}
+	return out.String()
+}
+
+func formatSeederPlan(definition generator.SeederDefinition, tables []*schema.Table, rootSeed int64, projectDir string) string {
+	var out strings.Builder
+	fmt.Fprintf(&out, "# Seed plan: %s\n", definition.Name)
+	if rootSeed == 0 {
+		out.WriteString("root seed: generated and printed before execution\n")
+	} else {
+		fmt.Fprintf(&out, "root seed: %d\n", rootSeed)
+	}
+	policy := definition.Policy
+	if policy == "" {
+		policy = "InsertOnly"
+	}
+	fmt.Fprintf(&out, "policy: %s\ntransaction: one root scenario\nmutation: none (static plan)\n", policy)
+	if relative, err := filepath.Rel(projectDir, definition.File); err == nil {
+		fmt.Fprintf(&out, "source: %s\n", relative)
+	}
+	if len(definition.GraphCalls) > 0 {
+		out.WriteString("\ngraph declarations (values redacted):\n")
+		for _, call := range definition.GraphCalls {
+			detail := strings.Join(call.Arguments, ", ")
+			fmt.Fprintf(&out, "  %s(%s)\n", call.Method, detail)
+		}
+	}
+	out.WriteString("\nfield providers:\n")
+	providerCount := 0
+	for _, table := range tables {
+		for _, column := range table.Columns {
+			if column.Seeder == nil || column.Seeder.Kind == "none" {
+				continue
+			}
+			providerCount++
+			detail := formatSeedSpec(column.Seeder)
+			if column.Seeder.Kind == "password" {
+				detail = "SEED(password:[REDACTED COMPOSITE])"
+			}
+			fmt.Fprintf(&out, "  %s.%s %s\n", table.Name, column.Name, detail)
+		}
+	}
+	if providerCount == 0 {
+		out.WriteString("  none\n")
+	}
+	out.WriteString("\nsafety: sensitive values are redacted; use the compiled db:seed --dry-run command for fully resolved row counts.\n")
+	return out.String()
 }
 
 func formatRoutes(routes []squeeze.AnalyzedRoute, methods map[string]*squeeze.ControllerMethod, requests []generator.RequestDef) string {

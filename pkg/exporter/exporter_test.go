@@ -78,6 +78,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "commands.NewApp().Run(os.Args[1:])")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "func BuiltinCommands() []Command")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "type dbSeedCommand struct")
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "Environment: config.App.Env")
+	assertFileNotContains(t, filepath.Join(out, "app", "commands", "support.go"), `os.Getenv("APP_ENV")`)
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "dbSeedCommand{}.Run(seedArgs)")
 	assertFileContains(t, filepath.Join(out, "database", "migrations", "seed_support.go"), "type SeedExecutor struct")
 	assertFileContains(t, filepath.Join(out, "database", "seeders", "pickle_gen.go"), "func ResolveValue")

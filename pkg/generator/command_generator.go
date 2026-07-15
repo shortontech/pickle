@@ -326,7 +326,7 @@ func (c dbSeedCommand) Run(args []string) error {
 	result, err := executor.Run(context.Background(), definition.Graph, migrations.SeedExecutionOptions{
 		Scenario: scenario,
 		RootSeed: *rootSeed,
-		Environment: os.Getenv("APP_ENV"),
+		Environment: config.App.Env,
 		Force: *force,
 		ConfirmEnvironment: *confirmEnvironment,
 		DryRun: *dryRun,

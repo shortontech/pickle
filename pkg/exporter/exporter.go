@@ -7255,7 +7255,7 @@ func (e *exporter) generateCommandsSupport() ([]byte, error) {
 	b.WriteString("\t\"log\"\n")
 	b.WriteString("\t\"net/http\"\n")
 	b.WriteString("\t\"time\"\n")
-	if hasSchedule || hasSeeders {
+	if hasSchedule {
 		b.WriteString("\t\"os\"\n")
 	}
 	if hasSchedule {
@@ -7592,7 +7592,7 @@ func (c dbSeedCommand) Run(args []string) error {
 	if err != nil { return err }
 	executor := migrations.SeedExecutor{DB: sqlDB, Tables: seeders.Tables()}
 	result, err := executor.Run(context.Background(), definition.Graph, migrations.SeedExecutionOptions{
-		Scenario: scenario, RootSeed: *rootSeed, Environment: os.Getenv("APP_ENV"), Force: *force,
+		Scenario: scenario, RootSeed: *rootSeed, Environment: config.App.Env, Force: *force,
 		ConfirmEnvironment: *confirmEnvironment, DryRun: *dryRun, Driver: config.Database.Connection().Driver,
 		Policy: definition.Policy, SeederResolver: seeders.ResolveValue,
 		PasswordHasher: func(value string) (string, error) { hash, err := bcrypt.GenerateFromPassword([]byte(value), bcrypt.DefaultCost); return string(hash), err },

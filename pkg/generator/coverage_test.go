@@ -815,10 +815,13 @@ func TestGenerateCommandsGlueWithSeeders(t *testing.T) {
 		t.Fatalf("GenerateCommandsGlue: %v", err)
 	}
 	text := string(out)
-	for _, want := range []string{"type dbSeedCommand struct", "seeders.Resolve(scenario)", "seeders.ResolveValue", "bcrypt.GenerateFromPassword", "migrations.SeedExecutor", "definition.Policy", "if argument == \"--seed\"", "dbSeedCommand{}.Run(seedArgs)", "dbSeedCommand{}"} {
+	for _, want := range []string{"type dbSeedCommand struct", "seeders.Resolve(scenario)", "seeders.ResolveValue", "bcrypt.GenerateFromPassword", "migrations.SeedExecutor", "definition.Policy", "Environment:        config.App.Env", "if argument == \"--seed\"", "dbSeedCommand{}.Run(seedArgs)", "dbSeedCommand{}"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("generated commands missing %q", want)
 		}
+	}
+	if strings.Contains(text, `os.Getenv("APP_ENV")`) {
+		t.Fatal("generated db:seed bypasses loaded config.App.Env")
 	}
 }
 

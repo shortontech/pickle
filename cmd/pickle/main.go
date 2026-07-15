@@ -41,6 +41,10 @@ func main() {
 	case "mcp":
 		cmdMCP()
 	case "migrate", "migrate:rollback", "migrate:fresh", "migrate:status", "db:seed":
+		if os.Args[1] == "db:seed" && helpRequested(os.Args[2:]) {
+			dbSeedUsage()
+			return
+		}
 		cmdMigrate()
 	case "policies:rollback", "policies:status":
 		cmdMigrate()
@@ -79,6 +83,32 @@ func main() {
 		usage()
 		os.Exit(1)
 	}
+}
+
+func helpRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "--help" || arg == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+func dbSeedUsage() {
+	fmt.Println(`Usage: pickle db:seed [scenario] [options]
+
+Run a compiled root seed scenario. When scenario is omitted, the first root
+scenario is used. Pickle regenerates the project before executing a seed, but
+showing this help does not generate or modify project files.
+
+Options:
+  --seed <int64>                Use a deterministic 64-bit root seed
+  --list                        List compiled root scenarios
+  --dry-run                     Plan without inserting rows
+  --force                       Permit a confirmed non-development environment
+  --confirm-environment <name>  Confirm the exact environment to mutate
+  --project <dir>               Project directory (default: current directory)
+  --help, -h                    Show this help`)
 }
 
 func usage() {

@@ -138,3 +138,11 @@ Mutation is enabled by default only in `local`, `development`, and `test`.
 Other environments require both `--force` and an exact
 `--confirm-environment` value. Dry runs are non-mutating and may be planned in
 any environment.
+
+Run a root scenario through the project binary or the forwarding Pickle CLI:
+
+```bash
+pickle db:seed CRMSeeder --seed 8675309
+pickle db:seed --list
+pickle db:seed CRMSeeder --dry-run
+```

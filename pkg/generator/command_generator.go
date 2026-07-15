@@ -201,6 +201,12 @@ var commandsGlueTemplate = template.Must(template.New("commands").Parse(`// Code
 package commands
 
 import (
+	{{ if .HasSeeders }}"crypto/rand"
+	"encoding/binary"
+	"flag"
+	"fmt"
+	"strings"
+	{{ end }}
 	"context"
 	"log"
 	"net/http"
@@ -213,6 +219,9 @@ import (
 	"{{ .MigrationsImport }}"
 	"{{ .ConfigImport }}"
 	"{{ .RoutesImport }}"
+{{ if .HasSeeders }}	"{{ .SeedersImport }}"
+	"golang.org/x/crypto/bcrypt"
+{{ end }}
 {{ if .HasAuth }}	"{{ .AuthImport }}"
 {{ end }}{{ if .HasSchedule }}	"{{ .ScheduleImport }}"
 {{ end }})
@@ -262,6 +271,69 @@ func (c migrateStatusCommand) Run(args []string) error {
 	return nil
 }
 
+{{ if .HasSeeders }}// dbSeedCommand runs an explicit root seed scenario.
+type dbSeedCommand struct{}
+
+func (c dbSeedCommand) Name() string        { return "db:seed" }
+func (c dbSeedCommand) Description() string { return "Seed the database" }
+func (c dbSeedCommand) Run(args []string) error {
+	flags := flag.NewFlagSet("db:seed", flag.ContinueOnError)
+	rootSeed := flags.Int64("seed", 0, "deterministic 64-bit root seed")
+	list := flags.Bool("list", false, "list root scenarios")
+	dryRun := flags.Bool("dry-run", false, "plan without inserting")
+	force := flags.Bool("force", false, "permit a confirmed non-development environment")
+	confirmEnvironment := flags.String("confirm-environment", "", "exact environment mutation confirmation")
+	var flagArgs, scenarioArgs []string
+	for i := 0; i < len(args); i++ {
+		argument := args[i]
+		if !strings.HasPrefix(argument, "-") {
+			scenarioArgs = append(scenarioArgs, argument)
+			continue
+		}
+		flagArgs = append(flagArgs, argument)
+		if (argument == "--seed" || argument == "--confirm-environment") && i+1 < len(args) {
+			i++
+			flagArgs = append(flagArgs, args[i])
+		}
+	}
+	if err := flags.Parse(flagArgs); err != nil { return err }
+	names := seeders.Names()
+	if *list {
+		for _, name := range names { fmt.Println(name) }
+		return nil
+	}
+	if len(names) == 0 { return fmt.Errorf("no root seed scenarios are defined") }
+	scenario := names[0]
+	if len(scenarioArgs) > 1 { return fmt.Errorf("db:seed accepts at most one scenario name") }
+	if len(scenarioArgs) == 1 { scenario = scenarioArgs[0] }
+	if *rootSeed == 0 {
+		var raw [8]byte
+		if _, err := rand.Read(raw[:]); err != nil { return fmt.Errorf("generate root seed: %w", err) }
+		*rootSeed = int64(binary.BigEndian.Uint64(raw[:]))
+	}
+	fmt.Printf("Seed: %d\n", *rootSeed)
+	graph, err := seeders.Graph(scenario)
+	if err != nil { return err }
+	executor := migrations.SeedExecutor{DB: models.DB, Tables: seeders.Tables()}
+	result, err := executor.Run(context.Background(), graph, migrations.SeedExecutionOptions{
+		Scenario: scenario,
+		RootSeed: *rootSeed,
+		Environment: os.Getenv("APP_ENV"),
+		Force: *force,
+		ConfirmEnvironment: *confirmEnvironment,
+		DryRun: *dryRun,
+		Driver: config.Database.Connection().Driver,
+		PasswordHasher: func(value string) (string, error) {
+			hash, err := bcrypt.GenerateFromPassword([]byte(value), bcrypt.DefaultCost)
+			return string(hash), err
+		},
+	})
+	if err != nil { return err }
+	if result.DryRun { fmt.Printf("Plan: %s (%d rows)\n", result.Scenario, len(result.Rows)) } else { fmt.Printf("Seeded: %s (%d rows)\n", result.Scenario, len(result.Rows)) }
+	return nil
+}
+{{ end }}
+
 // BuiltinCommands returns the built-in Pickle commands.
 func BuiltinCommands() []pickle.Command {
 	return []pickle.Command{
@@ -269,7 +341,8 @@ func BuiltinCommands() []pickle.Command {
 		migrateRollbackCommand{},
 		migrateFreshCommand{},
 		migrateStatusCommand{},
-	}
+{{ if .HasSeeders }}		dbSeedCommand{},
+{{ end }}	}
 }
 
 // UserCommands returns user-defined commands.
@@ -323,7 +396,7 @@ func NewApp() *pickle.App {
 `))
 
 // GenerateCommandsGlue produces app/commands/pickle_gen.go.
-func GenerateCommandsGlue(modulePath string, migrationsRel string, userCommands []string, routeVars []string, hasAuth bool, hasSchedule bool) ([]byte, error) {
+func GenerateCommandsGlue(modulePath string, migrationsRel string, userCommands []string, routeVars []string, hasAuth bool, hasSchedule bool, seeders ...bool) ([]byte, error) {
 	// Default to "API" if no route vars found
 	if len(routeVars) == 0 {
 		routeVars = []string{"API"}
@@ -337,10 +410,12 @@ func GenerateCommandsGlue(modulePath string, migrationsRel string, userCommands 
 		RoutesImport     string
 		AuthImport       string
 		ScheduleImport   string
+		SeedersImport    string
 		UserCommands     []string
 		RouteVars        []string
 		HasAuth          bool
 		HasSchedule      bool
+		HasSeeders       bool
 	}{
 		HTTPImport:       modulePath + "/app/http",
 		ModelsImport:     modulePath + "/app/models",
@@ -349,10 +424,12 @@ func GenerateCommandsGlue(modulePath string, migrationsRel string, userCommands 
 		RoutesImport:     modulePath + "/routes",
 		AuthImport:       modulePath + "/app/http/auth",
 		ScheduleImport:   modulePath + "/schedule",
+		SeedersImport:    modulePath + "/database/seeders",
 		UserCommands:     userCommands,
 		RouteVars:        routeVars,
 		HasAuth:          hasAuth,
 		HasSchedule:      hasSchedule,
+		HasSeeders:       len(seeders) > 0 && seeders[0],
 	}
 
 	var buf bytes.Buffer

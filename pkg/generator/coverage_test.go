@@ -801,6 +801,27 @@ func TestGenerateCommandsGlueDefaultRouteVar(t *testing.T) {
 	}
 }
 
+func TestGenerateCommandsGlueWithSeeders(t *testing.T) {
+	out, err := GenerateCommandsGlue(
+		"github.com/example/myapp",
+		"database/migrations",
+		nil,
+		[]string{"API"},
+		false,
+		false,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("GenerateCommandsGlue: %v", err)
+	}
+	text := string(out)
+	for _, want := range []string{"type dbSeedCommand struct", "seeders.Graph(scenario)", "bcrypt.GenerateFromPassword", "migrations.SeedExecutor", "dbSeedCommand{}"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("generated commands missing %q", want)
+		}
+	}
+}
+
 // ─── model_generator.go ──────────────────────────────────────────────────────
 
 func TestGenerateModelWithPublicProjection(t *testing.T) {

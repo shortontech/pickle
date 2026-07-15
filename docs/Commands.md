@@ -24,8 +24,22 @@ Pickle generates these commands automatically:
 | `migrate:rollback` | Roll back the last migration batch |
 | `migrate:fresh` | Drop all tables and re-run migrations |
 | `migrate:status` | Show migration status |
+| `db:seed` | Run a compiled root seed scenario |
 
 Run them via: `go run ./cmd/server/ migrate`
+
+Seeder commands may also be forwarded through Pickle:
+
+```bash
+pickle db:seed
+pickle db:seed CRMSeeder --seed 8675309
+pickle db:seed --list
+pickle db:seed CRMSeeder --dry-run
+```
+
+When no scenario is named, Pickle runs the first root scenario by its stable
+generated name. An omitted root seed is generated and printed before planning
+or mutation.
 
 ## App lifecycle
 

@@ -40,7 +40,7 @@ func main() {
 		cmdExport()
 	case "mcp":
 		cmdMCP()
-	case "migrate", "migrate:rollback", "migrate:fresh", "migrate:status":
+	case "migrate", "migrate:rollback", "migrate:fresh", "migrate:status", "db:seed":
 		cmdMigrate()
 	case "policies:rollback", "policies:status":
 		cmdMigrate()
@@ -95,6 +95,7 @@ Commands:
   migrate:rollback  Roll back the last batch of migrations
   migrate:fresh     Drop all tables and re-run all migrations
   migrate:status    Show migration status
+  db:seed           Run a compiled database seed scenario
   policies:rollback Roll back the last batch of role policies
   policies:status   Show role policy status
   graphql:rollback  Roll back the last batch of GraphQL policies
@@ -460,10 +461,26 @@ func cmdMigrate() {
 		fmt.Fprintf(os.Stderr, "pickle: generate failed: %v\n", err)
 		os.Exit(1)
 	}
+	if os.Args[1] == "db:seed" {
+		tidy := exec.Command("go", "mod", "tidy")
+		tidy.Dir = project.Dir
+		if output, err := tidy.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "pickle: go mod tidy failed: %v\n%s", err, output)
+			os.Exit(1)
+		}
+	}
 
 	// Delegate to the project's own binary via go run
 	// The binary command name matches the pickle CLI command (e.g. "migrate", "migrate:rollback")
-	cmd := exec.Command("go", "run", "./cmd/server/", os.Args[1])
+	forwarded := []string{"run", "./cmd/server/", os.Args[1]}
+	for i := 2; i < len(os.Args); i++ {
+		if os.Args[i] == "--project" && i+1 < len(os.Args) {
+			i++
+			continue
+		}
+		forwarded = append(forwarded, os.Args[i])
+	}
+	cmd := exec.Command("go", forwarded...)
 	cmd.Dir = project.Dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

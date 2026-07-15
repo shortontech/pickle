@@ -851,6 +851,33 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 	}
 
+	// 3a. Generate the compiled scenario registry and the minimal resolved
+	// schema metadata required by the standalone seed executor.
+	hasSeeders := false
+	seedersDir := filepath.Join(project.Dir, "database", "seeders")
+	if _, err := os.Stat(seedersDir); err == nil {
+		definitions, err := ScanSeeders(seedersDir)
+		if err != nil {
+			return fmt.Errorf("scanning seeders: %w", err)
+		}
+		for _, definition := range definitions {
+			if definition.Kind == "scenario" {
+				hasSeeders = true
+				break
+			}
+		}
+		if hasSeeders {
+			fmt.Println("  generating seeders/pickle_gen.go")
+			source, err := GenerateSeederGlue("seeders", project.ModulePath+"/"+layout.MigrationsRel, definitions, tables)
+			if err != nil {
+				return fmt.Errorf("generating seeder glue: %w", err)
+			}
+			if err := writeFile(filepath.Join(seedersDir, "pickle_gen.go"), source); err != nil {
+				return err
+			}
+		}
+	}
+
 	// Build nesting map: child table name → relationship info
 	nestingMap := map[string]SchemaRelationship{}
 	for _, rel := range relationships {
@@ -1160,7 +1187,7 @@ func Generate(project *Project, picklePkgDir string) error {
 				hasSchedule = true
 			}
 
-			cmdSrc, err := GenerateCommandsGlue(project.ModulePath, layout.MigrationsRel, userCmds, routeVars, hasAuth, hasSchedule)
+			cmdSrc, err := GenerateCommandsGlue(project.ModulePath, layout.MigrationsRel, userCmds, routeVars, hasAuth, hasSchedule, hasSeeders)
 			if err != nil {
 				return fmt.Errorf("generating commands glue: %w", err)
 			}

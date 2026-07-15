@@ -107,4 +107,36 @@ func TestGenerateSeedRowCastsFixedValues(t *testing.T) {
 	}
 }
 
+func TestGenerateSeedRowCastsCustomJSONAndScalars(t *testing.T) {
+	table := &Table{Name: "examples", Columns: []*Column{
+		{Name: "payload", Type: JSONB, Seeder: &SeedSpec{Kind: "json", Reference: "PayloadSeeder"}},
+		{Name: "count", Type: BigInteger, Seeder: &SeedSpec{Kind: "custom", Reference: "CountSeeder"}},
+		{Name: "ratio", Type: Double, Seeder: &SeedSpec{Kind: "custom", Reference: "RatioSeeder"}},
+		{Name: "data", Type: Binary, Seeder: &SeedSpec{Kind: "custom", Reference: "DataSeeder"}},
+	}}
+	resolver := func(name string, _ SeedValueContext) (any, bool, error) {
+		values := map[string]any{"PayloadSeeder": map[string]any{"role": "admin"}, "CountSeeder": int(42), "RatioSeeder": "1.25", "DataSeeder": "pickle"}
+		value, found := values[name]
+		return value, found, nil
+	}
+	row, err := GenerateSeedRowWith(table, nil, SeedValueContext{}, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(row["payload"].([]byte)) != `{"role":"admin"}` {
+		t.Fatalf("json = %s", row["payload"])
+	}
+	if row["count"] != int64(42) || row["ratio"] != 1.25 || string(row["data"].([]byte)) != "pickle" {
+		t.Fatalf("casts = %#v", row)
+	}
+}
+
+func TestGenerateSeedRowRejectsInvalidCustomJSON(t *testing.T) {
+	table := &Table{Name: "examples", Columns: []*Column{{Name: "payload", Type: JSONB, Seeder: &SeedSpec{Kind: "json", Reference: "PayloadSeeder"}}}}
+	resolver := func(string, SeedValueContext) (any, bool, error) { return "not-json", true, nil }
+	if _, err := GenerateSeedRowWith(table, nil, SeedValueContext{}, resolver); err == nil {
+		t.Fatal("expected invalid JSON error")
+	}
+}
+
 func valueKey(value any) string { return fmt.Sprintf("%#v", value) }

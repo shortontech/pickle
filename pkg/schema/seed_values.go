@@ -3,6 +3,8 @@ package schema
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"strconv"
@@ -387,11 +389,10 @@ func castSeedValue(columnType ColumnType, value any) (any, error) {
 	if value == nil {
 		return nil, nil
 	}
-	text, isText := value.(string)
-	if !isText {
-		return value, nil
-	}
+	text := fmt.Sprint(value)
 	switch columnType {
+	case String, Text, UUID:
+		return text, nil
 	case Integer:
 		parsed, err := strconv.Atoi(text)
 		if err != nil {
@@ -410,12 +411,50 @@ func castSeedValue(columnType ColumnType, value any) (any, error) {
 			return nil, fmt.Errorf("cannot cast %q to boolean", text)
 		}
 		return parsed, nil
+	case Decimal:
+		if _, ok := new(big.Rat).SetString(text); !ok {
+			return nil, fmt.Errorf("cannot cast %q to decimal", text)
+		}
+		return text, nil
+	case Float, Double:
+		parsed, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			return nil, fmt.Errorf("cannot cast %q to floating point", text)
+		}
+		return parsed, nil
 	case Date, Timestamp, Time:
+		if parsed, ok := value.(time.Time); ok {
+			return parsed, nil
+		}
 		parsed, err := parseSeedTime(text)
 		if err != nil {
 			return nil, err
 		}
 		return parsed, nil
+	case JSONB:
+		switch typed := value.(type) {
+		case []byte:
+			if !json.Valid(typed) {
+				return nil, errors.New("custom JSON seeder returned invalid JSON")
+			}
+			return typed, nil
+		case string:
+			if !json.Valid([]byte(typed)) {
+				return nil, errors.New("custom JSON seeder returned invalid JSON")
+			}
+			return []byte(typed), nil
+		default:
+			encoded, err := json.Marshal(value)
+			if err != nil {
+				return nil, fmt.Errorf("cannot cast custom seeder result to JSON: %w", err)
+			}
+			return encoded, nil
+		}
+	case Binary:
+		if bytes, ok := value.([]byte); ok {
+			return bytes, nil
+		}
+		return []byte(text), nil
 	default:
 		return value, nil
 	}

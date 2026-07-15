@@ -95,6 +95,7 @@ The exported project includes:
 - SQL migration files as `.up.sql` and `.down.sql` pairs
 - copied controllers, routes, requests, middleware, and config
 - standalone HTTP, auth, request binding, and server support code
+- deterministic field/scenario seeders and compiled `db:seed` behavior
 - `EXPORT_REPORT.md` describing unsupported generated subsystems
 
 Generated Pickle imports are removed. The exported app has no runtime dependency on Pickle.

@@ -16,6 +16,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "basic-crud"))
 	writeTestAction(t, projectDir)
 	writeTestCommand(t, projectDir)
+	writeTestSeeder(t, projectDir)
 	writeVisibilityQuerySourceFixture(t, projectDir)
 	out := filepath.Join(t.TempDir(), "exported")
 	res, err := Export(Options{
@@ -61,6 +62,7 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "## Exported")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone JWT, OAuth client-credentials, and session auth drivers")
 	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Standalone RBAC and GraphQL policy state support with changelog tables")
+	assertFileContains(t, filepath.Join(out, "EXPORT_REPORT.md"), "Deterministic scenario seeders with db:seed")
 	assertCleanExportReport(t, out)
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "func Env(key, fallback string) string")
 	assertFileContains(t, filepath.Join(out, "config", "support.go"), "type ConnectionConfig struct")
@@ -75,6 +77,11 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "config", "app.go"), "func app() AppConfig")
 	assertFileContains(t, filepath.Join(out, "cmd", "server", "main.go"), "commands.NewApp().Run(os.Args[1:])")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "func BuiltinCommands() []Command")
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "type dbSeedCommand struct")
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "dbSeedCommand{}.Run(seedArgs)")
+	assertFileContains(t, filepath.Join(out, "database", "migrations", "seed_support.go"), "type SeedExecutor struct")
+	assertFileContains(t, filepath.Join(out, "database", "seeders", "pickle_gen.go"), "func ResolveValue")
+	assertFileContains(t, filepath.Join(out, "database", "seeders", "crm_seeder.go"), "func (CRMSeeder) Seed")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "AuditMarkerCommand{}")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "func HTTPHandler() http.Handler")
 	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), "routes.API.RegisterRoutes(mux)")
@@ -190,6 +197,29 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	writeExportedRBACMiddlewareBehaviorTest(t, out)
 	writeExportedAuthPlaceholderTests(t, out)
 	runExported(t, out, "go", "test", "./...")
+}
+
+func writeTestSeeder(t *testing.T, projectDir string) {
+	t.Helper()
+	dir := filepath.Join(projectDir, "database", "seeders")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := fmt.Sprintf(`package seeders
+
+import seed %q
+
+var UserSeederRef = seed.NewRowSeederRef("UserSeeder", "users")
+
+type CRMSeeder struct { seed.ScenarioSeeder }
+func (CRMSeeder) Seed(graph *seed.SeedGraph) { graph.Create(UserSeederRef).With("password_hash", "fixture") }
+
+type UserSeeder struct{}
+func (UserSeeder) Seed(ctx *seed.SeedValueContext) map[string]any { return map[string]any{} }
+`, "github.com/shortontech/pickle/testdata/basic-crud/database/migrations")
+	if err := os.WriteFile(filepath.Join(dir, "crm_seeder.go"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestExportPreservesCustomRouteVars(t *testing.T) {

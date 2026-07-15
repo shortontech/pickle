@@ -123,6 +123,7 @@ func Export(opts Options) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scanning scopes: %w", err)
 	}
+	ex.seeders = analysis.Seeders
 	ex.managesRoles, err = exportedManagesRoles(project.Dir)
 	if err != nil {
 		return nil, fmt.Errorf("deriving manages roles: %w", err)
@@ -150,6 +151,9 @@ func Export(opts Options) (*Result, error) {
 		return nil, err
 	}
 	if err := ex.writeSQLMigrations(tables, views); err != nil {
+		return nil, err
+	}
+	if err := ex.writeSeederSupport(tables); err != nil {
 		return nil, err
 	}
 	if err := ex.writePolicySupport(); err != nil {
@@ -206,6 +210,7 @@ type exporter struct {
 	integrityModels     map[string]integrityModelInfo
 	scopes              map[string][]generator.ScopeDef
 	managesRoles        map[string]bool
+	seeders             []generator.SeederDefinition
 }
 
 type integrityModelInfo struct {
@@ -317,6 +322,9 @@ func (e *exporter) writeGoMod() error {
 	}
 	b.WriteString("\tgithub.com/go-playground/validator/v10 v10.30.1\n")
 	b.WriteString("\tgithub.com/google/uuid v1.6.0\n")
+	if e.hasSeedScenarios() {
+		b.WriteString("\tgolang.org/x/crypto v0.46.0\n")
+	}
 	b.WriteString("\tgorm.io/driver/mysql v1.6.0\n")
 	b.WriteString("\tgorm.io/driver/postgres v1.6.0\n")
 	b.WriteString("\tgorm.io/driver/sqlite v1.6.0\n")
@@ -6321,6 +6329,29 @@ func (e *exporter) writeCommandsSupport() error {
 	return e.writeFile(filepath.Join("app", "commands", "support.go"), commands)
 }
 
+func (e *exporter) hasSeedScenarios() bool {
+	for _, definition := range e.seeders {
+		if definition.Kind == "scenario" {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *exporter) writeSeederSupport(tables []*schema.Table) error {
+	if len(e.seeders) == 0 {
+		return nil
+	}
+	if err := e.writeFile(filepath.Join("database", "migrations", "seed_support.go"), generator.GenerateCoreSchema("migrations")); err != nil {
+		return err
+	}
+	source, err := generator.GenerateSeederGlue("seeders", e.modulePath+"/database/migrations", e.seeders, tables)
+	if err != nil {
+		return fmt.Errorf("generating exported seeder support: %w", err)
+	}
+	return e.writeFile(filepath.Join("database", "seeders", "pickle_gen.go"), source)
+}
+
 func (e *exporter) hasCommands() bool {
 	_, err := os.Stat(filepath.Join(e.project.Dir, "app", "commands"))
 	return err == nil
@@ -7201,6 +7232,7 @@ func (e *exporter) generateCommandsSupport() ([]byte, error) {
 	hasGraphQL := e.hasGraphQLPackage()
 	hasSchedule := e.hasSchedule()
 	hasPolicies := e.hasPolicySupport()
+	hasSeeders := e.hasSeedScenarios()
 	userCommands, err := generator.ScanCommands(e.project.Layout.CommandsDir)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("scanning exported user commands: %w", err)
@@ -7213,16 +7245,24 @@ func (e *exporter) generateCommandsSupport() ([]byte, error) {
 	var b strings.Builder
 	b.WriteString("package commands\n\n")
 	b.WriteString("import (\n")
-	if hasSchedule {
+	if hasSchedule || hasSeeders {
 		b.WriteString("\t\"context\"\n")
+	}
+	if hasSeeders {
+		b.WriteString("\t\"crypto/rand\"\n\t\"encoding/binary\"\n\t\"flag\"\n")
 	}
 	b.WriteString("\t\"fmt\"\n")
 	b.WriteString("\t\"log\"\n")
 	b.WriteString("\t\"net/http\"\n")
 	b.WriteString("\t\"time\"\n")
-	if hasSchedule {
+	if hasSchedule || hasSeeders {
 		b.WriteString("\t\"os\"\n")
+	}
+	if hasSchedule {
 		b.WriteString("\t\"os/signal\"\n")
+	}
+	if hasSeeders {
+		b.WriteString("\t\"strings\"\n")
 	}
 	b.WriteString("\t\"time\"\n\n")
 	if hasGraphQL {
@@ -7232,6 +7272,10 @@ func (e *exporter) generateCommandsSupport() ([]byte, error) {
 	b.WriteString(fmt.Sprintf("\t\"%s/app/models\"\n", e.modulePath))
 	b.WriteString(fmt.Sprintf("\t\"%s/config\"\n", e.modulePath))
 	b.WriteString(fmt.Sprintf("\t\"%s/database/migrations\"\n", e.modulePath))
+	if hasSeeders {
+		b.WriteString(fmt.Sprintf("\t\"%s/database/seeders\"\n", e.modulePath))
+		b.WriteString("\t\"golang.org/x/crypto/bcrypt\"\n")
+	}
 	if hasPolicies {
 		b.WriteString(fmt.Sprintf("\t\"%s/database/policies\"\n", e.modulePath))
 	}
@@ -7382,10 +7426,12 @@ func (c migrateFreshCommand) Run(args []string) error {
 	}
 `)
 	if hasPolicies {
-		b.WriteString("\treturn policies.Migrate(models.DB, config.Database.Connection().Driver)\n")
-	} else {
-		b.WriteString("\treturn nil\n")
+		b.WriteString("\tif err := policies.Migrate(models.DB, config.Database.Connection().Driver); err != nil { return err }\n")
 	}
+	if hasSeeders {
+		b.WriteString("\tseed := false\n\tseedArgs := make([]string, 0, len(args))\n\tfor _, argument := range args { if argument == \"--seed\" { seed = true; continue }; seedArgs = append(seedArgs, argument) }\n\tif seed { return dbSeedCommand{}.Run(seedArgs) }\n")
+	}
+	b.WriteString("\treturn nil\n")
 	b.WriteString(`
 }
 
@@ -7413,13 +7459,21 @@ func (c migrateStatusCommand) Run(args []string) error {
 	return nil
 }
 
-func BuiltinCommands() []Command {
+`)
+	if hasSeeders {
+		b.WriteString(exportedSeedCommandSource())
+	}
+	b.WriteString(`func BuiltinCommands() []Command {
 	return []Command{
 		migrateCommand{},
 		migrateRollbackCommand{},
 		migrateFreshCommand{},
 		migrateStatusCommand{},
+`)
+	if hasSeeders {
+		b.WriteString("\t\tdbSeedCommand{},\n")
 	}
+	b.WriteString(`	}
 }
 
 func UserCommands() []Command {
@@ -7497,6 +7551,58 @@ func NewApp() *App {
 }
 `)
 	return format.Source([]byte(b.String()))
+}
+
+func exportedSeedCommandSource() string {
+	return `type dbSeedCommand struct{}
+
+func (c dbSeedCommand) Name() string { return "db:seed" }
+func (c dbSeedCommand) Description() string { return "Seed the database" }
+func (c dbSeedCommand) Run(args []string) error {
+	flags := flag.NewFlagSet("db:seed", flag.ContinueOnError)
+	rootSeed := flags.Int64("seed", 0, "deterministic 64-bit root seed")
+	list := flags.Bool("list", false, "list root scenarios")
+	dryRun := flags.Bool("dry-run", false, "plan without inserting")
+	force := flags.Bool("force", false, "permit a confirmed non-development environment")
+	confirmEnvironment := flags.String("confirm-environment", "", "exact environment mutation confirmation")
+	var flagArgs, scenarioArgs []string
+	for i := 0; i < len(args); i++ {
+		argument := args[i]
+		if !strings.HasPrefix(argument, "-") { scenarioArgs = append(scenarioArgs, argument); continue }
+		flagArgs = append(flagArgs, argument)
+		if (argument == "--seed" || argument == "--confirm-environment") && i+1 < len(args) { i++; flagArgs = append(flagArgs, args[i]) }
+	}
+	if err := flags.Parse(flagArgs); err != nil { return err }
+	names := seeders.Names()
+	if *list { for _, name := range names { fmt.Println(name) }; return nil }
+	if len(names) == 0 { return fmt.Errorf("no root seed scenarios are defined") }
+	scenario := names[0]
+	if len(scenarioArgs) > 1 { return fmt.Errorf("db:seed accepts at most one scenario name") }
+	if len(scenarioArgs) == 1 { scenario = scenarioArgs[0] }
+	if *rootSeed == 0 {
+		var raw [8]byte
+		if _, err := rand.Read(raw[:]); err != nil { return fmt.Errorf("generate root seed: %w", err) }
+		*rootSeed = int64(binary.BigEndian.Uint64(raw[:]))
+	}
+	fmt.Printf("Seed: %d\n", *rootSeed)
+	definition, err := seeders.Resolve(scenario)
+	if err != nil { return err }
+	if models.DB == nil { return fmt.Errorf("database is not initialized") }
+	sqlDB, err := models.DB.DB()
+	if err != nil { return err }
+	executor := migrations.SeedExecutor{DB: sqlDB, Tables: seeders.Tables()}
+	result, err := executor.Run(context.Background(), definition.Graph, migrations.SeedExecutionOptions{
+		Scenario: scenario, RootSeed: *rootSeed, Environment: os.Getenv("APP_ENV"), Force: *force,
+		ConfirmEnvironment: *confirmEnvironment, DryRun: *dryRun, Driver: config.Database.Connection().Driver,
+		Policy: definition.Policy, SeederResolver: seeders.ResolveValue,
+		PasswordHasher: func(value string) (string, error) { hash, err := bcrypt.GenerateFromPassword([]byte(value), bcrypt.DefaultCost); return string(hash), err },
+	})
+	if err != nil { return err }
+	if result.DryRun { fmt.Printf("Plan: %s (%d rows)\n", result.Scenario, len(result.Rows)) } else { fmt.Printf("Seeded: %s (%d rows)\n", result.Scenario, len(result.Rows)) }
+	return nil
+}
+
+`
 }
 
 func (e *exporter) generateSQLMigrations(tables []*schema.Table, views []*schema.View) ([]sqlMigration, error) {
@@ -8315,6 +8421,9 @@ func (e *exporter) writeReport(orm string) error {
 	}
 	if e.hasCommands() {
 		b.WriteString("- Standalone command dispatch with embedded SQL migration commands\n")
+	}
+	if e.hasSeedScenarios() {
+		b.WriteString("- Deterministic scenario seeders with db:seed and migrate:fresh --seed command parity\n")
 	}
 	b.WriteString("- Standalone JWT, OAuth client-credentials, and session auth drivers\n")
 	if e.hasPolicySupport() {

@@ -253,7 +253,15 @@ func (c migrateFreshCommand) Name() string        { return "migrate:fresh" }
 func (c migrateFreshCommand) Description() string { return "Drop all tables and re-run all migrations" }
 func (c migrateFreshCommand) Run(args []string) error {
 	runner := migrations.NewRunner(models.DB, config.Database.Connection().Driver)
-	return runner.Fresh(migrations.Registry)
+	if err := runner.Fresh(migrations.Registry); err != nil { return err }
+{{ if .HasSeeders }}	seed := false
+	seedArgs := make([]string, 0, len(args))
+	for _, argument := range args {
+		if argument == "--seed" { seed = true; continue }
+		seedArgs = append(seedArgs, argument)
+	}
+	if seed { return dbSeedCommand{}.Run(seedArgs) }
+{{ end }}	return nil
 }
 
 // migrateStatusCommand shows migration status.

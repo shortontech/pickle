@@ -145,7 +145,12 @@ Run a root scenario through the project binary or the forwarding Pickle CLI:
 pickle db:seed CRMSeeder --seed 8675309
 pickle db:seed --list
 pickle db:seed CRMSeeder --dry-run
+pickle migrate:fresh --seed
 ```
+
+`migrate:fresh --seed` completes the fresh migration first and then delegates
+to the same compiled `db:seed` command. It does not create a second seeding
+implementation or implicitly seed ordinary migrations.
 
 ## Repeat policies
 

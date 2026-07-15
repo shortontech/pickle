@@ -35,6 +35,7 @@ pickle db:seed
 pickle db:seed CRMSeeder --seed 8675309
 pickle db:seed --list
 pickle db:seed CRMSeeder --dry-run
+pickle migrate:fresh --seed
 ```
 
 When no scenario is named, Pickle runs the first root scenario by its stable

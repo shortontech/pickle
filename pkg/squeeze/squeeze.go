@@ -86,11 +86,16 @@ func Analyze(projectDir string) (*AnalysisContext, error) {
 
 	// 6d. Scan GraphQL policies to determine which tables are actually exposed
 	graphQLExposed := scanGraphQLExposedTables(filepath.Join(project.Dir, "database", "policies", "graphql"))
+	seeders, err := generator.ScanSeeders(filepath.Join(project.Dir, "database", "seeders"))
+	if err != nil {
+		return nil, fmt.Errorf("scanning seeders: %w", err)
+	}
 
 	return &AnalysisContext{
 		Routes:         routes,
 		Methods:        methods,
 		Requests:       requests,
+		Seeders:        seeders,
 		Tables:         tables,
 		Views:          views,
 		Migrations:     migrations,

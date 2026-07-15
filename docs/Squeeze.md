@@ -83,6 +83,22 @@ Add RBAC and action/scope rules to the config as needed:
 
 ## Rules
 
+### seeder_unstable_identity
+
+**Severity:** error
+
+**What it catches:** A root scenario using `InsertOrIgnore` or `Upsert` without
+`UniqueBy(...)` on every created row node, or an upsert node without an
+explicit `Update(...)` allowlist. Pickle never guesses a conflict identity.
+
+### seeder_nondeterministic
+
+**Severity:** error
+
+**What it catches:** Seeder source that directly calls global `rand` functions
+or `time.Now()`, bypassing the deterministic root-seed substreams. Generate
+values through migration field providers or the supplied seed context instead.
+
 ### ownership_scoping
 
 **Severity:** error

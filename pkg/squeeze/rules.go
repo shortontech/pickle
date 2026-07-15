@@ -17,6 +17,7 @@ type AnalysisContext struct {
 	Routes               []AnalyzedRoute
 	Methods              map[string]*ControllerMethod
 	Requests             []generator.RequestDef
+	Seeders              []generator.SeederDefinition
 	Tables               []*schema.Table
 	Views                []*schema.View
 	Migrations           []generator.MigrationOps
@@ -95,6 +96,8 @@ func AllRules() map[string]Rule {
 		"graphql_stale_expose":                 ruleGraphQLStaleExpose,
 		"plaintext_password":                   rulePlaintextPassword,
 		"handler_package":                      ruleHandlerPackage,
+		"seeder_unstable_identity":             ruleSeederUnstableIdentity,
+		"seeder_nondeterministic":              ruleSeederNondeterministic,
 	}
 }
 

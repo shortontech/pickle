@@ -15,16 +15,16 @@ func Create(moduleName, targetDir string) error {
 	ts := time.Now().Format("2006_01_02_150405")
 
 	files := map[string]string{
-		".gitignore":                          tmplGitignore(),
-		"go.mod":                              tmplGoMod(moduleName),
-		".env":                                tmplDotEnv(),
-		"cmd/server/main.go":                  tmplMain(moduleName),
-		"config/app.go":                       tmplConfigApp(),
-		"config/database.go":                  tmplConfigDatabase(),
-		"routes/web.go":                       tmplRoutes(moduleName),
-		"app/http/controllers/welcome_controller.go": tmplWelcomeController(moduleName),
-		"app/http/middleware/auth.go":          tmplAuthMiddleware(moduleName),
-		"app/http/requests/login.go":           tmplLoginRequest(),
+		".gitignore":         tmplGitignore(),
+		"go.mod":             tmplGoMod(moduleName),
+		".env":               tmplDotEnv(),
+		"cmd/server/main.go": tmplMain(moduleName),
+		"config/app.go":      tmplConfigApp(),
+		"config/database.go": tmplConfigDatabase(),
+		"routes/web.go":      tmplRoutes(moduleName),
+		"app/http/controllers/welcome_controller.go":           tmplWelcomeController(moduleName),
+		"app/http/middleware/auth.go":                          tmplAuthMiddleware(moduleName),
+		"app/http/requests/login.go":                           tmplLoginRequest(),
 		"database/migrations/" + ts + "_create_users_table.go": tmplMigration(ts),
 	}
 
@@ -135,6 +135,33 @@ func MakeJob(name, projectDir, moduleName string) (string, error) {
 	fileName := snake + ".go"
 	relPath := filepath.Join("app", "jobs", fileName)
 	return writeScaffold(projectDir, relPath, tmplMakeJob(structName))
+}
+
+// MakeSeeder scaffolds a root scenario in database/seeders.
+func MakeSeeder(name, projectDir, moduleName string) (string, error) {
+	if err := sanitizeName(name); err != nil {
+		return "", err
+	}
+	name = strings.TrimSuffix(name, "Seeder")
+	structName := names.SnakeToPascal(name) + "Seeder"
+	fileName := names.PascalToSnake(name) + "_seeder.go"
+	relPath := filepath.Join("database", "seeders", fileName)
+	return writeScaffold(projectDir, relPath, tmplMakeSeeder(structName, moduleName))
+}
+
+func tmplMakeSeeder(structName, moduleName string) string {
+	return r(`package seeders
+
+import seed "{{.ModuleName}}/database/migrations"
+
+type `+structName+` struct {
+	seed.ScenarioSeeder
+}
+
+func (`+structName+`) Seed(graph *seed.SeedGraph) {
+	// Declare row seeder tokens and build the scenario graph here.
+}
+`, moduleName)
 }
 
 func tmplMakeJob(structName string) string {

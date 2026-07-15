@@ -58,6 +58,8 @@ func main() {
 		cmdMakeMiddleware()
 	case "make:job":
 		cmdMakeJob()
+	case "make:seeder":
+		cmdMakeSeeder()
 	case "make:policy":
 		cmdMakePolicy()
 	case "make:action":
@@ -102,6 +104,7 @@ Commands:
   make:request      Scaffold a new request class
   make:middleware    Scaffold a new middleware
   make:job              Scaffold a new job
+  make:seeder           Scaffold a root seed scenario
   make:policy          Scaffold a new role policy
   make:action          Scaffold a new action + gate (model/action)
   make:scope           Scaffold a new scope (model/scope)
@@ -765,6 +768,25 @@ func cmdMakeJob() {
 		os.Exit(1)
 	}
 	relPath, err := scaffold.MakeJob(name, project.Dir, project.ModulePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("  created %s\n", relPath)
+}
+
+func cmdMakeSeeder() {
+	name, projectDir := parseMakeArgs()
+	if name == "" {
+		fmt.Fprintf(os.Stderr, "Usage: pickle make:seeder <Name>\n")
+		os.Exit(1)
+	}
+	project, err := generator.DetectProject(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+		os.Exit(1)
+	}
+	relPath, err := scaffold.MakeSeeder(name, project.Dir, project.ModulePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
 		os.Exit(1)

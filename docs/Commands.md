@@ -62,6 +62,7 @@ The Pickle CLI includes scaffolding commands (run from your project root):
 | `pickle make:request` | Scaffold a new request class |
 | `pickle make:middleware` | Scaffold a new middleware |
 | `pickle make:job` | Scaffold a new cron job (creates a job struct in `app/jobs/`) |
+| `pickle make:seeder` | Scaffold a root scenario in `database/seeders/` |
 
 ## Export
 

@@ -257,6 +257,27 @@ func TestMakeMigrationValid(t *testing.T) {
 	}
 }
 
+func TestMakeSeeder(t *testing.T) {
+	dir := t.TempDir()
+	relPath, err := MakeSeeder("CRM", dir, "example.com/crm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relPath != filepath.Join("database", "seeders", "crm_seeder.go") {
+		t.Fatalf("path = %q", relPath)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, relPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, want := range []string{"type CRMSeeder struct", "seed.ScenarioSeeder", "Seed(graph *seed.SeedGraph)", `"example.com/crm/database/migrations"`} {
+		if !strings.Contains(content, want) {
+			t.Errorf("missing %q in:\n%s", want, content)
+		}
+	}
+}
+
 func TestMakeMigrationContent(t *testing.T) {
 	dir := t.TempDir()
 	relPath, err := MakeMigration("create_orders_table", dir)

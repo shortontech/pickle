@@ -102,3 +102,22 @@ When a row is generated, values resolve in this order:
 
 Required columns without a value source fail before insertion. Foreign keys
 come from scenario relationships rather than randomly generated identifiers.
+
+## Scenario graphs
+
+Scenario seeders describe counts and relationships:
+
+```go
+func (CRMSeeder) Seed(graph *SeedGraph) {
+    user := graph.Create(UserSeeder).One()
+    contacts := graph.CreateN(ContactSeeder, 25).For(user).Many()
+
+    graph.ForEach(contacts, func(contact SeedRecord) {
+        graph.CreateN(NoteSeeder, graph.Between(1, 8)).For(contact)
+    })
+}
+```
+
+`For` resolves the foreign key from migration metadata. Ambiguous
+relationships require an explicit local column selector. Composite foreign
+keys always propagate as complete ordered tuples.

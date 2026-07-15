@@ -33,6 +33,7 @@ const (
 type SeederRef struct {
 	Name       string
 	ReturnType ColumnType
+	Table      string
 }
 
 func NewSeederRef(name string, returnType ColumnType) SeederRef {

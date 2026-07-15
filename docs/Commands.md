@@ -42,6 +42,9 @@ When no scenario is named, Pickle runs the first root scenario by its stable
 generated name. An omitted root seed is generated and printed before planning
 or mutation.
 
+See [Seeders](Seeders.md) for defining field providers and scenario graphs,
+previewing plans, environment safeguards, and repeat policies.
+
 ## App lifecycle
 
 The generated `NewApp()` function builds an `App` with:

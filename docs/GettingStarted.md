@@ -32,7 +32,9 @@ myapp/
 │   │   ├── middleware/          ← Auth, rate limiting, etc.
 │   │   └── requests/           ← Input validation structs
 │   └── models/                 ← Generated from migrations
-├── database/migrations/        ← Schema definitions
+├── database/
+│   ├── migrations/             ← Schema definitions and field seed providers
+│   └── seeders/                ← Fixture scenarios and row seeders
 ├── .env                        ← Environment variables
 └── go.mod
 ```
@@ -48,6 +50,18 @@ Pickle also runs the generator and `go mod tidy`, so the project compiles immedi
 5. **Run `pickle --watch`** — Pickle generates models, query builders, bindings, and everything else
 
 Repeat. The generated files update every time you save.
+
+When you need deterministic fixture data, annotate migration columns with
+field seed providers and scaffold a root scenario:
+
+```bash
+pickle make:seeder Demo
+pickle db:seed DemoSeeder --dry-run
+pickle db:seed DemoSeeder
+```
+
+See [Seeders](Seeders.md) for scenario graphs, relationships, reproducible root
+seeds, environment safeguards, and repeat policies.
 
 ## Exporting to plain Go
 

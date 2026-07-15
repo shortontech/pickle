@@ -158,6 +158,7 @@ See the [Getting Started guide](docs/GettingStarted.md) to create your first Pic
 | [Middleware](docs/Middleware.md) | Auth, rate limiting, and request pipeline |
 | [Requests](docs/Requests.md) | Validation and deserialization |
 | [Migrations](docs/Migrations.md) | Database schema as code |
+| [Seeders](docs/Seeders.md) | Deterministic fixture data, scenario graphs, and repeat policies |
 | [Views](docs/Views.md) | Database views with computed columns |
 | [Router](docs/Router.md) | Route definitions and groups |
 | [Context](docs/Context.md) | The request context object |

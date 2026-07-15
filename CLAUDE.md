@@ -32,6 +32,7 @@ You Write (source of truth):              Pickle Generates (don't edit):
 
 - [Getting Started](docs/GettingStarted.md) — project creation, workflow, file structure
 - [Migrations](docs/Migrations.md) — schema DSL, column types, transactional migrations, state machine
+- [Seeders](docs/Seeders.md) — deterministic field providers, scenario graphs, execution, repeat policies
 - [Query Builder](docs/QueryBuilder.md) — CRUD, typed scopes, eager loading, encrypted columns
 - [Controllers](docs/Controller.md) — structure, request binding, ResourceController
 - [Requests](docs/Requests.md) — validation, deserialization, BindingError

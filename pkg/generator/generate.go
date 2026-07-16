@@ -305,6 +305,7 @@ type MigrationOperation struct {
 // MigrationOps groups the Up and Down operations captured for one migration struct.
 type MigrationOps struct {
 	Name string
+	File string
 	Up   []MigrationOperation
 	Down []MigrationOperation
 }
@@ -429,7 +430,11 @@ func RunSchemaInspectorWithMigrations(project *Project) ([]*schema.Table, []*sch
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("converting migration %s down operations: %w", mi.Name, err)
 		}
-		migrations = append(migrations, MigrationOps{Name: mi.Name, Up: up, Down: down})
+		file := structNameToMigrationID(mi.Name)
+		if file != "" {
+			file += ".go"
+		}
+		migrations = append(migrations, MigrationOps{Name: mi.Name, File: file, Up: up, Down: down})
 	}
 
 	return tables, views, rels, migrations, nil

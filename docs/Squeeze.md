@@ -83,6 +83,16 @@ Add RBAC and action/scope rules to the config as needed:
 
 ## Rules
 
+### rls_guidance
+
+**Severity:** warning
+
+**What it catches:** Migrations that enable, force, or create PostgreSQL RLS policies. This is architectural guidance, not a claim that the RLS declaration is defective.
+
+Pickle policies and generated scopes provide most—and often all—of the access-control behavior applications seek from RLS, while Squeeze adds static guarantees across routes, controllers, scopes, generated queries, visibility annotations, and roles. Raw SQL in regular application code is already a Squeeze error, so fear of an unchecked raw query is not a reason to choose RLS: remove the raw query and use the generated query builder.
+
+RLS remains useful when enforcement must cover database clients outside Pickle or privileged operational access. In that case it should complement, not replace, Pickle policy, ownership, visibility, and authorization analysis. `RawSQL` inside migrations remains appropriate for PostgreSQL roles, grants, and helper functions.
+
 ### seeder_unstable_identity
 
 **Severity:** error

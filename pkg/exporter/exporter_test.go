@@ -8824,6 +8824,48 @@ func TestGenerateSQLMigrationsLowersCapturedOperations(t *testing.T) {
 	}
 }
 
+func TestGenerateSQLMigrationsLowersPostgresRLSPolicies(t *testing.T) {
+	predicate := schema.SQLPredicate("workspace_id = current_setting('app.workspace_id')::uuid")
+	ex := &exporter{migrations: []generator.MigrationOps{{
+		Name: "SecureMessages_2026_07_16_120000",
+		Up: []generator.MigrationOperation{
+			{Type: "enable_rls", Table: "private.messages"},
+			{Type: "force_rls", Table: "private.messages"},
+			{Type: "create_rls_policy", Table: "private.messages", RLSPolicy: &schema.RLSPolicy{Name: "message_scope", Command: schema.RLSAll, Roles: []string{"dill_app"}, Using: predicate, WithCheck: predicate}},
+		},
+		Down: []generator.MigrationOperation{
+			{Type: "drop_rls_policy", Table: "private.messages", RLSPolicy: &schema.RLSPolicy{Name: "message_scope"}},
+			{Type: "no_force_rls", Table: "private.messages"},
+			{Type: "disable_rls", Table: "private.messages"},
+		},
+	}}}
+	migrations, err := ex.generateSQLMigrations(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(migrations) != 1 {
+		t.Fatalf("got %d migrations", len(migrations))
+	}
+	for _, want := range []string{
+		`ALTER TABLE "private"."messages" ENABLE ROW LEVEL SECURITY`,
+		`ALTER TABLE "private"."messages" FORCE ROW LEVEL SECURITY`,
+		`CREATE POLICY "message_scope" ON "private"."messages" FOR ALL TO "dill_app" USING (workspace_id = current_setting('app.workspace_id')::uuid) WITH CHECK (workspace_id = current_setting('app.workspace_id')::uuid)`,
+	} {
+		if !strings.Contains(migrations[0].Up, want) {
+			t.Errorf("up migration missing %q:\n%s", want, migrations[0].Up)
+		}
+	}
+	for _, want := range []string{
+		`DROP POLICY IF EXISTS "message_scope" ON "private"."messages"`,
+		`ALTER TABLE "private"."messages" NO FORCE ROW LEVEL SECURITY`,
+		`ALTER TABLE "private"."messages" DISABLE ROW LEVEL SECURITY`,
+	} {
+		if !strings.Contains(migrations[0].Down, want) {
+			t.Errorf("down migration missing %q:\n%s", want, migrations[0].Down)
+		}
+	}
+}
+
 func TestGenerateSQLMigrationsReportsUnsupportedCapturedOperationBoundary(t *testing.T) {
 	ex := &exporter{migrations: []generator.MigrationOps{
 		{

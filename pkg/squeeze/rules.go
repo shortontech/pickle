@@ -77,6 +77,7 @@ func AllRules() map[string]Rule {
 		"float_request_field":                  ruleFloatRequestField,
 		"raw_sql":                              ruleRawSQL,
 		"raw_query_builder_access":             ruleRawQueryBuilderAccess,
+		"rls_guidance":                        ruleRLSGuidance,
 		"stale_role_annotation":                ruleStaleRoleAnnotation,
 		"unknown_role_annotation":              ruleUnknownRoleAnnotation,
 		"role_without_load":                    ruleRoleWithoutLoad,

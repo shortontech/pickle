@@ -6543,6 +6543,7 @@ func (e *exporter) hasGraphQLPolicies() bool {
 func (e *exporter) generatePolicySupport() ([]byte, error) {
 	var roles []generator.DerivedRole
 	var rolePolicyIDs []string
+	var rowPolicyIDs []string
 	var graphQLPolicyIDs []string
 	if e.hasRolePolicies() {
 		policies, err := generator.ParsePolicyOps(filepath.Join(e.project.Dir, "database", "policies"))
@@ -6552,6 +6553,15 @@ func (e *exporter) generatePolicySupport() ([]byte, error) {
 		roles = generator.StaticDeriveRoles(policies)
 		for _, policy := range policies {
 			rolePolicyIDs = append(rolePolicyIDs, policy.PolicyID)
+		}
+	}
+	if len(e.rowPolicies) > 0 {
+		policies, err := generator.ParseRowPolicyOps(filepath.Join(e.project.Dir, "database", "policies"))
+		if err != nil {
+			return nil, err
+		}
+		for _, policy := range policies {
+			rowPolicyIDs = append(rowPolicyIDs, policy.PolicyID)
 		}
 	}
 	var graphQLState generator.DerivedGraphQLState
@@ -6567,6 +6577,7 @@ func (e *exporter) generatePolicySupport() ([]byte, error) {
 		}
 	}
 	sort.Strings(rolePolicyIDs)
+	sort.Strings(rowPolicyIDs)
 	sort.Strings(graphQLPolicyIDs)
 
 	var b strings.Builder
@@ -6655,6 +6666,13 @@ var rolePolicyIDs = []string{
 	}
 	b.WriteString(`}
 
+var rowPolicyIDs = []string{
+`)
+	for _, id := range rowPolicyIDs {
+		fmt.Fprintf(&b, "\t%q,\n", id)
+	}
+	b.WriteString(`}
+
 var graphQLPolicyIDs = []string{
 `)
 	for _, id := range graphQLPolicyIDs {
@@ -6665,6 +6683,7 @@ var graphQLPolicyIDs = []string{
 func Migrate(db *gorm.DB, driver string) error {
 	if err := ensurePolicyDB(db); err != nil { return err }
 	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := ensureRowPolicySchema(tx); err != nil { return err }
 		if len(roleSeeds) > 0 {
 			if err := ensureRBACSchema(tx); err != nil { return err }
 			if err := seedRoles(tx); err != nil { return err }
@@ -6675,7 +6694,7 @@ func Migrate(db *gorm.DB, driver string) error {
 			if err := seedGraphQLPolicies(tx); err != nil { return err }
 			if err := markPoliciesApplied(tx, "graphql_changelog", graphQLPolicyIDs); err != nil { return err }
 		}
-		if err := migrateGeneratedRowPolicies(tx, driver); err != nil { return err }
+		if err := applyPendingGeneratedRowPolicies(tx, driver); err != nil { return err }
 		return nil
 	}); err != nil {
 		if errors.Is(err, errPolicyDatabase) {
@@ -6689,7 +6708,8 @@ func Migrate(db *gorm.DB, driver string) error {
 func Rollback(db *gorm.DB, driver string) error {
 	if err := ensurePolicyDB(db); err != nil { return err }
 	if err := db.Transaction(func(tx *gorm.DB) error {
-		if err := rollbackGeneratedRowPolicies(tx, driver); err != nil { return err }
+		if err := ensureRowPolicySchema(tx); err != nil { return err }
+		if err := rollbackGeneratedRowPolicyBatch(tx, driver); err != nil { return err }
 		if len(graphQLExposureSeeds) > 0 || len(graphQLActionSeeds) > 0 {
 			if err := tx.Exec("DELETE FROM graphql_actions").Error; err != nil { return policyDatabaseError() }
 			if err := tx.Exec("DELETE FROM graphql_exposures").Error; err != nil { return policyDatabaseError() }
@@ -6714,7 +6734,7 @@ func Rollback(db *gorm.DB, driver string) error {
 func Fresh(db *gorm.DB, driver string) error {
 	if err := ensurePolicyDB(db); err != nil { return err }
 	if err := db.Transaction(func(tx *gorm.DB) error {
-		for _, table := range []string{"graphql_actions", "graphql_exposures", "graphql_changelog", "role_actions", "role_user", "roles", "rbac_changelog"} {
+		for _, table := range []string{"graphql_actions", "graphql_exposures", "graphql_changelog", "role_actions", "role_user", "roles", "rbac_changelog", "row_policy_changelog"} {
 			if err := tx.Exec("DROP TABLE IF EXISTS " + table).Error; err != nil {
 				return fmt.Errorf("policy fresh drop %s", table)
 			}
@@ -6742,8 +6762,20 @@ func reconcileGeneratedRowPolicies(tx *gorm.DB, driver string, ddl []string, des
 	return nil
 }
 func quotePolicyTable(table string) string { parts:=strings.Split(table,".");for i,part:=range parts{parts[i]="\""+strings.ReplaceAll(part,"\"","\"\"")+"\""};return strings.Join(parts,".") }
-func migrateGeneratedRowPolicies(tx *gorm.DB, driver string) error { return reconcileGeneratedRowPolicies(tx,driver,GeneratedRowPolicyDDL,GeneratedRowPolicyDesired) }
-func rollbackGeneratedRowPolicies(tx *gorm.DB, driver string) error { state:=GeneratedRowPolicyStates[""];return reconcileGeneratedRowPolicies(tx,driver,state.DDL,state.Desired) }
+func applyPendingGeneratedRowPolicies(tx *gorm.DB, driver string) error {
+	applied,err:=appliedPolicyRows(tx,"row_policy_changelog");if err!=nil{return err}
+	pending:=[]string{};for _,id:=range rowPolicyIDs{if _,ok:=applied[id];!ok{pending=append(pending,id)}}
+	if len(pending)==0{return nil};batch,err:=nextRowPolicyBatch(tx);if err!=nil{return err};now:=time.Now().UTC()
+	for _,id:=range pending{state,ok:=GeneratedRowPolicyStates[id];if !ok{return fmt.Errorf("missing generated row policy state %s",id)};if err:=reconcileGeneratedRowPolicies(tx,driver,state.DDL,state.Desired);err!=nil{return err};sql:=policyAppliedUpsertSQLForDialect(gormDialectName(tx),"row_policy_changelog");if err:=tx.Exec(sql,id,batch,"applied",now,now).Error;err!=nil{return policyDatabaseError()}}
+	return nil
+}
+func nextRowPolicyBatch(tx *gorm.DB)(int,error){var batch int;if err:=tx.Raw("SELECT COALESCE(MAX(batch), 0) FROM row_policy_changelog").Scan(&batch).Error;err!=nil{return 0,policyDatabaseError()};return batch+1,nil}
+func rollbackGeneratedRowPolicyBatch(tx *gorm.DB,driver string)error{
+	var batch int;if err:=tx.Raw("SELECT COALESCE(MAX(batch), 0) FROM row_policy_changelog WHERE state = 'applied'").Scan(&batch).Error;err!=nil{return policyDatabaseError()};if batch==0{return nil}
+	if err:=tx.Exec("UPDATE row_policy_changelog SET state = 'rolled_back', completed_at = ? WHERE batch = ? AND state = 'applied'",time.Now().UTC(),batch).Error;err!=nil{return policyDatabaseError()}
+	applied,err:=appliedPolicyRows(tx,"row_policy_changelog");if err!=nil{return err};target:=GeneratedRowPolicyStates[""];for i:=len(rowPolicyIDs)-1;i>=0;i--{if _,ok:=applied[rowPolicyIDs[i]];ok{target=GeneratedRowPolicyStates[rowPolicyIDs[i]];break}}
+	return reconcileGeneratedRowPolicies(tx,driver,target.DDL,target.Desired)
+}
 
 func Status(db *gorm.DB, driver string) ([]PolicyStatus, error) {
 	if err := ensurePolicyDB(db); err != nil { return nil, err }
@@ -6826,6 +6858,10 @@ func ensureRBACSchema(db *gorm.DB) error {
 	return nil
 }
 
+func ensureRowPolicySchema(db *gorm.DB) error {
+	if err:=db.Exec(` + "`" + `CREATE TABLE IF NOT EXISTS row_policy_changelog (id VARCHAR(255) PRIMARY KEY, batch INTEGER NOT NULL, state VARCHAR(20) NOT NULL, error TEXT, started_at DATETIME, completed_at DATETIME)` + "`" + `).Error;err!=nil{return policyDatabaseError()};return nil
+}
+
 func ensureGraphQLPolicySchema(db *gorm.DB) error {
 	stmts := []string{
 		` + "`" + `CREATE TABLE IF NOT EXISTS graphql_changelog (id VARCHAR(255) PRIMARY KEY, batch INTEGER NOT NULL, state VARCHAR(20) NOT NULL, error TEXT, started_at DATETIME, completed_at DATETIME)` + "`" + `,
@@ -6892,14 +6928,14 @@ func policyAppliedUpsertSQL(db *gorm.DB, table string) (string, error) {
 
 func policyAppliedUpsertSQLForDialect(dialect string, table string) string {
 	if dialect == "mysql" {
-		return "INSERT INTO " + table + " (id, batch, state, started_at, completed_at) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE state = VALUES(state), completed_at = VALUES(completed_at)"
+		return "INSERT INTO " + table + " (id, batch, state, started_at, completed_at) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE batch = VALUES(batch), state = VALUES(state), started_at = VALUES(started_at), completed_at = VALUES(completed_at)"
 	}
-	return "INSERT INTO " + table + " (id, batch, state, started_at, completed_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET state = excluded.state, completed_at = excluded.completed_at"
+	return "INSERT INTO " + table + " (id, batch, state, started_at, completed_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET batch = excluded.batch, state = excluded.state, started_at = excluded.started_at, completed_at = excluded.completed_at"
 }
 
 func policyStateTableName(table string) (string, error) {
 	switch table {
-	case "rbac_changelog", "graphql_changelog":
+	case "rbac_changelog", "graphql_changelog", "row_policy_changelog":
 		return table, nil
 	default:
 		return "", policyDatabaseError()

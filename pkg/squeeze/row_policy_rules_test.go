@@ -4,6 +4,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -44,6 +46,30 @@ func TestRowPolicyContextMissingAcceptsExplicitContext(t *testing.T) {
 	findings := ruleRowPolicyContextMissing(&AnalysisContext{Methods: map[string]*ControllerMethod{"C.Show": method}, RowPolicies: protectedMessages()})
 	if len(findings) != 0 {
 		t.Fatalf("unexpected: %+v", findings)
+	}
+}
+
+func TestPolicyContextAnalysisIncludesJobsAndCommands(t *testing.T) {
+	root := t.TempDir()
+	for _, entry := range []struct{ dir, file, source string }{
+		{"jobs", "cleanup.go", "package jobs\ntype Cleanup struct{}\nfunc(Cleanup) Handle() error { models.QueryMessage().All(); return nil }"},
+		{"commands", "report.go", "package commands\ntype Report struct{}\nfunc(Report) Run(args []string) error { models.QueryMessage().WithPolicyContext(policyContext).All(); return nil }"},
+	} {
+		dir := filepath.Join(root, "app", entry.dir)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, entry.file), []byte(entry.source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	methods := map[string]*ControllerMethod{}
+	if err := mergePolicyEntryMethods(root, methods); err != nil {
+		t.Fatal(err)
+	}
+	findings := ruleRowPolicyContextMissing(&AnalysisContext{Methods: methods, RowPolicies: protectedMessages()})
+	if len(findings) != 1 || !strings.Contains(findings[0].Message, "Cleanup.Handle") {
+		t.Fatalf("unexpected: %+v methods=%v", findings, methods)
 	}
 }
 func TestRowPolicyApplicationOnlyExplainsClassification(t *testing.T) {

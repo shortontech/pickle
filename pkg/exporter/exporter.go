@@ -6780,6 +6780,14 @@ func rollbackGeneratedRowPolicyBatch(tx *gorm.DB,driver string)error{
 func Status(db *gorm.DB, driver string) ([]PolicyStatus, error) {
 	if err := ensurePolicyDB(db); err != nil { return nil, err }
 	var statuses []PolicyStatus
+	if err := ensureRowPolicySchema(db); err != nil { return nil, err }
+	rowApplied, err := appliedPolicyRows(db, "row_policy_changelog")
+	if err != nil { return nil, err }
+	for _, id := range rowPolicyIDs {
+		status := PolicyStatus{ID: "row:" + id, State: "pending"}
+		if batch, ok := rowApplied[id]; ok { status.Applied=true;status.Batch=batch;status.State="applied" }
+		statuses=append(statuses,status)
+	}
 	if len(roleSeeds) > 0 {
 		if err := ensureRBACSchema(db); err != nil { return nil, err }
 		applied, err := appliedPolicyRows(db, "rbac_changelog")

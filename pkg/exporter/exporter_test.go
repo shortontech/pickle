@@ -11341,6 +11341,75 @@ func TestExportedRowPolicyQuerySupportEnforcesEveryTerminal(t *testing.T) {
 	}
 }
 
+func TestExportedRowPolicyLifecycleExecutesBatchesAndRollsBackAtomically(t *testing.T) {
+	root := t.TempDir()
+	policyDir := filepath.Join(root, "database", "policies")
+	if err := os.MkdirAll(policyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"2026_07_16_100000_first", "2026_07_16_110000_second"} {
+		typeName := "P_" + strings.ReplaceAll(id, "-", "_")
+		source := "package policies\ntype " + typeName + " struct{ Policy }\nfunc(p *" + typeName + ") Up(){p.IdentityUUID(\"user_id\");p.Protect(\"messages\",func(rows *Rows){rows.Rule(\"owner\").ForAuthenticated().Select(Owner(\"user_id\",Identity(\"user_id\")))})}\nfunc(p *" + typeName + ") Down(){p.Unprotect(\"messages\")}\n"
+		if err := os.WriteFile(filepath.Join(policyDir, id+".go"), []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := &exporter{project: &generator.Project{Dir: root}, rowPolicies: []generator.ResolvedRowPolicy{{Protection: schema.RowProtection{Table: "messages"}}}}
+	support, err := e.generatePolicySupport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "database")); err != nil {
+		t.Fatal(err)
+	}
+	module := `module example.com/policyfixture
+
+go 1.25.7
+
+require (
+	github.com/google/uuid v1.6.0
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.1
+)
+`
+	registry := `package policies
+type GeneratedRowPolicyObject struct { Table, Name, Command, Using, WithCheck, Fingerprint string; Permissive bool }
+type GeneratedRowPolicyVersionState struct { DDL []string; Desired map[string][]string; Fingerprint string }
+var GeneratedRowPolicyCatalog=[]GeneratedRowPolicyObject{}
+var GeneratedRowPolicyDDL=[]string{}
+var GeneratedRowPolicyDesired=map[string][]string{}
+var GeneratedRowPolicyStates=map[string]GeneratedRowPolicyVersionState{"":{Desired:map[string][]string{}},"2026_07_16_100000_first":{Desired:map[string][]string{}},"2026_07_16_110000_second":{Desired:map[string][]string{}}}
+`
+	behavior := `package policies
+import("testing";"gorm.io/driver/sqlite";"gorm.io/gorm")
+func TestLifecycle(t *testing.T){
+	db,err:=gorm.Open(sqlite.Open(":memory:"),&gorm.Config{});if err!=nil{t.Fatal(err)}
+	if err:=Migrate(db,"sqlite");err!=nil{t.Fatal(err)}
+	var applied int64;if err:=db.Table("row_policy_changelog").Where("state = ?","applied").Count(&applied).Error;err!=nil||applied!=2{t.Fatalf("applied=%d err=%v",applied,err)}
+	statuses,err:=Status(db,"sqlite");if err!=nil||len(statuses)<2||statuses[0].ID[:4]!="row:"{t.Fatalf("statuses=%+v err=%v",statuses,err)}
+	if err:=Rollback(db,"sqlite");err!=nil{t.Fatal(err)}
+	if err:=db.Table("row_policy_changelog").Where("state = ?","applied").Count(&applied).Error;err!=nil||applied!=0{t.Fatalf("after rollback applied=%d err=%v",applied,err)}
+	if err:=Migrate(db,"sqlite");err!=nil{t.Fatal(err)}
+	var batch int;if err:=db.Raw("SELECT MAX(batch) FROM row_policy_changelog").Scan(&batch).Error;err!=nil||batch!=2{t.Fatalf("reapply batch=%d err=%v",batch,err)}
+}
+func TestLifecycleFailureRollsBackLedger(t *testing.T){
+	db,err:=gorm.Open(sqlite.Open(":memory:"),&gorm.Config{});if err!=nil{t.Fatal(err)}
+	if err:=ensureRowPolicySchema(db);err!=nil{t.Fatal(err)}
+	state:=GeneratedRowPolicyStates["2026_07_16_110000_second"];delete(GeneratedRowPolicyStates,"2026_07_16_110000_second");defer func(){GeneratedRowPolicyStates["2026_07_16_110000_second"]=state}()
+	if err:=Migrate(db,"sqlite");err==nil{t.Fatal("expected missing-state failure")}
+	var rows int64;if err:=db.Table("row_policy_changelog").Count(&rows).Error;err!=nil||rows!=0{t.Fatalf("ledger rows=%d err=%v",rows,err)}
+}
+`
+	files := map[string]string{"go.mod": module, "support.go": string(support), "row_policies_gen.go": registry, "support_test.go": behavior}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runExported(t, root, "go", "mod", "tidy")
+	runExported(t, root, "go", "test", "./...")
+}
+
 func runExported(t *testing.T, dir string, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)

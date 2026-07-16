@@ -43,6 +43,13 @@ func Analyze(projectDir string) (*AnalysisContext, error) {
 			return nil, fmt.Errorf("parsing controllers: %w", err)
 		}
 	}
+	// Generated jobs and CLI commands are part of the closed row-policy proof
+	// boundary. Parse their user-authored methods with the same AST model so a
+	// protected query cannot escape context reachability analysis merely by
+	// moving outside HTTP.
+	if err := mergePolicyEntryMethods(project.Dir, methods); err != nil {
+		return nil, err
+	}
 
 	// 5. Scan request structs
 	requests, err := generator.ScanRequests(project.Layout.RequestsDir)
@@ -122,6 +129,22 @@ func Analyze(projectDir string) (*AnalysisContext, error) {
 		GraphQLExposed: graphQLExposed,
 		ProjectDir:     projectDir,
 	}, nil
+}
+
+func mergePolicyEntryMethods(projectDir string, methods map[string]*ControllerMethod) error {
+	for _, entryDir := range []string{filepath.Join(projectDir, "app", "jobs"), filepath.Join(projectDir, "app", "commands")} {
+		entryMethods, entryErr := ParseControllers(entryDir)
+		if entryErr != nil {
+			if os.IsNotExist(entryErr) || strings.Contains(entryErr.Error(), "not found") {
+				continue
+			}
+			return fmt.Errorf("parsing policy entry points in %s: %w", entryDir, entryErr)
+		}
+		for key, method := range entryMethods {
+			methods[key] = method
+		}
+	}
+	return nil
 }
 
 // RunOptions tunes a squeeze run.

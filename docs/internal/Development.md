@@ -12,6 +12,10 @@ go run ./pkg/tickle/cmd/
 # Run tests
 go test ./...
 
+# Execute the PostgreSQL three-lane row-policy corpus against a disposable DB
+PICKLE_POSTGRES_TEST_DSN='postgres://user:pass@localhost/db?sslmode=disable' \
+  go test ./pkg/cooked -run TestPostgresRowPolicyThreeLaneConformance -count=1 -v
+
 # Generate from a test project
 go run ./cmd/pickle/ generate --project ./testdata/basic-crud/
 

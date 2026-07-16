@@ -12,7 +12,7 @@ Policies are versioned definitions for row authorization, roles, and GraphQL exp
 
 **GraphQL policies** define which models and operations are exposed over the GraphQL API. They embed `GraphQLPolicy`.
 
-All three types replay deterministically. Row and role state share the role-policy transaction; GraphQL retains its later phase and changelog.
+All three types replay deterministically. In a Pickle project, row and role state share the role-policy transaction. Standalone exports keep a dedicated `row_policy_changelog`, replay pending row-policy versions in order, and roll back only the latest applied batch to its exact preceding generated state. GraphQL retains its later phase and changelog.
 
 ## Row policy DSL
 
@@ -89,7 +89,15 @@ err := models.WithTransaction(func(tx *models.Tx) error {
 
 `pickle.identity.*` is reserved. `Tx.SetLocal` cannot spoof it, a transaction context cannot be overwritten, and nested savepoints inherit but cannot broaden it.
 
-HTTP and GraphQL entry points derive context from verified authentication. Background jobs and CLI commands must use their generated trusted adapter and declare the same identities explicitly; tests use the generated test adapter. Never accept identity values directly from request JSON or flags without verifying them against the entry point's authority.
+HTTP and GraphQL entry points derive context from verified authentication. Background jobs and CLI commands pass a driver-native, request-shaped credential through `auth.AuthenticateJobPolicySource` or `auth.AuthenticateCLIPolicySource`, then call `models.PolicyContextFromVerified`. These adapters deliberately do not accept identity maps or role lists. Tests alone receive `models.NewVerifiedPolicyContext` from a generated `_test.go` adapter. Never accept identity values directly from request JSON or flags without verifying them against the entry point's authority.
+
+```go
+verified, err := auth.AuthenticateJobPolicySource(credentialRequest)
+if err != nil {
+    return err
+}
+policyContext := models.PolicyContextFromVerified(verified)
+```
 
 Ownership transfer is an update with different existing and proposed rules: the existing predicate decides who may touch the current row, while the proposed predicate constrains its new owner. For a direct migration-defined foreign-key relationship, `Exists("memberships", Equal(PolicyColumn("workspace_id"), Identity("workspace_id")))` is portable in select, delete, and the existing-row half of update. Pickle resolves the parent/child join and emits the same correlated `EXISTS` in application SQL and PostgreSQL RLS. Proposed-row relationship checks, ambiguous foreign keys, recursion, and privilege-dependent graphs stop generation rather than weakening the rule.
 

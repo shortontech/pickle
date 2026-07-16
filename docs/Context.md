@@ -4,6 +4,8 @@
 
 Authentication, job, CLI, and test entry points should derive a verified `PolicyContext` once and attach it to every protected generated query. The context carries typed identities such as `user_id` and `workspace_id` plus application role slugs; it is separate from column visibility and action gates.
 
+Use `auth.AuthenticatePolicySource` for HTTP/GraphQL, `auth.AuthenticateJobPolicySource` for background work, and `auth.AuthenticateCLIPolicySource` for commands. Each accepts a request-shaped credential understood by the configured auth driver and returns a sealed source for `models.PolicyContextFromVerified`. Production code cannot construct that source from raw identities or roles; the direct constructor exists only in generated `_test.go` code.
+
 For PostgreSQL, seal the same context with `tx.WithPostgresPolicyContext(...)` and use `tx.QueryModel()`. This keeps `pickle.identity.*` transaction-local and applies both generated query predicates and generated RLS. Missing identity fails closed before database access. Direct construction of verified context in ordinary application code is a `row_policy_context_spoof` Squeeze error.
 
 The request context passed to every controller and middleware. Wraps the HTTP request/response and provides helpers for params, auth, and response building.

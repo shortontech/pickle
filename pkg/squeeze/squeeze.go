@@ -212,7 +212,7 @@ func classifyRowPolicies(ctx *AnalysisContext, findings []Finding) []RowPolicyPr
 		}
 		for _, finding := range findings {
 			switch finding.Rule {
-			case "row_policy_context_missing", "row_policy_context_spoof", "row_policy_invalid", "rls_manual_broadening", "raw_query_builder_access":
+			case "row_policy_missing", "row_policy_unknown_identity", "row_policy_unlowerable", "row_policy_context_missing", "row_policy_context_spoof", "row_policy_bypass", "row_policy_projection_conflict", "row_policy_invalid", "rls_not_enabled", "rls_not_forced", "rls_runtime_bypass", "rls_manual_broadening", "rls_drift", "raw_query_builder_access":
 				proof.Classification = "unproven"
 				proof.Evidence = append(proof.Evidence, "blocked-by:"+finding.Rule)
 			}

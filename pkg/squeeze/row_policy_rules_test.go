@@ -75,3 +75,13 @@ func TestAllRowPolicyRuleIDsAreRegistered(t *testing.T) {
 		}
 	}
 }
+
+func TestRowPolicyProofDowngradesOnBypassOrIncompletePolicy(t *testing.T) {
+	policy := generator.ResolvedRowPolicy{Protection: schema.RowProtection{Table: "messages", Rules: []schema.RowRule{{Key: "owner"}}}, EnforcementClass: "portable"}
+	for _, rule := range []string{"row_policy_bypass", "row_policy_missing", "row_policy_unlowerable"} {
+		proofs := classifyRowPolicies(&AnalysisContext{RowPolicies: []generator.ResolvedRowPolicy{policy}}, []Finding{{Rule: rule}})
+		if proofs[0].Classification != "unproven" {
+			t.Errorf("%s left classification %s", rule, proofs[0].Classification)
+		}
+	}
+}

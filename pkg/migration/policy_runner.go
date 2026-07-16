@@ -448,15 +448,15 @@ func (r *PolicyRunner) RowPolicyStatus() ([]RowPolicyDrift, error) {
 		if bypass {
 			status.Problems = append(status.Problems, "runtime role has BYPASSRLS")
 		}
-		rows, err := r.DB.Query(`SELECT p.polname, CASE p.polcmd WHEN 'r' THEN 'SELECT' WHEN 'a' THEN 'INSERT' WHEN 'w' THEN 'UPDATE' WHEN 'd' THEN 'DELETE' ELSE 'ALL' END, p.polpermissive, COALESCE(obj_description(p.oid, 'pg_policy'),'') FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname=$2`, schemaName, tableName)
+		rows, err := r.DB.Query(`SELECT p.polname, CASE p.polcmd WHEN 'r' THEN 'SELECT' WHEN 'a' THEN 'INSERT' WHEN 'w' THEN 'UPDATE' WHEN 'd' THEN 'DELETE' ELSE 'ALL' END, p.polpermissive, COALESCE(obj_description(p.oid, 'pg_policy'),''), COALESCE(pg_get_expr(p.polqual,p.polrelid),''), COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname=$2`, schemaName, tableName)
 		if err != nil {
 			return nil, fmt.Errorf("inspecting policies for %s: %w", table, err)
 		}
 		seen := map[string]bool{}
 		for rows.Next() {
-			var name, command, comment string
+			var name, command, comment, using, withCheck string
 			var permissive bool
-			if err := rows.Scan(&name, &command, &permissive, &comment); err != nil {
+			if err := rows.Scan(&name, &command, &permissive, &comment, &using, &withCheck); err != nil {
 				rows.Close()
 				return nil, err
 			}
@@ -471,6 +471,12 @@ func (r *PolicyRunner) RowPolicyStatus() ([]RowPolicyDrift, error) {
 				}
 				if comment != "pickle:fingerprint:"+object.Fingerprint {
 					status.Problems = append(status.Problems, "fingerprint mismatch for "+name)
+				}
+				if !policyExpressionEquivalent(using, object.Using) {
+					status.Problems = append(status.Problems, "USING predicate drift for "+name)
+				}
+				if !policyExpressionEquivalent(withCheck, object.WithCheck) {
+					status.Problems = append(status.Problems, "WITH CHECK predicate drift for "+name)
 				}
 			} else if permissive && shouldProtect {
 				status.Problems = append(status.Problems, "unexpected permissive policy "+name)
@@ -493,6 +499,14 @@ func (r *PolicyRunner) RowPolicyStatus() ([]RowPolicyDrift, error) {
 		statuses = append(statuses, status)
 	}
 	return statuses, nil
+}
+
+func policyExpressionEquivalent(actual, expected string) bool {
+	normalize := func(value string) string {
+		value = strings.ToLower(value)
+		return strings.Join(strings.Fields(value), "")
+	}
+	return normalize(actual) == normalize(expected)
 }
 
 func policySplitQualifiedName(table string) (string, string) {

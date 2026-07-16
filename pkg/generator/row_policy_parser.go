@@ -76,15 +76,15 @@ func parseRowPolicyFile(path string) (ParsedRowPolicyFile, error) {
 		for _, stmt := range fn.Body.List {
 			exprStmt, ok := stmt.(*ast.ExprStmt)
 			if !ok {
-				continue
+				return out, fmt.Errorf("unsupported statement in row policy Up: %T", stmt)
 			}
 			call, ok := exprStmt.X.(*ast.CallExpr)
 			if !ok {
-				continue
+				return out, fmt.Errorf("unsupported expression in row policy Up")
 			}
 			sel, ok := call.Fun.(*ast.SelectorExpr)
 			if !ok {
-				continue
+				return out, fmt.Errorf("unsupported unqualified call in row policy Up")
 			}
 			switch sel.Sel.Name {
 			case "IdentityUUID", "IdentityString", "IdentityStrings":
@@ -121,6 +121,15 @@ func parseRowPolicyFile(path string) (ParsedRowPolicyFile, error) {
 					return out, fmt.Errorf("Unprotect table must be a string literal")
 				}
 				out.Operations = append(out.Operations, schema.RowPolicyOperation{Type: "unprotect", Protection: schema.RowProtection{Table: table}})
+			default:
+				chain := collectCallChain(call)
+				if len(chain) == 0 {
+					return out, fmt.Errorf("unsupported row policy call %s", sel.Sel.Name)
+				}
+				root, ok := chain[0].Fun.(*ast.SelectorExpr)
+				if !ok || (root.Sel.Name != "CreateRole" && root.Sel.Name != "AlterRole" && root.Sel.Name != "DropRole") {
+					return out, fmt.Errorf("unsupported row policy call %s", sel.Sel.Name)
+				}
 			}
 		}
 	}
@@ -143,19 +152,19 @@ func parseProtectionCall(call *ast.CallExpr, kind string) (schema.RowPolicyOpera
 	for _, stmt := range fn.Body.List {
 		expr, ok := stmt.(*ast.ExprStmt)
 		if !ok {
-			continue
+			return schema.RowPolicyOperation{}, fmt.Errorf("unsupported statement in Protect callback: %T", stmt)
 		}
 		call, ok := expr.X.(*ast.CallExpr)
 		if !ok {
-			continue
+			return schema.RowPolicyOperation{}, fmt.Errorf("unsupported expression in Protect callback")
 		}
 		calls := collectCallChain(call)
 		if len(calls) == 0 {
-			continue
+			return schema.RowPolicyOperation{}, fmt.Errorf("unsupported call in Protect callback")
 		}
 		rootSel, ok := calls[0].Fun.(*ast.SelectorExpr)
 		if !ok {
-			continue
+			return schema.RowPolicyOperation{}, fmt.Errorf("Protect callback calls must target Rows")
 		}
 		switch rootSel.Sel.Name {
 		case "CombineSubjects":
@@ -186,6 +195,8 @@ func parseProtectionCall(call *ast.CallExpr, kind string) (schema.RowPolicyOpera
 				return schema.RowPolicyOperation{}, err
 			}
 			p.Rules = append(p.Rules, rule)
+		default:
+			return schema.RowPolicyOperation{}, fmt.Errorf("unsupported Protect callback call %s", rootSel.Sel.Name)
 		}
 	}
 	return schema.RowPolicyOperation{Type: kind, Protection: p}, nil
@@ -242,6 +253,8 @@ func parseRowRuleChain(calls []*ast.CallExpr) (schema.RowRule, error) {
 				return rule, fmt.Errorf("Update second argument must be Proposed: %w", err)
 			}
 			rule.UpdateOld, rule.UpdateNew = &old, &newPred
+		default:
+			return rule, fmt.Errorf("unsupported row rule call %s", sel.Sel.Name)
 		}
 	}
 	return rule, nil
@@ -378,6 +391,12 @@ func ResolveRowPolicies(files []ParsedRowPolicyFile, tables []*schema.Table, rol
 			resolved.SourcePolicies = append(resolved.SourcePolicies, file.PolicyID)
 			resolved.EnforcementClass = "portable"
 			resolved.PhysicalPlans = rowPolicyPhysicalPlans(table, op.Protection)
+			if table.IsImmutable {
+				resolved.EnforcementClass = "application_only"
+				for operation := range resolved.PhysicalPlans {
+					resolved.PhysicalPlans[operation] = "application_only:global_current_version_requires_pre_rls_reduction"
+				}
+			}
 			for _, plan := range resolved.PhysicalPlans {
 				if strings.Contains(plan, "application_only") {
 					resolved.EnforcementClass = "application_only"
@@ -391,10 +410,46 @@ func ResolveRowPolicies(files []ParsedRowPolicyFile, tables []*schema.Table, rol
 	var out []ResolvedRowPolicy
 	for _, table := range order {
 		if policy := state[table]; policy != nil {
+			if err := rejectPrivilegeDependentRelationships(policy.Protection, state); err != nil {
+				return nil, fmt.Errorf("row policy for %s: %w", table, err)
+			}
 			out = append(out, *policy)
 		}
 	}
 	return out, nil
+}
+
+func rejectPrivilegeDependentRelationships(protection schema.RowProtection, protected map[string]*ResolvedRowPolicy) error {
+	var walk func(*schema.RowPredicate) error
+	walk = func(predicate *schema.RowPredicate) error {
+		if predicate == nil {
+			return nil
+		}
+		if predicate.Kind == schema.PredicateExists {
+			if protected[predicate.RelatedTable] != nil {
+				return fmt.Errorf("relationship %q references protected table %s; equivalent RLS evaluation privileges cannot be proven", predicate.Name, predicate.RelatedTable)
+			}
+			for _, child := range predicate.Children {
+				if child.Kind == schema.PredicateExists {
+					return fmt.Errorf("recursive relationship predicates are not portable")
+				}
+			}
+		}
+		for i := range predicate.Children {
+			if err := walk(&predicate.Children[i]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, rule := range protection.Rules {
+		for _, predicate := range []*schema.RowPredicate{rule.Select, rule.Insert, rule.UpdateOld, rule.UpdateNew, rule.Delete} {
+			if err := walk(predicate); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func copyPolicyIdentities(in map[string]schema.PolicyIdentityType) map[string]schema.PolicyIdentityType {
@@ -411,11 +466,17 @@ func validateResolvedProtection(p schema.RowProtection, table *schema.Table, ide
 		cols[col.Name] = col.Type
 	}
 	seen := map[string]bool{}
+	seenSubjects := map[string]bool{}
 	for _, rule := range p.Rules {
 		if rule.Key == "" || seen[rule.Key] {
 			return fmt.Errorf("duplicate or empty rule key %q", rule.Key)
 		}
 		seen[rule.Key] = true
+		subjectKey := string(rule.Subject.Kind) + ":" + rule.Subject.Name
+		if seenSubjects[subjectKey] {
+			return fmt.Errorf("duplicate subject %q; combine that subject's predicates explicitly with And or Or", subjectKey)
+		}
+		seenSubjects[subjectKey] = true
 		if rule.Subject.Kind == schema.SubjectRole && !roles[rule.Subject.Name] {
 			return fmt.Errorf("rule %q references unknown role %q", rule.Key, rule.Subject.Name)
 		}
@@ -434,8 +495,31 @@ func validateResolvedProtection(p schema.RowProtection, table *schema.Table, ide
 		if (rule.UpdateOld == nil) != (rule.UpdateNew == nil) {
 			return fmt.Errorf("rule %q update requires existing and proposed predicates", rule.Key)
 		}
+		for _, pred := range []*schema.RowPredicate{rule.Insert, rule.UpdateNew} {
+			if pred != nil {
+				if column := predicateDefaultedColumn(*pred, table); column != "" {
+					return fmt.Errorf("rule %q proposed-row predicate references defaulted column %q; application and database values may differ", rule.Key, column)
+				}
+			}
+		}
 	}
 	return nil
+}
+
+func predicateDefaultedColumn(predicate schema.RowPredicate, table *schema.Table) string {
+	if predicate.Kind == schema.PredicateColumn {
+		for _, column := range table.Columns {
+			if column.Name == predicate.Name && column.HasDefault {
+				return column.Name
+			}
+		}
+	}
+	for _, child := range predicate.Children {
+		if name := predicateDefaultedColumn(child, table); name != "" {
+			return name
+		}
+	}
+	return ""
 }
 
 func validateResolvedPredicate(p schema.RowPredicate, cols map[string]schema.ColumnType, identities map[string]schema.PolicyIdentityType) error {
@@ -459,10 +543,14 @@ func validateResolvedPredicate(p schema.RowPredicate, cols map[string]schema.Col
 	}
 	if (p.Kind == schema.PredicateEqual || p.Kind == schema.PredicateNotEqual) && len(p.Children) == 2 {
 		left, right := p.Children[0], p.Children[1]
-		if left.Kind == schema.PredicateColumn && right.Kind == schema.PredicateIdentity {
-			if !rowPolicyTypesCompatible(cols[left.Name], identities[right.Name]) {
-				return fmt.Errorf("column %q and identity %q have incompatible types", left.Name, right.Name)
-			}
+		if left.Kind == schema.PredicateIdentity && right.Kind == schema.PredicateColumn {
+			left, right = right, left
+		}
+		if left.Kind != schema.PredicateColumn || right.Kind != schema.PredicateIdentity {
+			return fmt.Errorf("comparison must pair one policy column with one identity")
+		}
+		if !rowPolicyTypesCompatible(cols[left.Name], identities[right.Name]) {
+			return fmt.Errorf("column %q and identity %q have incompatible types", left.Name, right.Name)
 		}
 	}
 	return nil
@@ -491,19 +579,22 @@ func resolveRowPolicyRelationships(protection *schema.RowProtection, table *sche
 			}
 			var related *schema.Table
 			local, foreign := "", ""
+			matches := 0
 			for _, relationship := range relationships {
 				if relationship.ParentTable == current.Name && relationship.ChildTable == node.Name {
+					matches++
 					related = tables[relationship.ChildTable]
 					local = primaryPolicyColumn(current)
 					foreign = foreignKeyPolicyColumn(related, current.Name)
 				}
 				if relationship.ChildTable == current.Name && relationship.ParentTable == node.Name {
+					matches++
 					related = tables[relationship.ParentTable]
 					local = foreignKeyPolicyColumn(current, related.Name)
 					foreign = primaryPolicyColumn(related)
 				}
 			}
-			if related == nil || local == "" || foreign == "" {
+			if matches != 1 || related == nil || local == "" || foreign == "" {
 				return fmt.Errorf("unresolved or ambiguous relationship %q from %s", node.Name, current.Name)
 			}
 			node.RelatedTable, node.LocalColumn, node.ForeignColumn = related.Name, local, foreign

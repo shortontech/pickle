@@ -112,3 +112,38 @@ func TestResolveRowPoliciesRejectsRelationshipInProposedRow(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestParseRowPoliciesFailsClosedOnUnsupportedSource(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "2026_07_16_120000_bad.go")
+	src := `package policies
+type Bad_2026_07_16_120000 struct{ Policy }
+func (p *Bad_2026_07_16_120000) Up() { if true { p.Protect("messages", func(rows *Rows) {}) } }`
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseRowPolicyOps(dir); err == nil || !strings.Contains(err.Error(), "unsupported statement") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveImmutableRowPolicyRequiresApplicationOnly(t *testing.T) {
+	pred := schema.Allow()
+	files := []ParsedRowPolicyFile{{PolicyID: "p1", Operations: []schema.RowPolicyOperation{{Type: "protect", Protection: schema.RowProtection{Table: "messages", Rules: []schema.RowRule{{Key: "read", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &pred}}}}}}}
+	_, err := ResolveRowPolicies(files, []*schema.Table{{Name: "messages", IsImmutable: true}}, nil)
+	if err == nil || !strings.Contains(err.Error(), `AllowApplicationOnly("non_bijective_physical_plan")`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveRelationshipRejectsProtectedReferencedTable(t *testing.T) {
+	exists := schema.Exists("memberships", schema.Equal(schema.PolicyColumn("workspace_id"), schema.Identity("workspace_id")))
+	allow := schema.Allow()
+	files := []ParsedRowPolicyFile{{PolicyID: "p1", Identities: []schema.PolicyIdentityDefinition{{Name: "workspace_id", Type: schema.PolicyIdentityUUID}}, Operations: []schema.RowPolicyOperation{{Type: "protect", Protection: schema.RowProtection{Table: "users", Rules: []schema.RowRule{{Key: "member", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &exists}}}}, {Type: "protect", Protection: schema.RowProtection{Table: "memberships", Rules: []schema.RowRule{{Key: "visible", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &allow}}}}}}}
+	users := &schema.Table{Name: "users", Columns: []*schema.Column{{Name: "id", Type: schema.UUID, IsPrimaryKey: true}}}
+	memberships := &schema.Table{Name: "memberships", Columns: []*schema.Column{{Name: "user_id", Type: schema.UUID, ForeignKeyTable: "users"}, {Name: "workspace_id", Type: schema.UUID}}}
+	_, err := ResolveRowPolicies(files, []*schema.Table{users, memberships}, nil, []SchemaRelationship{{ParentTable: "users", ChildTable: "memberships"}})
+	if err == nil || !strings.Contains(err.Error(), "evaluation privileges cannot be proven") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

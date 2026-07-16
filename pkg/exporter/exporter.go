@@ -11194,7 +11194,7 @@ func NewVerifiedPolicyContext(identities map[string]string, roles []string) Poli
 func (c PolicyContext) identity(name string) (string,bool) { value, ok := c.identities[name]; return value, ok && value != "" }
 func (c PolicyContext) encodedRoles() string { values:=make([]string,0,len(c.roles)); for role:=range c.roles { values=append(values,role) }; sort.Strings(values); data,_:=json.Marshal(values); return string(data) }
 
-type rowPolicyRuntimePredicate struct { Kind, Name string; Children []rowPolicyRuntimePredicate }
+type rowPolicyRuntimePredicate struct { Kind, Name, RelatedTable, LocalColumn, ForeignColumn string; Children []rowPolicyRuntimePredicate }
 type rowPolicyRuntimeRule struct { Key, SubjectKind, SubjectName string; Select, Insert, UpdateOld, UpdateNew, Delete *rowPolicyRuntimePredicate }
 type rowPolicyRuntimeDefinition struct { Table, SubjectCombination, EnforcementClass string; IdentityTypes map[string]string; Rules []rowPolicyRuntimeRule }
 var rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{}
@@ -11209,15 +11209,17 @@ func compileRowPolicy(table, operation string, context *PolicyContext) (string,[
     if len(parts)==0 { return "",nil,fmt.Errorf("%w for %s.%s",ErrPolicyContextRequired,table,operation) }
     join:=" OR "; if definition.SubjectCombination=="all" { join=" AND " }; return "("+strings.Join(parts,join)+")",args,nil
 }
-func compileExportedPredicate(p rowPolicyRuntimePredicate, context PolicyContext) (string,[]any,error) {
+func compileExportedPredicate(p rowPolicyRuntimePredicate, context PolicyContext) (string,[]any,error) { return compileExportedPredicateAlias(p,context,"") }
+func compileExportedPredicateAlias(p rowPolicyRuntimePredicate, context PolicyContext, alias string) (string,[]any,error) {
     switch p.Kind {
     case "allow": return "TRUE",nil,nil
     case "deny": return "FALSE",nil,nil
-    case "column": return ` + "`" + `"` + "`" + `+strings.ReplaceAll(p.Name,` + "`" + `"` + "`" + `,` + "`" + `""` + "`" + `)+` + "`" + `"` + "`" + `,nil,nil
+    case "column": prefix:="";if alias!=""{prefix=alias+"."};return prefix+` + "`" + `"` + "`" + `+strings.ReplaceAll(p.Name,` + "`" + `"` + "`" + `,` + "`" + `""` + "`" + `)+` + "`" + `"` + "`" + `,nil,nil
     case "identity": value,ok:=context.identity(p.Name); if !ok{return "",nil,fmt.Errorf("missing identity %q",p.Name)}; return "?",[]any{value},nil
-    case "equal","not_equal": if len(p.Children)!=2{return "",nil,fmt.Errorf("invalid comparison")}; left,la,err:=compileExportedPredicate(p.Children[0],context);if err!=nil{return "",nil,err};right,ra,err:=compileExportedPredicate(p.Children[1],context);if err!=nil{return "",nil,err};op:="=";if p.Kind=="not_equal"{op="<>"};return "COALESCE(("+left+" "+op+" "+right+"), FALSE)",append(la,ra...),nil
-    case "and","or": join:=" AND ";if p.Kind=="or"{join=" OR "};var parts []string;var args []any;for _,child:=range p.Children{part,values,err:=compileExportedPredicate(child,context);if err!=nil{return "",nil,err};parts=append(parts,part);args=append(args,values...)};return "("+strings.Join(parts,join)+")",args,nil
-    case "not": child,args,err:=compileExportedPredicate(p.Children[0],context);return "COALESCE(NOT ("+child+"), FALSE)",args,err
+    case "equal","not_equal": if len(p.Children)!=2{return "",nil,fmt.Errorf("invalid comparison")}; left,la,err:=compileExportedPredicateAlias(p.Children[0],context,alias);if err!=nil{return "",nil,err};right,ra,err:=compileExportedPredicateAlias(p.Children[1],context,alias);if err!=nil{return "",nil,err};op:="=";if p.Kind=="not_equal"{op="<>"};return "COALESCE(("+left+" "+op+" "+right+"), FALSE)",append(la,ra...),nil
+    case "and","or": join:=" AND ";if p.Kind=="or"{join=" OR "};var parts []string;var args []any;for _,child:=range p.Children{part,values,err:=compileExportedPredicateAlias(child,context,alias);if err!=nil{return "",nil,err};parts=append(parts,part);args=append(args,values...)};return "("+strings.Join(parts,join)+")",args,nil
+    case "not": child,args,err:=compileExportedPredicateAlias(p.Children[0],context,alias);return "COALESCE(NOT ("+child+"), FALSE)",args,err
+    case "exists": if len(p.Children)!=1||p.RelatedTable==""||p.LocalColumn==""||p.ForeignColumn==""{return "",nil,fmt.Errorf("invalid relationship predicate")};related:="pickle_rel";child,args,err:=compileExportedPredicateAlias(p.Children[0],context,related);if err!=nil{return "",nil,err};outer:=` + "`" + `"` + "`" + `+strings.ReplaceAll(p.LocalColumn,` + "`" + `"` + "`" + `,` + "`" + `""` + "`" + `)+` + "`" + `"` + "`" + `;if alias!=""{outer=alias+"."+outer};table:=` + "`" + `"` + "`" + `+strings.ReplaceAll(p.RelatedTable,` + "`" + `"` + "`" + `,` + "`" + `""` + "`" + `)+` + "`" + `"` + "`" + `;foreign:=` + "`" + `"` + "`" + `+strings.ReplaceAll(p.ForeignColumn,` + "`" + `"` + "`" + `,` + "`" + `""` + "`" + `)+` + "`" + `"` + "`" + `;return "EXISTS (SELECT 1 FROM "+table+" "+related+" WHERE "+related+"."+foreign+" = "+outer+" AND ("+child+"))",args,nil
     }; return "",nil,fmt.Errorf("unknown predicate %q",p.Kind)
 }
 func applyExportedRowPolicy(db *gorm.DB, table, operation string, context *PolicyContext) (*gorm.DB,error) { clause,args,err:=compileRowPolicy(table,operation,context);if err!=nil{return nil,err};if clause!=""{db=db.Where(clause,args...)};return db,nil }

@@ -38,9 +38,13 @@ func TestPolicyProtectRejectsDuplicateStableKeys(t *testing.T) {
 
 func TestPolicyResetClearsRowOperations(t *testing.T) {
 	p := &Policy{}
+	p.IdentityUUID("workspace_id")
 	p.Unprotect("messages")
 	p.Reset()
 	if len(p.GetRowOperations()) != 0 {
 		t.Fatal("row operations not cleared")
+	}
+	if len(p.GetIdentityDefinitions()) != 0 {
+		t.Fatal("identity definitions not cleared")
 	}
 }

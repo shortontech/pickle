@@ -2,6 +2,32 @@ package schema
 
 import "strings"
 
+type PolicyIdentityType string
+
+const (
+	PolicyIdentityUUID    PolicyIdentityType = "uuid"
+	PolicyIdentityString  PolicyIdentityType = "string"
+	PolicyIdentityStrings PolicyIdentityType = "strings"
+)
+
+type PolicyIdentityDefinition struct {
+	Name string
+	Type PolicyIdentityType
+}
+
+func (p *Policy) IdentityUUID(name string)    { p.declareIdentity(name, PolicyIdentityUUID) }
+func (p *Policy) IdentityString(name string)  { p.declareIdentity(name, PolicyIdentityString) }
+func (p *Policy) IdentityStrings(name string) { p.declareIdentity(name, PolicyIdentityStrings) }
+func (p *Policy) declareIdentity(name string, kind PolicyIdentityType) {
+	rowPolicyName("identity", name)
+	for _, existing := range p.IdentityDefinitions {
+		if existing.Name == name {
+			panic("pickle: duplicate policy identity \"" + name + "\"")
+		}
+	}
+	p.IdentityDefinitions = append(p.IdentityDefinitions, PolicyIdentityDefinition{Name: name, Type: kind})
+}
+
 // RowPolicyOperation is a replayable row-authorization state transition.
 type RowPolicyOperation struct {
 	Type       string // protect, alter_protection, unprotect

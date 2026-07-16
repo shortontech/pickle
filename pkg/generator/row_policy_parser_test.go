@@ -1,0 +1,88 @@
+package generator
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/shortontech/pickle/pkg/schema"
+)
+
+func TestParseAndResolveRowPolicies(t *testing.T) {
+	dir := t.TempDir()
+	src := `package policies
+type MessageAccess_2026_07_16_120000 struct{ Policy }
+func (p *MessageAccess_2026_07_16_120000) Up() {
+	p.IdentityUUID("workspace_id")
+	p.CreateRole("member")
+	p.Protect("messages", func(rows *Rows) {
+		rows.Rule("member_workspace").ForRole("member").
+			Select(Owner("workspace_id", Identity("workspace_id"))).
+			Insert(Owner("workspace_id", Identity("workspace_id"))).
+			Update(Existing(Owner("workspace_id", Identity("workspace_id"))), Proposed(Owner("workspace_id", Identity("workspace_id"))))
+	})
+}`
+	path := filepath.Join(dir, "2026_07_16_120000_message_access.go")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files, err := ParseRowPolicyOps(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || len(files[0].Operations) != 1 || len(files[0].Identities) != 1 {
+		t.Fatalf("unexpected parse: %#v", files)
+	}
+	roles, err := ParsePolicyOps(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := ResolveRowPolicies(files, []*schema.Table{{Name: "messages", Columns: []*schema.Column{{Name: "workspace_id", Type: schema.UUID}}}}, StaticDeriveRoles(roles))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 1 || resolved[0].EnforcementClass != "portable" || resolved[0].PhysicalPlans["update"] != "update" {
+		t.Fatalf("unexpected resolution: %#v", resolved)
+	}
+}
+
+func TestResolveRowPoliciesRequiresApplicationOnlyAcknowledgement(t *testing.T) {
+	files := []ParsedRowPolicyFile{{
+		PolicyID:   "p1",
+		Identities: []schema.PolicyIdentityDefinition{{Name: "workspace_id", Type: schema.PolicyIdentityUUID}},
+		Operations: []schema.RowPolicyOperation{{
+			Type: "protect",
+			Protection: schema.RowProtection{
+				Table:              "messages",
+				SubjectCombination: schema.AnyOfSubjects,
+				Rules: []schema.RowRule{{
+					Key: "owner", Subject: schema.RowSubject{Kind: schema.SubjectAuthenticated},
+					UpdateOld: &schema.RowPredicate{Kind: schema.PredicateAllow},
+					UpdateNew: &schema.RowPredicate{Kind: schema.PredicateAllow},
+				}},
+			},
+		}},
+	}}
+	_, err := ResolveRowPolicies(files, []*schema.Table{{Name: "messages", IsImmutable: true}}, nil)
+	if err == nil || !strings.Contains(err.Error(), `AllowApplicationOnly("non_bijective_physical_plan")`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveRowPoliciesRejectsUnknownIdentityAndColumn(t *testing.T) {
+	pred := schema.RowPredicate{Kind: schema.PredicateEqual, Children: []schema.RowPredicate{{Kind: schema.PredicateColumn, Name: "tenant_id"}, {Kind: schema.PredicateIdentity, Name: "tenant_id"}}}
+	files := []ParsedRowPolicyFile{{
+		PolicyID: "p1",
+		Operations: []schema.RowPolicyOperation{{
+			Type: "protect",
+			Protection: schema.RowProtection{Table: "messages", Rules: []schema.RowRule{{
+				Key: "owner", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &pred,
+			}}},
+		}},
+	}}
+	_, err := ResolveRowPolicies(files, []*schema.Table{{Name: "messages"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "unknown column") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

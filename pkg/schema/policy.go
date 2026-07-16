@@ -3,7 +3,8 @@ package schema
 // Policy is the base type embedded by all role policy structs.
 // It records role operations for later execution or inspection.
 type Policy struct {
-	Operations []RoleOperation
+	Operations    []RoleOperation
+	RowOperations []RowPolicyOperation
 }
 
 // RoleOperation records a single role lifecycle change.
@@ -123,7 +124,11 @@ func (p *Policy) GetOperations() []RoleOperation {
 // Reset clears recorded operations so the policy struct can be reused.
 func (p *Policy) Reset() {
 	p.Operations = nil
+	p.RowOperations = nil
 }
+
+// GetRowOperations returns row-policy state transitions recorded by Up/Down.
+func (p *Policy) GetRowOperations() []RowPolicyOperation { return p.RowOperations }
 
 // Transactional returns true — policies run in a transaction by default.
 func (p *Policy) Transactional() bool {

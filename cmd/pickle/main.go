@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,6 +49,11 @@ func main() {
 		cmdMigrate()
 	case "policies:rollback", "policies:status", "rls:status":
 		cmdMigrate()
+	case "policies:rows", "policies:row", "policies:explain":
+		if err := runRowPolicyCommand(os.Args[1], os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+			os.Exit(1)
+		}
 	case "graphql:rollback", "graphql:status":
 		cmdMigrate()
 	case "graphql:schema":
@@ -128,6 +134,9 @@ Commands:
   db:seed           Run a compiled database seed scenario
   policies:rollback Roll back the last batch of role policies
   policies:status   Show role policy status
+  policies:rows     List normalized row policies
+  policies:row      Show one normalized row policy
+  policies:explain  Explain a row-policy operation and subject
   rls:status        Inspect PostgreSQL RLS drift and runtime role privileges
   graphql:rollback  Roll back the last batch of GraphQL policies
   graphql:status    Show GraphQL policy status
@@ -531,6 +540,77 @@ func cmdMigrate() {
 		os.Exit(1)
 	}
 	fmt.Println("pickle: done")
+}
+
+func runRowPolicyCommand(command string, args []string, out io.Writer) error {
+	projectDir := "."
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--project" {
+			if i+1 >= len(args) {
+				return fmt.Errorf("--project requires a directory")
+			}
+			projectDir = args[i+1]
+			i++
+			continue
+		}
+		positional = append(positional, args[i])
+	}
+	project, err := generator.DetectProject(projectDir)
+	if err != nil {
+		return err
+	}
+	state := picklemcp.DeriveRBACState(project.Dir)
+	if state.RowPolicyError != "" {
+		return fmt.Errorf("row policies are invalid: %s", state.RowPolicyError)
+	}
+	if command == "policies:rows" {
+		if len(positional) != 0 {
+			return fmt.Errorf("usage: pickle policies:rows [--project <dir>]")
+		}
+		if len(state.RowPolicies) == 0 {
+			_, err = fmt.Fprintln(out, "No Pickle row policies defined.")
+			return err
+		}
+		_, err = fmt.Fprint(out, picklemcp.RenderRowPolicies(state.RowPolicies))
+		return err
+	}
+	if len(positional) == 0 {
+		return fmt.Errorf("table is required")
+	}
+	var policy *generator.ResolvedRowPolicy
+	for i := range state.RowPolicies {
+		if state.RowPolicies[i].Protection.Table == positional[0] {
+			policy = &state.RowPolicies[i]
+			break
+		}
+	}
+	if policy == nil {
+		return fmt.Errorf("no row policy protects table %s", positional[0])
+	}
+	if command == "policies:row" {
+		if len(positional) != 1 {
+			return fmt.Errorf("usage: pickle policies:row <table> [--project <dir>]")
+		}
+		_, err = fmt.Fprint(out, picklemcp.RenderRowPolicy(*policy))
+		return err
+	}
+	if len(positional) < 2 {
+		return fmt.Errorf("operation is required (select, insert, update, or delete)")
+	}
+	if len(positional) > 3 {
+		return fmt.Errorf("usage: pickle policies:explain <table> <operation> [subject] [--project <dir>]")
+	}
+	subject := ""
+	if len(positional) == 3 {
+		subject = positional[2]
+	}
+	text, err := picklemcp.ExplainRowPolicy(*policy, positional[1], subject)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprint(out, text)
+	return err
 }
 
 func cmdWatch() {

@@ -25,13 +25,7 @@ func (s *Server) policiesRows(_ context.Context, _ *mcp.CallToolRequest, _ any) 
 	if len(state.RowPolicies) == 0 {
 		return textResult("No Pickle row policies defined."), nil, nil
 	}
-	var b strings.Builder
-	for _, policy := range state.RowPolicies {
-		fmt.Fprintf(&b, "## %s\nClassification: %s\n", policy.Protection.Table, rowPolicyClassification(policy))
-		fmt.Fprintf(&b, "Required identities: %s\n", strings.Join(sortedIdentityNames(policy.Identities), ", "))
-		fmt.Fprintf(&b, "Operations: %s\nRule IDs: %s\nSources: %s\n\n", strings.Join(rowPolicyOperations(policy), ", "), strings.Join(rowPolicyRuleKeys(policy), ", "), strings.Join(policy.SourcePolicies, ", "))
-	}
-	return textResult(b.String()), nil, nil
+	return textResult(RenderRowPolicies(state.RowPolicies)), nil, nil
 }
 
 func (s *Server) policiesRow(_ context.Context, _ *mcp.CallToolRequest, input rowPolicyInput) (*mcp.CallToolResult, any, error) {
@@ -39,7 +33,7 @@ func (s *Server) policiesRow(_ context.Context, _ *mcp.CallToolRequest, input ro
 	if result != nil {
 		return result, nil, nil
 	}
-	return textResult(renderRowPolicy(policy)), nil, nil
+	return textResult(RenderRowPolicy(policy)), nil, nil
 }
 
 func (s *Server) policiesExplain(_ context.Context, _ *mcp.CallToolRequest, input rowPolicyInput) (*mcp.CallToolResult, any, error) {
@@ -47,13 +41,34 @@ func (s *Server) policiesExplain(_ context.Context, _ *mcp.CallToolRequest, inpu
 	if result != nil {
 		return result, nil, nil
 	}
-	operation := strings.ToLower(strings.TrimSpace(input.Operation))
+	output, err := ExplainRowPolicy(policy, input.Operation, input.Subject)
+	if err != nil {
+		return errResult(err.Error()), nil, nil
+	}
+	return textResult(output), nil, nil
+}
+
+// RenderRowPolicies renders the shared normalized row-policy list used by MCP
+// and the pickle CLI.
+func RenderRowPolicies(policies []generator.ResolvedRowPolicy) string {
+	var b strings.Builder
+	for _, policy := range policies {
+		fmt.Fprintf(&b, "## %s\nClassification: %s\n", policy.Protection.Table, rowPolicyClassification(policy))
+		fmt.Fprintf(&b, "Required identities: %s\n", strings.Join(sortedIdentityNames(policy.Identities), ", "))
+		fmt.Fprintf(&b, "Operations: %s\nRule IDs: %s\nSources: %s\n\n", strings.Join(rowPolicyOperations(policy), ", "), strings.Join(rowPolicyRuleKeys(policy), ", "), strings.Join(policy.SourcePolicies, ", "))
+	}
+	return b.String()
+}
+
+// ExplainRowPolicy renders one operation from a normalized row policy.
+func ExplainRowPolicy(policy generator.ResolvedRowPolicy, requestedOperation, requestedSubject string) (string, error) {
+	operation := strings.ToLower(strings.TrimSpace(requestedOperation))
 	if operation == "" {
-		return errResult("operation is required (select, insert, update, or delete)"), nil, nil
+		return "", fmt.Errorf("operation is required (select, insert, update, or delete)")
 	}
 	var matching []schema.RowRule
 	for _, rule := range policy.Protection.Rules {
-		if input.Subject != "" && input.Subject != rowPolicySubject(rule.Subject) && input.Subject != rule.Subject.Name {
+		if requestedSubject != "" && requestedSubject != rowPolicySubject(rule.Subject) && requestedSubject != rule.Subject.Name {
 			continue
 		}
 		if rowRuleHasOperation(rule, operation) {
@@ -61,7 +76,7 @@ func (s *Server) policiesExplain(_ context.Context, _ *mcp.CallToolRequest, inpu
 		}
 	}
 	if len(matching) == 0 {
-		return errResult("no matching normalized rule for that table, operation, and subject"), nil, nil
+		return "", fmt.Errorf("no matching normalized rule for that table, operation, and subject")
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Table: %s\nOperation: %s\nClassification: %s\n", policy.Protection.Table, operation, rowPolicyClassification(policy))
@@ -85,7 +100,7 @@ func (s *Server) policiesExplain(_ context.Context, _ *mcp.CallToolRequest, inpu
 		fmt.Fprintf(&b, "PostgreSQL RLS: equivalent generated policy %s; RLS enabled and forced\n", strings.Join(names, ", "))
 	}
 	fmt.Fprintf(&b, "Source policies: %s\n", strings.Join(policy.SourcePolicies, ", "))
-	return textResult(b.String()), nil, nil
+	return b.String(), nil
 }
 
 func (s *Server) rlsStatus(_ context.Context, _ *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
@@ -128,7 +143,7 @@ func (s *Server) findRowPolicy(table string) (generator.ResolvedRowPolicy, *mcp.
 	return generator.ResolvedRowPolicy{}, errResult("no row policy protects table " + table)
 }
 
-func renderRowPolicy(policy generator.ResolvedRowPolicy) string {
+func RenderRowPolicy(policy generator.ResolvedRowPolicy) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Table: %s\nClassification: %s\nSubject combination: %s\n", policy.Protection.Table, rowPolicyClassification(policy), policy.Protection.SubjectCombination)
 	for _, name := range sortedIdentityNames(policy.Identities) {

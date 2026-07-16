@@ -16,7 +16,7 @@ func TestRenderRowPolicyIncludesNormalizedProofMetadata(t *testing.T) {
 		SourcePolicies:   []string{"ProtectMessages_20260716000000"},
 		EnforcementClass: "portable",
 	}
-	output := renderRowPolicy(policy)
+	output := RenderRowPolicy(policy)
 	for _, want := range []string{"messages", "unproven", "workspace_id (uuid)", "workspace_member", "equal(column(workspace_id), identity(workspace_id))", "ProtectMessages_20260716000000"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("output missing %q: %s", want, output)

@@ -4,6 +4,9 @@
 
 ```bash
 pickle policies:status  # role ledger plus generated row-policy status
+pickle policies:rows    # list normalized row-policy classifications
+pickle policies:row users
+pickle policies:explain users select authenticated
 pickle rls:status       # explicit read-only PostgreSQL catalog drift inspection
 pickle squeeze          # static classification, rule IDs, and proof evidence
 ```

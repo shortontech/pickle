@@ -10060,6 +10060,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"reflect"
+	"strings"
 
 	"%s/app/http/auth/jwt"
 	"%s/app/http/auth/oauth"
@@ -10163,6 +10165,20 @@ func Authenticate(r *http.Request) (*httpx.AuthInfo, error) {
 	}
 	return driver.Authenticate(r)
 }
+
+type VerifiedPolicySource interface {
+	policySourceSeal()
+	PolicyIdentities() map[string]string
+	PolicyRoles() []string
+}
+type verifiedPolicySource struct { identities map[string]string; roles []string }
+func (verifiedPolicySource) policySourceSeal() {}
+func (v verifiedPolicySource) PolicyIdentities() map[string]string { out:=map[string]string{};for key,value:=range v.identities{out[key]=value};return out }
+func (v verifiedPolicySource) PolicyRoles() []string { return append([]string(nil),v.roles...) }
+func AuthenticatePolicySource(r *http.Request) (VerifiedPolicySource,error) { info,err:=Authenticate(r);if err!=nil{return nil,err};identities:=policyClaimIdentities(info.Claims);identities["user_id"]=info.UserID;roles:=[]string{};if info.Role!=""{roles=append(roles,info.Role)};return verifiedPolicySource{identities:identities,roles:roles},nil }
+func AuthenticateJobPolicySource(r *http.Request) (VerifiedPolicySource,error) { return AuthenticatePolicySource(r) }
+func AuthenticateCLIPolicySource(r *http.Request) (VerifiedPolicySource,error) { return AuthenticatePolicySource(r) }
+func policyClaimIdentities(claims any)map[string]string{out:=map[string]string{};rv:=reflect.ValueOf(claims);if rv.Kind()==reflect.Pointer{if rv.IsNil(){return out};rv=rv.Elem()};if rv.Kind()!=reflect.Struct{return out};rt:=rv.Type();for i:=0;i<rv.NumField();i++{field:=rv.Field(i);meta:=rt.Field(i);name:=meta.Tag.Get("json");if comma:=strings.IndexByte(name,',');comma>=0{name=name[:comma]};if name==""||name=="-"{name=meta.Name};if field.Kind()==reflect.String&&field.String()!=""{out[name]=field.String()};if meta.Name=="Extra"&&field.Kind()==reflect.Map{iter:=field.MapRange();for iter.Next(){if iter.Key().Kind()==reflect.String{value:=iter.Value();if value.Kind()==reflect.Interface&&!value.IsNil(){value=value.Elem()};if value.Kind()==reflect.String&&value.String()!=""{out[iter.Key().String()]=value.String()}}}}};return out}
 
 func DefaultAuthMiddleware(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
 	info, err := Authenticate(ctx.Request())

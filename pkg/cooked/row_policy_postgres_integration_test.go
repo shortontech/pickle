@@ -2,9 +2,11 @@ package cooked
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -39,7 +41,7 @@ func TestPostgresRowPolicyThreeLaneConformance(t *testing.T) {
 		"SET ROLE " + quote(owner),
 		"CREATE TABLE " + quote(table) + " (id uuid PRIMARY KEY, user_id uuid)",
 		"RESET ROLE",
-		"GRANT SELECT ON " + quote(table) + " TO " + quote(runtimeRole),
+		"GRANT SELECT, INSERT, UPDATE, DELETE ON " + quote(table) + " TO " + quote(runtimeRole),
 		"INSERT INTO " + quote(table) + " VALUES ('11111111-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),('22222222-2222-4222-8222-222222222222','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')",
 	}
 	for _, stmt := range statements {
@@ -54,14 +56,15 @@ func TestPostgresRowPolicyThreeLaneConformance(t *testing.T) {
 		admin.Exec("DROP ROLE IF EXISTS " + quote(owner))
 	})
 	predicate := schema.Equal(schema.PolicyColumn("user_id"), schema.Identity("user_id"))
-	resolved := generator.ResolvedRowPolicy{Protection: schema.RowProtection{Table: table, SubjectCombination: schema.AnyOfSubjects, Rules: []schema.RowRule{{Key: "owner", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &predicate}}}, EnforcementClass: "portable", Identities: map[string]schema.PolicyIdentityType{"user_id": schema.PolicyIdentityUUID}, PhysicalPlans: map[string]string{"select": "select"}}
+	resolved := generator.ResolvedRowPolicy{Protection: schema.RowProtection{Table: table, SubjectCombination: schema.AnyOfSubjects, Rules: []schema.RowRule{{Key: "owner", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &predicate, Insert: &predicate, UpdateOld: &predicate, UpdateNew: &predicate, Delete: &predicate}}}, EnforcementClass: "portable", Identities: map[string]schema.PolicyIdentityType{"user_id": schema.PolicyIdentityUUID}, PhysicalPlans: map[string]string{"select": "select", "insert": "insert", "update": "update", "delete": "delete"}}
 	plans, err := generator.LowerPostgresRowPolicies([]generator.ResolvedRowPolicy{resolved})
 	if err != nil {
 		t.Fatal(err)
 	}
 	old := rowPolicyRuntimeRegistry
 	rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{}
-	registerRowPolicyRuntime(rowPolicyRuntimeDefinition{Table: table, SubjectCombination: "any", IdentityTypes: map[string]string{"user_id": "uuid"}, Rules: []rowPolicyRuntimeRule{{Key: "owner", SubjectKind: "public", Select: &rowPolicyRuntimePredicate{Kind: "equal", Children: []rowPolicyRuntimePredicate{{Kind: "column", Name: "user_id"}, {Kind: "identity", Name: "user_id"}}}}}})
+	runtimePredicate := &rowPolicyRuntimePredicate{Kind: "equal", Children: []rowPolicyRuntimePredicate{{Kind: "column", Name: "user_id"}, {Kind: "identity", Name: "user_id"}}}
+	registerRowPolicyRuntime(rowPolicyRuntimeDefinition{Table: table, SubjectCombination: "any", IdentityTypes: map[string]string{"user_id": "uuid"}, Rules: []rowPolicyRuntimeRule{{Key: "owner", SubjectKind: "public", Select: runtimePredicate, Insert: runtimePredicate, UpdateOld: runtimePredicate, UpdateNew: runtimePredicate, Delete: runtimePredicate}}})
 	t.Cleanup(func() { rowPolicyRuntimeRegistry = old })
 	runtimeDSN := postgresRoleDSN(t, dsn, runtimeRole, password)
 	runtimeDB, err := sql.Open("postgres", runtimeDSN)
@@ -85,10 +88,33 @@ func TestPostgresRowPolicyThreeLaneConformance(t *testing.T) {
 	if err != nil || len(rows) != 0 {
 		t.Fatalf("application mismatch rows=%d err=%v", len(rows), err)
 	}
+	appRecord := &postgresPolicyMessage{ID: "33333333-3333-4333-8333-333333333333", UserID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
+	if err := Query[postgresPolicyMessage](table).WithPolicyContext(ctx).Create(appRecord); err != nil {
+		t.Fatalf("application insert: %v", err)
+	}
+	deniedRecord := &postgresPolicyMessage{ID: "44444444-4444-4444-8444-444444444444", UserID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}
+	if err := Query[postgresPolicyMessage](table).WithPolicyContext(ctx).Create(deniedRecord); err == nil {
+		t.Fatal("application insert admitted mismatched row")
+	}
+	appRecord.UserID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	if err := Query[postgresPolicyMessage](table).WithPolicyContext(ctx).where("id", appRecord.ID).Update(appRecord); err == nil {
+		t.Fatal("application update admitted ownership transfer")
+	}
+	appRecord.UserID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	if err := Query[postgresPolicyMessage](table).WithPolicyContext(ctx).where("id", appRecord.ID).Delete(appRecord); err != nil {
+		t.Fatalf("application delete: %v", err)
+	}
 	ddl := append([]string{}, generator.PostgresPolicyIdentityHelpers()...)
 	ddl = append(ddl, "ALTER TABLE "+quote(table)+" ENABLE ROW LEVEL SECURITY", "ALTER TABLE "+quote(table)+" FORCE ROW LEVEL SECURITY")
 	for _, policy := range plans[0].Policies {
-		ddl = append(ddl, "CREATE POLICY "+quote(policy.Name)+" ON "+quote(table)+" FOR "+string(policy.Command)+" TO PUBLIC USING ("+policy.Using+")")
+		statement := "CREATE POLICY " + quote(policy.Name) + " ON " + quote(table) + " FOR " + string(policy.Command) + " TO PUBLIC"
+		if policy.Using != "" {
+			statement += " USING (" + policy.Using + ")"
+		}
+		if policy.WithCheck != "" {
+			statement += " WITH CHECK (" + policy.WithCheck + ")"
+		}
+		ddl = append(ddl, statement)
 	}
 	for _, stmt := range ddl {
 		if _, err := admin.Exec(stmt); err != nil {
@@ -97,10 +123,31 @@ func TestPostgresRowPolicyThreeLaneConformance(t *testing.T) {
 	}
 	var rlsCount int
 	if err := withSQLPolicyContext(runtimeDB, ctx, func(tx *sql.Tx) error { return tx.QueryRow("SELECT count(*) FROM " + quote(table)).Scan(&rlsCount) }); err != nil || rlsCount != 1 {
-		t.Fatalf("RLS lane count=%d err=%v", rlsCount, err)
+		t.Fatalf("RLS lane count=%d err=%v policies=%+v", rlsCount, err, plans[0].Policies)
 	}
 	if err := withSQLPolicyContext(runtimeDB, mismatch, func(tx *sql.Tx) error { return tx.QueryRow("SELECT count(*) FROM " + quote(table)).Scan(&rlsCount) }); err != nil || rlsCount != 0 {
 		t.Fatalf("RLS mismatch count=%d err=%v", rlsCount, err)
+	}
+	if err := withSQLPolicyContext(runtimeDB, ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec("INSERT INTO " + quote(table) + " VALUES ('55555555-5555-4555-8555-555555555555','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')")
+		return err
+	}); err != nil {
+		t.Fatalf("RLS insert: %v", err)
+	}
+	if err := withSQLPolicyContext(runtimeDB, ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec("UPDATE " + quote(table) + " SET user_id='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' WHERE id='11111111-1111-4111-8111-111111111111'")
+		if err == nil {
+			return fmt.Errorf("RLS admitted ownership transfer")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("RLS update check: %v", err)
+	}
+	if err := withSQLPolicyContext(runtimeDB, ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec("DELETE FROM " + quote(table) + " WHERE id='11111111-1111-4111-8111-111111111111'")
+		return err
+	}); err != nil {
+		t.Fatalf("RLS delete: %v", err)
 	}
 	err = TransactionOn(runtimeDB, func(tx *Tx) error {
 		if err := tx.WithPostgresPolicyContext(ctx); err != nil {
@@ -128,6 +175,33 @@ func TestPostgresRowPolicyThreeLaneConformance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dual mismatch lane: %v", err)
 	}
+	dualRecord := &postgresPolicyMessage{ID: "66666666-6666-4666-8666-666666666666", UserID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
+	err = TransactionOn(runtimeDB, func(tx *Tx) error {
+		if err := tx.WithPostgresPolicyContext(ctx); err != nil {
+			return err
+		}
+		q := Query[postgresPolicyMessage](table).UseTransaction(tx.conn).WithPolicyContext(ctx)
+		if err := q.Create(dualRecord); err != nil {
+			return err
+		}
+		if err := Query[postgresPolicyMessage](table).UseTransaction(tx.conn).WithPolicyContext(ctx).where("id", dualRecord.ID).Update(dualRecord); err != nil {
+			return err
+		}
+		return Query[postgresPolicyMessage](table).UseTransaction(tx.conn).WithPolicyContext(ctx).where("id", dualRecord.ID).Delete(dualRecord)
+	})
+	if err != nil {
+		t.Fatalf("dual write matrix: %v", err)
+	}
+	dualDenied := &postgresPolicyMessage{ID: "77777777-7777-4777-8777-777777777777", UserID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}
+	err = TransactionOn(runtimeDB, func(tx *Tx) error {
+		if err := tx.WithPostgresPolicyContext(ctx); err != nil {
+			return err
+		}
+		return Query[postgresPolicyMessage](table).UseTransaction(tx.conn).WithPolicyContext(ctx).Create(dualDenied)
+	})
+	if err == nil {
+		t.Fatal("dual lane admitted mismatched insert")
+	}
 	if _, err := Query[postgresPolicyMessage](table).All(); err == nil {
 		t.Fatal("application lane admitted missing context")
 	}
@@ -149,6 +223,181 @@ func TestPostgresRowPolicyThreeLaneConformance(t *testing.T) {
 	if err := ownerTx.QueryRow("SELECT count(*) FROM " + quote(table)).Scan(&rlsCount); err != nil || rlsCount != 0 {
 		t.Fatalf("forced owner lane count=%d err=%v", rlsCount, err)
 	}
+	if err := ownerTx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	runPostgresPredicateCorpus(t, admin, runtimeDB, table, quote)
+}
+
+func runPostgresPredicateCorpus(t *testing.T, admin, runtimeDB *sql.DB, table string, quote func(string) string) {
+	t.Helper()
+	type corpusCase struct {
+		ID, Predicate, Identity, Row string
+		Decision                     bool
+	}
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "row-policy-conformance", "cases.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []corpusCase
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	related := table + "_memberships"
+	if _, err := admin.Exec("CREATE TABLE " + quote(related) + " (parent_id uuid, user_id uuid)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec("GRANT SELECT ON " + quote(related) + " TO PUBLIC"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { admin.Exec("DROP TABLE IF EXISTS " + quote(related) + " CASCADE") })
+	matching := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	different := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	rowID := "88888888-8888-4888-8888-888888888888"
+	var previous []generator.GeneratedPostgresRowPolicy
+	var existing []string
+	rows, err := admin.Query("SELECT policyname FROM pg_policies WHERE schemaname='public' AND tablename=$1", table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		existing = append(existing, name)
+	}
+	rows.Close()
+	for _, name := range existing {
+		if _, err := admin.Exec("DROP POLICY " + quote(name) + " ON " + quote(table)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range cases {
+		t.Run("corpus_"+tc.ID, func(t *testing.T) {
+			if _, err := admin.Exec("ALTER TABLE " + quote(table) + " DISABLE ROW LEVEL SECURITY"); err != nil {
+				t.Fatal(err)
+			}
+			for _, policy := range previous {
+				if _, err := admin.Exec("DROP POLICY IF EXISTS " + quote(policy.Name) + " ON " + quote(table)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			previous = nil
+			if _, err := admin.Exec("DELETE FROM " + quote(table)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.Exec("DELETE FROM " + quote(related)); err != nil {
+				t.Fatal(err)
+			}
+			rowValue := "'" + matching + "'"
+			if tc.Row == "different" {
+				rowValue = "'" + different + "'"
+			}
+			if tc.Row == "null" {
+				rowValue = "NULL"
+			}
+			if _, err := admin.Exec("INSERT INTO " + quote(table) + " VALUES ('" + rowID + "'," + rowValue + ")"); err != nil {
+				t.Fatal(err)
+			}
+			base := schema.Equal(schema.PolicyColumn("user_id"), schema.Identity("user_id"))
+			var predicate schema.RowPredicate
+			switch tc.Predicate {
+			case "allow":
+				predicate = schema.Allow()
+			case "deny":
+				predicate = schema.Deny()
+			case "equal":
+				predicate = base
+			case "not_equal":
+				predicate = schema.NotEqual(schema.PolicyColumn("user_id"), schema.Identity("user_id"))
+			case "and":
+				predicate = schema.And(base, schema.Allow())
+			case "or":
+				predicate = schema.Or(base, schema.Deny())
+			case "not":
+				predicate = schema.Not(base)
+			case "exists":
+				predicate = schema.Exists("memberships", base)
+				predicate.RelatedTable = related
+				predicate.LocalColumn = "id"
+				predicate.ForeignColumn = "parent_id"
+				if tc.Row == "related_matching" {
+					if _, err := admin.Exec("INSERT INTO " + quote(related) + " VALUES ('" + rowID + "','" + matching + "')"); err != nil {
+						t.Fatal(err)
+					}
+				}
+			default:
+				t.Fatalf("unknown predicate %s", tc.Predicate)
+			}
+			ctxIdentities := map[string]string{"user_id": matching}
+			if tc.Identity == "missing" {
+				ctxIdentities = map[string]string{}
+			}
+			ctx := NewVerifiedPolicyContext(ctxIdentities, nil)
+			runtimePredicate := postgresTestRuntimePredicate(predicate)
+			rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{}
+			registerRowPolicyRuntime(rowPolicyRuntimeDefinition{Table: table, SubjectCombination: "any", IdentityTypes: map[string]string{"user_id": "uuid"}, Rules: []rowPolicyRuntimeRule{{Key: "corpus", SubjectKind: "public", Select: runtimePredicate}}})
+			rows, appErr := Query[postgresPolicyMessage](table).WithPolicyContext(ctx).All()
+			if appErr != nil && tc.Decision {
+				t.Fatal(appErr)
+			}
+			if got := len(rows) > 0; got != tc.Decision {
+				t.Fatalf("application decision=%t want %t", got, tc.Decision)
+			}
+			resolved := generator.ResolvedRowPolicy{Protection: schema.RowProtection{Table: table, SubjectCombination: schema.AnyOfSubjects, Rules: []schema.RowRule{{Key: "corpus", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &predicate}}}, EnforcementClass: "portable", Identities: map[string]schema.PolicyIdentityType{"user_id": schema.PolicyIdentityUUID}, PhysicalPlans: map[string]string{"select": "select"}}
+			plans, err := generator.LowerPostgresRowPolicies([]generator.ResolvedRowPolicy{resolved})
+			if err != nil {
+				t.Fatal(err)
+			}
+			previous = plans[0].Policies
+			for _, policy := range previous {
+				if _, err := admin.Exec("CREATE POLICY " + quote(policy.Name) + " ON " + quote(table) + " FOR SELECT TO PUBLIC USING (" + policy.Using + ")"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := admin.Exec("ALTER TABLE " + quote(table) + " ENABLE ROW LEVEL SECURITY"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.Exec("ALTER TABLE " + quote(table) + " FORCE ROW LEVEL SECURITY"); err != nil {
+				t.Fatal(err)
+			}
+			var count int
+			if err := withSQLPolicyContext(runtimeDB, ctx, func(tx *sql.Tx) error { return tx.QueryRow("SELECT count(*) FROM " + quote(table)).Scan(&count) }); err != nil {
+				t.Fatal(err)
+			}
+			if got := count > 0; got != tc.Decision {
+				t.Fatalf("RLS decision=%t want %t", got, tc.Decision)
+			}
+			err = TransactionOn(runtimeDB, func(tx *Tx) error {
+				if err := tx.WithPostgresPolicyContext(ctx); err != nil {
+					return err
+				}
+				rows, err := Query[postgresPolicyMessage](table).UseTransaction(tx.conn).WithPolicyContext(ctx).All()
+				if err != nil {
+					if !tc.Decision {
+						return nil
+					}
+					return err
+				}
+				if got := len(rows) > 0; got != tc.Decision {
+					return fmt.Errorf("dual decision=%t want %t", got, tc.Decision)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func postgresTestRuntimePredicate(predicate schema.RowPredicate) *rowPolicyRuntimePredicate {
+	out := &rowPolicyRuntimePredicate{Kind: string(predicate.Kind), Name: predicate.Name, RelatedTable: predicate.RelatedTable, LocalColumn: predicate.LocalColumn, ForeignColumn: predicate.ForeignColumn}
+	for _, child := range predicate.Children {
+		out.Children = append(out.Children, *postgresTestRuntimePredicate(child))
+	}
+	return out
 }
 
 func postgresRoleDSN(t *testing.T, dsn, user, password string) string {

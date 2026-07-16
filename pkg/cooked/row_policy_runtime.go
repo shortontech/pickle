@@ -184,7 +184,7 @@ func compileRuntimePredicate(p rowPolicyRuntimePredicate, alias string, context 
 		if alias != "" {
 			outer = alias + "." + outer
 		}
-		return "EXISTS (SELECT 1 FROM " + quoteRuntimeIdent(p.RelatedTable) + " " + relatedAlias + " WHERE " + relatedAlias + "." + quoteRuntimeIdent(p.ForeignColumn) + " = " + outer + " AND (" + child + "))", args, nil
+		return "EXISTS (SELECT 1 FROM " + quoteRuntimeQualifiedIdent(p.RelatedTable) + " " + relatedAlias + " WHERE " + relatedAlias + "." + quoteRuntimeIdent(p.ForeignColumn) + " = " + outer + " AND (" + child + "))", args, nil
 	case "equal", "not_equal":
 		if len(p.Children) != 2 {
 			return "", nil, fmt.Errorf("invalid comparison")
@@ -228,6 +228,13 @@ func compileRuntimePredicate(p rowPolicyRuntimePredicate, alias string, context 
 	return "", nil, fmt.Errorf("unknown predicate %q", p.Kind)
 }
 func quoteRuntimeIdent(value string) string { return `"` + strings.ReplaceAll(value, `"`, `""`) + `"` }
+func quoteRuntimeQualifiedIdent(value string) string {
+	parts := strings.Split(value, ".")
+	for i, part := range parts {
+		parts[i] = quoteRuntimeIdent(part)
+	}
+	return strings.Join(parts, ".")
+}
 func bindRuntimeClause(clause string, start int) string {
 	var b strings.Builder
 	n := start

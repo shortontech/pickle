@@ -133,7 +133,10 @@ func (r *Runner) placeholder(n int) string {
 
 func (r *Runner) execOps(ops []Operation, tx *sql.Tx) error {
 	for _, op := range ops {
-		sqls := r.opsToSQL(op)
+		sqls, err := r.opsToSQL(op)
+		if err != nil {
+			return err
+		}
 		for _, q := range sqls {
 			if q == "" {
 				continue
@@ -152,14 +155,14 @@ func (r *Runner) execOps(ops []Operation, tx *sql.Tx) error {
 	return nil
 }
 
-func (r *Runner) opsToSQL(op Operation) []string {
+func (r *Runner) opsToSQL(op Operation) ([]string, error) {
 	switch op.Type {
 	case OpCreateTable:
-		return []string{r.Generator.CreateTable(op.TableDef)}
+		return []string{r.Generator.CreateTable(op.TableDef)}, nil
 	case OpDropTableIfExists:
-		return []string{r.Generator.DropTableIfExists(op.Table)}
+		return []string{r.Generator.DropTableIfExists(op.Table)}, nil
 	case OpRenameTable:
-		return []string{r.Generator.RenameTable(op.OldName, op.NewName)}
+		return []string{r.Generator.RenameTable(op.OldName, op.NewName)}, nil
 	case OpAddColumn:
 		tmp := &Table{}
 		op.ColumnDef(tmp)
@@ -167,17 +170,26 @@ func (r *Runner) opsToSQL(op Operation) []string {
 		for _, col := range expandColumns(tmp.Columns) {
 			out = append(out, r.Generator.AddColumn(op.Table, col))
 		}
-		return out
+		return out, nil
 	case OpDropColumn:
-		return []string{r.Generator.DropColumn(op.Table, op.ColumnName)}
+		return []string{r.Generator.DropColumn(op.Table, op.ColumnName)}, nil
 	case OpRenameColumn:
-		return []string{r.Generator.RenameColumn(op.Table, op.OldName, op.NewName)}
+		return []string{r.Generator.RenameColumn(op.Table, op.OldName, op.NewName)}, nil
 	case OpAddIndex, OpAddUniqueIndex:
-		return []string{r.Generator.AddIndex(op.Index)}
+		return []string{r.Generator.AddIndex(op.Index)}, nil
 	case OpRawSQL:
-		return []string{op.SQL}
+		return []string{op.SQL}, nil
+	case OpEnableRLS, OpDisableRLS, OpForceRLS, OpNoForceRLS, OpCreateRLSPolicy, OpDropRLSPolicy:
+		if r.Driver != "pgsql" && r.Driver != "postgres" {
+			return nil, fmt.Errorf("PostgreSQL RLS operation on unsupported driver %q", r.Driver)
+		}
+		q, err := postgresRLSSQL(op)
+		if err != nil {
+			return nil, err
+		}
+		return []string{q}, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // markFKMetadataOnly scans all operations for CreateTable and marks any FK

@@ -1,5 +1,7 @@
 # Migrations
 
+PostgreSQL row-level security has a structured migration DSL for enabling RLS and managing policies. See [PostgreSQL Row-Level Security](RLS.md).
+
 The single source of truth for your database schema. You write migrations using the schema DSL; Pickle generates model structs and query scopes from them.
 
 ## Writing a migration

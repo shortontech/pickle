@@ -7756,6 +7756,43 @@ func sqlForMigrationOp(op generator.MigrationOperation, tableByName map[string]*
 			return "", fmt.Errorf("raw_sql operation missing SQL")
 		}
 		return strings.TrimRight(strings.TrimSpace(op.SQL), ";"), nil
+	case "enable_rls":
+		return "ALTER TABLE " + quoteQualifiedIdent(op.Table) + " ENABLE ROW LEVEL SECURITY", nil
+	case "disable_rls":
+		return "ALTER TABLE " + quoteQualifiedIdent(op.Table) + " DISABLE ROW LEVEL SECURITY", nil
+	case "force_rls":
+		return "ALTER TABLE " + quoteQualifiedIdent(op.Table) + " FORCE ROW LEVEL SECURITY", nil
+	case "no_force_rls":
+		return "ALTER TABLE " + quoteQualifiedIdent(op.Table) + " NO FORCE ROW LEVEL SECURITY", nil
+	case "create_rls_policy":
+		if op.RLSPolicy == nil {
+			return "", fmt.Errorf("create_rls_policy missing policy definition")
+		}
+		p := op.RLSPolicy
+		q := "CREATE POLICY " + quoteIdent(p.Name) + " ON " + quoteQualifiedIdent(op.Table) + " FOR " + string(p.Command)
+		if len(p.Roles) > 0 {
+			roles := make([]string, len(p.Roles))
+			for i, role := range p.Roles {
+				if strings.EqualFold(role, "PUBLIC") {
+					roles[i] = "PUBLIC"
+				} else {
+					roles[i] = quoteIdent(role)
+				}
+			}
+			q += " TO " + strings.Join(roles, ", ")
+		}
+		if p.Using != "" {
+			q += " USING (" + string(p.Using) + ")"
+		}
+		if p.WithCheck != "" {
+			q += " WITH CHECK (" + string(p.WithCheck) + ")"
+		}
+		return q, nil
+	case "drop_rls_policy":
+		if op.RLSPolicy == nil {
+			return "", fmt.Errorf("drop_rls_policy missing policy definition")
+		}
+		return "DROP POLICY IF EXISTS " + quoteIdent(op.RLSPolicy.Name) + " ON " + quoteQualifiedIdent(op.Table), nil
 	case "alter_column_metadata":
 		return "", nil // seed metadata has no database DDL
 	default:
@@ -8081,6 +8118,14 @@ func sqlType(col *schema.Column) string {
 
 func quoteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+func quoteQualifiedIdent(name string) string {
+	parts := strings.Split(name, ".")
+	for i, part := range parts {
+		parts[i] = quoteIdent(part)
+	}
+	return strings.Join(parts, ".")
 }
 
 func (e *exporter) writeBindings() error {

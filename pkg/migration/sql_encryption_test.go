@@ -23,7 +23,11 @@ func encAddColumnSQL(fn func(tb *Table)) []string {
 	var m Migration
 	m.AddColumn("users", fn)
 	r := &Runner{Generator: &postgresGenerator{}}
-	return r.opsToSQL(m.GetOperations()[0])
+	sqls, err := r.opsToSQL(m.GetOperations()[0])
+	if err != nil {
+		panic(err)
+	}
+	return sqls
 }
 
 func TestEncryptedColumnExpandsInCreateTable(t *testing.T) {

@@ -236,16 +236,25 @@ type inspectorRelationshipInfo struct {
 }
 
 type inspectorOperationInfo struct {
-	Type       string                `json:"type"`
-	Table      string                `json:"table,omitempty"`
-	OldName    string                `json:"old_name,omitempty"`
-	NewName    string                `json:"new_name,omitempty"`
-	ColumnName string                `json:"column_name,omitempty"`
-	Columns    []inspectorColumnInfo `json:"columns,omitempty"`
-	Index      *inspectorIndexInfo   `json:"index,omitempty"`
-	TableDef   *inspectorTableInfo   `json:"table_def,omitempty"`
-	ViewDef    *inspectorViewInfo    `json:"view_def,omitempty"`
-	SQL        string                `json:"sql,omitempty"`
+	Type       string                  `json:"type"`
+	Table      string                  `json:"table,omitempty"`
+	OldName    string                  `json:"old_name,omitempty"`
+	NewName    string                  `json:"new_name,omitempty"`
+	ColumnName string                  `json:"column_name,omitempty"`
+	Columns    []inspectorColumnInfo   `json:"columns,omitempty"`
+	Index      *inspectorIndexInfo     `json:"index,omitempty"`
+	TableDef   *inspectorTableInfo     `json:"table_def,omitempty"`
+	ViewDef    *inspectorViewInfo      `json:"view_def,omitempty"`
+	SQL        string                  `json:"sql,omitempty"`
+	RLSPolicy  *inspectorRLSPolicyInfo `json:"rls_policy,omitempty"`
+}
+
+type inspectorRLSPolicyInfo struct {
+	Name      string   `json:"name"`
+	Command   string   `json:"command,omitempty"`
+	Roles     []string `json:"roles,omitempty"`
+	Using     string   `json:"using,omitempty"`
+	WithCheck string   `json:"with_check,omitempty"`
 }
 
 type inspectorMigrationInfo struct {
@@ -290,6 +299,7 @@ type MigrationOperation struct {
 	TableDef   *schema.Table
 	ViewDef    *schema.View
 	SQL        string
+	RLSPolicy  *schema.RLSPolicy
 }
 
 // MigrationOps groups the Up and Down operations captured for one migration struct.
@@ -505,6 +515,9 @@ func convertInspectorOperations(in []inspectorOperationInfo) ([]MigrationOperati
 	var out []MigrationOperation
 	for _, oi := range in {
 		op := MigrationOperation{Type: oi.Type, Table: oi.Table, OldName: oi.OldName, NewName: oi.NewName, ColumnName: oi.ColumnName, SQL: oi.SQL}
+		if oi.RLSPolicy != nil {
+			op.RLSPolicy = &schema.RLSPolicy{Name: oi.RLSPolicy.Name, Table: oi.Table, Command: schema.RLSPolicyCommand(oi.RLSPolicy.Command), Roles: oi.RLSPolicy.Roles, Using: schema.SQLPredicate(oi.RLSPolicy.Using), WithCheck: schema.SQLPredicate(oi.RLSPolicy.WithCheck)}
+		}
 		for _, ci := range oi.Columns {
 			if oi.Type == "alter_column_metadata" && ci.Type == "" {
 				col := &schema.Column{Name: ci.Name}

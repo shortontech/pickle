@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // dbExecutor is the common interface between *sql.DB and *sql.Tx.
@@ -15,6 +16,20 @@ type dbExecutor interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// SetLocal sets a PostgreSQL configuration value for the current transaction.
+// It is intended for values consumed by RLS policies through current_setting().
+// Both the setting name and value are bound parameters, and the value is reset
+// automatically when the transaction ends.
+func (tx *Tx) SetLocal(name, value string) error {
+	if strings.TrimSpace(name) == "" || strings.ContainsRune(name, '\x00') {
+		return fmt.Errorf("pickle: transaction-local setting name must not be empty or contain NUL")
+	}
+	if _, err := tx.conn.Exec("SELECT set_config($1, $2, true)", name, value); err != nil {
+		return fmt.Errorf("set transaction-local setting %q: %w", name, err)
+	}
+	return nil
 }
 
 // Tx wraps a database transaction and provides query builder constructors

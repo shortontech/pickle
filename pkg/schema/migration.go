@@ -23,6 +23,12 @@ const (
 	OpDropView
 	OpRawSQL
 	OpAlterColumnMetadata
+	OpEnableRLS
+	OpDisableRLS
+	OpForceRLS
+	OpNoForceRLS
+	OpCreateRLSPolicy
+	OpDropRLSPolicy
 )
 
 // Operation records a single schema change.
@@ -38,6 +44,7 @@ type Operation struct {
 	ColumnDef      func(*Table)
 	SQL            string  // for RawSQL operations
 	MetadataColumn *Column // metadata-only alteration; emits no DDL
+	RLSPolicy      *RLSPolicy
 }
 
 // Migration is the base type embedded by all migration structs.

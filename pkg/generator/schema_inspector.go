@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"text/tabwriter"
 {{ range .Imports }}
@@ -116,6 +117,30 @@ type operationInfo struct {
 	TableDef   *tableInfo   ` + "`" + `json:"table_def,omitempty"` + "`" + `
 	ViewDef    *viewInfo    ` + "`" + `json:"view_def,omitempty"` + "`" + `
 	SQL        string       ` + "`" + `json:"sql,omitempty"` + "`" + `
+	RLSPolicy  *rlsPolicyInfo ` + "`" + `json:"rls_policy,omitempty"` + "`" + `
+}
+
+type rlsPolicyInfo struct {
+	Name string ` + "`" + `json:"name"` + "`" + `
+	Command string ` + "`" + `json:"command,omitempty"` + "`" + `
+	Roles []string ` + "`" + `json:"roles,omitempty"` + "`" + `
+	Using string ` + "`" + `json:"using,omitempty"` + "`" + `
+	WithCheck string ` + "`" + `json:"with_check,omitempty"` + "`" + `
+}
+
+func rlsPolicyFromOperation(op any) *rlsPolicyInfo {
+	v := reflect.ValueOf(op)
+	if v.Kind() == reflect.Pointer { v = v.Elem() }
+	f := v.FieldByName("RLSPolicy")
+	if !f.IsValid() || f.IsNil() { return nil }
+	p := f.Elem()
+	info := &rlsPolicyInfo{}
+	if x := p.FieldByName("Name"); x.IsValid() { info.Name = x.String() }
+	if x := p.FieldByName("Command"); x.IsValid() { info.Command = x.String() }
+	if x := p.FieldByName("Roles"); x.IsValid() { for i := 0; i < x.Len(); i++ { info.Roles = append(info.Roles, x.Index(i).String()) } }
+	if x := p.FieldByName("Using"); x.IsValid() { info.Using = x.String() }
+	if x := p.FieldByName("WithCheck"); x.IsValid() { info.WithCheck = x.String() }
+	return info
 }
 
 type migrationInfo struct {
@@ -324,6 +349,17 @@ func operationsToInfo(ops []{{ .TypesPkg }}.Operation, tables map[string]*tableI
 			info.Type = "drop_view"
 		case {{ .TypesPkg }}.OpRawSQL:
 			info.Type = "raw_sql"
+		case {{ .TypesPkg }}.TableOperation(12):
+			info.Type = "enable_rls"
+		case {{ .TypesPkg }}.TableOperation(13):
+			info.Type = "disable_rls"
+		case {{ .TypesPkg }}.TableOperation(14):
+			info.Type = "force_rls"
+		case {{ .TypesPkg }}.TableOperation(15):
+			info.Type = "no_force_rls"
+		case {{ .TypesPkg }}.TableOperation(16), {{ .TypesPkg }}.TableOperation(17):
+			if op.Type == {{ .TypesPkg }}.TableOperation(16) { info.Type = "create_rls_policy" } else { info.Type = "drop_rls_policy" }
+			info.RLSPolicy = rlsPolicyFromOperation(op)
 		case {{ .TypesPkg }}.OpAlterColumnMetadata:
 			info.Type = "alter_column_metadata"
 			if op.MetadataColumn != nil {

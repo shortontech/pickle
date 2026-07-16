@@ -109,6 +109,7 @@ The exported project includes:
 - copied controllers, routes, requests, middleware, and config
 - standalone HTTP, auth, request binding, and server support code
 - deterministic field/scenario seeders and compiled `db:seed` behavior
+- normalized row policies, application enforcement, PostgreSQL lifecycle/rollback, and standalone `rls:status` drift inspection
 - `EXPORT_REPORT.md` describing unsupported generated subsystems
 
 Generated Pickle imports are removed. The exported app has no runtime dependency on Pickle.

@@ -1,0 +1,14 @@
+[
+  {"id":"allow","predicate":"allow","identity":"present","row":"matching","decision":true},
+  {"id":"deny","predicate":"deny","identity":"present","row":"matching","decision":false},
+  {"id":"equal-match","predicate":"equal","identity":"present","row":"matching","decision":true},
+  {"id":"equal-mismatch","predicate":"equal","identity":"present","row":"different","decision":false},
+  {"id":"equal-null","predicate":"equal","identity":"present","row":"null","decision":false},
+  {"id":"identity-missing","predicate":"equal","identity":"missing","row":"matching","decision":false},
+  {"id":"not-equal","predicate":"not_equal","identity":"present","row":"different","decision":true},
+  {"id":"and","predicate":"and","identity":"present","row":"matching","decision":true},
+  {"id":"or","predicate":"or","identity":"present","row":"matching","decision":true},
+  {"id":"not","predicate":"not","identity":"present","row":"different","decision":true},
+  {"id":"exists-match","predicate":"exists","identity":"present","row":"related_matching","decision":true},
+  {"id":"exists-missing","predicate":"exists","identity":"present","row":"related_missing","decision":false}
+]

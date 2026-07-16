@@ -80,9 +80,18 @@ err := models.WithTransaction(func(tx *models.Tx) error {
 
 HTTP and GraphQL entry points derive context from verified authentication. Background jobs and CLI commands must use their generated trusted adapter and declare the same identities explicitly; tests use the generated test adapter. Never accept identity values directly from request JSON or flags without verifying them against the entry point's authority.
 
-Ownership transfer is an update with different existing and proposed rules: the existing predicate decides who may touch the current row, while the proposed predicate constrains its new owner. Multi-tenant membership that requires relationship traversal is portable only when Pickle can resolve and inline the relationship without recursion or privilege-dependent behavior; unsupported relationship graphs stop RLS lowering instead of weakening it.
+Ownership transfer is an update with different existing and proposed rules: the existing predicate decides who may touch the current row, while the proposed predicate constrains its new owner. For a direct migration-defined foreign-key relationship, `Exists("memberships", Equal(PolicyColumn("workspace_id"), Identity("workspace_id")))` is portable in select, delete, and the existing-row half of update. Pickle resolves the parent/child join and emits the same correlated `EXISTS` in application SQL and PostgreSQL RLS. Proposed-row relationship checks, ambiguous foreign keys, recursion, and privilege-dependent graphs stop generation rather than weakening the rule.
 
-Standalone export carries the normalized registry, application predicate runtime, generated PostgreSQL DDL/fingerprints, policy ledger, status commands, diagnostics, and conformance metadata. It does not import Pickle at runtime. In a multi-service application, exactly one service must own each protected table's generated policy state; consumers use that contract rather than emitting competing policies.
+Standalone export carries the normalized registry, application predicate runtime, generated PostgreSQL DDL/fingerprints, policy ledger, `rls:status`, diagnostics, and conformance metadata. It does not import Pickle at runtime. In a multi-service application, exactly one service must own each protected table's generated policy state; consumers use that contract rather than emitting competing policies:
+
+```yaml
+services:
+  api:
+    dir: services/api
+    row_policy_owner: true
+  worker:
+    dir: services/worker
+```
 
 ### Enforcement classifications
 

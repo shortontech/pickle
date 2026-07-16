@@ -66,3 +66,12 @@ func TestRowPolicyProofNeverClaimsLiveDualEnforcementWithoutInspection(t *testin
 		t.Fatalf("unexpected blocked proof: %+v", blocked)
 	}
 }
+
+func TestAllRowPolicyRuleIDsAreRegistered(t *testing.T) {
+	rules := AllRules()
+	for _, name := range []string{"row_policy_missing", "row_policy_unknown_identity", "row_policy_unlowerable", "row_policy_context_missing", "row_policy_bypass", "row_policy_projection_conflict", "rls_not_enabled", "rls_not_forced", "rls_runtime_bypass", "rls_manual_broadening", "rls_drift"} {
+		if rules[name] == nil {
+			t.Errorf("missing rule %s", name)
+		}
+	}
+}

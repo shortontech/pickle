@@ -31,9 +31,19 @@ type AnalysisContext struct {
 	Actions              []ActionInfo
 	GraphQLExposed       map[string]bool // table/model names exposed via GraphQL policies (nil = no policies)
 	ProjectDir           string
-	RoleBirths           map[string]string // role -> birth policy timestamp (for pre_birth_annotation)
-	ScopeAllowedMethods  map[string]bool   // method names allowed on ScopeBuilder (for scope_side_effect)
-	TablesWithVisibility map[string]bool   // table names that have visibility annotations (for missing_visibility_scope)
+	RoleBirths           map[string]string    // role -> birth policy timestamp (for pre_birth_annotation)
+	ScopeAllowedMethods  map[string]bool      // method names allowed on ScopeBuilder (for scope_side_effect)
+	TablesWithVisibility map[string]bool      // table names that have visibility annotations (for missing_visibility_scope)
+	LiveRLS              []LiveRLSObservation // populated only by an explicit live catalog inspection
+}
+
+// LiveRLSObservation is sanitized catalog evidence for live-only row-policy
+// rules. It contains no identity values or row data.
+type LiveRLSObservation struct {
+	Table, Detail                                 string
+	Enabled, Forced                               bool
+	RuntimeSuperuser, RuntimeBypass, RuntimeOwner bool
+	Drift, ManualPermissive                       bool
 }
 
 // Rule is a function that inspects the analysis context and returns findings.

@@ -102,6 +102,24 @@ func TestAllRowPolicyRuleIDsAreRegistered(t *testing.T) {
 	}
 }
 
+func TestLiveRLSRulesUseExplicitCatalogEvidence(t *testing.T) {
+	ctx := &AnalysisContext{LiveRLS: []LiveRLSObservation{{Table: "messages", Enabled: false, Forced: false, RuntimeBypass: true, Drift: true, Detail: "predicate mismatch"}}}
+	for name, rule := range map[string]Rule{"rls_not_enabled": ruleRLSNotEnabled, "rls_not_forced": ruleRLSNotForced, "rls_runtime_bypass": ruleRLSRuntimeBypass, "rls_drift": ruleRLSDrift} {
+		findings := rule(ctx)
+		if len(findings) != 1 || findings[0].Rule != name {
+			t.Fatalf("%s: %+v", name, findings)
+		}
+	}
+}
+
+func TestRowPolicyProjectionConflictRequiresContradictoryVisibility(t *testing.T) {
+	table := &schema.Table{Name: "messages", Columns: []*schema.Column{{Name: "secret", IsPublic: true, IsOwnerSees: true}}}
+	findings := ruleRowPolicyProjectionConflict(&AnalysisContext{Tables: []*schema.Table{table}, RowPolicies: protectedMessages()})
+	if len(findings) != 1 {
+		t.Fatalf("unexpected: %+v", findings)
+	}
+}
+
 func TestRowPolicyProofDowngradesOnBypassOrIncompletePolicy(t *testing.T) {
 	policy := generator.ResolvedRowPolicy{Protection: schema.RowProtection{Table: "messages", Rules: []schema.RowRule{{Key: "owner"}}}, EnforcementClass: "portable"}
 	for _, rule := range []string{"row_policy_bypass", "row_policy_missing", "row_policy_unlowerable"} {

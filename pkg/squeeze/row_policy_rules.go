@@ -65,18 +65,72 @@ func ruleRowPolicyBypass(ctx *AnalysisContext) []Finding {
 	return findings
 }
 
-// Projection conflicts require a proven row/column exposure mismatch. The
-// normalized metadata deliberately emits no finding when that proof is absent.
-func ruleRowPolicyProjectionConflict(*AnalysisContext) []Finding { return nil }
+func ruleRowPolicyProjectionConflict(ctx *AnalysisContext) []Finding {
+	protected := map[string]bool{}
+	for _, policy := range ctx.RowPolicies {
+		protected[policy.Protection.Table] = true
+	}
+	var findings []Finding
+	for _, table := range ctx.Tables {
+		if table == nil || !protected[table.Name] {
+			continue
+		}
+		for _, column := range table.Columns {
+			if column == nil {
+				continue
+			}
+			if column.IsPublic && (column.IsOwnerSees || len(column.VisibleTo) > 0) {
+				findings = append(findings, Finding{Rule: "row_policy_projection_conflict", Severity: SeverityError, File: "database/migrations", Message: "protected table " + table.Name + " column " + column.Name + " is public while also carrying owner/role-only projection metadata; public projection would broaden the restricted declaration"})
+			}
+		}
+	}
+	return findings
+}
 
 // Live-only RLS findings are produced by rls:status, which has the database
 // catalog and role inspection needed to prove these conditions. Registering
 // the rule IDs keeps static Squeeze configuration and proof output stable
 // without guessing from source files.
-func ruleRLSNotEnabled(*AnalysisContext) []Finding    { return nil }
-func ruleRLSNotForced(*AnalysisContext) []Finding     { return nil }
-func ruleRLSRuntimeBypass(*AnalysisContext) []Finding { return nil }
-func ruleRLSDrift(*AnalysisContext) []Finding         { return nil }
+func ruleRLSNotEnabled(ctx *AnalysisContext) []Finding {
+	var out []Finding
+	for _, o := range ctx.LiveRLS {
+		if !o.Enabled {
+			out = append(out, Finding{Rule: "rls_not_enabled", Severity: SeverityError, File: "postgres:" + o.Table, Message: "generated PostgreSQL row policy is not enabled on " + o.Table})
+		}
+	}
+	return out
+}
+func ruleRLSNotForced(ctx *AnalysisContext) []Finding {
+	var out []Finding
+	for _, o := range ctx.LiveRLS {
+		if !o.Forced {
+			out = append(out, Finding{Rule: "rls_not_forced", Severity: SeverityError, File: "postgres:" + o.Table, Message: "generated PostgreSQL row policy is not forced on " + o.Table})
+		}
+	}
+	return out
+}
+func ruleRLSRuntimeBypass(ctx *AnalysisContext) []Finding {
+	var out []Finding
+	for _, o := range ctx.LiveRLS {
+		if o.RuntimeSuperuser || o.RuntimeBypass || o.RuntimeOwner && !o.Forced {
+			out = append(out, Finding{Rule: "rls_runtime_bypass", Severity: SeverityError, File: "postgres:" + o.Table, Message: "runtime database role can bypass row policy on " + o.Table})
+		}
+	}
+	return out
+}
+func ruleRLSDrift(ctx *AnalysisContext) []Finding {
+	var out []Finding
+	for _, o := range ctx.LiveRLS {
+		if o.Drift || o.ManualPermissive {
+			message := "live PostgreSQL row policy differs from generated state on " + o.Table
+			if o.Detail != "" {
+				message += ": " + o.Detail
+			}
+			out = append(out, Finding{Rule: "rls_drift", Severity: SeverityError, File: "postgres:" + o.Table, Message: message})
+		}
+	}
+	return out
+}
 
 func ruleRowPolicyApplicationOnly(ctx *AnalysisContext) []Finding {
 	var findings []Finding

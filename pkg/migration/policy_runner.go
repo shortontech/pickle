@@ -296,7 +296,12 @@ func (r *PolicyRunner) Migrate(entries []PolicyEntry) error {
 		ops := entry.Policy.GetOperations()
 
 		var execErr error
-		if entry.Policy.Transactional() {
+		appliedInTransaction := false
+		rowState, changesRowPolicy := GeneratedRowPolicyStates[entry.ID]
+		if changesRowPolicy && !entry.Policy.Transactional() {
+			execErr = fmt.Errorf("row-policy transitions must be transactional")
+		}
+		if execErr == nil && entry.Policy.Transactional() {
 			tx, err := r.DB.Begin()
 			if err != nil {
 				execErr = err
@@ -304,11 +309,26 @@ func (r *PolicyRunner) Migrate(entries []PolicyEntry) error {
 				if err := r.execRoleOps(ops, tx); err != nil {
 					tx.Rollback() //nolint:errcheck
 					execErr = err
+				} else if changesRowPolicy {
+					if err := r.reconcileGeneratedRowPolicyStateTx(tx, rowState.DDL, rowState.Desired); err != nil {
+						tx.Rollback()
+						execErr = err
+					} else {
+						uq := fmt.Sprintf("UPDATE rbac_changelog SET state = 'applied', completed_at = NOW() WHERE id = %s", r.placeholder(1))
+						if _, err := tx.Exec(uq, entry.ID); err != nil {
+							tx.Rollback()
+							execErr = err
+						} else if err := tx.Commit(); err != nil {
+							execErr = err
+						} else {
+							appliedInTransaction = true
+						}
+					}
 				} else {
 					execErr = tx.Commit()
 				}
 			}
-		} else {
+		} else if execErr == nil {
 			execErr = r.execRoleOps(ops, nil)
 		}
 
@@ -323,12 +343,11 @@ func (r *PolicyRunner) Migrate(entries []PolicyEntry) error {
 		}
 
 		// Mark as applied
-		uq := fmt.Sprintf(
-			"UPDATE rbac_changelog SET state = 'applied', completed_at = NOW() WHERE id = %s",
-			r.placeholder(1),
-		)
-		if _, err := r.DB.Exec(uq, entry.ID); err != nil {
-			return fmt.Errorf("recording %s: %w", entry.ID, err)
+		if !appliedInTransaction {
+			uq := fmt.Sprintf("UPDATE rbac_changelog SET state = 'applied', completed_at = NOW() WHERE id = %s", r.placeholder(1))
+			if _, err := r.DB.Exec(uq, entry.ID); err != nil {
+				return fmt.Errorf("recording %s: %w", entry.ID, err)
+			}
 		}
 		fmt.Printf("  applied policy: %s\n", entry.ID)
 		ran++
@@ -352,6 +371,13 @@ func (r *PolicyRunner) reconcileGeneratedRowPolicyState(ddl []string, desiredSta
 		return fmt.Errorf("beginning row-policy reconciliation: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
+	if err := r.reconcileGeneratedRowPolicyStateTx(tx, ddl, desiredState); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *PolicyRunner) reconcileGeneratedRowPolicyStateTx(tx *sql.Tx, ddl []string, desiredState map[string][]string) error {
 	for _, statement := range ddl {
 		if _, err := tx.Exec(statement); err != nil {
 			return fmt.Errorf("applying generated row policy: %w", err)
@@ -388,7 +414,7 @@ func (r *PolicyRunner) reconcileGeneratedRowPolicyState(ddl []string, desiredSta
 			}
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // RowPolicyStatus explicitly inspects PostgreSQL catalogs for generated RLS,
@@ -578,7 +604,19 @@ func (r *PolicyRunner) Rollback(entries []PolicyEntry) error {
 		ops := entry.Policy.GetOperations()
 
 		var execErr error
-		if entry.Policy.Transactional() {
+		rolledBackInTransaction := false
+		_, changesRowPolicy := GeneratedRowPolicyStates[entry.ID]
+		remainingApplied := make(map[string]int, len(applied))
+		for id, batch := range applied {
+			if id != entry.ID {
+				remainingApplied[id] = batch
+			}
+		}
+		targetState := generatedRowPolicyStateForApplied(entries, remainingApplied)
+		if changesRowPolicy && !entry.Policy.Transactional() {
+			execErr = fmt.Errorf("row-policy transitions must be transactional")
+		}
+		if execErr == nil && entry.Policy.Transactional() {
 			tx, err := r.DB.Begin()
 			if err != nil {
 				execErr = err
@@ -586,11 +624,26 @@ func (r *PolicyRunner) Rollback(entries []PolicyEntry) error {
 				if err := r.execRoleOps(ops, tx); err != nil {
 					tx.Rollback() //nolint:errcheck
 					execErr = err
+				} else if changesRowPolicy {
+					if err := r.reconcileGeneratedRowPolicyStateTx(tx, targetState.DDL, targetState.Desired); err != nil {
+						tx.Rollback()
+						execErr = err
+					} else {
+						uq := fmt.Sprintf("UPDATE rbac_changelog SET state = 'rolled_back', completed_at = NOW() WHERE id = %s", r.placeholder(1))
+						if _, err := tx.Exec(uq, entry.ID); err != nil {
+							tx.Rollback()
+							execErr = err
+						} else if err := tx.Commit(); err != nil {
+							execErr = err
+						} else {
+							rolledBackInTransaction = true
+						}
+					}
 				} else {
 					execErr = tx.Commit()
 				}
 			}
-		} else {
+		} else if execErr == nil {
 			execErr = r.execRoleOps(ops, nil)
 		}
 
@@ -604,10 +657,13 @@ func (r *PolicyRunner) Rollback(entries []PolicyEntry) error {
 		}
 
 		// Mark as rolled back
-		uq = fmt.Sprintf("UPDATE rbac_changelog SET state = 'rolled_back', completed_at = NOW() WHERE id = %s", r.placeholder(1))
-		if _, err := r.DB.Exec(uq, entry.ID); err != nil {
-			return fmt.Errorf("recording rollback of %s: %w", entry.ID, err)
+		if !rolledBackInTransaction {
+			uq = fmt.Sprintf("UPDATE rbac_changelog SET state = 'rolled_back', completed_at = NOW() WHERE id = %s", r.placeholder(1))
+			if _, err := r.DB.Exec(uq, entry.ID); err != nil {
+				return fmt.Errorf("recording rollback of %s: %w", entry.ID, err)
+			}
 		}
+		delete(applied, entry.ID)
 		fmt.Printf("  rolled back policy: %s\n", entry.ID)
 	}
 	remaining, err := r.applied()
@@ -628,6 +684,19 @@ func (r *PolicyRunner) Rollback(entries []PolicyEntry) error {
 		return fmt.Errorf("restoring generated row policy state: %w", err)
 	}
 	return nil
+}
+
+func generatedRowPolicyStateForApplied(entries []PolicyEntry, applied map[string]int) GeneratedRowPolicyVersionState {
+	state := GeneratedRowPolicyStates[""]
+	for i := len(entries) - 1; i >= 0; i-- {
+		if _, ok := applied[entries[i].ID]; !ok {
+			continue
+		}
+		if candidate, ok := GeneratedRowPolicyStates[entries[i].ID]; ok {
+			return candidate
+		}
+	}
+	return state
 }
 
 // Status returns the status of all known role policies.

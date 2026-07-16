@@ -335,7 +335,7 @@ func (c policiesStatusCommand) Name() string { return "policies:status" }
 func (c policiesStatusCommand) Description() string { return "Show role policy and generated row-policy status" }
 func (c policiesStatusCommand) Run(args []string) error {
 	runner := policies.NewPolicyRunner(models.DB, config.Database.Connection().Driver)
-	statuses, err := runner.Status(policies.Registry)
+	statuses, err := runner.Status(policies.PolicyRegistry)
 	if err != nil { return err }
 	policies.PrintStatus(statuses)
 	rowStatuses, err := runner.RowPolicyStatus()
@@ -349,7 +349,7 @@ func (c policiesRollbackCommand) Name() string { return "policies:rollback" }
 func (c policiesRollbackCommand) Description() string { return "Roll back the last role policy batch" }
 func (c policiesRollbackCommand) Run(args []string) error {
 	runner := policies.NewPolicyRunner(models.DB, config.Database.Connection().Driver)
-	return runner.Rollback(policies.Registry)
+	return runner.Rollback(policies.PolicyRegistry)
 }
 
 type rlsStatusCommand struct{}

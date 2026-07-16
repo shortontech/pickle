@@ -21,7 +21,7 @@ func installPolicyTestDefinition(t *testing.T) {
 	old := rowPolicyRuntimeRegistry
 	rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{}
 	pred := &rowPolicyRuntimePredicate{Kind: "equal", Children: []rowPolicyRuntimePredicate{{Kind: "column", Name: "workspace_id"}, {Kind: "identity", Name: "workspace_id"}}}
-	registerRowPolicyRuntime(rowPolicyRuntimeDefinition{Table: "messages", SubjectCombination: "any", Rules: []rowPolicyRuntimeRule{{Key: "member", SubjectKind: "role", SubjectName: "member", Select: pred, Insert: pred, UpdateOld: pred, UpdateNew: pred, Delete: pred}}})
+	registerRowPolicyRuntime(rowPolicyRuntimeDefinition{Table: "messages", SubjectCombination: "any", IdentityTypes: map[string]string{"workspace_id": "string"}, Rules: []rowPolicyRuntimeRule{{Key: "member", SubjectKind: "role", SubjectName: "member", Select: pred, Insert: pred, UpdateOld: pred, UpdateNew: pred, Delete: pred}}})
 	t.Cleanup(func() { rowPolicyRuntimeRegistry = old })
 }
 
@@ -70,7 +70,7 @@ func TestProtectedCreateEvaluatesProposedRow(t *testing.T) {
 func TestProposedPolicyUsesSQLNullComparisonSemantics(t *testing.T) {
 	old := rowPolicyRuntimeRegistry
 	pred := &rowPolicyRuntimePredicate{Kind: "not_equal", Children: []rowPolicyRuntimePredicate{{Kind: "column", Name: "workspace_id"}, {Kind: "identity", Name: "workspace_id"}}}
-	rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{"messages": {Table: "messages", SubjectCombination: "any", Rules: []rowPolicyRuntimeRule{{SubjectKind: "public", Insert: pred}}}}
+	rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{"messages": {Table: "messages", SubjectCombination: "any", IdentityTypes: map[string]string{"workspace_id": "string"}, Rules: []rowPolicyRuntimeRule{{SubjectKind: "public", Insert: pred}}}}
 	t.Cleanup(func() { rowPolicyRuntimeRegistry = old })
 	ctx := NewVerifiedPolicyContext(map[string]string{"workspace_id": "workspace-1"}, nil)
 	if err := evaluateRowPolicyRecord("messages", "insert", &ctx, &nullablePolicyMessage{}); err == nil {
@@ -86,5 +86,22 @@ func TestAllSubjectCombinationRequiresEveryMatchingRule(t *testing.T) {
 	ctx := NewVerifiedPolicyContext(nil, []string{"member"})
 	if err := evaluateRowPolicyRecord("messages", "insert", &ctx, &policyTestMessage{}); err == nil {
 		t.Fatal("all subject combination must deny when one matching rule denies")
+	}
+}
+
+func TestVerifiedPolicyContextCanonicalizesTypedIdentities(t *testing.T) {
+	old := rowPolicyRuntimeRegistry
+	rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{"messages": {Table: "messages", IdentityTypes: map[string]string{"user_id": "uuid"}}}
+	t.Cleanup(func() { rowPolicyRuntimeRegistry = old })
+	valid := NewVerifiedPolicyContext(map[string]string{"user_id": "11111111-1111-4111-8111-111111111111", "undeclared": "value"}, nil)
+	if value, ok := valid.identity("user_id"); !ok || value != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("unexpected UUID: %q %t", value, ok)
+	}
+	if _, ok := valid.identity("undeclared"); ok {
+		t.Fatal("undeclared identity was admitted")
+	}
+	invalid := NewVerifiedPolicyContext(map[string]string{"user_id": "not-a-uuid"}, nil)
+	if _, ok := invalid.identity("user_id"); ok {
+		t.Fatal("malformed UUID was admitted")
 	}
 }

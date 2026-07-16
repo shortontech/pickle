@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 var ErrPolicyContextRequired = errors.New("pickle: protected query requires policy context")
@@ -18,13 +21,32 @@ type PolicyContext struct {
 // NewVerifiedPolicyContext is intended for generated trusted entry-point
 // adapters. Squeeze rejects direct calls from ordinary application code.
 func NewVerifiedPolicyContext(identities map[string]string, roles []string) PolicyContext {
+	types := map[string]string{}
+	for _, definition := range rowPolicyRuntimeRegistry {
+		for name, kind := range definition.IdentityTypes {
+			types[name] = kind
+		}
+	}
 	copyIDs := make(map[string]string, len(identities))
 	for key, value := range identities {
+		kind, declared := types[key]
+		if !declared || value == "" || len(value) > 65536 {
+			continue
+		}
+		if kind == "uuid" {
+			parsed, err := uuid.Parse(value)
+			if err != nil {
+				continue
+			}
+			value = parsed.String()
+		}
 		copyIDs[key] = value
 	}
 	roleSet := make(map[string]bool, len(roles))
 	for _, role := range roles {
-		roleSet[role] = true
+		if role != "" && len(role) <= 1024 {
+			roleSet[role] = true
+		}
 	}
 	return PolicyContext{identities: copyIDs, roles: roleSet}
 }
@@ -38,6 +60,7 @@ func (c PolicyContext) encodedRoles() string {
 	for role := range c.roles {
 		values = append(values, role)
 	}
+	sort.Strings(values)
 	data, _ := json.Marshal(values)
 	return string(data)
 }
@@ -52,7 +75,7 @@ type rowPolicyRuntimeRule struct {
 }
 type rowPolicyRuntimeDefinition struct {
 	Table, SubjectCombination, EnforcementClass string
-	Identities                                  []string
+	IdentityTypes                               map[string]string
 	Rules                                       []rowPolicyRuntimeRule
 }
 

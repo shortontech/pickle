@@ -403,6 +403,11 @@ func validateResolvedProtection(p schema.RowProtection, table *schema.Table, ide
 		if rule.Subject.Kind == schema.SubjectRole && !roles[rule.Subject.Name] {
 			return fmt.Errorf("rule %q references unknown role %q", rule.Key, rule.Subject.Name)
 		}
+		if rule.Subject.Kind == schema.SubjectAuthenticated {
+			if _, ok := identities["user_id"]; !ok {
+				return fmt.Errorf("rule %q uses ForAuthenticated without declaring user_id identity", rule.Key)
+			}
+		}
 		for _, pred := range []*schema.RowPredicate{rule.Select, rule.Insert, rule.UpdateOld, rule.UpdateNew, rule.Delete} {
 			if pred != nil {
 				if err := validateResolvedPredicate(*pred, cols, identities); err != nil {

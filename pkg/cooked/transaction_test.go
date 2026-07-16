@@ -62,6 +62,9 @@ func TestSetLocalRejectsReservedPolicyIdentity(t *testing.T) {
 }
 
 func TestPostgresPolicyContextUsesTransactionLocalSettings(t *testing.T) {
+	oldRegistry := rowPolicyRuntimeRegistry
+	rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{"messages": {Table: "messages", IdentityTypes: map[string]string{"user_id": "uuid"}}}
+	t.Cleanup(func() { rowPolicyRuntimeRegistry = oldRegistry })
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -72,11 +75,11 @@ func TestPostgresPolicyContextUsesTransactionLocalSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mock.ExpectExec(regexp.QuoteMeta("SELECT set_config($1, $2, true)")).WithArgs("pickle.identity.user_id", "user-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta("SELECT set_config($1, $2, true)")).WithArgs("pickle.identity.user_id", "11111111-1111-4111-8111-111111111111").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta("SELECT set_config($1, $2, true)")).WithArgs("pickle.identity.roles", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectRollback()
 	tx := &Tx{conn: sqlTx}
-	ctx := NewVerifiedPolicyContext(map[string]string{"user_id": "user-1"}, []string{"member"})
+	ctx := NewVerifiedPolicyContext(map[string]string{"user_id": "11111111-1111-4111-8111-111111111111"}, []string{"member"})
 	if err := tx.WithPostgresPolicyContext(ctx); err != nil {
 		t.Fatal(err)
 	}

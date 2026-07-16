@@ -46,7 +46,7 @@ func LowerPostgresRowPolicies(policies []ResolvedRowPolicy) ([]PostgresRowPolicy
 func lowerPostgresOperation(resolved ResolvedRowPolicy, operation string) (GeneratedPostgresRowPolicy, bool, error) {
 	var usingParts, checkParts, keys []string
 	for _, rule := range resolved.Protection.Rules {
-		subject, err := postgresSubjectPredicate(rule.Subject)
+		subject, err := postgresSubjectPredicate(rule.Subject, resolved.Identities)
 		if err != nil {
 			return GeneratedPostgresRowPolicy{}, false, err
 		}
@@ -91,12 +91,19 @@ func lowerPostgresOperation(resolved ResolvedRowPolicy, operation string) (Gener
 	return GeneratedPostgresRowPolicy{Name: generatedRowPolicyName(resolved.Protection.Table, operation), Table: resolved.Protection.Table, Command: command, Using: joinPredicates(usingParts, join), WithCheck: joinPredicates(checkParts, join), RuleKeys: keys}, true, nil
 }
 
-func postgresSubjectPredicate(subject schema.RowSubject) (string, error) {
+func postgresSubjectPredicate(subject schema.RowSubject, identities map[string]schema.PolicyIdentityType) (string, error) {
 	switch subject.Kind {
 	case schema.SubjectPublic:
 		return "TRUE", nil
 	case schema.SubjectAuthenticated:
-		return `pickle_identity_present('user_id')`, nil
+		kind, ok := identities["user_id"]
+		if !ok {
+			return "", fmt.Errorf("authenticated subject requires declared user_id identity")
+		}
+		if kind == schema.PolicyIdentityUUID {
+			return `pickle_identity_uuid('user_id') IS NOT NULL`, nil
+		}
+		return `pickle_identity_text('user_id') IS NOT NULL`, nil
 	case schema.SubjectRole:
 		return "pickle_identity_has_role(" + quotePolicyLiteral(subject.Name) + ")", nil
 	default:
@@ -196,8 +203,8 @@ func quotePolicyIdent(value string) string {
 
 func PostgresPolicyIdentityHelpers() []string {
 	return []string{
-		`CREATE OR REPLACE FUNCTION pickle_identity_present(identity_name text) RETURNS boolean LANGUAGE sql STABLE AS $$ SELECT NULLIF(current_setting('pickle.identity.' || identity_name, true), '') IS NOT NULL $$`,
-		`CREATE OR REPLACE FUNCTION pickle_identity_text(identity_name text) RETURNS text LANGUAGE sql STABLE AS $$ SELECT NULLIF(current_setting('pickle.identity.' || identity_name, true), '') $$`,
+		`CREATE OR REPLACE FUNCTION pickle_identity_present(identity_name text) RETURNS boolean LANGUAGE sql STABLE AS $$ SELECT length(NULLIF(current_setting('pickle.identity.' || identity_name, true), '')) BETWEEN 1 AND 65536 $$`,
+		`CREATE OR REPLACE FUNCTION pickle_identity_text(identity_name text) RETURNS text LANGUAGE sql STABLE AS $$ SELECT CASE WHEN length(NULLIF(current_setting('pickle.identity.' || identity_name, true), '')) BETWEEN 1 AND 65536 THEN NULLIF(current_setting('pickle.identity.' || identity_name, true), '') ELSE NULL END $$`,
 		`CREATE OR REPLACE FUNCTION pickle_identity_uuid(identity_name text) RETURNS uuid LANGUAGE plpgsql STABLE AS $$ DECLARE raw text; BEGIN raw := NULLIF(current_setting('pickle.identity.' || identity_name, true), ''); IF raw IS NULL THEN RETURN NULL; END IF; BEGIN RETURN raw::uuid; EXCEPTION WHEN invalid_text_representation THEN RETURN NULL; END; END $$`,
 		`CREATE OR REPLACE FUNCTION pickle_identity_has_role(role_name text) RETURNS boolean LANGUAGE plpgsql STABLE AS $$ DECLARE raw text; BEGIN raw := NULLIF(current_setting('pickle.identity.roles', true), ''); IF raw IS NULL OR length(raw) > 65536 THEN RETURN FALSE; END IF; BEGIN RETURN raw::jsonb ? role_name; EXCEPTION WHEN invalid_text_representation THEN RETURN FALSE; END; END $$`,
 	}

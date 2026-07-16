@@ -50,7 +50,7 @@ func (p *MessageAccess_2026_07_16_120000) Up() {
 func TestResolveRowPoliciesRequiresApplicationOnlyAcknowledgement(t *testing.T) {
 	files := []ParsedRowPolicyFile{{
 		PolicyID:   "p1",
-		Identities: []schema.PolicyIdentityDefinition{{Name: "workspace_id", Type: schema.PolicyIdentityUUID}},
+		Identities: []schema.PolicyIdentityDefinition{{Name: "workspace_id", Type: schema.PolicyIdentityUUID}, {Name: "user_id", Type: schema.PolicyIdentityUUID}},
 		Operations: []schema.RowPolicyOperation{{
 			Type: "protect",
 			Protection: schema.RowProtection{

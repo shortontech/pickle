@@ -530,6 +530,8 @@ func (r *PolicyRunner) RowPolicyStatus() ([]RowPolicyDrift, error) {
 func policyExpressionEquivalent(actual, expected string) bool {
 	normalize := func(value string) string {
 		value = strings.ToLower(value)
+		value = strings.ReplaceAll(value, "::text", "")
+		value = strings.ReplaceAll(value, `"`, "")
 		return strings.Join(strings.Fields(value), "")
 	}
 	return normalize(actual) == normalize(expected)

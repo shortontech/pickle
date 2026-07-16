@@ -101,9 +101,9 @@ func postgresSubjectPredicate(subject schema.RowSubject, identities map[string]s
 			return "", fmt.Errorf("authenticated subject requires declared user_id identity")
 		}
 		if kind == schema.PolicyIdentityUUID {
-			return `pickle_identity_uuid('user_id') IS NOT NULL`, nil
+			return `(pickle_identity_uuid('user_id') IS NOT NULL)`, nil
 		}
-		return `pickle_identity_text('user_id') IS NOT NULL`, nil
+		return `(pickle_identity_text('user_id') IS NOT NULL)`, nil
 	case schema.SubjectRole:
 		return "pickle_identity_has_role(" + quotePolicyLiteral(subject.Name) + ")", nil
 	default:
@@ -211,6 +211,9 @@ func generatedRowPolicyName(table, operation string) string {
 func joinPredicates(parts []string, join string) string {
 	if len(parts) == 0 {
 		return ""
+	}
+	if len(parts) == 1 {
+		return parts[0]
 	}
 	return "(" + strings.Join(parts, join) + ")"
 }

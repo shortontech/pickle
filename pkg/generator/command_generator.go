@@ -284,7 +284,11 @@ func (c migrateCommand) Name() string        { return "migrate" }
 func (c migrateCommand) Description() string { return "Run pending migrations" }
 func (c migrateCommand) Run(args []string) error {
 	runner := migrations.NewRunner(models.DB, config.Database.Connection().Driver)
-	return runner.Migrate(migrations.Registry)
+	if err := runner.Migrate(migrations.Registry); err != nil { return err }
+{{ if .HasPolicies }}	policyRunner := policies.NewPolicyRunner(models.DB, config.Database.Connection().Driver)
+	return policyRunner.Migrate(policies.PolicyRegistry)
+{{ else }}	return nil
+{{ end }}
 }
 
 // migrateRollbackCommand rolls back the last batch.
@@ -305,6 +309,9 @@ func (c migrateFreshCommand) Description() string { return "Drop all tables and 
 func (c migrateFreshCommand) Run(args []string) error {
 	runner := migrations.NewRunner(models.DB, config.Database.Connection().Driver)
 	if err := runner.Fresh(migrations.Registry); err != nil { return err }
+{{ if .HasPolicies }}	policyRunner := policies.NewPolicyRunner(models.DB, config.Database.Connection().Driver)
+	if err := policyRunner.Migrate(policies.PolicyRegistry); err != nil { return err }
+{{ end }}
 {{ if .HasSeeders }}	seed := false
 	seedArgs := make([]string, 0, len(args))
 	for _, argument := range args {
@@ -327,6 +334,14 @@ func (c migrateStatusCommand) Run(args []string) error {
 		return err
 	}
 	migrations.PrintStatus(statuses)
+{{ if .HasPolicies }}	policyRunner := policies.NewPolicyRunner(models.DB, config.Database.Connection().Driver)
+	policyStatuses, err := policyRunner.Status(policies.PolicyRegistry)
+	if err != nil { return err }
+	policies.PrintStatus(policyStatuses)
+	rowStatuses, err := policyRunner.RowPolicyStatus()
+	if err != nil { return err }
+	policies.PrintRowPolicyStatus(rowStatuses)
+{{ end }}
 	return nil
 }
 

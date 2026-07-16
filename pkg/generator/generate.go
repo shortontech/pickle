@@ -889,7 +889,29 @@ func Generate(project *Project, picklePkgDir string) error {
 		if err != nil {
 			return fmt.Errorf("lowering PostgreSQL row policies: %w", err)
 		}
-		rowPolicySrc, err := GenerateRowPolicyRegistry("policies", postgresPlans)
+		managedRowTables := []string{}
+		managedSeen := map[string]bool{}
+		for _, file := range parsedRows {
+			for _, operation := range file.Operations {
+				if table := operation.Protection.Table; table != "" && !managedSeen[table] {
+					managedSeen[table] = true
+					managedRowTables = append(managedRowTables, table)
+				}
+			}
+		}
+		versionStates := make([]RowPolicyVersionState, 0, len(parsedRows))
+		for i, parsed := range parsedRows {
+			prefixResolved, prefixErr := ResolveRowPolicies(parsedRows[:i+1], tables, StaticDeriveRoles(staticRoles))
+			if prefixErr != nil {
+				return fmt.Errorf("resolving row policy state %s: %w", parsed.PolicyID, prefixErr)
+			}
+			prefixPlans, prefixErr := LowerPostgresRowPolicies(prefixResolved)
+			if prefixErr != nil {
+				return fmt.Errorf("lowering row policy state %s: %w", parsed.PolicyID, prefixErr)
+			}
+			versionStates = append(versionStates, RowPolicyVersionState{PolicyID: parsed.PolicyID, Plans: prefixPlans})
+		}
+		rowPolicySrc, err := GenerateRowPolicyRegistryWithStates("policies", postgresPlans, versionStates, managedRowTables)
 		if err != nil {
 			return err
 		}

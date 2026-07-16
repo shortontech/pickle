@@ -279,6 +279,10 @@ func (r *PolicyRunner) Migrate(entries []PolicyEntry) error {
 		fmt.Printf("  applying policy: %s\n", entry.ID)
 
 		// Mark as running
+		deleteExisting := fmt.Sprintf("DELETE FROM rbac_changelog WHERE id = %s", r.placeholder(1))
+		if _, err := r.DB.Exec(deleteExisting, entry.ID); err != nil {
+			return fmt.Errorf("clearing prior non-applied state of %s: %w", entry.ID, err)
+		}
 		q := fmt.Sprintf(
 			"INSERT INTO rbac_changelog (id, batch, state, started_at) VALUES (%s, %s, 'running', NOW())",
 			r.placeholder(1), r.placeholder(2),
@@ -336,6 +340,10 @@ func (r *PolicyRunner) Migrate(entries []PolicyEntry) error {
 }
 
 func (r *PolicyRunner) reconcileGeneratedRowPolicies() error {
+	return r.reconcileGeneratedRowPolicyState(GeneratedRowPolicyDDL, GeneratedRowPolicyDesired)
+}
+
+func (r *PolicyRunner) reconcileGeneratedRowPolicyState(ddl []string, desiredState map[string][]string) error {
 	if r.Driver != "pgsql" && r.Driver != "postgres" {
 		return nil
 	}
@@ -344,17 +352,18 @@ func (r *PolicyRunner) reconcileGeneratedRowPolicies() error {
 		return fmt.Errorf("beginning row-policy reconciliation: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
-	for _, statement := range GeneratedRowPolicyDDL {
+	for _, statement := range ddl {
 		if _, err := tx.Exec(statement); err != nil {
 			return fmt.Errorf("applying generated row policy: %w", err)
 		}
 	}
-	for table, desiredNames := range GeneratedRowPolicyDesired {
+	for table, desiredNames := range desiredState {
 		desired := map[string]bool{}
 		for _, name := range desiredNames {
 			desired[name] = true
 		}
-		rows, err := tx.Query(`SELECT policyname FROM pg_policies WHERE schemaname = ANY(current_schemas(false)) AND tablename = $1 AND policyname LIKE 'pickle\_%' ESCAPE '\'`, table)
+		schemaName, tableName := policySplitQualifiedName(table)
+		rows, err := tx.Query(`SELECT policyname FROM pg_policies WHERE schemaname = $1 AND tablename = $2 AND policyname LIKE 'pickle\_%' ESCAPE '\'`, schemaName, tableName)
 		if err != nil {
 			return fmt.Errorf("inspecting generated policies for %s: %w", table, err)
 		}
@@ -398,6 +407,9 @@ func (r *PolicyRunner) RowPolicyStatus() ([]RowPolicyDrift, error) {
 		return nil, fmt.Errorf("inspecting runtime role: %w", err)
 	}
 	expected := map[string]map[string]GeneratedRowPolicyObject{}
+	for table := range GeneratedRowPolicyDesired {
+		expected[table] = map[string]GeneratedRowPolicyObject{}
+	}
 	for _, object := range GeneratedRowPolicyCatalog {
 		if expected[object.Table] == nil {
 			expected[object.Table] = map[string]GeneratedRowPolicyObject{}
@@ -408,16 +420,23 @@ func (r *PolicyRunner) RowPolicyStatus() ([]RowPolicyDrift, error) {
 	for table, objects := range expected {
 		schemaName, tableName := policySplitQualifiedName(table)
 		status := RowPolicyDrift{Table: table, Fingerprint: GeneratedRowPolicyFingerprintValue, State: "in-sync"}
+		shouldProtect := len(objects) > 0
 		var enabled, forced, owned bool
 		err := r.DB.QueryRow(`SELECT c.relrowsecurity, c.relforcerowsecurity, pg_get_userbyid(c.relowner) = current_user FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname=$2`, schemaName, tableName).Scan(&enabled, &forced, &owned)
 		if err != nil {
 			status.Problems = append(status.Problems, "protected table missing or not inspectable")
 		} else {
-			if !enabled {
+			if shouldProtect && !enabled {
 				status.Problems = append(status.Problems, "RLS disabled")
 			}
-			if !forced {
+			if shouldProtect && !forced {
 				status.Problems = append(status.Problems, "RLS not forced")
+			}
+			if !shouldProtect && enabled {
+				status.Problems = append(status.Problems, "RLS remains enabled after explicit unprotect")
+			}
+			if !shouldProtect && forced {
+				status.Problems = append(status.Problems, "RLS remains forced after explicit unprotect")
 			}
 			if owned && !forced {
 				status.Problems = append(status.Problems, "runtime role owns table while RLS is not forced")
@@ -453,7 +472,7 @@ func (r *PolicyRunner) RowPolicyStatus() ([]RowPolicyDrift, error) {
 				if comment != "pickle:fingerprint:"+object.Fingerprint {
 					status.Problems = append(status.Problems, "fingerprint mismatch for "+name)
 				}
-			} else if permissive {
+			} else if permissive && shouldProtect {
 				status.Problems = append(status.Problems, "unexpected permissive policy "+name)
 			}
 			if strings.HasPrefix(name, "pickle_") && !managed {
@@ -576,6 +595,23 @@ func (r *PolicyRunner) Rollback(entries []PolicyEntry) error {
 			return fmt.Errorf("recording rollback of %s: %w", entry.ID, err)
 		}
 		fmt.Printf("  rolled back policy: %s\n", entry.ID)
+	}
+	remaining, err := r.applied()
+	if err != nil {
+		return err
+	}
+	state := GeneratedRowPolicyStates[""]
+	for i := len(entries) - 1; i >= 0; i-- {
+		if _, ok := remaining[entries[i].ID]; !ok {
+			continue
+		}
+		if candidate, ok := GeneratedRowPolicyStates[entries[i].ID]; ok {
+			state = candidate
+			break
+		}
+	}
+	if err := r.reconcileGeneratedRowPolicyState(state.DDL, state.Desired); err != nil {
+		return fmt.Errorf("restoring generated row policy state: %w", err)
 	}
 	return nil
 }

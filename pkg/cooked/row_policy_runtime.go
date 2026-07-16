@@ -18,9 +18,9 @@ type PolicyContext struct {
 	roles      map[string]bool
 }
 
-// NewVerifiedPolicyContext is intended for generated trusted entry-point
-// adapters. Squeeze rejects direct calls from ordinary application code.
-func NewVerifiedPolicyContext(identities map[string]string, roles []string) PolicyContext {
+// newVerifiedPolicyContext is intentionally package-private. Generated sealed
+// entry-point adapters are the only production callers.
+func newVerifiedPolicyContext(identities map[string]string, roles []string) PolicyContext {
 	types := map[string]string{}
 	for _, definition := range rowPolicyRuntimeRegistry {
 		for name, kind := range definition.IdentityTypes {

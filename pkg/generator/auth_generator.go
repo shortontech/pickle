@@ -100,15 +100,15 @@ func GenerateBuiltinDriver(driver AuthDriverInfo, httpImport string) ([]byte, er
 // driver registry, and default middleware.
 func GenerateAuthRegistry(drivers []AuthDriverInfo, modulePath, httpImport string) ([]byte, error) {
 	data := struct {
-		HTTPImport   string
-		Drivers      []AuthDriverInfo
+		HTTPImport    string
+		Drivers       []AuthDriverInfo
 		DriverImports []struct {
 			Alias string
 			Path  string
 		}
 	}{
-		HTTPImport:   httpImport,
-		Drivers:      drivers,
+		HTTPImport: httpImport,
+		Drivers:    drivers,
 	}
 
 	for _, d := range drivers {
@@ -246,6 +246,28 @@ func ActiveDriverName() string {
 // Authenticate is a convenience function that calls Authenticate on the active driver.
 func Authenticate(r *http.Request) (*pickle.AuthInfo, error) {
 	return ActiveDriver().Authenticate(r)
+}
+
+// VerifiedPolicySource is a sealed result of successful authentication.
+// Application packages can consume it but cannot implement or forge it.
+type VerifiedPolicySource interface {
+	policySourceSeal()
+	PolicyIdentities() map[string]string
+	PolicyRoles() []string
+}
+type verifiedPolicySource struct { identities map[string]string; roles []string }
+func (verifiedPolicySource) policySourceSeal() {}
+func (v verifiedPolicySource) PolicyIdentities() map[string]string { out:=map[string]string{};for key,value:=range v.identities{out[key]=value};return out }
+func (v verifiedPolicySource) PolicyRoles() []string { return append([]string(nil),v.roles...) }
+
+// AuthenticatePolicySource validates the configured credential and returns a
+// sealed source suitable for generated row-policy context construction.
+func AuthenticatePolicySource(r *http.Request) (VerifiedPolicySource, error) {
+	info, err := Authenticate(r)
+	if err != nil { return nil, err }
+	identities:=map[string]string{"user_id":info.UserID}
+	roles:=[]string{};if info.Role!=""{roles=append(roles,info.Role)}
+	return verifiedPolicySource{identities:identities,roles:roles},nil
 }
 
 // DefaultAuthMiddleware validates requests using the active auth driver

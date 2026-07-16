@@ -931,7 +931,7 @@ func Generate(project *Project, picklePkgDir string) error {
 		if err := writeFile(filepath.Join(policiesDir, "row_policies_gen.go"), rowPolicySrc); err != nil {
 			return err
 		}
-		runtimePolicySrc, err := GenerateRowPolicyRuntimeRegistry("models", resolvedRows)
+		runtimePolicySrc, err := GenerateRowPolicyRuntimeRegistry("models", resolvedRows, project.ModulePath+"/app/http/auth")
 		if err != nil {
 			return err
 		}

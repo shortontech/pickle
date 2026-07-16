@@ -2174,7 +2174,7 @@ func (e *exporter) writeModels(tables []*schema.Table, views []*schema.View) err
 		if err := e.writeFile(filepath.Join("app", "models", "row_policy_support.go"), base); err != nil {
 			return err
 		}
-		registry, err := generator.GenerateRowPolicyRuntimeRegistry("models", e.rowPolicies)
+		registry, err := generator.GenerateRowPolicyRuntimeRegistry("models", e.rowPolicies, e.modulePath+"/app/http/auth")
 		if err != nil {
 			return err
 		}
@@ -11179,7 +11179,7 @@ import (
 
 var ErrPolicyContextRequired = errors.New("pickle: protected query requires policy context")
 type PolicyContext struct { identities map[string]string; roles map[string]bool }
-func NewVerifiedPolicyContext(identities map[string]string, roles []string) PolicyContext {
+func newVerifiedPolicyContext(identities map[string]string, roles []string) PolicyContext {
     types := map[string]string{}
     for _, definition := range rowPolicyRuntimeRegistry { for name, kind := range definition.IdentityTypes { types[name] = kind } }
     ids := map[string]string{}

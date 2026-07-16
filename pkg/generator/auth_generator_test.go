@@ -156,6 +156,11 @@ func TestGenerateAuthRegistry(t *testing.T) {
 	if !strings.Contains(content, "type AuthDriver interface") {
 		t.Error("missing AuthDriver interface")
 	}
+	for _, want := range []string{"type VerifiedPolicySource interface", "policySourceSeal()", "AuthenticatePolicySource"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("generated auth registry missing %q", want)
+		}
+	}
 
 	// Should have DefaultAuthMiddleware
 	if !strings.Contains(content, "func DefaultAuthMiddleware") {

@@ -11333,6 +11333,9 @@ func TestExportedRowPolicyQuerySupportEnforcesEveryTerminal(t *testing.T) {
 	if _, err := format.Source([]byte(exportedRowPolicyRuntimeSource)); err != nil {
 		t.Fatalf("row policy runtime does not format: %v", err)
 	}
+	if strings.Contains(exportedRowPolicyRuntimeSource, "func NewVerifiedPolicyContext") {
+		t.Fatal("exported runtime exposes forgeable verified context constructor")
+	}
 }
 
 func runExported(t *testing.T, dir string, name string, args ...string) {

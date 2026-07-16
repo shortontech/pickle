@@ -42,6 +42,19 @@ func TestGenerateRowPolicyRuntimeRegistryUsesResolvedIR(t *testing.T) {
 	}
 }
 
+func TestGenerateRowPolicyRuntimeRegistryUsesSealedAuthSource(t *testing.T) {
+	src, err := GenerateRowPolicyRuntimeRegistry("models", nil, "example.com/app/app/http/auth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, want := range []string{`auth "example.com/app/app/http/auth"`, `func PolicyContextFromVerified(source auth.VerifiedPolicySource)`, `newVerifiedPolicyContext(`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in %s", want, text)
+		}
+	}
+}
+
 func TestGenerateRowPolicyRegistryExplicitlyDisablesUnprotectedTable(t *testing.T) {
 	src, err := GenerateRowPolicyRegistry("policies", nil, []string{"private.messages"})
 	if err != nil {

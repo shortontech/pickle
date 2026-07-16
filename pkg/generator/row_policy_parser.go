@@ -27,6 +27,7 @@ type ResolvedRowPolicy struct {
 	SourcePolicies   []string
 	EnforcementClass string // portable, application_only
 	PhysicalPlans    map[string]string
+	Identities       map[string]schema.PolicyIdentityType
 }
 
 func ParseRowPolicyOps(policiesDir string) ([]ParsedRowPolicyFile, error) {
@@ -357,6 +358,7 @@ func ResolveRowPolicies(files []ParsedRowPolicyFile, tables []*schema.Table, rol
 				return nil, fmt.Errorf("table %q is already protected; use AlterProtection", table.Name)
 			}
 			resolved.Protection = op.Protection
+			resolved.Identities = copyPolicyIdentities(identities)
 			resolved.SourcePolicies = append(resolved.SourcePolicies, file.PolicyID)
 			resolved.EnforcementClass = "portable"
 			resolved.PhysicalPlans = rowPolicyPhysicalPlans(table, op.Protection)
@@ -377,6 +379,14 @@ func ResolveRowPolicies(files []ParsedRowPolicyFile, tables []*schema.Table, rol
 		}
 	}
 	return out, nil
+}
+
+func copyPolicyIdentities(in map[string]schema.PolicyIdentityType) map[string]schema.PolicyIdentityType {
+	out := make(map[string]schema.PolicyIdentityType, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func validateResolvedProtection(p schema.RowProtection, table *schema.Table, identities map[string]schema.PolicyIdentityType, roles map[string]bool) error {

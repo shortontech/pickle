@@ -869,6 +869,35 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 	}
 
+	// Resolve row policies only after migration replay has produced authoritative
+	// table metadata. Both enforcement emitters consume this same normalized state.
+	if hasRolePolicies {
+		parsedRows, err := ParseRowPolicyOps(policiesDir)
+		if err != nil {
+			return fmt.Errorf("parsing row policies: %w", err)
+		}
+		staticRoles, err := ParsePolicyOps(policiesDir)
+		if err != nil {
+			return fmt.Errorf("parsing policy roles: %w", err)
+		}
+		resolvedRows, err := ResolveRowPolicies(parsedRows, tables, StaticDeriveRoles(staticRoles))
+		if err != nil {
+			return fmt.Errorf("resolving row policies: %w", err)
+		}
+		postgresPlans, err := LowerPostgresRowPolicies(resolvedRows)
+		if err != nil {
+			return fmt.Errorf("lowering PostgreSQL row policies: %w", err)
+		}
+		rowPolicySrc, err := GenerateRowPolicyRegistry("policies", postgresPlans)
+		if err != nil {
+			return err
+		}
+		fmt.Println("  generating policies/row_policies_gen.go")
+		if err := writeFile(filepath.Join(policiesDir, "row_policies_gen.go"), rowPolicySrc); err != nil {
+			return err
+		}
+	}
+
 	// 3a. Generate the compiled scenario registry and the minimal resolved
 	// schema metadata required by the standalone seed executor.
 	hasSeeders := false

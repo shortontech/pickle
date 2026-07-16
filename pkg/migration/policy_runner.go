@@ -5,6 +5,7 @@ package migration
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // PolicyIface is implemented by all role policy structs via embedded Policy.
@@ -322,7 +323,63 @@ func (r *PolicyRunner) Migrate(entries []PolicyEntry) error {
 	if ran == 0 {
 		fmt.Println("  no pending role policies")
 	}
-	return nil
+	return r.reconcileGeneratedRowPolicies()
+}
+
+func (r *PolicyRunner) reconcileGeneratedRowPolicies() error {
+	if r.Driver != "pgsql" && r.Driver != "postgres" {
+		return nil
+	}
+	tx, err := r.DB.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning row-policy reconciliation: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+	for _, statement := range GeneratedRowPolicyDDL {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("applying generated row policy: %w", err)
+		}
+	}
+	for table, desiredNames := range GeneratedRowPolicyDesired {
+		desired := map[string]bool{}
+		for _, name := range desiredNames {
+			desired[name] = true
+		}
+		rows, err := tx.Query(`SELECT policyname FROM pg_policies WHERE schemaname = ANY(current_schemas(false)) AND tablename = $1 AND policyname LIKE 'pickle\_%' ESCAPE '\'`, table)
+		if err != nil {
+			return fmt.Errorf("inspecting generated policies for %s: %w", table, err)
+		}
+		var stale []string
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				rows.Close()
+				return err
+			}
+			if !desired[name] {
+				stale = append(stale, name)
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, name := range stale {
+			q := "DROP POLICY " + policyQuoteIdent(name) + " ON " + policyQuoteQualifiedIdent(table)
+			if _, err := tx.Exec(q); err != nil {
+				return fmt.Errorf("dropping stale generated policy %s: %w", name, err)
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+func policyQuoteIdent(value string) string { return `"` + strings.ReplaceAll(value, `"`, `""`) + `"` }
+func policyQuoteQualifiedIdent(value string) string {
+	parts := strings.Split(value, ".")
+	for i, part := range parts {
+		parts[i] = policyQuoteIdent(part)
+	}
+	return strings.Join(parts, ".")
 }
 
 // Rollback reverses the last batch of role policies.

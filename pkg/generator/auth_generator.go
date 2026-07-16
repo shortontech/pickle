@@ -272,6 +272,19 @@ func AuthenticatePolicySource(r *http.Request) (VerifiedPolicySource, error) {
 	return verifiedPolicySource{identities:identities,roles:roles},nil
 }
 
+// AuthenticateJobPolicySource authenticates a driver-native credential for a
+// background job. Jobs must construct the same request-shaped credential the
+// active driver verifies; raw identity maps are deliberately not accepted.
+func AuthenticateJobPolicySource(r *http.Request) (VerifiedPolicySource, error) {
+	return AuthenticatePolicySource(r)
+}
+
+// AuthenticateCLIPolicySource authenticates a driver-native credential for a
+// CLI command. Commands cannot manufacture policy identities or roles.
+func AuthenticateCLIPolicySource(r *http.Request) (VerifiedPolicySource, error) {
+	return AuthenticatePolicySource(r)
+}
+
 func policyClaimIdentities(claims any) map[string]string {
 	out:=map[string]string{};rv:=reflect.ValueOf(claims);if rv.Kind()==reflect.Pointer{if rv.IsNil(){return out};rv=rv.Elem()};if rv.Kind()!=reflect.Struct{return out};rt:=rv.Type()
 	for i:=0;i<rv.NumField();i++{field:=rv.Field(i);meta:=rt.Field(i);name:=meta.Tag.Get("json");if comma:=strings.IndexByte(name,',');comma>=0{name=name[:comma]};if name==""||name=="-"{name=meta.Name};if field.Kind()==reflect.String&&field.String()!=""{out[name]=field.String()};if meta.Name=="Extra"&&field.Kind()==reflect.Map{iter:=field.MapRange();for iter.Next(){if iter.Key().Kind()==reflect.String{value:=iter.Value();if value.Kind()==reflect.Interface&&!value.IsNil(){value=value.Elem()};if value.Kind()==reflect.String&&value.String()!=""{out[iter.Key().String()]=value.String()}}}}}

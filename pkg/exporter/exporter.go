@@ -2181,6 +2181,9 @@ func (e *exporter) writeModels(tables []*schema.Table, views []*schema.View) err
 		if err := e.writeFile(filepath.Join("app", "models", "row_policies_gen.go"), registry); err != nil {
 			return err
 		}
+		if err := e.writeFile(filepath.Join("app", "models", "row_policy_test_adapter_gen_test.go"), generator.GenerateRowPolicyTestAdapter("models")); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -55,6 +55,15 @@ func TestGenerateRowPolicyRuntimeRegistryUsesSealedAuthSource(t *testing.T) {
 	}
 }
 
+func TestGenerateRowPolicyTestAdapterIsTestOnlyConstructionSurface(t *testing.T) {
+	text := string(GenerateRowPolicyTestAdapter("models"))
+	for _, want := range []string{"package models", "func NewVerifiedPolicyContext", "newVerifiedPolicyContext"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in %s", want, text)
+		}
+	}
+}
+
 func TestGenerateRowPolicyRegistryExplicitlyDisablesUnprotectedTable(t *testing.T) {
 	src, err := GenerateRowPolicyRegistry("policies", nil, []string{"private.messages"})
 	if err != nil {

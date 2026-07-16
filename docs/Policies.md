@@ -54,16 +54,27 @@ Predicates are a typed tree, not Go or SQL strings:
 | `Owner("column", Identity("name"))` | Equality ownership check |
 | `Equal`, `NotEqual` | Typed comparison with SQL null semantics |
 | `And`, `Or`, `Not` | Boolean composition |
+| `Exists("relationship", predicate)` | Direct, unprotected FK relationship admission for existing rows |
 
 Generation replays every policy, resolves tables, columns, roles, identity types, and operation positions, then feeds one normalized representation to both application and PostgreSQL emitters. Unknown or ambiguous references stop generation.
 
-`UPDATE` requires both `Existing(...)` and `Proposed(...)`. Immutable updates and immutable/soft-delete deletes map to physical inserts or updates and cannot be represented equivalently as PostgreSQL commands. They require the explicit `rows.AllowApplicationOnly("non_bijective_physical_plan")` acknowledgement; generated application enforcement remains active, but Pickle does not claim or emit equivalent RLS for that logical operation.
+`UPDATE` requires both `Existing(...)` and `Proposed(...)`. Immutable history tables cannot safely reduce to the globally current version after PostgreSQL has applied per-row RLS. Any row policy on an immutable table therefore requires the explicit `rows.AllowApplicationOnly("non_bijective_physical_plan")` acknowledgement. Generated application enforcement remains active for every operation, but Pickle emits no RLS that could resurrect an older or pre-delete version.
 
 For immutable reads, Pickle first finds the globally newest version and then applies row admission. A denied newest version never reveals an older allowed version.
 
 ### Policy context
 
-Protected queries fail before database access when no matching subject or required identity is present. Generated trusted entry-point adapters create `PolicyContext`; ordinary controller code attaches it with `WithPolicyContext`, or seals it on a transaction. PostgreSQL dual enforcement uses transaction-local settings:
+Protected queries fail before database access when no matching subject or required identity is present. Authentication returns a sealed source that application packages cannot implement; the generated model adapter converts it to `PolicyContext`. Verified custom string claims are available by their claim name, and `user_id` always comes from the verified authentication subject:
+
+```go
+verified, err := auth.AuthenticatePolicySource(ctx.Request())
+if err != nil {
+    return ctx.Unauthorized("invalid credentials")
+}
+policyContext := models.PolicyContextFromVerified(verified)
+```
+
+Ordinary controller code attaches that context with `WithPolicyContext`, or seals it on a transaction. PostgreSQL dual enforcement uses transaction-local settings:
 
 ```go
 err := models.WithTransaction(func(tx *models.Tx) error {

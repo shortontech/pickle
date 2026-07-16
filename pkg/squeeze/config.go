@@ -28,7 +28,8 @@ func (c *Config) IsMonorepo() bool {
 
 // ServiceConfig describes a service in a multi-service project (one go.mod, shared models).
 type ServiceConfig struct {
-	Dir string `yaml:"dir"` // relative to project root, e.g. "services/api"
+	Dir            string `yaml:"dir"` // relative to project root, e.g. "services/api"
+	RowPolicyOwner bool   `yaml:"row_policy_owner,omitempty"`
 }
 
 // IsMultiService returns true if the config defines multiple services.

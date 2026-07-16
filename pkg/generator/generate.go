@@ -34,12 +34,13 @@ type Layout struct {
 
 // ServiceLayout describes per-service paths in a multi-service project.
 type ServiceLayout struct {
-	Name        string // "api", "worker"
-	Dir         string // absolute path to service dir
-	HTTPDir     string // {serviceDir}/http
-	HTTPPkg     string // package name for HTTPDir ("pickle")
-	RequestsDir string // {serviceDir}/http/requests
-	CommandsDir string // {serviceDir}/commands
+	Name           string // "api", "worker"
+	Dir            string // absolute path to service dir
+	HTTPDir        string // {serviceDir}/http
+	HTTPPkg        string // package name for HTTPDir ("pickle")
+	RequestsDir    string // {serviceDir}/http/requests
+	CommandsDir    string // {serviceDir}/commands
+	RowPolicyOwner bool   // sole service allowed to migrate shared row-policy state
 }
 
 // Project represents a Pickle project layout rooted at a directory.
@@ -877,6 +878,17 @@ func Generate(project *Project, picklePkgDir string) error {
 		if err != nil {
 			return fmt.Errorf("parsing row policies: %w", err)
 		}
+		if len(project.Services) > 0 && len(parsedRows) > 0 {
+			owners := 0
+			for _, service := range project.Services {
+				if service.RowPolicyOwner {
+					owners++
+				}
+			}
+			if owners != 1 {
+				return fmt.Errorf("multi-service row policies require exactly one service with row_policy_owner: true (got %d)", owners)
+			}
+		}
 		staticRoles, err := ParsePolicyOps(policiesDir)
 		if err != nil {
 			return fmt.Errorf("parsing policy roles: %w", err)
@@ -1336,7 +1348,7 @@ func generateService(project *Project, svc ServiceLayout, picklePkgDir string) e
 			hasRolePolicies = len(policies) > 0
 		}
 		if rows, parseErr := ParseRowPolicyOps(servicePoliciesDir); parseErr == nil && len(rows) > 0 {
-			hasRolePolicies = true
+			hasRolePolicies = svc.RowPolicyOwner
 		}
 
 		cmdSrc, err := GenerateCommandsGlue(project.ModulePath, project.Layout.MigrationsRel, userCmds, routeVars, hasAuth, hasSchedule, false, hasRolePolicies)

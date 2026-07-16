@@ -124,6 +124,7 @@ func Export(opts Options) (*Result, error) {
 		return nil, fmt.Errorf("scanning scopes: %w", err)
 	}
 	ex.seeders = analysis.Seeders
+	ex.rowPolicies = analysis.RowPolicies
 	ex.managesRoles, err = exportedManagesRoles(project.Dir)
 	if err != nil {
 		return nil, fmt.Errorf("deriving manages roles: %w", err)
@@ -211,6 +212,7 @@ type exporter struct {
 	scopes              map[string][]generator.ScopeDef
 	managesRoles        map[string]bool
 	seeders             []generator.SeederDefinition
+	rowPolicies         []generator.ResolvedRowPolicy
 }
 
 type integrityModelInfo struct {
@@ -1915,7 +1917,7 @@ func exprString(expr ast.Expr) (string, error) {
 	return b.String(), nil
 }
 
-func exportedModelsDBSource() ([]byte, error) {
+func exportedModelsDBSource(rowPolicies bool) ([]byte, error) {
 	src := `package models
 
 import (
@@ -1938,6 +1940,7 @@ func SetDBWithDriver(db *gorm.DB, driver string) {
 
 type Tx struct {
 	DB *gorm.DB
+__ROW_POLICY_FIELD__
 }
 
 func WithTransaction(fn func(tx *Tx) error) error {
@@ -1960,7 +1963,7 @@ func (tx *Tx) Transaction(fn func(tx *Tx) error) error {
 		return fmt.Errorf("models: transaction callback is nil")
 	}
 	return tx.DB.Transaction(func(db *gorm.DB) error {
-		return fn(&Tx{DB: db})
+		return fn(&Tx{DB: db__ROW_POLICY_INHERIT__})
 	})
 }
 
@@ -2073,6 +2076,13 @@ func (e *LockOutsideTransactionError) Error() string {
 	return fmt.Sprintf("cannot lock %s outside a transaction", e.Model)
 }
 `
+	field, inherit := "", ""
+	if rowPolicies {
+		field = "\tpolicyContext *PolicyContext"
+		inherit = ", policyContext: tx.policyContext"
+	}
+	src = strings.ReplaceAll(src, "__ROW_POLICY_FIELD__", field)
+	src = strings.ReplaceAll(src, "__ROW_POLICY_INHERIT__", inherit)
 	formatted, err := format.Source([]byte(src))
 	if err != nil {
 		return nil, err
@@ -2085,7 +2095,7 @@ func (e *exporter) writeHTTPX() error {
 }
 
 func (e *exporter) writeModels(tables []*schema.Table, views []*schema.View) error {
-	dbSource, err := exportedModelsDBSource()
+	dbSource, err := exportedModelsDBSource(len(e.rowPolicies) > 0)
 	if err != nil {
 		return err
 	}
@@ -2154,6 +2164,22 @@ func (e *exporter) writeModels(tables []*schema.Table, views []*schema.View) err
 			if err := e.writeFile(filepath.Join("app", "models", "custom_scopes_gen.go"), data); err != nil {
 				return err
 			}
+		}
+	}
+	if len(e.rowPolicies) > 0 {
+		base, err := format.Source([]byte(exportedRowPolicyRuntimeSource))
+		if err != nil {
+			return fmt.Errorf("formatting exported row-policy runtime: %w", err)
+		}
+		if err := e.writeFile(filepath.Join("app", "models", "row_policy_support.go"), base); err != nil {
+			return err
+		}
+		registry, err := generator.GenerateRowPolicyRuntimeRegistry("models", e.rowPolicies)
+		if err != nil {
+			return err
+		}
+		if err := e.writeFile(filepath.Join("app", "models", "row_policies_gen.go"), registry); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -4033,7 +4059,7 @@ func extractStringConstFromGoSource(src []byte, name string) (string, error) {
 }
 
 func (e *exporter) needsModelQuerySupport() bool {
-	return e.hasGraphQLPackage() || len(e.scopes) > 0
+	return e.hasGraphQLPackage() || len(e.scopes) > 0 || len(e.rowPolicies) > 0
 }
 
 func (e *exporter) generateModelQuerySupport(tables []*schema.Table, views []*schema.View, graphQLErrors bool) ([]byte, error) {
@@ -4065,14 +4091,14 @@ func (e *exporter) generateModelQuerySupport(tables []*schema.Table, views []*sc
 		}
 	}
 	for _, table := range tables {
-		writeGraphQLModelQuerySupport(&b, table.Name, table.Columns, false)
+		writeGraphQLModelQuerySupport(&b, table.Name, table.Columns, false, len(e.rowPolicies) > 0)
 	}
 	for _, view := range views {
 		var cols []*schema.Column
 		for i := range view.Columns {
 			cols = append(cols, &view.Columns[i].Column)
 		}
-		writeGraphQLModelQuerySupport(&b, view.Name, cols, true)
+		writeGraphQLModelQuerySupport(&b, view.Name, cols, true, len(e.rowPolicies) > 0)
 	}
 	formatted, err := format.Source([]byte(b.String()))
 	if err != nil {
@@ -4277,7 +4303,7 @@ func lowerFirst(s string) string {
 	return strings.ToLower(s[:1]) + s[1:]
 }
 
-func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns []*schema.Column, readOnly bool) {
+func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns []*schema.Column, readOnly bool, rowPolicies ...bool) {
 	structName := tableToStruct(tableName)
 	queryName := structName + "Query"
 	scopeBuilderName := structName + "ScopeBuilder"
@@ -4287,11 +4313,23 @@ func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns
 	ownerCols := graphQLVisibilitySelectColumns(columns, func(col *schema.Column) bool {
 		return col.IsPublic || col.IsOwnerSees
 	})
-	b.WriteString(fmt.Sprintf("type %s struct { db *gorm.DB }\n\n", queryName))
+	hasRowPolicies := len(rowPolicies) > 0 && rowPolicies[0]
+	if hasRowPolicies {
+		b.WriteString(fmt.Sprintf("type %s struct { db *gorm.DB; policyContext *PolicyContext }\n\n", queryName))
+	} else {
+		b.WriteString(fmt.Sprintf("type %s struct { db *gorm.DB }\n\n", queryName))
+	}
 	b.WriteString(fmt.Sprintf("func Query%s() *%s { return &%s{db: DB.Model(&%s{})} }\n\n", structName, queryName, queryName, structName))
 	b.WriteString(fmt.Sprintf("func (tx *Tx) Query%s() *%s {\n", structName, queryName))
-	b.WriteString(fmt.Sprintf("\treturn &%s{db: tx.DB.Model(&%s{})}\n", queryName, structName))
+	if hasRowPolicies {
+		b.WriteString(fmt.Sprintf("\treturn &%s{db: tx.DB.Model(&%s{}), policyContext: tx.policyContext}\n", queryName, structName))
+	} else {
+		b.WriteString(fmt.Sprintf("\treturn &%s{db: tx.DB.Model(&%s{})}\n", queryName, structName))
+	}
 	b.WriteString("}\n")
+	if hasRowPolicies {
+		b.WriteString(fmt.Sprintf("func (q *%s) WithPolicyContext(context PolicyContext) *%s { q.policyContext = &context; return q }\n", queryName, queryName))
+	}
 	b.WriteString(fmt.Sprintf("func (q *%s) SelectPublic() *%s { q.db = q.db.Select([]string{%s}); return q }\n", queryName, queryName, quotedStringList(publicCols)))
 	b.WriteString(fmt.Sprintf("func (q *%s) SelectOwner() *%s { q.db = q.db.Select([]string{%s}); return q }\n", queryName, queryName, quotedStringList(ownerCols)))
 	b.WriteString(fmt.Sprintf("func (q *%s) SelectAll() *%s { q.db = q.db.Select(\"*\"); return q }\n", queryName, queryName))
@@ -4376,10 +4414,20 @@ func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns
 			b.WriteString(fmt.Sprintf("func (sb *%s) Where%s%s(value any) *%s { sb.db = sb.db.Where(%q, value); return sb }\n", scopeBuilderName, fieldName, suffix, scopeBuilderName, columnName+" "+op+" ?"))
 		}
 	}
-	b.WriteString(fmt.Sprintf("func (q *%s) First() (*%s, error) { var record %s; err := q.db.First(&record).Error; return &record, err }\n", queryName, structName, structName))
-	b.WriteString(fmt.Sprintf("func (q *%s) All() ([]%s, error) { var records []%s; err := q.db.Find(&records).Error; return records, err }\n", queryName, structName, structName))
-	b.WriteString(fmt.Sprintf("func (q *%s) Count() (int64, error) { var count int64; err := q.db.Count(&count).Error; return count, err }\n", queryName))
-	if !readOnly {
+	if hasRowPolicies {
+		b.WriteString(fmt.Sprintf("func (q *%s) First() (*%s, error) { db, err := applyExportedRowPolicy(q.db, %q, \"select\", q.policyContext); if err != nil { return nil, err }; var record %s; err = db.First(&record).Error; return &record, err }\n", queryName, structName, tableName, structName))
+		b.WriteString(fmt.Sprintf("func (q *%s) All() ([]%s, error) { db, err := applyExportedRowPolicy(q.db, %q, \"select\", q.policyContext); if err != nil { return nil, err }; var records []%s; err = db.Find(&records).Error; return records, err }\n", queryName, structName, tableName, structName))
+		b.WriteString(fmt.Sprintf("func (q *%s) Count() (int64, error) { db, err := applyExportedRowPolicy(q.db, %q, \"select\", q.policyContext); if err != nil { return 0, err }; var count int64; err = db.Count(&count).Error; return count, err }\n", queryName, tableName))
+	} else {
+		b.WriteString(fmt.Sprintf("func (q *%s) First() (*%s, error) { var record %s; err := q.db.First(&record).Error; return &record, err }\n", queryName, structName, structName))
+		b.WriteString(fmt.Sprintf("func (q *%s) All() ([]%s, error) { var records []%s; err := q.db.Find(&records).Error; return records, err }\n", queryName, structName, structName))
+		b.WriteString(fmt.Sprintf("func (q *%s) Count() (int64, error) { var count int64; err := q.db.Count(&count).Error; return count, err }\n", queryName))
+	}
+	if !readOnly && hasRowPolicies {
+		b.WriteString(fmt.Sprintf("func (q *%s) Create(record *%s) error { if err := evaluateRowPolicyRecord(%q, \"insert\", q.policyContext, record); err != nil { return err }; return q.db.Session(&gorm.Session{NewDB: true}).Create(record).Error }\n", queryName, structName, tableName))
+		b.WriteString(fmt.Sprintf("func (q *%s) Update(record *%s) error { if err := evaluateRowPolicyRecord(%q, \"update_new\", q.policyContext, record); err != nil { return err }; db, err := applyExportedRowPolicy(q.db, %q, \"update_old\", q.policyContext); if err != nil { return err }; result := db.Model(record).Updates(record); if result.Error != nil { return result.Error }; if result.RowsAffected == 0 { return gorm.ErrRecordNotFound }; return nil }\n", queryName, structName, tableName, tableName))
+		b.WriteString(fmt.Sprintf("func (q *%s) Delete(record *%s) error { db, err := applyExportedRowPolicy(q.db, %q, \"delete\", q.policyContext); if err != nil { return err }; result := db.Delete(record); if result.Error != nil { return result.Error }; if result.RowsAffected == 0 { return gorm.ErrRecordNotFound }; return nil }\n", queryName, structName, tableName))
+	} else if !readOnly {
 		b.WriteString(fmt.Sprintf("func (q *%s) Create(record *%s) error { return q.db.Session(&gorm.Session{NewDB: true}).Create(record).Error }\n", queryName, structName))
 		b.WriteString(fmt.Sprintf("func (q *%s) Update(record *%s) error { return q.db.Session(&gorm.Session{NewDB: true}).Save(record).Error }\n", queryName, structName))
 		b.WriteString(fmt.Sprintf("func (q *%s) Delete(record *%s) error { return q.db.Session(&gorm.Session{NewDB: true}).Delete(record).Error }\n", queryName, structName))
@@ -6392,6 +6440,21 @@ func (e *exporter) writePolicySupport() error {
 	if err := e.writeFile(filepath.Join("database", "policies", "support.go"), data); err != nil {
 		return err
 	}
+	plans, err := generator.LowerPostgresRowPolicies(e.rowPolicies)
+	if err != nil {
+		return fmt.Errorf("lowering exported row policies: %w", err)
+	}
+	managedTables := make([]string, 0, len(e.rowPolicies))
+	for _, policy := range e.rowPolicies {
+		managedTables = append(managedTables, policy.Protection.Table)
+	}
+	registry, err := generator.GenerateRowPolicyRegistry("policies", plans, managedTables)
+	if err != nil {
+		return err
+	}
+	if err := e.writeFile(filepath.Join("database", "policies", "row_policies_gen.go"), registry); err != nil {
+		return err
+	}
 	if e.hasRolePolicies() {
 		data := fmt.Sprintf(rbacMiddlewareSupportSource, e.modulePath, e.modulePath)
 		formatted, err := format.Source([]byte(data))
@@ -6574,6 +6637,7 @@ func Migrate(db *gorm.DB, driver string) error {
 			if err := seedGraphQLPolicies(tx); err != nil { return err }
 			if err := markPoliciesApplied(tx, "graphql_changelog", graphQLPolicyIDs); err != nil { return err }
 		}
+		if err := migrateGeneratedRowPolicies(tx, driver); err != nil { return err }
 		return nil
 	}); err != nil {
 		if errors.Is(err, errPolicyDatabase) {
@@ -6587,6 +6651,7 @@ func Migrate(db *gorm.DB, driver string) error {
 func Rollback(db *gorm.DB, driver string) error {
 	if err := ensurePolicyDB(db); err != nil { return err }
 	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := rollbackGeneratedRowPolicies(tx, driver); err != nil { return err }
 		if len(graphQLExposureSeeds) > 0 || len(graphQLActionSeeds) > 0 {
 			if err := tx.Exec("DELETE FROM graphql_actions").Error; err != nil { return policyDatabaseError() }
 			if err := tx.Exec("DELETE FROM graphql_exposures").Error; err != nil { return policyDatabaseError() }
@@ -6625,6 +6690,22 @@ func Fresh(db *gorm.DB, driver string) error {
 	}
 	return Migrate(db, driver)
 }
+
+func reconcileGeneratedRowPolicies(tx *gorm.DB, driver string, ddl []string, desired map[string][]string) error {
+	if driver != "pgsql" && driver != "postgres" { return nil }
+	for _, statement := range ddl { if err := tx.Exec(statement).Error; err != nil { return err } }
+	for table, names := range desired {
+		desiredNames := map[string]bool{}; for _, name := range names { desiredNames[name] = true }
+		parts := strings.Split(table, "."); schemaName, tableName := "public", parts[len(parts)-1]; if len(parts)>1 { schemaName = strings.Join(parts[:len(parts)-1], ".") }
+		var rows []struct{ PolicyName string ` + "`" + `gorm:"column:policyname"` + "`" + ` }
+		if err := tx.Raw("SELECT policyname FROM pg_policies WHERE schemaname = ? AND tablename = ? AND policyname LIKE 'pickle\\_%' ESCAPE '\\'", schemaName, tableName).Scan(&rows).Error; err != nil { return err }
+		for _, row := range rows { if !desiredNames[row.PolicyName] { if err := tx.Exec("DROP POLICY \""+strings.ReplaceAll(row.PolicyName,"\"","\"\"")+"\" ON "+quotePolicyTable(table)).Error; err != nil { return err } } }
+	}
+	return nil
+}
+func quotePolicyTable(table string) string { parts:=strings.Split(table,".");for i,part:=range parts{parts[i]="\""+strings.ReplaceAll(part,"\"","\"\"")+"\""};return strings.Join(parts,".") }
+func migrateGeneratedRowPolicies(tx *gorm.DB, driver string) error { return reconcileGeneratedRowPolicies(tx,driver,GeneratedRowPolicyDDL,GeneratedRowPolicyDesired) }
+func rollbackGeneratedRowPolicies(tx *gorm.DB, driver string) error { state:=GeneratedRowPolicyStates[""];return reconcileGeneratedRowPolicies(tx,driver,state.DDL,state.Desired) }
 
 func Status(db *gorm.DB, driver string) ([]PolicyStatus, error) {
 	if err := ensurePolicyDB(db); err != nil { return nil, err }
@@ -8477,6 +8558,9 @@ func (e *exporter) writeReport(orm string) error {
 	b.WriteString("- Standalone JWT, OAuth client-credentials, and session auth drivers\n")
 	if e.hasPolicySupport() {
 		b.WriteString("- Standalone RBAC and GraphQL policy state support with changelog tables\n")
+	}
+	if len(e.rowPolicies) > 0 {
+		b.WriteString("- Normalized row-policy registry, GORM terminal enforcement, transaction-local PostgreSQL identity, generated RLS lifecycle/rollback state, and proof metadata\n")
 	}
 	b.WriteString("\n")
 	e.writeUnsupportedSection(&b)
@@ -11036,6 +11120,76 @@ func main() {
 		log.Fatal("server failed")
 	}
 }
+`
+
+const exportedRowPolicyRuntimeSource = `package models
+
+import (
+    "encoding/json"
+    "errors"
+    "fmt"
+    "reflect"
+    "sort"
+    "strings"
+
+    "github.com/google/uuid"
+    "gorm.io/gorm"
+)
+
+var ErrPolicyContextRequired = errors.New("pickle: protected query requires policy context")
+type PolicyContext struct { identities map[string]string; roles map[string]bool }
+func NewVerifiedPolicyContext(identities map[string]string, roles []string) PolicyContext {
+    types := map[string]string{}
+    for _, definition := range rowPolicyRuntimeRegistry { for name, kind := range definition.IdentityTypes { types[name] = kind } }
+    ids := map[string]string{}
+    for name, value := range identities {
+        kind, ok := types[name]; if !ok || value == "" || len(value) > 65536 { continue }
+        if kind == "uuid" { parsed, err := uuid.Parse(value); if err != nil { continue }; value = parsed.String() }
+        ids[name] = value
+    }
+    roleSet := map[string]bool{}; for _, role := range roles { if role != "" && len(role) <= 1024 { roleSet[role] = true } }
+    return PolicyContext{identities:ids, roles:roleSet}
+}
+func (c PolicyContext) identity(name string) (string,bool) { value, ok := c.identities[name]; return value, ok && value != "" }
+func (c PolicyContext) encodedRoles() string { values:=make([]string,0,len(c.roles)); for role:=range c.roles { values=append(values,role) }; sort.Strings(values); data,_:=json.Marshal(values); return string(data) }
+
+type rowPolicyRuntimePredicate struct { Kind, Name string; Children []rowPolicyRuntimePredicate }
+type rowPolicyRuntimeRule struct { Key, SubjectKind, SubjectName string; Select, Insert, UpdateOld, UpdateNew, Delete *rowPolicyRuntimePredicate }
+type rowPolicyRuntimeDefinition struct { Table, SubjectCombination, EnforcementClass string; IdentityTypes map[string]string; Rules []rowPolicyRuntimeRule }
+var rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{}
+func registerRowPolicyRuntime(definition rowPolicyRuntimeDefinition) { rowPolicyRuntimeRegistry[definition.Table] = definition }
+func subjectMatches(rule rowPolicyRuntimeRule, context PolicyContext) bool { switch rule.SubjectKind { case "public": return true; case "authenticated": _,ok:=context.identity("user_id"); return ok; case "role": return context.roles[rule.SubjectName] }; return false }
+func policyPredicate(rule rowPolicyRuntimeRule, operation string) *rowPolicyRuntimePredicate { switch operation { case "select": return rule.Select; case "insert": return rule.Insert; case "update_old": return rule.UpdateOld; case "update_new": return rule.UpdateNew; case "delete": return rule.Delete }; return nil }
+func compileRowPolicy(table, operation string, context *PolicyContext) (string,[]any,error) {
+    definition, protected := rowPolicyRuntimeRegistry[table]; if !protected { return "",nil,nil }
+    ctx:=PolicyContext{identities:map[string]string{},roles:map[string]bool{}}; if context!=nil { ctx=*context }
+    var parts []string; var args []any
+    for _,rule:=range definition.Rules { if !subjectMatches(rule,ctx) { continue }; predicate:=policyPredicate(rule,operation); if predicate==nil { continue }; sql,values,err:=compileExportedPredicate(*predicate,ctx); if err!=nil{return "",nil,err}; parts=append(parts,"("+sql+")"); args=append(args,values...) }
+    if len(parts)==0 { return "",nil,fmt.Errorf("%w for %s.%s",ErrPolicyContextRequired,table,operation) }
+    join:=" OR "; if definition.SubjectCombination=="all" { join=" AND " }; return "("+strings.Join(parts,join)+")",args,nil
+}
+func compileExportedPredicate(p rowPolicyRuntimePredicate, context PolicyContext) (string,[]any,error) {
+    switch p.Kind {
+    case "allow": return "TRUE",nil,nil
+    case "deny": return "FALSE",nil,nil
+    case "column": return ` + "`" + `"` + "`" + `+strings.ReplaceAll(p.Name,` + "`" + `"` + "`" + `,` + "`" + `""` + "`" + `)+` + "`" + `"` + "`" + `,nil,nil
+    case "identity": value,ok:=context.identity(p.Name); if !ok{return "",nil,fmt.Errorf("missing identity %q",p.Name)}; return "?",[]any{value},nil
+    case "equal","not_equal": if len(p.Children)!=2{return "",nil,fmt.Errorf("invalid comparison")}; left,la,err:=compileExportedPredicate(p.Children[0],context);if err!=nil{return "",nil,err};right,ra,err:=compileExportedPredicate(p.Children[1],context);if err!=nil{return "",nil,err};op:="=";if p.Kind=="not_equal"{op="<>"};return "COALESCE(("+left+" "+op+" "+right+"), FALSE)",append(la,ra...),nil
+    case "and","or": join:=" AND ";if p.Kind=="or"{join=" OR "};var parts []string;var args []any;for _,child:=range p.Children{part,values,err:=compileExportedPredicate(child,context);if err!=nil{return "",nil,err};parts=append(parts,part);args=append(args,values...)};return "("+strings.Join(parts,join)+")",args,nil
+    case "not": child,args,err:=compileExportedPredicate(p.Children[0],context);return "COALESCE(NOT ("+child+"), FALSE)",args,err
+    }; return "",nil,fmt.Errorf("unknown predicate %q",p.Kind)
+}
+func applyExportedRowPolicy(db *gorm.DB, table, operation string, context *PolicyContext) (*gorm.DB,error) { clause,args,err:=compileRowPolicy(table,operation,context);if err!=nil{return nil,err};if clause!=""{db=db.Where(clause,args...)};return db,nil }
+func evaluateRowPolicyRecord(table,operation string,context *PolicyContext,record any) error {
+    definition,protected:=rowPolicyRuntimeRegistry[table];if !protected{return nil};ctx:=PolicyContext{identities:map[string]string{},roles:map[string]bool{}};if context!=nil{ctx=*context};matched,allowed:=0,0
+    for _,rule:=range definition.Rules{if !subjectMatches(rule,ctx){continue};predicate:=policyPredicate(rule,operation);if predicate==nil{continue};matched++;ok,err:=evaluateExportedPredicate(*predicate,ctx,record);if err!=nil{return err};if ok{allowed++;if definition.SubjectCombination!="all"{return nil}}}
+    if matched>0&&definition.SubjectCombination=="all"&&allowed==matched{return nil};return fmt.Errorf("row policy denied %s.%s",table,operation)
+}
+func evaluateExportedPredicate(p rowPolicyRuntimePredicate,context PolicyContext,record any)(bool,error){switch p.Kind{case"allow":return true,nil;case"deny":return false,nil;case"equal","not_equal":left,err:=exportedPredicateValue(p.Children[0],context,record);if err!=nil{return false,err};right,err:=exportedPredicateValue(p.Children[1],context,record);if err!=nil{return false,err};if exportedNull(left)||exportedNull(right){return false,nil};equal:=fmt.Sprint(left)==fmt.Sprint(right);if p.Kind=="not_equal"{equal=!equal};return equal,nil;case"and":for _,child:=range p.Children{ok,err:=evaluateExportedPredicate(child,context,record);if err!=nil||!ok{return ok,err}};return true,nil;case"or":for _,child:=range p.Children{ok,err:=evaluateExportedPredicate(child,context,record);if err!=nil{return false,err};if ok{return true,nil}};return false,nil;case"not":ok,err:=evaluateExportedPredicate(p.Children[0],context,record);return !ok,err};return false,fmt.Errorf("predicate %q is not boolean",p.Kind)}
+func exportedPredicateValue(p rowPolicyRuntimePredicate,context PolicyContext,record any)(any,error){if p.Kind=="identity"{value,ok:=context.identity(p.Name);if !ok{return nil,fmt.Errorf("missing identity %q",p.Name)};return value,nil};if p.Kind=="column"{rv:=reflect.ValueOf(record);if rv.Kind()==reflect.Pointer{rv=rv.Elem()};rt:=rv.Type();for i:=0;i<rt.NumField();i++{if rt.Field(i).Tag.Get("gorm") == "column:"+p.Name || strings.Split(rt.Field(i).Tag.Get("gorm"),";")[0]=="column:"+p.Name{return rv.Field(i).Interface(),nil}};return nil,fmt.Errorf("record missing policy column %q",p.Name)};return nil,fmt.Errorf("predicate %q has no scalar value",p.Kind)}
+func exportedNull(value any)bool{if value==nil{return true};rv:=reflect.ValueOf(value);switch rv.Kind(){case reflect.Chan,reflect.Func,reflect.Interface,reflect.Map,reflect.Pointer,reflect.Slice:return rv.IsNil()};return false}
+func (tx *Tx) WithPolicyContext(context PolicyContext) error { if tx.policyContext!=nil{return fmt.Errorf("policy context is already sealed")};copy:=context;tx.policyContext=&copy;return nil }
+func (tx *Tx) WithPostgresPolicyContext(context PolicyContext) error { if err:=tx.WithPolicyContext(context);err!=nil{return err};for name,value:=range context.identities{if err:=tx.DB.Exec("SELECT set_config(?, ?, true)","pickle.identity."+name,value).Error;err!=nil{return err}};return tx.DB.Exec("SELECT set_config(?, ?, true)","pickle.identity.roles",context.encodedRoles()).Error }
 `
 
 const exportedEncryptionSupportSource = `package models

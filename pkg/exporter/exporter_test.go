@@ -2,6 +2,7 @@ package exporter
 
 import (
 	"fmt"
+	"go/format"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11317,6 +11318,20 @@ func assertPathMissing(t *testing.T, path string) {
 		t.Fatalf("expected %s to be absent", path)
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("stat %s: %v", path, err)
+	}
+}
+
+func TestExportedRowPolicyQuerySupportEnforcesEveryTerminal(t *testing.T) {
+	var b strings.Builder
+	writeGraphQLModelQuerySupport(&b, "messages", []*schema.Column{{Name: "id", Type: schema.UUID}, {Name: "workspace_id", Type: schema.UUID}}, false, true)
+	text := b.String()
+	for _, want := range []string{"WithPolicyContext", `applyExportedRowPolicy(q.db, "messages", "select"`, `evaluateRowPolicyRecord("messages", "insert"`, `evaluateRowPolicyRecord("messages", "update_new"`, `applyExportedRowPolicy(q.db, "messages", "update_old"`, `applyExportedRowPolicy(q.db, "messages", "delete"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("exported query support missing %q", want)
+		}
+	}
+	if _, err := format.Source([]byte(exportedRowPolicyRuntimeSource)); err != nil {
+		t.Fatalf("row policy runtime does not format: %v", err)
 	}
 }
 

@@ -383,12 +383,13 @@ func cmdGenerate() {
 		for name, svc := range cfg.Services {
 			absDir := filepath.Join(project.Dir, svc.Dir)
 			project.Services = append(project.Services, generator.ServiceLayout{
-				Name:        name,
-				Dir:         absDir,
-				HTTPDir:     filepath.Join(absDir, "http"),
-				HTTPPkg:     "pickle",
-				RequestsDir: filepath.Join(absDir, "http", "requests"),
-				CommandsDir: filepath.Join(absDir, "commands"),
+				Name:           name,
+				Dir:            absDir,
+				HTTPDir:        filepath.Join(absDir, "http"),
+				HTTPPkg:        "pickle",
+				RequestsDir:    filepath.Join(absDir, "http", "requests"),
+				CommandsDir:    filepath.Join(absDir, "commands"),
+				RowPolicyOwner: svc.RowPolicyOwner,
 			})
 		}
 
@@ -642,12 +643,13 @@ func cmdWatch() {
 		for name, svc := range cfg.Services {
 			absDir := filepath.Join(project.Dir, svc.Dir)
 			project.Services = append(project.Services, generator.ServiceLayout{
-				Name:        name,
-				Dir:         absDir,
-				HTTPDir:     filepath.Join(absDir, "http"),
-				HTTPPkg:     "pickle",
-				RequestsDir: filepath.Join(absDir, "http", "requests"),
-				CommandsDir: filepath.Join(absDir, "commands"),
+				Name:           name,
+				Dir:            absDir,
+				HTTPDir:        filepath.Join(absDir, "http"),
+				HTTPPkg:        "pickle",
+				RequestsDir:    filepath.Join(absDir, "http", "requests"),
+				CommandsDir:    filepath.Join(absDir, "commands"),
+				RowPolicyOwner: svc.RowPolicyOwner,
 			})
 			svcDirs = append(svcDirs, svc.Dir)
 		}

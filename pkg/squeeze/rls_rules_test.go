@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/shortontech/pickle/pkg/generator"
+	"github.com/shortontech/pickle/pkg/schema"
 )
 
 func TestRLSGuidanceWarnsForRLSMigration(t *testing.T) {
@@ -28,10 +29,30 @@ func TestRLSGuidanceWarnsForRLSMigration(t *testing.T) {
 	if f.File != "database/migrations/2026_07_16_120000_create_isolation.go" {
 		t.Errorf("unexpected file: %q", f.File)
 	}
-	for _, phrase := range []string{"Pickle policies", "static security guarantees", "Raw SQL in regular application code is a Squeeze error", "not a reason to choose RLS", "RawSQL remains acceptable inside migrations"} {
+	for _, phrase := range []string{"Pickle row policy", "generated application queries", "Raw SQL in regular application code is a Squeeze error", "not justification for a second policy system", "restrictive defense-in-depth"} {
 		if !strings.Contains(f.Message, phrase) {
 			t.Errorf("message missing %q: %s", phrase, f.Message)
 		}
+	}
+}
+
+func TestRLSManualBroadeningRejectsPermissivePolicyOnProtectedTable(t *testing.T) {
+	ctx := &AnalysisContext{
+		RowPolicies: protectedMessages(),
+		Migrations:  []generator.MigrationOps{{File: "manual.go", Up: []generator.MigrationOperation{{Type: "create_rls_policy", Table: "messages", RLSPolicy: &schema.RLSPolicy{Name: "manual", Restrictive: false}}}}},
+	}
+	if findings := ruleRLSManualBroadening(ctx); len(findings) != 1 || findings[0].Severity != SeverityError {
+		t.Fatalf("unexpected findings: %+v", findings)
+	}
+}
+
+func TestRLSManualBroadeningAllowsRegisteredRestrictivePolicy(t *testing.T) {
+	ctx := &AnalysisContext{
+		RowPolicies: protectedMessages(),
+		Migrations:  []generator.MigrationOps{{File: "manual.go", Up: []generator.MigrationOperation{{Type: "create_rls_policy", Table: "messages", RLSPolicy: &schema.RLSPolicy{Name: "manual", Restrictive: true}}}}},
+	}
+	if findings := ruleRLSManualBroadening(ctx); len(findings) != 0 {
+		t.Fatalf("unexpected findings: %+v", findings)
 	}
 }
 

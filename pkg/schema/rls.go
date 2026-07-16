@@ -21,12 +21,13 @@ const (
 
 // RLSPolicy describes a PostgreSQL CREATE POLICY statement.
 type RLSPolicy struct {
-	Name      string
-	Table     string
-	Command   RLSPolicyCommand
-	Roles     []string
-	Using     SQLPredicate
-	WithCheck SQLPredicate
+	Name        string
+	Table       string
+	Command     RLSPolicyCommand
+	Roles       []string
+	Using       SQLPredicate
+	WithCheck   SQLPredicate
+	Restrictive bool
 }
 
 func (p *RLSPolicy) For(command RLSPolicyCommand) *RLSPolicy { p.Command = command; return p }
@@ -40,6 +41,12 @@ func (p *RLSPolicy) WithCheckExpression(predicate SQLPredicate) *RLSPolicy {
 	return p
 }
 func (p *RLSPolicy) WithSameCheck() *RLSPolicy { p.WithCheck = p.Using; return p }
+
+// RestrictiveDefenseInDepth registers a manual PostgreSQL policy as an
+// explicitly narrowing companion to Pickle-managed row policy. PostgreSQL
+// combines restrictive policies with AND, so this marker is required when a
+// manual policy coexists with generated protection.
+func (p *RLSPolicy) RestrictiveDefenseInDepth() *RLSPolicy { p.Restrictive = true; return p }
 
 func validateRLSIdentifier(kind, value string) {
 	if strings.TrimSpace(value) == "" || strings.ContainsRune(value, '\x00') {
@@ -87,6 +94,9 @@ func (m *Migration) rlsTableOp(kind TableOperation, table string) {
 }
 
 func (m *Migration) CreateRLSPolicy(table, name string, configure func(*RLSPolicy)) {
+	if strings.HasPrefix(strings.ToLower(name), "pickle_") {
+		panic("pickle: RLS policy names beginning with pickle_ are reserved for generated row policies")
+	}
 	p := &RLSPolicy{Name: name, Table: table, Command: RLSAll}
 	if configure != nil {
 		configure(p)
@@ -130,7 +140,11 @@ func postgresRLSSQL(op Operation) (string, error) {
 			return "", fmt.Errorf("RLS policy definition missing")
 		}
 		p := op.RLSPolicy
-		q := "CREATE POLICY " + quoteRLSIdent(p.Name) + " ON " + table + " FOR " + string(p.Command)
+		q := "CREATE POLICY " + quoteRLSIdent(p.Name) + " ON " + table
+		if p.Restrictive {
+			q += " AS RESTRICTIVE"
+		}
+		q += " FOR " + string(p.Command)
 		if len(p.Roles) > 0 {
 			roles := make([]string, len(p.Roles))
 			for i, role := range p.Roles {

@@ -84,6 +84,7 @@ func AllRules() map[string]Rule {
 		"row_policy_context_missing":           ruleRowPolicyContextMissing,
 		"row_policy_context_spoof":             ruleRowPolicyContextSpoof,
 		"row_policy_application_only":          ruleRowPolicyApplicationOnly,
+		"rls_manual_broadening":                ruleRLSManualBroadening,
 		"stale_role_annotation":                ruleStaleRoleAnnotation,
 		"unknown_role_annotation":              ruleUnknownRoleAnnotation,
 		"role_without_load":                    ruleRoleWithoutLoad,

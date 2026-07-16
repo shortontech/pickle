@@ -7769,7 +7769,11 @@ func sqlForMigrationOp(op generator.MigrationOperation, tableByName map[string]*
 			return "", fmt.Errorf("create_rls_policy missing policy definition")
 		}
 		p := op.RLSPolicy
-		q := "CREATE POLICY " + quoteIdent(p.Name) + " ON " + quoteQualifiedIdent(op.Table) + " FOR " + string(p.Command)
+		q := "CREATE POLICY " + quoteIdent(p.Name) + " ON " + quoteQualifiedIdent(op.Table)
+		if p.Restrictive {
+			q += " AS RESTRICTIVE"
+		}
+		q += " FOR " + string(p.Command)
 		if len(p.Roles) > 0 {
 			roles := make([]string, len(p.Roles))
 			for i, role := range p.Roles {

@@ -126,6 +126,7 @@ type rlsPolicyInfo struct {
 	Roles []string ` + "`" + `json:"roles,omitempty"` + "`" + `
 	Using string ` + "`" + `json:"using,omitempty"` + "`" + `
 	WithCheck string ` + "`" + `json:"with_check,omitempty"` + "`" + `
+	Restrictive bool ` + "`" + `json:"restrictive,omitempty"` + "`" + `
 }
 
 func rlsPolicyFromOperation(op any) *rlsPolicyInfo {
@@ -140,6 +141,7 @@ func rlsPolicyFromOperation(op any) *rlsPolicyInfo {
 	if x := p.FieldByName("Roles"); x.IsValid() { for i := 0; i < x.Len(); i++ { info.Roles = append(info.Roles, x.Index(i).String()) } }
 	if x := p.FieldByName("Using"); x.IsValid() { info.Using = x.String() }
 	if x := p.FieldByName("WithCheck"); x.IsValid() { info.WithCheck = x.String() }
+	if x := p.FieldByName("Restrictive"); x.IsValid() { info.Restrictive = x.Bool() }
 	return info
 }
 

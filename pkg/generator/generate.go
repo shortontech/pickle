@@ -250,11 +250,12 @@ type inspectorOperationInfo struct {
 }
 
 type inspectorRLSPolicyInfo struct {
-	Name      string   `json:"name"`
-	Command   string   `json:"command,omitempty"`
-	Roles     []string `json:"roles,omitempty"`
-	Using     string   `json:"using,omitempty"`
-	WithCheck string   `json:"with_check,omitempty"`
+	Name        string   `json:"name"`
+	Command     string   `json:"command,omitempty"`
+	Roles       []string `json:"roles,omitempty"`
+	Using       string   `json:"using,omitempty"`
+	WithCheck   string   `json:"with_check,omitempty"`
+	Restrictive bool     `json:"restrictive,omitempty"`
 }
 
 type inspectorMigrationInfo struct {
@@ -521,7 +522,7 @@ func convertInspectorOperations(in []inspectorOperationInfo) ([]MigrationOperati
 	for _, oi := range in {
 		op := MigrationOperation{Type: oi.Type, Table: oi.Table, OldName: oi.OldName, NewName: oi.NewName, ColumnName: oi.ColumnName, SQL: oi.SQL}
 		if oi.RLSPolicy != nil {
-			op.RLSPolicy = &schema.RLSPolicy{Name: oi.RLSPolicy.Name, Table: oi.Table, Command: schema.RLSPolicyCommand(oi.RLSPolicy.Command), Roles: oi.RLSPolicy.Roles, Using: schema.SQLPredicate(oi.RLSPolicy.Using), WithCheck: schema.SQLPredicate(oi.RLSPolicy.WithCheck)}
+			op.RLSPolicy = &schema.RLSPolicy{Name: oi.RLSPolicy.Name, Table: oi.Table, Command: schema.RLSPolicyCommand(oi.RLSPolicy.Command), Roles: oi.RLSPolicy.Roles, Using: schema.SQLPredicate(oi.RLSPolicy.Using), WithCheck: schema.SQLPredicate(oi.RLSPolicy.WithCheck), Restrictive: oi.RLSPolicy.Restrictive}
 		}
 		for _, ci := range oi.Columns {
 			if oi.Type == "alter_column_metadata" && ci.Type == "" {

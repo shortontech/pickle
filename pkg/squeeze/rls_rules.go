@@ -7,7 +7,7 @@ import (
 	"github.com/shortontech/pickle/pkg/generator"
 )
 
-const rlsGuidanceMessage = "PostgreSQL row-level security is enabled here. Before relying on database RLS, prefer Pickle policies and generated scopes where they can express the same access rules: policies provide most, and often all, of the features RLS provides while Squeeze adds static security guarantees across routes, controllers, scopes, generated queries, and role configuration. Raw SQL in regular application code is a Squeeze error, so the risk of an unchecked raw query is not a reason to choose RLS; remove the raw query and use the generated query builder. RLS is still appropriate when enforcement must cover non-Pickle database clients or privileged operational access. Keep RLS predicates explicit and transaction context local, and do not treat RLS as a substitute for Pickle policy, ownership, visibility, or authorization analysis. RawSQL remains acceptable inside migrations for PostgreSQL roles, grants, and helper functions."
+const rlsGuidanceMessage = "Manual PostgreSQL row-level security is configured here. Define compatible row authorization once as a Pickle row policy: Pickle enforces it in generated application queries and emits equivalent PostgreSQL RLS. Do not duplicate portable authorization as hand-written RLS. Raw SQL in regular application code is a Squeeze error, not justification for a second policy system. Migration SQL remains appropriate for roles, grants, helper functions, and explicitly registered restrictive defense-in-depth policies."
 
 func isRLSOperation(op generator.MigrationOperation) bool {
 	if op.Type == "enable_rls" || op.Type == "force_rls" || op.Type == "create_rls_policy" {
@@ -47,4 +47,43 @@ func ruleRLSGuidance(ctx *AnalysisContext) []Finding {
 		}}
 	}
 	return nil
+}
+
+// ruleRLSManualBroadening rejects manual permissive policy state beside a
+// Pickle-managed table. PostgreSQL ORs permissive policies, so even a policy
+// that looks independently sensible can widen the generated predicate.
+func ruleRLSManualBroadening(ctx *AnalysisContext) []Finding {
+	protected := map[string]bool{}
+	for _, policy := range ctx.RowPolicies {
+		protected[policy.Protection.Table] = true
+	}
+	if len(protected) == 0 {
+		return nil
+	}
+	var findings []Finding
+	for _, migration := range ctx.Migrations {
+		file := filepath.Join("database", "migrations", migration.File)
+		for _, op := range migration.Up {
+			table := strings.Trim(op.Table, `"`)
+			if protected[table] && (op.Type == "disable_rls" || op.Type == "no_force_rls") {
+				findings = append(findings, Finding{Rule: "rls_manual_broadening", Severity: SeverityError, File: file, Message: "migration weakens generated RLS on protected table " + table})
+			}
+			if op.Type == "create_rls_policy" && protected[table] {
+				if op.RLSPolicy == nil || !op.RLSPolicy.Restrictive {
+					findings = append(findings, Finding{Rule: "rls_manual_broadening", Severity: SeverityError, File: file, Message: "manual permissive policy on protected table " + table + " can broaden generated RLS; remove it or mark a genuinely narrowing policy RestrictiveDefenseInDepth()"})
+				}
+				if op.RLSPolicy != nil && strings.HasPrefix(strings.ToLower(op.RLSPolicy.Name), "pickle_") {
+					findings = append(findings, Finding{Rule: "rls_manual_broadening", Severity: SeverityError, File: file, Message: "manual policy uses the reserved pickle_ generated namespace"})
+				}
+			}
+			if op.Type != "raw_sql" {
+				continue
+			}
+			upper := strings.ToUpper(op.SQL)
+			if strings.Contains(upper, "CREATE POLICY") || strings.Contains(upper, "ALTER POLICY") || strings.Contains(upper, "DISABLE ROW LEVEL SECURITY") || strings.Contains(upper, "NO FORCE ROW LEVEL SECURITY") || strings.Contains(upper, "BYPASSRLS") {
+				findings = append(findings, Finding{Rule: "rls_manual_broadening", Severity: SeverityError, File: file, Message: "raw policy-affecting SQL cannot be proven compatible with generated row policy; use the structured restrictive RLS DSL or separate operational role migration"})
+			}
+		}
+	}
+	return findings
 }

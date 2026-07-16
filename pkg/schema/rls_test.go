@@ -1,6 +1,9 @@
 package schema
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestRLSPolicyOperations(t *testing.T) {
 	var m Migration
@@ -39,5 +42,30 @@ func TestRLSPolicyRejectsInvalidCommandShape(t *testing.T) {
 	var m Migration
 	m.CreateRLSPolicy("messages", "read", func(p *RLSPolicy) {
 		p.For(RLSSelect).UsingExpression(SQLPredicate("true")).WithCheckExpression(SQLPredicate("true"))
+	})
+}
+
+func TestRLSPolicyRestrictiveDefenseInDepth(t *testing.T) {
+	m := &Migration{}
+	m.CreateRLSPolicy("messages", "message_archive", func(p *RLSPolicy) {
+		p.For(RLSSelect).UsingExpression("archived_at IS NULL").RestrictiveDefenseInDepth()
+	})
+	sql, err := postgresRLSSQL(m.Operations[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sql, `AS RESTRICTIVE FOR SELECT`) {
+		t.Fatalf("expected restrictive policy SQL, got %s", sql)
+	}
+}
+
+func TestRLSPolicyGeneratedNamespaceIsReserved(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected reserved generated policy name to panic")
+		}
+	}()
+	(&Migration{}).CreateRLSPolicy("messages", "pickle_messages_select_deadbeef", func(p *RLSPolicy) {
+		p.For(RLSSelect).UsingExpression("true")
 	})
 }

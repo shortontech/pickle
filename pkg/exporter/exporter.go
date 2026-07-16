@@ -7651,6 +7651,18 @@ func (c migrateStatusCommand) Run(args []string) error {
 }
 
 `)
+	if hasPolicies {
+		b.WriteString(`type policiesStatusCommand struct{}
+func (c policiesStatusCommand) Name() string { return "policies:status" }
+func (c policiesStatusCommand) Description() string { return "Show role, GraphQL, and row-policy lifecycle status" }
+func (c policiesStatusCommand) Run(args []string) error { statuses,err:=policies.Status(models.DB,config.Database.Connection().Driver);if err!=nil{return err};policies.PrintStatus(statuses);return nil }
+type policiesRollbackCommand struct{}
+func (c policiesRollbackCommand) Name() string { return "policies:rollback" }
+func (c policiesRollbackCommand) Description() string { return "Roll back the latest policy batch" }
+func (c policiesRollbackCommand) Run(args []string) error { return policies.Rollback(models.DB,config.Database.Connection().Driver) }
+
+`)
+	}
 	if hasSeeders {
 		b.WriteString(exportedSeedCommandSource())
 	}
@@ -7669,6 +7681,9 @@ func (c rlsStatusCommand) Run(args []string) error { statuses,err:=policies.Insp
 		migrateFreshCommand{},
 		migrateStatusCommand{},
 `)
+	if hasPolicies {
+		b.WriteString("\t\tpoliciesStatusCommand{},\n\t\tpoliciesRollbackCommand{},\n")
+	}
 	if hasRowPolicies {
 		b.WriteString("\t\trlsStatusCommand{},\n")
 	}

@@ -169,6 +169,8 @@ func TestExportBasicCRUDNoPickleImports(t *testing.T) {
 	assertFileContains(t, filepath.Join(out, "database", "policies", "support.go"), "func applyPendingGeneratedRowPolicies")
 	assertFileContains(t, filepath.Join(out, "database", "policies", "support.go"), "func rollbackGeneratedRowPolicyBatch")
 	assertFileContains(t, filepath.Join(out, "database", "policies", "support.go"), "row_policy_changelog")
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), `Name() string { return "policies:status" }`)
+	assertFileContains(t, filepath.Join(out, "app", "commands", "support.go"), `policiesRollbackCommand{}`)
 	assertFileNotContains(t, filepath.Join(out, "database", "policies", "support.go"), `_ = db.Exec("DROP TABLE IF EXISTS roles").Error`)
 	assertFileContains(t, filepath.Join(out, "app", "services", "action_call.go"), "models.BanAction")
 	assertFileContains(t, filepath.Join(out, "app", "services", "visibility_selectors.go"), `Select([]string{`)

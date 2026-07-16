@@ -1,5 +1,11 @@
 # Squeeze
 
+## Row-policy proof
+
+Squeeze normalizes row policies and prints an affirmative classification with supporting rule IDs and evidence. It distinguishes `application-enforced`, generated portable application+RLS intent with the live catalog explicitly uninspected, and `unproven`. It never calls a policy `dual-enforced` merely because no finding appeared.
+
+Row-policy rules cover invalid normalization, missing entry-point context, direct verified-context construction, explicit application-only classification, and manual RLS broadening. Unknown/raw query paths remain `unproven`. Compatible generated RLS does not trigger generic RLS guidance; that warning is for manual RLS or an incomplete migration from it.
+
 Static security analysis for Pickle projects. Squeeze understands routes, middleware, migrations, request classes, generated query builders, RBAC policies, and actions. It complements generic Go linters by checking framework-level invariants.
 
 ## Running squeeze

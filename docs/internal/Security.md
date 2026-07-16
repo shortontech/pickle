@@ -1,5 +1,11 @@
 # Security Architecture
 
+## Row authorization boundary
+
+Row admission is its own normalized policy layer, distinct from RBAC actions, GraphQL exposure, and column projection. Application SQL predicates and portable PostgreSQL RLS consume the same resolved rule. Runtime context is write-once; PostgreSQL identity is transaction-local; generated RLS is enabled and forced; and live proof requires catalog inspection of policy fingerprints and runtime bypass privileges.
+
+Manual permissive RLS cannot coexist with a managed table because PostgreSQL would OR it with generated admission. Explicit structured restrictive defense-in-depth is allowed and remains database-only. Raw query access or unresolved entry points prevent a dual-layer proof claim.
+
 Pickle makes the secure path the default, keeps security-relevant structure visible, and flags many framework-level mistakes before deployment.
 
 ## By Design — Structural Prevention

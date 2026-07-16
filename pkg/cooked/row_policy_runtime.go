@@ -213,6 +213,8 @@ func evaluateRowPolicyRecord(table, operation string, context *PolicyContext, re
 	if context != nil {
 		ctx = *context
 	}
+	matched := 0
+	allowedCount := 0
 	for _, rule := range definition.Rules {
 		if !runtimeSubjectMatches(rule, ctx) {
 			continue
@@ -226,13 +228,20 @@ func evaluateRowPolicyRecord(table, operation string, context *PolicyContext, re
 		if predicate == nil {
 			continue
 		}
+		matched++
 		allowed, err := evaluateRuntimePredicate(*predicate, ctx, record)
 		if err != nil {
 			return err
 		}
 		if allowed {
-			return nil
+			allowedCount++
+			if definition.SubjectCombination != "all" {
+				return nil
+			}
 		}
+	}
+	if matched > 0 && definition.SubjectCombination == "all" && allowedCount == matched {
+		return nil
 	}
 	return fmt.Errorf("row policy denied %s.%s", table, operation)
 }
@@ -253,6 +262,9 @@ func evaluateRuntimePredicate(p rowPolicyRuntimePredicate, context PolicyContext
 		right, err := runtimePredicateValue(p.Children[1], context, record)
 		if err != nil {
 			return false, err
+		}
+		if isRuntimePolicyNull(left) || isRuntimePolicyNull(right) {
+			return false, nil
 		}
 		equal := fmt.Sprint(left) == fmt.Sprint(right)
 		if p.Kind == "not_equal" {
@@ -283,6 +295,18 @@ func evaluateRuntimePredicate(p rowPolicyRuntimePredicate, context PolicyContext
 		return !ok, err
 	}
 	return false, fmt.Errorf("predicate %q is not boolean", p.Kind)
+}
+
+func isRuntimePolicyNull(value any) bool {
+	if value == nil {
+		return true
+	}
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return rv.IsNil()
+	}
+	return false
 }
 func runtimePredicateValue(p rowPolicyRuntimePredicate, context PolicyContext, record any) (any, error) {
 	if p.Kind == "identity" {

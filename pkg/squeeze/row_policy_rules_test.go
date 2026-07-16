@@ -52,3 +52,17 @@ func TestRowPolicyApplicationOnlyExplainsClassification(t *testing.T) {
 		t.Fatalf("unexpected: %+v", findings)
 	}
 }
+
+func TestRowPolicyProofNeverClaimsLiveDualEnforcementWithoutInspection(t *testing.T) {
+	policy := protectedMessages()[0]
+	policy.EnforcementClass = "portable"
+	policy.Protection.Rules = []schema.RowRule{{Key: "member"}}
+	proofs := classifyRowPolicies(&AnalysisContext{RowPolicies: []generator.ResolvedRowPolicy{policy}}, nil)
+	if len(proofs) != 1 || !strings.Contains(proofs[0].Classification, "live catalog uninspected") || strings.HasPrefix(proofs[0].Classification, "dual-enforced") {
+		t.Fatalf("unexpected proof: %+v", proofs)
+	}
+	blocked := classifyRowPolicies(&AnalysisContext{RowPolicies: []generator.ResolvedRowPolicy{policy}}, []Finding{{Rule: "row_policy_context_missing"}})
+	if blocked[0].Classification != "unproven" {
+		t.Fatalf("unexpected blocked proof: %+v", blocked)
+	}
+}

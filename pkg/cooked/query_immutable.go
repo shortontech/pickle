@@ -287,14 +287,46 @@ func (q *ImmutableQueryBuilder[T]) aggregate(fn, column string) (*float64, error
 
 // Create inserts a new record.
 func (q *ImmutableQueryBuilder[T]) Create(record *T) error {
-	if err := evaluateRowPolicyRecord(q.table, "insert", q.policyContext, record); err != nil {
-		return err
+	return q.createWithPolicyOperation(record, "insert")
+}
+
+func (q *ImmutableQueryBuilder[T]) createWithPolicyOperation(record *T, operation string) error {
+	if operation != "" {
+		if err := evaluateRowPolicyRecord(q.table, operation, q.policyContext, record); err != nil {
+			return err
+		}
 	}
 	query, args := buildInsert(q.table, record)
 	cols := dbColumns(record)
 	query += " RETURNING " + strings.Join(cols, ", ")
 	row := q.db().QueryRow(query, args...)
 	return row.Scan(dbScanDest(record)...)
+}
+
+// checkExistingPolicy evaluates an immutable logical operation against the
+// globally current version. The policy is outside the latest-version
+// reduction, so denial cannot reveal an older allowed version.
+func (q *ImmutableQueryBuilder[T]) checkExistingPolicy(operation string, id any) error {
+	clause, policyArgs, err := compileRowPolicy(q.table, operation, "t", q.policyContext)
+	if err != nil {
+		return err
+	}
+	if clause == "" {
+		return nil
+	}
+	query := "SELECT 1 FROM " + q.table + " t WHERE t.id = $1 AND t.version_id = (SELECT version_id FROM " + q.table + " WHERE id = t.id ORDER BY version_id DESC LIMIT 1) AND " + bindRuntimeClause(clause, 2)
+	if q.tx != nil {
+		query += " FOR UPDATE"
+	}
+	args := append([]any{id}, policyArgs...)
+	var allowed int
+	if err := q.db().QueryRow(query, args...).Scan(&allowed); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("row policy denied %s.%s", q.table, operation)
+		}
+		return err
+	}
+	return nil
 }
 
 // --- SQL builders ---

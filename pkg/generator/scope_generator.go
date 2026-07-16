@@ -330,6 +330,7 @@ func generateImmutableMethods(b *bytes.Buffer, table *schema.Table, queryType, s
 	// from silently forking. If the version has changed since the caller read it,
 	// returns a StaleVersionError.
 	b.WriteString(fmt.Sprintf("func (q *%s) Update(model *%s) error {\n", queryType, structName))
+	b.WriteString(fmt.Sprintf("\tif err := evaluateRowPolicyRecord(%q, \"update_new\", q.policyContext, model); err != nil { return err }\n", table.Name))
 	b.WriteString("\tdb := q.db()\n\n")
 	// If not in a transaction, start an implicit one
 	b.WriteString("\t// Version fence requires a transaction\n")
@@ -342,10 +343,12 @@ func generateImmutableMethods(b *bytes.Buffer, table *schema.Table, queryType, s
 	b.WriteString("\t\t\t}\n")
 	b.WriteString("\t\t\treturn DB\n")
 	b.WriteString("\t\t}(), func(tx *Tx) error {\n")
+	b.WriteString("\t\t\tif q.policyContext != nil { if err := tx.WithPolicyContext(*q.policyContext); err != nil { return err } }\n")
 	b.WriteString(fmt.Sprintf("\t\t\ttxQ := tx.Query%s()\n", structName))
 	b.WriteString("\t\t\treturn txQ.Update(model)\n")
 	b.WriteString("\t\t})\n")
 	b.WriteString("\t}\n\n")
+	b.WriteString("\tif err := q.checkExistingPolicy(\"update_old\", model.ID); err != nil { return err }\n")
 	// Version fence: SELECT version_id FOR UPDATE, compare
 	b.WriteString("\tvar currentVersionID uuid.UUID\n")
 	b.WriteString(fmt.Sprintf("\terr := db.QueryRow(\"SELECT version_id FROM %s WHERE id = $1 ORDER BY version_id DESC LIMIT 1 FOR UPDATE\", model.ID).Scan(&currentVersionID)\n", table.Name))
@@ -362,15 +365,21 @@ func generateImmutableMethods(b *bytes.Buffer, table *schema.Table, queryType, s
 	b.WriteString("\t}\n\n")
 	b.WriteString("\tmodel.VersionID = uuid.Must(uuid.NewV7())\n")
 	b.WriteString(generateChainHashBlock(table.Name, structName, true))
-	b.WriteString("\treturn q.ImmutableQueryBuilder.Create(model)\n}\n\n")
+	b.WriteString("\treturn q.createWithPolicyOperation(model, \"\")\n}\n\n")
 
 	// Delete — only if SoftDeletes
 	if softDeletes {
 		b.WriteString(fmt.Sprintf("func (q *%s) Delete(model *%s) error {\n", queryType, structName))
+		b.WriteString("\tif q.ImmutableQueryBuilder.tx == nil {\n")
+		b.WriteString("\t\treturn TransactionOn(func() *sql.DB { if q.connection != \"\" { if conn, ok := Connections[q.connection]; ok { return conn } }; return DB }(), func(tx *Tx) error {\n")
+		b.WriteString("\t\t\tif q.policyContext != nil { if err := tx.WithPolicyContext(*q.policyContext); err != nil { return err } }\n")
+		b.WriteString(fmt.Sprintf("\t\t\treturn tx.Query%s().Delete(model)\n", structName))
+		b.WriteString("\t\t})\n\t}\n")
+		b.WriteString("\tif err := q.checkExistingPolicy(\"delete\", model.ID); err != nil { return err }\n")
 		b.WriteString("\tnow := time.Now()\n\tmodel.DeletedAt = &now\n")
 		b.WriteString("\tmodel.VersionID = uuid.Must(uuid.NewV7())\n")
 		b.WriteString(generateChainHashBlock(table.Name, structName, true))
-		b.WriteString("\treturn q.ImmutableQueryBuilder.Create(model)\n}\n\n")
+		b.WriteString("\treturn q.createWithPolicyOperation(model, \"\")\n}\n\n")
 	}
 
 	// VerifyChain and VerifyRow

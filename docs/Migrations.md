@@ -1,5 +1,11 @@
 # Migrations
 
+## RLS migration interoperability
+
+Portable authorization belongs in `database/policies/`, not duplicated migration SQL. Pickle generates and reconciles its reserved `pickle_` PostgreSQL policies during explicit policy migration. Manual database-only constraints may coexist only through structured `CreateRLSPolicy(...).RestrictiveDefenseInDepth()`, which emits `AS RESTRICTIVE`. Raw migration SQL remains appropriate for roles, grants, and helper functions; Squeeze rejects unprovable policy-affecting SQL beside a Pickle-protected table.
+
+Protecting existing data after adding a non-null ownership column requires an explicit expand/backfill/protect sequence. Pickle never invents owners or silently classifies old rows.
+
 PostgreSQL row-level security has a structured migration DSL for enabling RLS and managing policies. See [PostgreSQL Row-Level Security](RLS.md).
 
 The single source of truth for your database schema. You write migrations using the schema DSL; Pickle generates model structs and query scopes from them.

@@ -138,6 +138,16 @@ type RunResult struct {
 	Findings []Finding
 	// Suppressed is the number of findings silenced by //squeeze:ignore directives.
 	Suppressed int
+	// RowPolicyProofs are affirmative enforcement classifications with the
+	// normalized rule IDs and proof evidence that support them.
+	RowPolicyProofs []RowPolicyProof
+}
+
+type RowPolicyProof struct {
+	Table          string
+	Classification string
+	RuleIDs        []string
+	Evidence       []string
 }
 
 // Run executes all enabled squeeze rules against the project and returns the
@@ -180,13 +190,36 @@ func RunWithOptions(projectDir string, opts RunOptions) (*RunResult, error) {
 	sups := collectSuppressions(uniqueFindingFiles(findings), actx.ProjectDir)
 	kept, suppressed := applySuppressions(findings, sups)
 
-	result := &RunResult{Suppressed: len(suppressed)}
+	result := &RunResult{Suppressed: len(suppressed), RowPolicyProofs: classifyRowPolicies(actx, findings)}
 	if opts.NoSuppress {
 		result.Findings = findings
 	} else {
 		result.Findings = kept
 	}
 	return result, nil
+}
+
+func classifyRowPolicies(ctx *AnalysisContext, findings []Finding) []RowPolicyProof {
+	var proofs []RowPolicyProof
+	for _, policy := range ctx.RowPolicies {
+		proof := RowPolicyProof{Table: policy.Protection.Table, Classification: "application-enforced + generated-rls (live catalog uninspected)", Evidence: []string{"normalized-policy", "generated-query-enforcement", "generated-rls-enabled-forced"}}
+		for _, rule := range policy.Protection.Rules {
+			proof.RuleIDs = append(proof.RuleIDs, rule.Key)
+		}
+		if policy.EnforcementClass == "application_only" {
+			proof.Classification = "application-enforced"
+			proof.Evidence = []string{"normalized-policy", "generated-query-enforcement", "application-only-acknowledgement"}
+		}
+		for _, finding := range findings {
+			switch finding.Rule {
+			case "row_policy_context_missing", "row_policy_context_spoof", "row_policy_invalid", "rls_manual_broadening", "raw_query_builder_access":
+				proof.Classification = "unproven"
+				proof.Evidence = append(proof.Evidence, "blocked-by:"+finding.Rule)
+			}
+		}
+		proofs = append(proofs, proof)
+	}
+	return proofs
 }
 
 var (

@@ -1,5 +1,7 @@
 # Getting Started
 
+Security convention: define row authorization once in `database/policies/`. Generated queries enforce it for every database driver, and compatible rules also generate PostgreSQL RLS. Do not duplicate the rule in hand-written RLS or bypass it with raw application SQL.
+
 Everything you need to go from zero to a running Pickle app.
 
 ## What Pickle does

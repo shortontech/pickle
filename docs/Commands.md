@@ -1,5 +1,15 @@
 # Commands
 
+## Row-policy inspection
+
+```bash
+pickle policies:status  # role ledger plus generated row-policy status
+pickle rls:status       # explicit read-only PostgreSQL catalog drift inspection
+pickle squeeze          # static classification, rule IDs, and proof evidence
+```
+
+MCP exposes `policies_rows`, `policies_row`, `policies_explain`, and `rls_status`. MCP RLS status reports desired generated state only and does not unexpectedly open a production connection; use the CLI for explicit live inspection.
+
 The CLI command system for your compiled binary. The generated `App` handles initialization, command dispatch, and HTTP serving.
 
 ## How it works

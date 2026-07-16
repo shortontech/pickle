@@ -988,6 +988,14 @@ func cmdSqueeze() {
 		os.Exit(1)
 	}
 	findings := result.Findings
+	if len(result.RowPolicyProofs) > 0 {
+		fmt.Println("\nRow-policy enforcement:")
+		for _, proof := range result.RowPolicyProofs {
+			fmt.Printf("  %s: %s\n", proof.Table, proof.Classification)
+			fmt.Printf("    rule IDs: %s\n", strings.Join(proof.RuleIDs, ", "))
+			fmt.Printf("    evidence: %s\n", strings.Join(proof.Evidence, ", "))
+		}
+	}
 
 	// In --hard mode, promote all warnings to errors
 	if hard {

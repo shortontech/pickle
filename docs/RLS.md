@@ -1,57 +1,59 @@
 # PostgreSQL Row-Level Security
 
-Pickle migrations have first-party operations for PostgreSQL row-level security (RLS). Pickle owns the policy lifecycle and preserves it through schema inspection and standalone export; the predicate remains explicit SQL because PostgreSQL policy expressions can use application-specific functions, joins, and settings.
+Pickle normally generates PostgreSQL row-level security from the portable subset of [row policies](Policies.md). Define authorization once: generated query builders enforce the normalized rule on every driver, while PostgreSQL receives an equivalent `ENABLE` + `FORCE ROW LEVEL SECURITY` policy generated from that same rule.
 
-RLS operations are PostgreSQL-only. Applying a migration containing them with another driver returns an error instead of silently ignoring the policy.
+Do not copy a portable Pickle row policy into hand-written RLS. PostgreSQL permissive policies combine with `OR`, so an independent manual policy can silently broaden access.
 
-## Creating a policy
+## Generated RLS
 
-```go
-func (m *CreateMessageIsolation_2026_07_16_120000) Up() {
-    m.EnableRLS("messages")
-    m.ForceRLS("messages")
+For each protected table and physical command, Pickle emits at most one aggregate permissive policy. Subject dispatch stays inside its predicate. Stable `pickle_` names are reserved, limited to PostgreSQL's identifier length, and carry a normalized fingerprint in policy comments.
 
-    m.CreateRLSPolicy("messages", "message_scope", func(p *RLSPolicy) {
-        p.For(RLSAll).
-            To("dill_app").
-            UsingExpression(SQLPredicate(
-                "workspace_id = current_setting('dill.workspace_id')::uuid",
-            )).
-            WithSameCheck()
-    })
-}
+| Logical position | PostgreSQL position |
+|---|---|
+| select/delete existing row | `USING` |
+| insert proposed row | `WITH CHECK` |
+| update existing row | `USING` |
+| update proposed row | `WITH CHECK` |
 
-func (m *CreateMessageIsolation_2026_07_16_120000) Down() {
-    m.DropRLSPolicy("messages", "message_scope")
-    m.NoForceRLS("messages")
-    m.DisableRLS("messages")
-}
-```
+Missing, empty, malformed, or wrongly typed identity settings evaluate false. Generated helpers read `current_setting(name, true)` without throwing. Roles are application role slugs encoded as JSON identity data; Pickle does not create one PostgreSQL login per application role.
 
-Commands are `RLSAll`, `RLSSelect`, `RLSInsert`, `RLSUpdate`, and `RLSDelete`. `To` accepts one or more PostgreSQL roles. If omitted, PostgreSQL uses `PUBLIC`.
-
-Use `UsingExpression` for row visibility and `WithCheckExpression` for rows created or changed by a command. `WithSameCheck` copies the `USING` expression to `WITH CHECK`. Pickle rejects invalid PostgreSQL combinations such as `WITH CHECK` on a `SELECT` policy or `USING` on an `INSERT` policy.
-
-The expression passed as `SQLPredicate` is raw migration SQL. Keep request data out of it. Dynamic request or job identity belongs in a transaction-local setting.
-
-## Supplying request context
-
-Generated query code exposes `SetLocal` on a transaction:
+Protected PostgreSQL work must use a transaction carrying verified context:
 
 ```go
 err := models.WithTransaction(func(tx *models.Tx) error {
-    if err := tx.SetLocal("dill.workspace_id", workspaceID.String()); err != nil {
+    if err := tx.WithPostgresPolicyContext(policyContext); err != nil {
         return err
     }
-
-    messages, err := tx.QueryMessage().All()
-    // Every statement in this transaction sees the RLS setting.
+    _, err := tx.QueryMessage().All()
     return err
 })
 ```
 
-`SetLocal` calls PostgreSQL `set_config(name, value, true)` with bound parameters. The value lasts only for the transaction, so pooled connections cannot leak one request's identity into another. RLS-protected queries should not run outside that transaction.
+Settings use parameterized `set_config(..., true)`, last only for the transaction, and cannot leak through a pooled connection. `pickle.identity.*` is reserved from `SetLocal`; the context is write-once and nested savepoints inherit it.
 
-## Roles, grants, and helper functions
+The runtime PostgreSQL role must not be superuser or have `BYPASSRLS`. Generated tables are forced by default, which also protects against table-owner bypass. Keep migration/owner credentials separate from runtime credentials.
 
-Role creation, grants, and application-specific SQL helper functions remain ordinary `RawSQL` migration statements. Those objects are broader PostgreSQL administration primitives rather than policy definitions. Keeping them in migrations makes their lifecycle reviewable and prevents raw policy SQL from leaking into regular application code.
+Run explicit, read-only drift inspection with:
+
+```bash
+pickle rls:status
+```
+
+It compares managed names, commands, permissiveness, fingerprints, enabled/forced state, unexpected permissive policies, orphaned generated policies, ownership, superuser, and `BYPASSRLS`. MCP `rls_status` shows desired state without unexpectedly connecting to a live database.
+
+## Manual restrictive defense in depth
+
+`CreateRLSPolicy` remains an advanced migration-only escape hatch for database-only constraints. On a Pickle-protected table, a manual companion must be genuinely narrowing and explicitly registered:
+
+```go
+m.CreateRLSPolicy("messages", "messages_not_archived", func(p *RLSPolicy) {
+    p.For(RLSSelect).
+        To("dill_app").
+        UsingExpression(SQLPredicate("archived_at IS NULL")).
+        RestrictiveDefenseInDepth()
+})
+```
+
+This emits `AS RESTRICTIVE`, so PostgreSQL combines it with generated permissive admission using `AND`. It remains database-only and is never assumed by application enforcement. Squeeze rejects manual permissive policies, the reserved `pickle_` namespace, weakening `DISABLE`/`NO FORCE` operations, and raw policy-affecting SQL beside a protected table.
+
+Raw SQL is still acceptable in migrations for roles, grants, and helper functions. RLS operations are PostgreSQL-only and error on other drivers rather than being ignored.

@@ -1,5 +1,11 @@
 # Context
 
+## Row-policy identity
+
+Authentication, job, CLI, and test entry points should derive a verified `PolicyContext` once and attach it to every protected generated query. The context carries typed identities such as `user_id` and `workspace_id` plus application role slugs; it is separate from column visibility and action gates.
+
+For PostgreSQL, seal the same context with `tx.WithPostgresPolicyContext(...)` and use `tx.QueryModel()`. This keeps `pickle.identity.*` transaction-local and applies both generated query predicates and generated RLS. Missing identity fails closed before database access. Direct construction of verified context in ordinary application code is a `row_policy_context_spoof` Squeeze error.
+
 The request context passed to every controller and middleware. Wraps the HTTP request/response and provides helpers for params, auth, and response building.
 
 Every controller method receives `*pickle.Context` as its only argument and returns `pickle.Response`. Context is created automatically by the router — you never construct one yourself.

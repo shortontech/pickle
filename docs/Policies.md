@@ -1,14 +1,94 @@
 # Policies
 
-Policies are versioned definitions for roles and GraphQL exposure. They use the same timestamp-prefixed, `Up()`/`Down()` pattern as migrations, but operate on RBAC and API surface state instead of database schema.
+Policies are versioned definitions for row authorization, roles, and GraphQL exposure. They use the same timestamp-prefixed, `Up()`/`Down()` pattern as migrations, but operate on authorization and API state instead of database schema.
 
-## Two policy types
+> Define row authorization once as a Pickle row policy. Pickle enforces it in generated application queries and emits equivalent PostgreSQL RLS for the portable subset. Do not duplicate it as hand-written RLS. Raw application queries are Squeeze errors, not justification for a second policy system.
+
+## Three policy types
+
+**Row policies** decide which existing or proposed rows a subject may select, insert, update, or delete. They are enforced by every generated terminal query on every driver. Portable rules additionally generate PostgreSQL RLS from the identical normalized predicate.
 
 **Role policies** define roles, permissions, and lifecycle changes. They embed `Policy` from the schema package.
 
 **GraphQL policies** define which models and operations are exposed over the GraphQL API. They embed `GraphQLPolicy`.
 
-Both types run transactionally by default and track their state in changelog tables.
+All three types replay deterministically. Row and role state share the role-policy transaction; GraphQL retains its later phase and changelog.
+
+## Row policy DSL
+
+Row policies live in `database/policies/` and embed `Policy`. Declare typed identities before protecting a table:
+
+```go
+func (p *MessageAccess_2026_07_16_120000) Up() {
+    p.IdentityUUID("user_id")
+    p.IdentityUUID("workspace_id")
+
+    p.Protect("messages", func(rows *Rows) {
+        rows.Rule("workspace_member").ForAuthenticated().
+            Select(Owner("workspace_id", Identity("workspace_id"))).
+            Insert(Owner("workspace_id", Identity("workspace_id"))).
+            Update(
+                Existing(Owner("workspace_id", Identity("workspace_id"))),
+                Proposed(Owner("workspace_id", Identity("workspace_id"))),
+            ).
+            Delete(Owner("workspace_id", Identity("workspace_id")))
+
+        rows.Rule("admin_all").ForRole("admin").All(Allow())
+    })
+}
+
+func (p *MessageAccess_2026_07_16_120000) Down() {
+    p.Unprotect("messages")
+}
+```
+
+Identity declarations are `IdentityUUID`, `IdentityString`, and `IdentityStrings`. Subjects are `ForPublic`, `ForAuthenticated`, and `ForRole`. Matching subjects use `AnyOfSubjects` by default; call `rows.CombineSubjects(AllOfSubjects)` when every matching subject predicate must pass.
+
+Predicates are a typed tree, not Go or SQL strings:
+
+| Predicate | Meaning |
+|---|---|
+| `Allow()` / `Deny()` | Constant decision |
+| `Identity("name")` | Declared request/job identity |
+| `PolicyColumn("column")` | Resolved table column |
+| `Owner("column", Identity("name"))` | Equality ownership check |
+| `Equal`, `NotEqual` | Typed comparison with SQL null semantics |
+| `And`, `Or`, `Not` | Boolean composition |
+
+Generation replays every policy, resolves tables, columns, roles, identity types, and operation positions, then feeds one normalized representation to both application and PostgreSQL emitters. Unknown or ambiguous references stop generation.
+
+`UPDATE` requires both `Existing(...)` and `Proposed(...)`. Immutable updates and immutable/soft-delete deletes map to physical inserts or updates and cannot be represented equivalently as PostgreSQL commands. They require the explicit `rows.AllowApplicationOnly("non_bijective_physical_plan")` acknowledgement; generated application enforcement remains active, but Pickle does not claim or emit equivalent RLS for that logical operation.
+
+For immutable reads, Pickle first finds the globally newest version and then applies row admission. A denied newest version never reveals an older allowed version.
+
+### Policy context
+
+Protected queries fail before database access when no matching subject or required identity is present. Generated trusted entry-point adapters create `PolicyContext`; ordinary controller code attaches it with `WithPolicyContext`, or seals it on a transaction. PostgreSQL dual enforcement uses transaction-local settings:
+
+```go
+err := models.WithTransaction(func(tx *models.Tx) error {
+    if err := tx.WithPostgresPolicyContext(policyContext); err != nil {
+        return err
+    }
+    messages, err := tx.QueryMessage().All()
+    _ = messages
+    return err
+})
+```
+
+`pickle.identity.*` is reserved. `Tx.SetLocal` cannot spoof it, a transaction context cannot be overwritten, and nested savepoints inherit but cannot broaden it.
+
+HTTP and GraphQL entry points derive context from verified authentication. Background jobs and CLI commands must use their generated trusted adapter and declare the same identities explicitly; tests use the generated test adapter. Never accept identity values directly from request JSON or flags without verifying them against the entry point's authority.
+
+Ownership transfer is an update with different existing and proposed rules: the existing predicate decides who may touch the current row, while the proposed predicate constrains its new owner. Multi-tenant membership that requires relationship traversal is portable only when Pickle can resolve and inline the relationship without recursion or privilege-dependent behavior; unsupported relationship graphs stop RLS lowering instead of weakening it.
+
+Standalone export carries the normalized registry, application predicate runtime, generated PostgreSQL DDL/fingerprints, policy ledger, status commands, diagnostics, and conformance metadata. It does not import Pickle at runtime. In a multi-service application, exactly one service must own each protected table's generated policy state; consumers use that contract rather than emitting competing policies.
+
+### Enforcement classifications
+
+- `application-enforced + generated-rls (live catalog uninspected)` means the normalized portable rule feeds both generators, but Squeeze has not inspected PostgreSQL.
+- `application-enforced` means the explicitly acknowledged application-only plan is enforced on all generated query paths.
+- `unproven` means reachability, context, raw access, manual RLS composition, or another proof obligation is unresolved. Pickle never upgrades absence of findings into a live `dual-enforced` claim.
 
 ## Role policy DSL
 

@@ -1,5 +1,11 @@
 # QueryBuilder
 
+## Protected queries
+
+When a table has a Pickle row policy, every generated terminal operation (`First`, `All`, `Count`, aggregates, `Create`, `Update`, and `Delete`) compiles the normalized predicate automatically. Attach verified identity with `.WithPolicyContext(policyContext)`. PostgreSQL callers should use a policy-scoped transaction so the same context also reaches RLS.
+
+Denials are expressed without disclosing whether a protected row exists. Immutable reads reduce to the globally newest version before applying admission. Immutable logical updates/deletes enforce their distinct existing/proposed rules even though their physical storage operation is an insert/update.
+
 The generic typed query builder for all models. Pickle generates a model-specific wrapper (e.g. `UserQuery`) with typed `Where*` scope methods, but the underlying CRUD and query building is handled by `QueryBuilder[T]`.
 
 ## Generated query types

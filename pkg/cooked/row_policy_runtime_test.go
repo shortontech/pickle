@@ -12,6 +12,10 @@ type policyTestMessage struct {
 	WorkspaceID string `db:"workspace_id"`
 }
 
+type nullablePolicyMessage struct {
+	WorkspaceID *string `db:"workspace_id"`
+}
+
 func installPolicyTestDefinition(t *testing.T) {
 	t.Helper()
 	old := rowPolicyRuntimeRegistry
@@ -60,5 +64,27 @@ func TestProtectedCreateEvaluatesProposedRow(t *testing.T) {
 	err := Query[policyTestMessage]("messages").WithPolicyContext(ctx).Create(&policyTestMessage{ID: "m1", WorkspaceID: "workspace-2"})
 	if err == nil {
 		t.Fatal("expected proposed-row denial")
+	}
+}
+
+func TestProposedPolicyUsesSQLNullComparisonSemantics(t *testing.T) {
+	old := rowPolicyRuntimeRegistry
+	pred := &rowPolicyRuntimePredicate{Kind: "not_equal", Children: []rowPolicyRuntimePredicate{{Kind: "column", Name: "workspace_id"}, {Kind: "identity", Name: "workspace_id"}}}
+	rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{"messages": {Table: "messages", SubjectCombination: "any", Rules: []rowPolicyRuntimeRule{{SubjectKind: "public", Insert: pred}}}}
+	t.Cleanup(func() { rowPolicyRuntimeRegistry = old })
+	ctx := NewVerifiedPolicyContext(map[string]string{"workspace_id": "workspace-1"}, nil)
+	if err := evaluateRowPolicyRecord("messages", "insert", &ctx, &nullablePolicyMessage{}); err == nil {
+		t.Fatal("NULL <> identity must normalize to false")
+	}
+}
+
+func TestAllSubjectCombinationRequiresEveryMatchingRule(t *testing.T) {
+	old := rowPolicyRuntimeRegistry
+	allow, deny := &rowPolicyRuntimePredicate{Kind: "allow"}, &rowPolicyRuntimePredicate{Kind: "deny"}
+	rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{"messages": {Table: "messages", SubjectCombination: "all", Rules: []rowPolicyRuntimeRule{{SubjectKind: "public", Insert: allow}, {SubjectKind: "role", SubjectName: "member", Insert: deny}}}}
+	t.Cleanup(func() { rowPolicyRuntimeRegistry = old })
+	ctx := NewVerifiedPolicyContext(nil, []string{"member"})
+	if err := evaluateRowPolicyRecord("messages", "insert", &ctx, &policyTestMessage{}); err == nil {
+		t.Fatal("all subject combination must deny when one matching rule denies")
 	}
 }

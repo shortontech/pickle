@@ -21,6 +21,8 @@ type AnalysisContext struct {
 	Tables               []*schema.Table
 	Views                []*schema.View
 	Migrations           []generator.MigrationOps
+	RowPolicies          []generator.ResolvedRowPolicy
+	RowPolicyError       string
 	Config               SqueezeConfig
 	FuncRegistry         FuncRegistry
 	HasGraphQL           bool // true if the project has a graphql/ directory
@@ -77,7 +79,11 @@ func AllRules() map[string]Rule {
 		"float_request_field":                  ruleFloatRequestField,
 		"raw_sql":                              ruleRawSQL,
 		"raw_query_builder_access":             ruleRawQueryBuilderAccess,
-		"rls_guidance":                        ruleRLSGuidance,
+		"rls_guidance":                         ruleRLSGuidance,
+		"row_policy_invalid":                   ruleRowPolicyInvalid,
+		"row_policy_context_missing":           ruleRowPolicyContextMissing,
+		"row_policy_context_spoof":             ruleRowPolicyContextSpoof,
+		"row_policy_application_only":          ruleRowPolicyApplicationOnly,
 		"stale_role_annotation":                ruleStaleRoleAnnotation,
 		"unknown_role_annotation":              ruleUnknownRoleAnnotation,
 		"role_without_load":                    ruleRoleWithoutLoad,

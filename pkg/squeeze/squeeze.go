@@ -90,6 +90,21 @@ func Analyze(projectDir string) (*AnalysisContext, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scanning seeders: %w", err)
 	}
+	policiesDir := filepath.Join(project.Dir, "database", "policies")
+	parsedRows, rowParseErr := generator.ParseRowPolicyOps(policiesDir)
+	staticRoles, roleParseErr := generator.ParsePolicyOps(policiesDir)
+	var rowPolicies []generator.ResolvedRowPolicy
+	var rowPolicyError string
+	if rowParseErr != nil {
+		rowPolicyError = rowParseErr.Error()
+	} else if roleParseErr != nil {
+		rowPolicyError = roleParseErr.Error()
+	} else {
+		rowPolicies, err = generator.ResolveRowPolicies(parsedRows, tables, generator.StaticDeriveRoles(staticRoles))
+		if err != nil {
+			rowPolicyError = err.Error()
+		}
+	}
 
 	return &AnalysisContext{
 		Routes:         routes,
@@ -99,6 +114,8 @@ func Analyze(projectDir string) (*AnalysisContext, error) {
 		Tables:         tables,
 		Views:          views,
 		Migrations:     migrations,
+		RowPolicies:    rowPolicies,
+		RowPolicyError: rowPolicyError,
 		Config:         cfg.Squeeze,
 		FuncRegistry:   funcRegistry,
 		HasGraphQL:     hasGraphQL,

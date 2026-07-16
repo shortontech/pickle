@@ -8,6 +8,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/template"
 )
@@ -161,23 +162,47 @@ func ScanRouteVars(routesDir string) ([]string, error) {
 // warnNonControllerHandlers scans route files and prints advisory warnings if any
 // handler references a type from a package other than "controllers".
 func warnNonControllerHandlers(routesDir string) {
+	for _, warning := range findNonControllerHandlers(routesDir) {
+		fmt.Printf("  warning: %s:%d: handler from package %q, expected \"controllers\"\n", warning.file, warning.line, warning.packageName)
+	}
+}
+
+type nonControllerHandlerWarning struct {
+	file        string
+	line        int
+	packageName string
+}
+
+func findNonControllerHandlers(routesDir string) []nonControllerHandlerWarning {
 	entries, err := os.ReadDir(routesDir)
 	if err != nil {
-		return
+		return nil
 	}
+	var warnings []nonControllerHandlerWarning
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
 			continue
 		}
 		fset := token.NewFileSet()
-		f, err := parser.ParseFile(fset, routesDir+"/"+e.Name(), nil, 0)
+		path := filepath.Join(routesDir, e.Name())
+		f, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
 			continue
 		}
 		ast.Inspect(f, func(n ast.Node) bool {
-			// Look for composite literals like services.SomeType{}.Method
-			comp, ok := n.(*ast.CompositeLit)
+			call, ok := n.(*ast.CallExpr)
 			if !ok {
+				return true
+			}
+			method, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if !isRouteRegistrationMethod(method.Sel.Name) || len(call.Args) < 2 {
+				return true
+			}
+			comp := handlerCompositeLiteral(call.Args[1])
+			if comp == nil {
 				return true
 			}
 			sel, ok := comp.Type.(*ast.SelectorExpr)
@@ -190,10 +215,35 @@ func warnNonControllerHandlers(routesDir string) {
 			}
 			if ident.Name != "controllers" && ident.Name != "" {
 				pos := fset.Position(comp.Pos())
-				fmt.Printf("  warning: %s:%d: handler from package %q, expected \"controllers\"\n", pos.Filename, pos.Line, ident.Name)
+				warnings = append(warnings, nonControllerHandlerWarning{file: pos.Filename, line: pos.Line, packageName: ident.Name})
 			}
 			return true
 		})
+	}
+	return warnings
+}
+
+func isRouteRegistrationMethod(name string) bool {
+	switch name {
+	case "Get", "Post", "Put", "Patch", "Delete", "Resource":
+		return true
+	default:
+		return false
+	}
+}
+
+func handlerCompositeLiteral(expr ast.Expr) *ast.CompositeLit {
+	switch value := expr.(type) {
+	case *ast.SelectorExpr:
+		return handlerCompositeLiteral(value.X)
+	case *ast.CompositeLit:
+		return value
+	case *ast.ParenExpr:
+		return handlerCompositeLiteral(value.X)
+	case *ast.UnaryExpr:
+		return handlerCompositeLiteral(value.X)
+	default:
+		return nil
 	}
 }
 

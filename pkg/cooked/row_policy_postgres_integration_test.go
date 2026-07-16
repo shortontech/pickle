@@ -228,6 +228,121 @@ func TestPostgresRowPolicyThreeLaneConformance(t *testing.T) {
 	}
 	runPostgresPredicateCorpus(t, admin, runtimeDB, table, quote)
 	runPostgresSubjectCorpus(t, admin, runtimeDB, table, quote)
+	runPostgresPolicyTransitionConformance(t, admin, runtimeDB, table, quote)
+}
+
+func runPostgresPolicyTransitionConformance(t *testing.T, admin, runtimeDB *sql.DB, table string, quote func(string) string) {
+	t.Helper()
+	var names []string
+	rows, err := admin.Query("SELECT policyname FROM pg_policies WHERE schemaname='public' AND tablename=$1", table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, name)
+	}
+	rows.Close()
+	for _, name := range names {
+		if _, err := admin.Exec("DROP POLICY " + quote(name) + " ON " + quote(table)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	policyName := "pickle_transition_" + table
+	if len(policyName) > 63 {
+		policyName = policyName[:63]
+	}
+	usingTrue := "pickle_identity_uuid('user_id') IS NOT NULL"
+	if _, err := admin.Exec("CREATE POLICY " + quote(policyName) + " ON " + quote(table) + " FOR SELECT TO PUBLIC USING (" + usingTrue + ")"); err != nil {
+		t.Fatal(err)
+	}
+	ctx := NewVerifiedPolicyContext(map[string]string{"user_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, nil)
+	countRowsResult := func() (int, error) {
+		var count int
+		err := withSQLPolicyContext(runtimeDB, ctx, func(tx *sql.Tx) error { return tx.QueryRow("SELECT count(*) FROM " + quote(table)).Scan(&count) })
+		return count, err
+	}
+	countRows := func() int {
+		count, err := countRowsResult()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	if got := countRows(); got != 1 {
+		t.Fatalf("initial transition visibility=%d", got)
+	}
+	transition, err := admin.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := transition.Exec("DROP POLICY " + quote(policyName) + " ON " + quote(table)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := transition.Exec("CREATE POLICY " + quote(policyName) + " ON " + quote(table) + " FOR SELECT TO PUBLIC USING (FALSE)"); err != nil {
+		t.Fatal(err)
+	}
+	// PostgreSQL blocks a concurrent statement while transactional policy DDL
+	// is pending; it cannot observe a dropped or partially-created policy.
+	type result struct {
+		count int
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() { count, err := countRowsResult(); done <- result{count, err} }()
+	select {
+	case got := <-done:
+		transition.Rollback()
+		t.Fatalf("concurrent query did not wait for transition: %+v", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := transition.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	got := <-done
+	if got.err != nil || got.count != 0 {
+		t.Fatalf("concurrent committed transition=%+v", got)
+	}
+	if got := countRows(); got != 0 {
+		t.Fatalf("committed transition visibility=%d", got)
+	}
+	rollback, err := admin.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rollback.Exec("DROP POLICY " + quote(policyName) + " ON " + quote(table)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rollback.Exec("CREATE POLICY " + quote(policyName) + " ON " + quote(table) + " FOR SELECT TO PUBLIC USING (" + usingTrue + ")"); err != nil {
+		t.Fatal(err)
+	}
+	if err := rollback.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRows(); got != 0 {
+		t.Fatalf("rolled-back transition changed visibility=%d", got)
+	}
+	// An unregistered permissive manual policy demonstrably broadens PostgreSQL
+	// composition, which is why generation/status reject it.
+	manual := "manual_broadening_" + table
+	if len(manual) > 63 {
+		manual = manual[:63]
+	}
+	if _, err := admin.Exec("CREATE POLICY " + quote(manual) + " ON " + quote(table) + " FOR SELECT TO PUBLIC USING (TRUE)"); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRows(); got != 1 {
+		t.Fatalf("manual permissive policy did not expose broadening: %d", got)
+	}
+	if _, err := admin.Exec("DROP POLICY " + quote(manual) + " ON " + quote(table)); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRows(); got != 0 {
+		t.Fatalf("manual policy cleanup visibility=%d", got)
+	}
 }
 
 func runPostgresSubjectCorpus(t *testing.T, admin, runtimeDB *sql.DB, table string, quote func(string) string) {

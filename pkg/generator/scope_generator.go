@@ -40,6 +40,8 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 	builderType := "QueryBuilder" // mutable by default
 	if table.IsImmutable {
 		builderType = "ImmutableQueryBuilder"
+	} else if table.IsAppendOnly {
+		builderType = "AppendOnlyQueryBuilder"
 	}
 
 	b.WriteString(fmt.Sprintf("// %s provides typed query methods for %s.\n", queryType, structName))
@@ -55,6 +57,12 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 		} else {
 			b.WriteString(fmt.Sprintf("\treturn &%s{ImmutableQueryBuilder: ImmutableQuery[%s](%q, %v)}\n", queryType, structName, table.Name, softDeletes))
 		}
+	} else if table.IsAppendOnly {
+		if table.Connection != "" {
+			b.WriteString(fmt.Sprintf("\treturn &%s{AppendOnlyQueryBuilder: AppendOnlyQuery[%s](%q, %q)}\n", queryType, structName, table.Name, table.Connection))
+		} else {
+			b.WriteString(fmt.Sprintf("\treturn &%s{AppendOnlyQueryBuilder: AppendOnlyQuery[%s](%q)}\n", queryType, structName, table.Name))
+		}
 	} else {
 		if table.Connection != "" {
 			b.WriteString(fmt.Sprintf("\treturn &%s{QueryBuilder: Query[%s](%q, %q)}\n", queryType, structName, table.Name, table.Connection))
@@ -63,7 +71,6 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 		}
 	}
 	b.WriteString("}\n\n")
-
 	// Generate eager loading methods from foreign keys
 	for _, col := range table.Columns {
 		if col.ForeignKeyTable != "" {
@@ -93,6 +100,7 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 	// return the typed query wrapper instead of the builder type.
 	// Immutable tables get these in generateImmutableMethods instead.
 	if !table.IsImmutable {
+		baseBuilder := builderType
 		for _, m := range []struct{ name, sig, call string }{
 			{"AnyOwner", "", "AnyOwner()"},
 			{"Limit", "n int", "Limit(n)"},
@@ -105,13 +113,13 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 			{"Timeout", "d time.Duration", "Timeout(d)"},
 		} {
 			b.WriteString(fmt.Sprintf("func (q *%s) %s(%s) *%s {\n", queryType, m.name, m.sig, queryType))
-			b.WriteString(fmt.Sprintf("\tq.QueryBuilder.%s\n", m.call))
+			b.WriteString(fmt.Sprintf("\tq.%s.%s\n", baseBuilder, m.call))
 			b.WriteString(fmt.Sprintf("\treturn q\n"))
 			b.WriteString("}\n\n")
 		}
 
 		// Generate typed OrderBy methods per column
-		generateOrderByMethods(&b, table, queryType, "QueryBuilder")
+		generateOrderByMethods(&b, table, queryType, baseBuilder)
 	}
 
 	// Generate the ScopeBuilder wrapper type
@@ -125,6 +133,8 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 	b.WriteString(fmt.Sprintf("func (q *%s) ToScopeBuilder() *%s {\n", queryType, scopeBuilderType))
 	if table.IsImmutable {
 		b.WriteString(fmt.Sprintf("\treturn &%s{ScopeBuilder: NewImmutableScopeBuilder[%s](q.ImmutableQueryBuilder)}\n", scopeBuilderType, structName))
+	} else if table.IsAppendOnly {
+		b.WriteString(fmt.Sprintf("\treturn &%s{ScopeBuilder: NewAppendOnlyScopeBuilder[%s](q.AppendOnlyQueryBuilder)}\n", scopeBuilderType, structName))
 	} else {
 		b.WriteString(fmt.Sprintf("\treturn &%s{ScopeBuilder: NewScopeBuilder[%s](q.QueryBuilder)}\n", scopeBuilderType, structName))
 	}
@@ -134,6 +144,8 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 	b.WriteString(fmt.Sprintf("func (q *%s) ApplyScope(sb *%s) *%s {\n", queryType, scopeBuilderType, queryType))
 	if table.IsImmutable {
 		b.WriteString(fmt.Sprintf("\tApplyImmutableScopeBuilder[%s](q.ImmutableQueryBuilder, sb.ScopeBuilder)\n", structName))
+	} else if table.IsAppendOnly {
+		b.WriteString(fmt.Sprintf("\tApplyAppendOnlyScopeBuilder[%s](q.AppendOnlyQueryBuilder, sb.ScopeBuilder)\n", structName))
 	} else {
 		b.WriteString(fmt.Sprintf("\tApplyScopeBuilder[%s](q.QueryBuilder, sb.ScopeBuilder)\n", structName))
 	}
@@ -396,7 +408,7 @@ func generateAppendOnlyMethods(b *bytes.Buffer, table *schema.Table, queryType, 
 	b.WriteString(fmt.Sprintf("func (q *%s) Create(model *%s) error {\n", queryType, structName))
 	b.WriteString("\tif model.ID == (uuid.UUID{}) {\n\t\tmodel.ID = uuid.Must(uuid.NewV7())\n\t}\n")
 	b.WriteString(generateChainHashBlock(table.Name, structName, false))
-	b.WriteString("\treturn q.QueryBuilder.Create(model)\n}\n\n")
+	b.WriteString("\treturn q.AppendOnlyQueryBuilder.Create(model)\n}\n\n")
 
 	// VerifyChain and VerifyRow
 	generateVerifyMethods(b, table, queryType, structName, false)
@@ -1137,6 +1149,9 @@ func GenerateTxMethods(tables []*schema.Table, nestingMap map[string]SchemaRelat
 		if tbl.IsImmutable {
 			b.WriteString("\tq.ImmutableQueryBuilder.setTx(tx.Conn())\n")
 			b.WriteString("\tif tx.policyContext != nil { q.ImmutableQueryBuilder.WithPolicyContext(*tx.policyContext) }\n")
+		} else if tbl.IsAppendOnly {
+			b.WriteString("\tq.AppendOnlyQueryBuilder.setTx(tx.Conn())\n")
+			b.WriteString("\tif tx.policyContext != nil { q.AppendOnlyQueryBuilder.WithPolicyContext(*tx.policyContext) }\n")
 		} else {
 			b.WriteString("\tq.QueryBuilder.setTx(tx.Conn())\n")
 			b.WriteString("\tif tx.policyContext != nil { q.QueryBuilder.WithPolicyContext(*tx.policyContext) }\n")

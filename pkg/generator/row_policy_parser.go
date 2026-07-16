@@ -304,6 +304,15 @@ func parseRowPredicateExpr(expr ast.Expr) (schema.RowPredicate, error) {
 			return schema.RowPredicate{}, err
 		}
 		return schema.RowPredicate{Kind: schema.PredicateEqual, Children: []schema.RowPredicate{{Kind: schema.PredicateColumn, Name: extractStringLit(call.Args[0])}, right}}, nil
+	case "Exists":
+		if len(call.Args) != 2 || extractStringLit(call.Args[0]) == "" {
+			return schema.RowPredicate{}, fmt.Errorf("Exists requires relationship literal and predicate")
+		}
+		child, err := parseRowPredicateExpr(call.Args[1])
+		if err != nil {
+			return schema.RowPredicate{}, err
+		}
+		return schema.RowPredicate{Kind: schema.PredicateExists, Name: extractStringLit(call.Args[0]), Children: []schema.RowPredicate{child}}, nil
 	case "Equal", "NotEqual", "And", "Or", "Not":
 		ch, err := children()
 		if err != nil {
@@ -317,12 +326,16 @@ func parseRowPredicateExpr(expr ast.Expr) (schema.RowPredicate, error) {
 }
 
 // ResolveRowPolicies replays definitions and validates references against schema and roles.
-func ResolveRowPolicies(files []ParsedRowPolicyFile, tables []*schema.Table, roles []DerivedRole) ([]ResolvedRowPolicy, error) {
+func ResolveRowPolicies(files []ParsedRowPolicyFile, tables []*schema.Table, roles []DerivedRole, relationshipSets ...[]SchemaRelationship) ([]ResolvedRowPolicy, error) {
 	tableMap := map[string]*schema.Table{}
 	for _, table := range tables {
 		tableMap[table.Name] = table
 	}
 	roleMap := map[string]bool{}
+	var relationships []SchemaRelationship
+	if len(relationshipSets) > 0 {
+		relationships = relationshipSets[0]
+	}
 	for _, role := range roles {
 		roleMap[role.Slug] = true
 	}
@@ -346,6 +359,9 @@ func ResolveRowPolicies(files []ParsedRowPolicyFile, tables []*schema.Table, rol
 				continue
 			}
 			if err := validateResolvedProtection(op.Protection, table, identities, roleMap); err != nil {
+				return nil, fmt.Errorf("row policy %s: %w", file.PolicyID, err)
+			}
+			if err := resolveRowPolicyRelationships(&op.Protection, table, tableMap, relationships, identities); err != nil {
 				return nil, fmt.Errorf("row policy %s: %w", file.PolicyID, err)
 			}
 			resolved := state[table.Name]
@@ -423,6 +439,9 @@ func validateResolvedProtection(p schema.RowProtection, table *schema.Table, ide
 }
 
 func validateResolvedPredicate(p schema.RowPredicate, cols map[string]schema.ColumnType, identities map[string]schema.PolicyIdentityType) error {
+	if p.Kind == schema.PredicateExists {
+		return nil
+	}
 	if p.Kind == schema.PredicateColumn {
 		if _, ok := cols[p.Name]; !ok {
 			return fmt.Errorf("unknown column %q", p.Name)
@@ -447,6 +466,110 @@ func validateResolvedPredicate(p schema.RowPredicate, cols map[string]schema.Col
 		}
 	}
 	return nil
+}
+
+func resolveRowPolicyRelationships(protection *schema.RowProtection, table *schema.Table, tables map[string]*schema.Table, relationships []SchemaRelationship, identities map[string]schema.PolicyIdentityType) error {
+	resolve := func(predicate *schema.RowPredicate, proposed bool) error {
+		if predicate == nil {
+			return nil
+		}
+		var walk func(*schema.RowPredicate, *schema.Table) error
+		walk = func(node *schema.RowPredicate, current *schema.Table) error {
+			if node.Kind != schema.PredicateExists {
+				for i := range node.Children {
+					if err := walk(&node.Children[i], current); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			if proposed {
+				return fmt.Errorf("Exists relationship predicates are initially limited to existing-row positions")
+			}
+			if len(node.Children) != 1 {
+				return fmt.Errorf("Exists %q requires one predicate", node.Name)
+			}
+			var related *schema.Table
+			local, foreign := "", ""
+			for _, relationship := range relationships {
+				if relationship.ParentTable == current.Name && relationship.ChildTable == node.Name {
+					related = tables[relationship.ChildTable]
+					local = primaryPolicyColumn(current)
+					foreign = foreignKeyPolicyColumn(related, current.Name)
+				}
+				if relationship.ChildTable == current.Name && relationship.ParentTable == node.Name {
+					related = tables[relationship.ParentTable]
+					local = foreignKeyPolicyColumn(current, related.Name)
+					foreign = primaryPolicyColumn(related)
+				}
+			}
+			if related == nil || local == "" || foreign == "" {
+				return fmt.Errorf("unresolved or ambiguous relationship %q from %s", node.Name, current.Name)
+			}
+			node.RelatedTable, node.LocalColumn, node.ForeignColumn = related.Name, local, foreign
+			cols := map[string]schema.ColumnType{}
+			for _, column := range related.Columns {
+				cols[column.Name] = column.Type
+			}
+			if err := validateResolvedPredicate(node.Children[0], cols, identities); err != nil {
+				return fmt.Errorf("relationship %q: %w", node.Name, err)
+			}
+			for i := range node.Children {
+				if err := walk(&node.Children[i], related); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		return walk(predicate, table)
+	}
+	for i := range protection.Rules {
+		rule := &protection.Rules[i]
+		if err := resolve(rule.Select, false); err != nil {
+			return err
+		}
+		if err := resolve(rule.Delete, false); err != nil {
+			return err
+		}
+		if err := resolve(rule.UpdateOld, false); err != nil {
+			return err
+		}
+		if err := resolve(rule.Insert, true); err != nil {
+			return err
+		}
+		if err := resolve(rule.UpdateNew, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func primaryPolicyColumn(table *schema.Table) string {
+	for _, column := range table.Columns {
+		if column.IsPrimaryKey {
+			return column.Name
+		}
+	}
+	for _, column := range table.Columns {
+		if column.Name == "id" {
+			return column.Name
+		}
+	}
+	return ""
+}
+func foreignKeyPolicyColumn(table *schema.Table, target string) string {
+	if table == nil {
+		return ""
+	}
+	found := ""
+	for _, column := range table.Columns {
+		if column.ForeignKeyTable == target {
+			if found != "" {
+				return ""
+			}
+			found = column.Name
+		}
+	}
+	return found
 }
 
 func rowPolicyTypesCompatible(column schema.ColumnType, identity schema.PolicyIdentityType) bool {

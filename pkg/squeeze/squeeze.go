@@ -55,7 +55,7 @@ func Analyze(projectDir string) (*AnalysisContext, error) {
 	}
 
 	// 6. Get schema from migrations
-	tables, views, _, migrations, err := generator.RunSchemaInspectorWithMigrations(project)
+	tables, views, relationships, migrations, err := generator.RunSchemaInspectorWithMigrations(project)
 	if err != nil {
 		// Schema inspection is optional — warn and continue
 		fmt.Printf("  warning: schema inspection failed: %v\n", err)
@@ -100,7 +100,7 @@ func Analyze(projectDir string) (*AnalysisContext, error) {
 	} else if roleParseErr != nil {
 		rowPolicyError = roleParseErr.Error()
 	} else {
-		rowPolicies, err = generator.ResolveRowPolicies(parsedRows, tables, generator.StaticDeriveRoles(staticRoles))
+		rowPolicies, err = generator.ResolveRowPolicies(parsedRows, tables, generator.StaticDeriveRoles(staticRoles), relationships)
 		if err != nil {
 			rowPolicyError = err.Error()
 		}

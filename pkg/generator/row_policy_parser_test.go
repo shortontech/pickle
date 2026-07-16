@@ -86,3 +86,29 @@ func TestResolveRowPoliciesRejectsUnknownIdentityAndColumn(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestResolveRowPoliciesResolvesExistingRowRelationship(t *testing.T) {
+	pred := schema.Exists("memberships", schema.Equal(schema.PolicyColumn("workspace_id"), schema.Identity("workspace_id")))
+	files := []ParsedRowPolicyFile{{PolicyID: "p1", Identities: []schema.PolicyIdentityDefinition{{Name: "workspace_id", Type: schema.PolicyIdentityUUID}}, Operations: []schema.RowPolicyOperation{{Type: "protect", Protection: schema.RowProtection{Table: "users", Rules: []schema.RowRule{{Key: "member", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &pred}}}}}}}
+	users := &schema.Table{Name: "users", Columns: []*schema.Column{{Name: "id", Type: schema.UUID, IsPrimaryKey: true}}}
+	memberships := &schema.Table{Name: "memberships", Columns: []*schema.Column{{Name: "user_id", Type: schema.UUID, ForeignKeyTable: "users", ForeignKeyColumn: "id"}, {Name: "workspace_id", Type: schema.UUID}}}
+	resolved, err := ResolveRowPolicies(files, []*schema.Table{users, memberships}, nil, []SchemaRelationship{{ParentTable: "users", ChildTable: "memberships"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := resolved[0].Protection.Rules[0].Select
+	if got.RelatedTable != "memberships" || got.LocalColumn != "id" || got.ForeignColumn != "user_id" {
+		t.Fatalf("unresolved relationship: %#v", got)
+	}
+}
+
+func TestResolveRowPoliciesRejectsRelationshipInProposedRow(t *testing.T) {
+	pred := schema.Exists("memberships", schema.Allow())
+	files := []ParsedRowPolicyFile{{PolicyID: "p1", Operations: []schema.RowPolicyOperation{{Type: "protect", Protection: schema.RowProtection{Table: "users", Rules: []schema.RowRule{{Key: "member", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Insert: &pred}}}}}}}
+	users := &schema.Table{Name: "users", Columns: []*schema.Column{{Name: "id", IsPrimaryKey: true}}}
+	memberships := &schema.Table{Name: "memberships", Columns: []*schema.Column{{Name: "user_id", ForeignKeyTable: "users"}}}
+	_, err := ResolveRowPolicies(files, []*schema.Table{users, memberships}, nil, []SchemaRelationship{{ParentTable: "users", ChildTable: "memberships"}})
+	if err == nil || !strings.Contains(err.Error(), "existing-row positions") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

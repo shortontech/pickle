@@ -66,8 +66,9 @@ func (c PolicyContext) encodedRoles() string {
 }
 
 type rowPolicyRuntimePredicate struct {
-	Kind, Name string
-	Children   []rowPolicyRuntimePredicate
+	Kind, Name                               string
+	RelatedTable, LocalColumn, ForeignColumn string
+	Children                                 []rowPolicyRuntimePredicate
 }
 type rowPolicyRuntimeRule struct {
 	Key, SubjectKind, SubjectName                string
@@ -170,6 +171,20 @@ func compileRuntimePredicate(p rowPolicyRuntimePredicate, alias string, context 
 			return "", nil, fmt.Errorf("missing identity %q", p.Name)
 		}
 		return "?", []any{value}, nil
+	case "exists":
+		if len(p.Children) != 1 || p.RelatedTable == "" || p.LocalColumn == "" || p.ForeignColumn == "" {
+			return "", nil, fmt.Errorf("invalid relationship predicate")
+		}
+		relatedAlias := "pickle_rel"
+		child, args, err := compileRuntimePredicate(p.Children[0], relatedAlias, context)
+		if err != nil {
+			return "", nil, err
+		}
+		outer := quoteRuntimeIdent(p.LocalColumn)
+		if alias != "" {
+			outer = alias + "." + outer
+		}
+		return "EXISTS (SELECT 1 FROM " + quoteRuntimeIdent(p.RelatedTable) + " " + relatedAlias + " WHERE " + relatedAlias + "." + quoteRuntimeIdent(p.ForeignColumn) + " = " + outer + " AND (" + child + "))", args, nil
 	case "equal", "not_equal":
 		if len(p.Children) != 2 {
 			return "", nil, fmt.Errorf("invalid comparison")

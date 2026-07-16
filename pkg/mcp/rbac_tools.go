@@ -63,14 +63,14 @@ func DeriveRBACState(projectDir string) *RBACState {
 
 	project, projectErr := generator.DetectProject(projectDir)
 	if projectErr == nil {
-		tables, _, _, schemaErr := generator.RunSchemaInspector(project)
+		tables, _, relationships, schemaErr := generator.RunSchemaInspector(project)
 		rows, rowErr := generator.ParseRowPolicyOps(policiesDir)
 		if schemaErr != nil {
 			state.RowPolicyError = schemaErr.Error()
 		} else if rowErr != nil {
 			state.RowPolicyError = rowErr.Error()
 		} else {
-			state.RowPolicies, rowErr = generator.ResolveRowPolicies(rows, tables, state.Roles)
+			state.RowPolicies, rowErr = generator.ResolveRowPolicies(rows, tables, state.Roles, relationships)
 			if rowErr != nil {
 				state.RowPolicyError = rowErr.Error()
 			}

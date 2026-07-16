@@ -84,14 +84,16 @@ const (
 	PredicateAnd      RowPredicateKind = "and"
 	PredicateOr       RowPredicateKind = "or"
 	PredicateNot      RowPredicateKind = "not"
+	PredicateExists   RowPredicateKind = "exists"
 )
 
 // RowPredicate is a database-independent authorization expression. It never
 // contains Go callbacks or raw SQL.
 type RowPredicate struct {
-	Kind     RowPredicateKind
-	Name     string
-	Children []RowPredicate
+	Kind                                     RowPredicateKind
+	Name                                     string
+	Children                                 []RowPredicate
+	RelatedTable, LocalColumn, ForeignColumn string
 }
 
 func Allow() RowPredicate { return RowPredicate{Kind: PredicateAllow} }
@@ -127,6 +129,10 @@ func Or(predicates ...RowPredicate) RowPredicate {
 }
 func Not(predicate RowPredicate) RowPredicate {
 	return RowPredicate{Kind: PredicateNot, Children: []RowPredicate{predicate}}
+}
+func Exists(relationship string, predicate RowPredicate) RowPredicate {
+	rowPolicyName("relationship", relationship)
+	return RowPredicate{Kind: PredicateExists, Name: relationship, Children: []RowPredicate{predicate}}
 }
 
 type PositionedPredicate struct {
@@ -287,6 +293,11 @@ func validateRowPredicate(predicate RowPredicate) {
 	case PredicateNot:
 		if len(predicate.Children) != 1 {
 			panic("pickle: Not row predicate requires one child")
+		}
+	case PredicateExists:
+		rowPolicyName("relationship", predicate.Name)
+		if len(predicate.Children) != 1 {
+			panic("pickle: Exists row predicate requires one child")
 		}
 	default:
 		panic("pickle: unknown row predicate kind")

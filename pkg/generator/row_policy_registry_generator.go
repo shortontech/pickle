@@ -240,6 +240,9 @@ func writeRuntimePredicateField(b *bytes.Buffer, name string, predicate *schema.
 }
 func writeRuntimePredicate(b *bytes.Buffer, p schema.RowPredicate) {
 	fmt.Fprintf(b, "rowPolicyRuntimePredicate{Kind:%s, Name:%s", strconv.Quote(string(p.Kind)), strconv.Quote(p.Name))
+	if p.RelatedTable != "" {
+		fmt.Fprintf(b, ", RelatedTable:%s, LocalColumn:%s, ForeignColumn:%s", strconv.Quote(p.RelatedTable), strconv.Quote(p.LocalColumn), strconv.Quote(p.ForeignColumn))
+	}
 	if len(p.Children) > 0 {
 		b.WriteString(", Children: []rowPolicyRuntimePredicate{")
 		for _, child := range p.Children {

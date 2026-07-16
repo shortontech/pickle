@@ -893,7 +893,7 @@ func Generate(project *Project, picklePkgDir string) error {
 		if err != nil {
 			return fmt.Errorf("parsing policy roles: %w", err)
 		}
-		resolvedRows, err := ResolveRowPolicies(parsedRows, tables, StaticDeriveRoles(staticRoles))
+		resolvedRows, err := ResolveRowPolicies(parsedRows, tables, StaticDeriveRoles(staticRoles), relationships)
 		if err != nil {
 			return fmt.Errorf("resolving row policies: %w", err)
 		}
@@ -913,7 +913,7 @@ func Generate(project *Project, picklePkgDir string) error {
 		}
 		versionStates := make([]RowPolicyVersionState, 0, len(parsedRows))
 		for i, parsed := range parsedRows {
-			prefixResolved, prefixErr := ResolveRowPolicies(parsedRows[:i+1], tables, StaticDeriveRoles(staticRoles))
+			prefixResolved, prefixErr := ResolveRowPolicies(parsedRows[:i+1], tables, StaticDeriveRoles(staticRoles), relationships)
 			if prefixErr != nil {
 				return fmt.Errorf("resolving row policy state %s: %w", parsed.PolicyID, prefixErr)
 			}

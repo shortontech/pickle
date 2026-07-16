@@ -41,3 +41,17 @@ func TestGeneratedRowPolicyNameFitsPostgres(t *testing.T) {
 		t.Fatalf("bad name %q", name)
 	}
 }
+
+func TestPostgresRowPredicateLowersResolvedRelationship(t *testing.T) {
+	predicate := schema.Exists("memberships", schema.Equal(schema.PolicyColumn("workspace_id"), schema.Identity("workspace_id")))
+	predicate.RelatedTable, predicate.LocalColumn, predicate.ForeignColumn = "memberships", "id", "user_id"
+	sql, err := postgresRowPredicate(predicate, map[string]schema.PolicyIdentityType{"workspace_id": schema.PolicyIdentityUUID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`EXISTS (SELECT 1 FROM "memberships" pickle_rel`, `pickle_rel."user_id" = "id"`, `pickle_rel."workspace_id"`, `pickle_identity_uuid('workspace_id')`} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("missing %q in %s", want, sql)
+		}
+	}
+}

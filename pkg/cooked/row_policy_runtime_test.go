@@ -2,10 +2,27 @@ package cooked
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
+
+func TestRuntimePredicateCompilesResolvedRelationship(t *testing.T) {
+	pred := rowPolicyRuntimePredicate{Kind: "exists", RelatedTable: "memberships", LocalColumn: "id", ForeignColumn: "user_id", Children: []rowPolicyRuntimePredicate{{Kind: "equal", Children: []rowPolicyRuntimePredicate{{Kind: "column", Name: "workspace_id"}, {Kind: "identity", Name: "workspace_id"}}}}}
+	sql, args, err := compileRuntimePredicate(pred, `"users"`, PolicyContext{identities: map[string]string{"workspace_id": "01900000-0000-7000-8000-000000000001"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`EXISTS (SELECT 1 FROM "memberships" pickle_rel`, `pickle_rel."user_id" = "users"."id"`, `pickle_rel."workspace_id"`} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("missing %q in %s", want, sql)
+		}
+	}
+	if len(args) != 1 {
+		t.Fatalf("args=%#v", args)
+	}
+}
 
 type policyTestMessage struct {
 	ID          string `db:"id"`

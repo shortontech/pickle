@@ -112,13 +112,21 @@ func postgresSubjectPredicate(subject schema.RowSubject, identities map[string]s
 }
 
 func postgresRowPredicate(predicate schema.RowPredicate, identities map[string]schema.PolicyIdentityType) (string, error) {
+	return postgresRowPredicateAlias(predicate, identities, "")
+}
+
+func postgresRowPredicateAlias(predicate schema.RowPredicate, identities map[string]schema.PolicyIdentityType, alias string) (string, error) {
 	switch predicate.Kind {
 	case schema.PredicateAllow:
 		return "TRUE", nil
 	case schema.PredicateDeny:
 		return "FALSE", nil
 	case schema.PredicateColumn:
-		return quotePolicyIdent(predicate.Name), nil
+		prefix := ""
+		if alias != "" {
+			prefix = alias + "."
+		}
+		return prefix + quotePolicyIdent(predicate.Name), nil
 	case schema.PredicateIdentity:
 		kind, ok := identities[predicate.Name]
 		if !ok {
@@ -136,11 +144,11 @@ func postgresRowPredicate(predicate schema.RowPredicate, identities map[string]s
 		if len(predicate.Children) != 2 {
 			return "", fmt.Errorf("comparison requires two children")
 		}
-		left, err := postgresRowPredicate(predicate.Children[0], identities)
+		left, err := postgresRowPredicateAlias(predicate.Children[0], identities, alias)
 		if err != nil {
 			return "", err
 		}
-		right, err := postgresRowPredicate(predicate.Children[1], identities)
+		right, err := postgresRowPredicateAlias(predicate.Children[1], identities, alias)
 		if err != nil {
 			return "", err
 		}
@@ -152,7 +160,7 @@ func postgresRowPredicate(predicate schema.RowPredicate, identities map[string]s
 	case schema.PredicateAnd, schema.PredicateOr:
 		parts := make([]string, len(predicate.Children))
 		for i, child := range predicate.Children {
-			part, err := postgresRowPredicate(child, identities)
+			part, err := postgresRowPredicateAlias(child, identities, alias)
 			if err != nil {
 				return "", err
 			}
@@ -167,11 +175,25 @@ func postgresRowPredicate(predicate schema.RowPredicate, identities map[string]s
 		if len(predicate.Children) != 1 {
 			return "", fmt.Errorf("not requires one child")
 		}
-		child, err := postgresRowPredicate(predicate.Children[0], identities)
+		child, err := postgresRowPredicateAlias(predicate.Children[0], identities, alias)
 		if err != nil {
 			return "", err
 		}
 		return "COALESCE(NOT (" + child + "), FALSE)", nil
+	case schema.PredicateExists:
+		if len(predicate.Children) != 1 || predicate.RelatedTable == "" || predicate.LocalColumn == "" || predicate.ForeignColumn == "" {
+			return "", fmt.Errorf("invalid relationship predicate")
+		}
+		relatedAlias := "pickle_rel"
+		child, err := postgresRowPredicateAlias(predicate.Children[0], identities, relatedAlias)
+		if err != nil {
+			return "", err
+		}
+		outer := quotePolicyIdent(predicate.LocalColumn)
+		if alias != "" {
+			outer = alias + "." + outer
+		}
+		return "EXISTS (SELECT 1 FROM " + quotePolicyIdent(predicate.RelatedTable) + " " + relatedAlias + " WHERE " + relatedAlias + "." + quotePolicyIdent(predicate.ForeignColumn) + " = " + outer + " AND (" + child + "))", nil
 	default:
 		return "", fmt.Errorf("unsupported predicate %q", predicate.Kind)
 	}

@@ -227,6 +227,141 @@ func TestPostgresRowPolicyThreeLaneConformance(t *testing.T) {
 		t.Fatal(err)
 	}
 	runPostgresPredicateCorpus(t, admin, runtimeDB, table, quote)
+	runPostgresSubjectCorpus(t, admin, runtimeDB, table, quote)
+}
+
+func runPostgresSubjectCorpus(t *testing.T, admin, runtimeDB *sql.DB, table string, quote func(string) string) {
+	t.Helper()
+	if _, err := admin.Exec("ALTER TABLE " + quote(table) + " DISABLE ROW LEVEL SECURITY"); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	rows, err := admin.Query("SELECT policyname FROM pg_policies WHERE schemaname='public' AND tablename=$1", table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, name)
+	}
+	rows.Close()
+	for _, name := range names {
+		if _, err := admin.Exec("DROP POLICY " + quote(name) + " ON " + quote(table)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := admin.Exec("DELETE FROM " + quote(table)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec("INSERT INTO " + quote(table) + " VALUES ('99999999-9999-4999-8999-999999999999','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')"); err != nil {
+		t.Fatal(err)
+	}
+	type subjectCase struct {
+		name     string
+		subject  schema.RowSubject
+		context  PolicyContext
+		decision bool
+	}
+	cases := []subjectCase{{"public", schema.RowSubject{Kind: schema.SubjectPublic}, NewVerifiedPolicyContext(nil, nil), true}, {"authenticated", schema.RowSubject{Kind: schema.SubjectAuthenticated}, NewVerifiedPolicyContext(map[string]string{"user_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, nil), true}, {"authenticated_missing", schema.RowSubject{Kind: schema.SubjectAuthenticated}, NewVerifiedPolicyContext(nil, nil), false}, {"role", schema.RowSubject{Kind: schema.SubjectRole, Name: "admin"}, NewVerifiedPolicyContext(nil, []string{"admin"}), true}, {"role_missing", schema.RowSubject{Kind: schema.SubjectRole, Name: "admin"}, NewVerifiedPolicyContext(nil, []string{"viewer"}), false}}
+	for _, tc := range cases {
+		t.Run("subject_"+tc.name, func(t *testing.T) {
+			var old []string
+			rows, err := admin.Query("SELECT policyname FROM pg_policies WHERE schemaname='public' AND tablename=$1", table)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for rows.Next() {
+				var name string
+				if err := rows.Scan(&name); err != nil {
+					t.Fatal(err)
+				}
+				old = append(old, name)
+			}
+			rows.Close()
+			for _, name := range old {
+				if _, err := admin.Exec("DROP POLICY " + quote(name) + " ON " + quote(table)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := admin.Exec("ALTER TABLE " + quote(table) + " DISABLE ROW LEVEL SECURITY"); err != nil {
+				t.Fatal(err)
+			}
+			rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{}
+			registerRowPolicyRuntime(rowPolicyRuntimeDefinition{Table: table, SubjectCombination: "any", IdentityTypes: map[string]string{"user_id": "uuid"}, Rules: []rowPolicyRuntimeRule{{Key: "subject", SubjectKind: string(tc.subject.Kind), SubjectName: tc.subject.Name, Select: &rowPolicyRuntimePredicate{Kind: "allow"}}}})
+			appRows, appErr := Query[postgresPolicyMessage](table).WithPolicyContext(tc.context).All()
+			if appErr != nil && tc.decision {
+				t.Fatal(appErr)
+			}
+			if got := len(appRows) > 0; got != tc.decision {
+				t.Fatalf("application=%t want %t", got, tc.decision)
+			}
+			allow := schema.Allow()
+			resolved := generator.ResolvedRowPolicy{Protection: schema.RowProtection{Table: table, SubjectCombination: schema.AnyOfSubjects, Rules: []schema.RowRule{{Key: "subject", Subject: tc.subject, Select: &allow}}}, EnforcementClass: "portable", Identities: map[string]schema.PolicyIdentityType{"user_id": schema.PolicyIdentityUUID}, PhysicalPlans: map[string]string{"select": "select"}}
+			plans, err := generator.LowerPostgresRowPolicies([]generator.ResolvedRowPolicy{resolved})
+			if err != nil {
+				t.Fatal(err)
+			}
+			policy := plans[0].Policies[0]
+			if _, err := admin.Exec("CREATE POLICY " + quote(policy.Name) + " ON " + quote(table) + " FOR SELECT TO PUBLIC USING (" + policy.Using + ")"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.Exec("ALTER TABLE " + quote(table) + " ENABLE ROW LEVEL SECURITY"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.Exec("ALTER TABLE " + quote(table) + " FORCE ROW LEVEL SECURITY"); err != nil {
+				t.Fatal(err)
+			}
+			var count int
+			if err := withSQLPolicyContext(runtimeDB, tc.context, func(tx *sql.Tx) error { return tx.QueryRow("SELECT count(*) FROM " + quote(table)).Scan(&count) }); err != nil {
+				t.Fatal(err)
+			}
+			if got := count > 0; got != tc.decision {
+				t.Fatalf("RLS=%t want %t", got, tc.decision)
+			}
+			err = TransactionOn(runtimeDB, func(tx *Tx) error {
+				if err := tx.WithPostgresPolicyContext(tc.context); err != nil {
+					return err
+				}
+				rows, err := Query[postgresPolicyMessage](table).UseTransaction(tx.conn).WithPolicyContext(tc.context).All()
+				if err != nil {
+					if !tc.decision {
+						return nil
+					}
+					return err
+				}
+				if got := len(rows) > 0; got != tc.decision {
+					return fmt.Errorf("dual=%t want %t", got, tc.decision)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	// A malformed role encoding is fail-closed and does not leak across the
+	// pooled connection after the transaction ends.
+	var count int
+	tx, err := runtimeDB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("SELECT set_config('pickle.identity.roles','not-json',true)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.QueryRow("SELECT count(*) FROM " + quote(table)).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	tx.Rollback()
+	if count != 0 {
+		t.Fatalf("malformed roles admitted %d rows", count)
+	}
+	if err := runtimeDB.QueryRow("SELECT count(*) FROM " + quote(table)).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("pooled role setting leaked count=%d err=%v", count, err)
+	}
 }
 
 func runPostgresPredicateCorpus(t *testing.T, admin, runtimeDB *sql.DB, table string, quote func(string) string) {

@@ -26,6 +26,9 @@ func (tx *Tx) SetLocal(name, value string) error {
 	if strings.TrimSpace(name) == "" || strings.ContainsRune(name, '\x00') {
 		return fmt.Errorf("pickle: transaction-local setting name must not be empty or contain NUL")
 	}
+	if strings.HasPrefix(name, "pickle.identity.") {
+		return fmt.Errorf("pickle: %q is reserved for verified policy identity", name)
+	}
 	if _, err := tx.conn.Exec("SELECT set_config($1, $2, true)", name, value); err != nil {
 		return fmt.Errorf("set transaction-local setting %q: %w", name, err)
 	}
@@ -36,8 +39,33 @@ func (tx *Tx) SetLocal(name, value string) error {
 // scoped to that transaction. Generated Query<Model>() methods are emitted
 // by the scope generator for each model.
 type Tx struct {
-	conn  *sql.Tx
-	depth int // savepoint nesting depth
+	conn          *sql.Tx
+	depth         int // savepoint nesting depth
+	policyContext *PolicyContext
+}
+
+func (tx *Tx) WithPolicyContext(context PolicyContext) error {
+	if tx.policyContext != nil {
+		return fmt.Errorf("pickle: policy context is already sealed on this transaction")
+	}
+	copy := context
+	tx.policyContext = &copy
+	return nil
+}
+
+func (tx *Tx) WithPostgresPolicyContext(context PolicyContext) error {
+	if err := tx.WithPolicyContext(context); err != nil {
+		return err
+	}
+	for name, value := range context.identities {
+		if _, err := tx.conn.Exec("SELECT set_config($1, $2, true)", "pickle.identity."+name, value); err != nil {
+			return fmt.Errorf("set policy identity %q: %w", name, err)
+		}
+	}
+	if _, err := tx.conn.Exec("SELECT set_config($1, $2, true)", "pickle.identity.roles", context.encodedRoles()); err != nil {
+		return fmt.Errorf("set policy roles: %w", err)
+	}
+	return nil
 }
 
 // Conn returns the underlying *sql.Tx for advanced use cases.
@@ -95,7 +123,7 @@ func (tx *Tx) Transaction(fn func(tx *Tx) error) error {
 		return fmt.Errorf("savepoint %s: %w", sp, err)
 	}
 
-	nested := &Tx{conn: tx.conn, depth: tx.depth}
+	nested := &Tx{conn: tx.conn, depth: tx.depth, policyContext: tx.policyContext}
 
 	defer func() {
 		if r := recover(); r != nil {

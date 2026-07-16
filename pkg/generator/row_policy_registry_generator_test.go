@@ -19,3 +19,25 @@ func TestGenerateRowPolicyRegistryIncludesManagedDDL(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateRowPolicyRuntimeRegistryUsesResolvedIR(t *testing.T) {
+	predicate := schema.RowPredicate{Kind: schema.PredicateEqual, Children: []schema.RowPredicate{{Kind: schema.PredicateColumn, Name: "workspace_id"}, {Kind: schema.PredicateIdentity, Name: "workspace_id"}}}
+	resolved := ResolvedRowPolicy{
+		Protection: schema.RowProtection{
+			Table: "messages", SubjectCombination: schema.AnyOfSubjects,
+			Rules: []schema.RowRule{{Key: "owner", Subject: schema.RowSubject{Kind: schema.SubjectAuthenticated}, Select: &predicate}},
+		},
+		EnforcementClass: "portable",
+		Identities:       map[string]schema.PolicyIdentityType{"workspace_id": schema.PolicyIdentityUUID},
+	}
+	src, err := GenerateRowPolicyRuntimeRegistry("models", []ResolvedRowPolicy{resolved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, want := range []string{"registerRowPolicyRuntime", "messages", "workspace_id", "authenticated", "equal"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q:\n%s", want, text)
+		}
+	}
+}

@@ -1127,8 +1127,10 @@ func GenerateTxMethods(tables []*schema.Table, nestingMap map[string]SchemaRelat
 		b.WriteString(fmt.Sprintf("\tq := Query%s()\n", structName))
 		if tbl.IsImmutable {
 			b.WriteString("\tq.ImmutableQueryBuilder.setTx(tx.Conn())\n")
+			b.WriteString("\tif tx.policyContext != nil { q.ImmutableQueryBuilder.WithPolicyContext(*tx.policyContext) }\n")
 		} else {
 			b.WriteString("\tq.QueryBuilder.setTx(tx.Conn())\n")
+			b.WriteString("\tif tx.policyContext != nil { q.QueryBuilder.WithPolicyContext(*tx.policyContext) }\n")
 		}
 		b.WriteString("\treturn q\n")
 		b.WriteString("}\n\n")

@@ -896,6 +896,14 @@ func Generate(project *Project, picklePkgDir string) error {
 		if err := writeFile(filepath.Join(policiesDir, "row_policies_gen.go"), rowPolicySrc); err != nil {
 			return err
 		}
+		runtimePolicySrc, err := GenerateRowPolicyRuntimeRegistry("models", resolvedRows)
+		if err != nil {
+			return err
+		}
+		fmt.Println("  generating models/row_policies_gen.go")
+		if err := writeFile(filepath.Join(modelsDir, "row_policies_gen.go"), runtimePolicySrc); err != nil {
+			return err
+		}
 	}
 
 	// 3a. Generate the compiled scenario registry and the minimal resolved

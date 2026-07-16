@@ -20,21 +20,34 @@ func ImmutableQuery[T any](table string, softDeletes bool, connection ...string)
 // It is completely separate from QueryBuilder — no embedding, no inherited methods.
 // All queries dedup to the latest version_id per id.
 type ImmutableQueryBuilder[T any] struct {
-	table        string
-	connection   string
-	conditions   []condition
-	orderBy      []string
-	limit        int
-	offset       int
-	eagerLoads   []string
-	selectedCols []string
-	visibility   visibilityMode
-	softDeletes  bool
-	allVersions  bool
-	tx           *sql.Tx       // transaction connection (nil = use global DB)
-	lockMode     string        // "", "FOR UPDATE", "FOR SHARE"
-	lockOpt      string        // "", "SKIP LOCKED", "NOWAIT"
-	lockTimeout  time.Duration // per-query lock timeout (0 = use server default)
+	table         string
+	connection    string
+	conditions    []condition
+	orderBy       []string
+	limit         int
+	offset        int
+	eagerLoads    []string
+	selectedCols  []string
+	visibility    visibilityMode
+	softDeletes   bool
+	allVersions   bool
+	tx            *sql.Tx       // transaction connection (nil = use global DB)
+	lockMode      string        // "", "FOR UPDATE", "FOR SHARE"
+	lockOpt       string        // "", "SKIP LOCKED", "NOWAIT"
+	lockTimeout   time.Duration // per-query lock timeout (0 = use server default)
+	policyContext *PolicyContext
+	policyClause  string
+	policyArgs    []any
+}
+
+func (q *ImmutableQueryBuilder[T]) WithPolicyContext(context PolicyContext) *ImmutableQueryBuilder[T] {
+	q.policyContext = &context
+	return q
+}
+func (q *ImmutableQueryBuilder[T]) preparePolicy(operation string) error {
+	clause, args, err := compileRowPolicy(q.table, operation, "t", q.policyContext)
+	q.policyClause, q.policyArgs = clause, args
+	return err
 }
 
 // --- Internal condition builders ---
@@ -210,6 +223,9 @@ func (q *ImmutableQueryBuilder[T]) AllVersions() *ImmutableQueryBuilder[T] {
 
 // First returns the latest version of the first matching record.
 func (q *ImmutableQueryBuilder[T]) First() (*T, error) {
+	if err := q.preparePolicy("select"); err != nil {
+		return nil, err
+	}
 	if err := q.checkLockRequiresTransaction(); err != nil {
 		return nil, err
 	}
@@ -228,6 +244,9 @@ func (q *ImmutableQueryBuilder[T]) First() (*T, error) {
 
 // All returns the latest version of all matching records.
 func (q *ImmutableQueryBuilder[T]) All() ([]T, error) {
+	if err := q.preparePolicy("select"); err != nil {
+		return nil, err
+	}
 	if err := q.checkLockRequiresTransaction(); err != nil {
 		return nil, err
 	}
@@ -246,6 +265,9 @@ func (q *ImmutableQueryBuilder[T]) All() ([]T, error) {
 
 // Count returns the number of distinct records matching conditions.
 func (q *ImmutableQueryBuilder[T]) Count() (int64, error) {
+	if err := q.preparePolicy("select"); err != nil {
+		return 0, err
+	}
 	query, args := q.buildCount()
 	var count int64
 	err := q.db().QueryRow(query, args...).Scan(&count)
@@ -254,6 +276,9 @@ func (q *ImmutableQueryBuilder[T]) Count() (int64, error) {
 
 // aggregate runs a SQL aggregate function on the latest version of each record.
 func (q *ImmutableQueryBuilder[T]) aggregate(fn, column string) (*float64, error) {
+	if err := q.preparePolicy("select"); err != nil {
+		return nil, err
+	}
 	query, args := q.buildAggregate(fn, column)
 	var result *float64
 	err := q.db().QueryRow(query, args...).Scan(&result)
@@ -262,6 +287,9 @@ func (q *ImmutableQueryBuilder[T]) aggregate(fn, column string) (*float64, error
 
 // Create inserts a new record.
 func (q *ImmutableQueryBuilder[T]) Create(record *T) error {
+	if err := evaluateRowPolicyRecord(q.table, "insert", q.policyContext, record); err != nil {
+		return err
+	}
 	query, args := buildInsert(q.table, record)
 	cols := dbColumns(record)
 	query += " RETURNING " + strings.Join(cols, ", ")
@@ -297,10 +325,15 @@ func (q *ImmutableQueryBuilder[T]) buildSelect(limit int) (string, []any) {
 		b.WriteString(" FROM ")
 		b.WriteString(q.table)
 		b.WriteString(" t")
-		if len(q.conditions) > 0 {
+		if len(q.conditions) > 0 || q.policyClause != "" {
 			b.WriteString(" WHERE ")
+			if q.policyClause != "" {
+				b.WriteString(bindRuntimeClause(q.policyClause, argIdx))
+				args = append(args, q.policyArgs...)
+				argIdx += len(q.policyArgs)
+			}
 			for i, c := range q.conditions {
-				if i > 0 {
+				if i > 0 || q.policyClause != "" {
 					b.WriteString(" AND ")
 				}
 				b.WriteString(fmt.Sprintf("t.%s %s $%d", c.column, c.op, argIdx))
@@ -324,6 +357,11 @@ func (q *ImmutableQueryBuilder[T]) buildSelect(limit int) (string, []any) {
 		b.WriteString(" ORDER BY version_id DESC LIMIT 1)")
 
 		var extra []string
+		if q.policyClause != "" {
+			extra = append(extra, bindRuntimeClause(q.policyClause, argIdx))
+			args = append(args, q.policyArgs...)
+			argIdx += len(q.policyArgs)
+		}
 		for _, c := range q.conditions {
 			extra = append(extra, fmt.Sprintf("t.%s %s $%d", c.column, c.op, argIdx))
 			args = append(args, c.value)
@@ -381,6 +419,11 @@ func (q *ImmutableQueryBuilder[T]) buildCount() (string, []any) {
 	b.WriteString(" ORDER BY version_id DESC LIMIT 1)")
 
 	var extra []string
+	if q.policyClause != "" {
+		extra = append(extra, bindRuntimeClause(q.policyClause, argIdx))
+		args = append(args, q.policyArgs...)
+		argIdx += len(q.policyArgs)
+	}
 	for _, c := range q.conditions {
 		extra = append(extra, fmt.Sprintf("t.%s %s $%d", c.column, c.op, argIdx))
 		args = append(args, c.value)
@@ -414,6 +457,11 @@ func (q *ImmutableQueryBuilder[T]) buildAggregate(fn, column string) (string, []
 	b.WriteString(" ORDER BY version_id DESC LIMIT 1)")
 
 	var extra []string
+	if q.policyClause != "" {
+		extra = append(extra, bindRuntimeClause(q.policyClause, argIdx))
+		args = append(args, q.policyArgs...)
+		argIdx += len(q.policyArgs)
+	}
 	for _, c := range q.conditions {
 		extra = append(extra, fmt.Sprintf("t.%s %s $%d", c.column, c.op, argIdx))
 		args = append(args, c.value)

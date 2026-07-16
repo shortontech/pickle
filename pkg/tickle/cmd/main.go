@@ -27,7 +27,7 @@ var templates = []struct {
 	{
 		srcDir: "pkg/cooked",
 		output: "pkg/generator/embed_query.go",
-		only:   map[string]bool{"query.go": true, "query_immutable.go": true, "connection.go": true, "transaction.go": true, "errors.go": true, "locks.go": true, "integrity.go": true, "merkle.go": true, "encryption.go": true},
+		only:   map[string]bool{"query.go": true, "query_immutable.go": true, "row_policy_runtime.go": true, "connection.go": true, "transaction.go": true, "errors.go": true, "locks.go": true, "integrity.go": true, "merkle.go": true, "encryption.go": true},
 	},
 	{
 		srcDir: "pkg/cooked",

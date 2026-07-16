@@ -110,7 +110,7 @@ func TestBuildUpdateByID(t *testing.T) {
 		Email string `db:"email"`
 	}
 	r := &Rec{ID: "42", Name: "New Name", Email: "new@example.com"}
-	q, args := buildUpdate("users", r, nil)
+	q, args := buildUpdate("users", r, nil, "", nil)
 	if !strings.Contains(q, "UPDATE users SET") {
 		t.Errorf("buildUpdate query = %q, want UPDATE users SET", q)
 	}
@@ -130,7 +130,7 @@ func TestBuildUpdateWithConditions(t *testing.T) {
 	}
 	r := &Rec{ID: "1", Name: "Alice"}
 	conds := []condition{{column: "status", op: "=", value: "active"}}
-	q, args := buildUpdate("users", r, conds)
+	q, args := buildUpdate("users", r, conds, "", nil)
 	if !strings.Contains(q, "WHERE status = $2") {
 		t.Errorf("buildUpdate with conditions = %q, want WHERE status = $2", q)
 	}
@@ -358,9 +358,9 @@ func TestParseQueryFilterOpsSimpleSkipped(t *testing.T) {
 
 func TestParseQuerySort(t *testing.T) {
 	tests := []struct {
-		query     string
-		wantCol   string
-		wantDir   string
+		query   string
+		wantCol string
+		wantDir string
 	}{
 		{"?sort=name", "name", "ASC"},
 		{"?sort=-created_at", "created_at", "DESC"},
@@ -385,8 +385,8 @@ func TestParseQueryPage(t *testing.T) {
 	}{
 		{"", 1, 25},
 		{"?page[number]=3&page[size]=50", 3, 50},
-		{"?page[number]=0", 1, 25}, // 0 is invalid, use default
-		{"?page[size]=200", 1, 100}, // capped at 100
+		{"?page[number]=0", 1, 25},   // 0 is invalid, use default
+		{"?page[size]=200", 1, 100},  // capped at 100
 		{"?page[number]=abc", 1, 25}, // non-numeric, use default
 	}
 	for _, tt := range tests {

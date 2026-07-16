@@ -39,20 +39,34 @@ const (
 
 // QueryBuilder is the generic query builder for all models.
 type QueryBuilder[T any] struct {
-	table        string
-	connection   string // named connection ("" = default DB)
-	conditions   []condition
-	orderBy      []string
-	limit        int
-	offset       int
-	eagerLoads   []string
-	selectedCols []string
-	visibility   visibilityMode
-	tx           *sql.Tx            // transaction connection (nil = use global DB)
-	lockMode     string             // "", "FOR UPDATE", "FOR SHARE"
-	lockOpt      string             // "", "SKIP LOCKED", "NOWAIT"
-	lockTimeout  time.Duration      // per-query lock timeout (0 = use server default)
-	managedConn  *ManagedConnection // tracked for Release() after query completes
+	table         string
+	connection    string // named connection ("" = default DB)
+	conditions    []condition
+	orderBy       []string
+	limit         int
+	offset        int
+	eagerLoads    []string
+	selectedCols  []string
+	visibility    visibilityMode
+	tx            *sql.Tx            // transaction connection (nil = use global DB)
+	lockMode      string             // "", "FOR UPDATE", "FOR SHARE"
+	lockOpt       string             // "", "SKIP LOCKED", "NOWAIT"
+	lockTimeout   time.Duration      // per-query lock timeout (0 = use server default)
+	managedConn   *ManagedConnection // tracked for Release() after query completes
+	policyContext *PolicyContext
+	policyClause  string
+	policyArgs    []any
+	policyErr     error
+}
+
+func (q *QueryBuilder[T]) WithPolicyContext(context PolicyContext) *QueryBuilder[T] {
+	q.policyContext = &context
+	return q
+}
+func (q *QueryBuilder[T]) preparePolicy(operation string) error {
+	clause, args, err := compileRowPolicy(q.table, operation, "", q.policyContext)
+	q.policyClause, q.policyArgs, q.policyErr = clause, args, err
+	return err
 }
 
 type condition struct {
@@ -365,6 +379,9 @@ var ErrNoVisibilityScope = fmt.Errorf("no visibility scope set — call SelectPu
 
 // First returns the first matching record.
 func (q *QueryBuilder[T]) First() (*T, error) {
+	if err := q.preparePolicy("select"); err != nil {
+		return nil, err
+	}
 	if err := q.checkLockRequiresTransaction(); err != nil {
 		return nil, err
 	}
@@ -387,6 +404,9 @@ func (q *QueryBuilder[T]) First() (*T, error) {
 
 // All returns all matching records.
 func (q *QueryBuilder[T]) All() ([]T, error) {
+	if err := q.preparePolicy("select"); err != nil {
+		return nil, err
+	}
 	if err := q.checkLockRequiresTransaction(); err != nil {
 		return nil, err
 	}
@@ -408,6 +428,9 @@ func (q *QueryBuilder[T]) All() ([]T, error) {
 
 // Count returns the number of matching records.
 func (q *QueryBuilder[T]) Count() (int64, error) {
+	if err := q.preparePolicy("select"); err != nil {
+		return 0, err
+	}
 	query, args := q.buildCount()
 	db := q.db()
 	defer q.releaseConn()
@@ -418,6 +441,9 @@ func (q *QueryBuilder[T]) Count() (int64, error) {
 
 // aggregate runs a SQL aggregate function (SUM, AVG, etc.) on a column.
 func (q *QueryBuilder[T]) aggregate(fn, column string) (*float64, error) {
+	if err := q.preparePolicy("select"); err != nil {
+		return nil, err
+	}
 	query, args := q.buildAggregate(fn, column)
 	db := q.db()
 	defer q.releaseConn()
@@ -436,6 +462,9 @@ func (q *QueryBuilder[T]) buildAggregate(fn, column string) (string, []any) {
 // Create inserts a new record and scans the returned row back into the struct,
 // populating DB-generated values (UUIDs, timestamps, defaults).
 func (q *QueryBuilder[T]) Create(record *T) error {
+	if err := evaluateRowPolicyRecord(q.table, "insert", q.policyContext, record); err != nil {
+		return err
+	}
 	query, args := buildInsert(q.table, record)
 	cols := dbColumns(record)
 	query += " RETURNING " + strings.Join(cols, ", ")
@@ -447,7 +476,13 @@ func (q *QueryBuilder[T]) Create(record *T) error {
 
 // Update updates an existing record.
 func (q *QueryBuilder[T]) Update(record *T) error {
-	query, args := buildUpdate(q.table, record, q.conditions)
+	if err := q.preparePolicy("update_old"); err != nil {
+		return err
+	}
+	if err := evaluateRowPolicyRecord(q.table, "update_new", q.policyContext, record); err != nil {
+		return err
+	}
+	query, args := buildUpdate(q.table, record, q.conditions, q.policyClause, q.policyArgs)
 	db := q.db()
 	defer q.releaseConn()
 	_, err := db.Exec(query, args...)
@@ -456,6 +491,9 @@ func (q *QueryBuilder[T]) Update(record *T) error {
 
 // Delete removes matching records.
 func (q *QueryBuilder[T]) Delete(record *T) error {
+	if err := q.preparePolicy("delete"); err != nil {
+		return err
+	}
 	query, args := q.buildDelete()
 	db := q.db()
 	defer q.releaseConn()
@@ -522,17 +560,21 @@ func (q *QueryBuilder[T]) buildDelete() (string, []any) {
 }
 
 func (q *QueryBuilder[T]) appendWhere(b *strings.Builder) []any {
-	if len(q.conditions) == 0 {
+	if len(q.conditions) == 0 && q.policyClause == "" {
 		return nil
 	}
 
 	var args []any
 	b.WriteString(" WHERE ")
+	if q.policyClause != "" {
+		b.WriteString(bindRuntimeClause(q.policyClause, 1))
+		args = append(args, q.policyArgs...)
+	}
 	for i, c := range q.conditions {
-		if i > 0 {
+		if i > 0 || q.policyClause != "" {
 			b.WriteString(" AND ")
 		}
-		b.WriteString(fmt.Sprintf("%s %s $%d", c.column, c.op, i+1))
+		b.WriteString(fmt.Sprintf("%s %s $%d", c.column, c.op, len(args)+1))
 		args = append(args, c.value)
 	}
 	return args
@@ -647,7 +689,7 @@ func buildInsert[T any](table string, record *T) (string, []any) {
 
 // buildUpdate builds a parameterized UPDATE statement from a struct's db tags.
 // The "id" column is excluded from SET and used in WHERE if no conditions are set.
-func buildUpdate[T any](table string, record *T, conditions []condition) (string, []any) {
+func buildUpdate[T any](table string, record *T, conditions []condition, policyClause string, policyArgs []any) (string, []any) {
 	rv := reflect.ValueOf(record).Elem()
 	rt := rv.Type()
 
@@ -679,10 +721,14 @@ func buildUpdate[T any](table string, record *T, conditions []condition) (string
 
 	args := append([]any{}, setVals...)
 
-	if len(conditions) > 0 {
+	if len(conditions) > 0 || policyClause != "" {
 		b.WriteString(" WHERE ")
+		if policyClause != "" {
+			b.WriteString(bindRuntimeClause(policyClause, len(args)+1))
+			args = append(args, policyArgs...)
+		}
 		for i, c := range conditions {
-			if i > 0 {
+			if i > 0 || policyClause != "" {
 				b.WriteString(" AND ")
 			}
 			b.WriteString(fmt.Sprintf("%s %s $%d", c.column, c.op, len(args)+1))

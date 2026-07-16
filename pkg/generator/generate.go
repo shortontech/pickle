@@ -1243,7 +1243,7 @@ func Generate(project *Project, picklePkgDir string) error {
 				hasSchedule = true
 			}
 
-			cmdSrc, err := GenerateCommandsGlue(project.ModulePath, layout.MigrationsRel, userCmds, routeVars, hasAuth, hasSchedule, hasSeeders)
+			cmdSrc, err := GenerateCommandsGlue(project.ModulePath, layout.MigrationsRel, userCmds, routeVars, hasAuth, hasSchedule, hasSeeders, hasRolePolicies)
 			if err != nil {
 				return fmt.Errorf("generating commands glue: %w", err)
 			}
@@ -1308,8 +1308,16 @@ func generateService(project *Project, svc ServiceLayout, picklePkgDir string) e
 		if _, err := os.Stat(filepath.Join(svc.Dir, "schedule", "jobs.go")); err == nil {
 			hasSchedule = true
 		}
+		hasRolePolicies := false
+		servicePoliciesDir := filepath.Join(project.Dir, "database", "policies")
+		if policies, parseErr := ParsePolicyOps(servicePoliciesDir); parseErr == nil {
+			hasRolePolicies = len(policies) > 0
+		}
+		if rows, parseErr := ParseRowPolicyOps(servicePoliciesDir); parseErr == nil && len(rows) > 0 {
+			hasRolePolicies = true
+		}
 
-		cmdSrc, err := GenerateCommandsGlue(project.ModulePath, project.Layout.MigrationsRel, userCmds, routeVars, hasAuth, hasSchedule)
+		cmdSrc, err := GenerateCommandsGlue(project.ModulePath, project.Layout.MigrationsRel, userCmds, routeVars, hasAuth, hasSchedule, false, hasRolePolicies)
 		if err != nil {
 			return fmt.Errorf("generating commands glue: %w", err)
 		}

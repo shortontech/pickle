@@ -13,7 +13,7 @@ func TestGenerateRowPolicyRegistryIncludesManagedDDL(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(src)
-	for _, want := range []string{"GeneratedRowPolicyDDL", `ENABLE ROW LEVEL SECURITY`, `FORCE ROW LEVEL SECURITY`, `DROP POLICY IF EXISTS`, `CREATE POLICY`, `GeneratedRowPolicyDesired`, `private.messages`} {
+	for _, want := range []string{"GeneratedRowPolicyDDL", `ENABLE ROW LEVEL SECURITY`, `FORCE ROW LEVEL SECURITY`, `DROP POLICY IF EXISTS`, `CREATE POLICY`, `COMMENT ON POLICY`, `GeneratedRowPolicyDesired`, `GeneratedRowPolicyCatalog`, `GeneratedRowPolicyFingerprintValue`, `private.messages`} {
 		if !strings.Contains(text, want) {
 			t.Errorf("generated source missing %q:\n%s", want, text)
 		}

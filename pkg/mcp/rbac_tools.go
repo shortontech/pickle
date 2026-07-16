@@ -38,6 +38,8 @@ type RBACState struct {
 	Policies       []generator.StaticPolicyOps
 	GraphQLModels  []GraphQLModel
 	GraphQLActions []GraphQLAction
+	RowPolicies    []generator.ResolvedRowPolicy
+	RowPolicyError string
 }
 
 // DeriveRBACState returns the current RBAC state by scanning policy files
@@ -58,6 +60,22 @@ func DeriveRBACState(projectDir string) *RBACState {
 	graphqlDir := filepath.Join(policiesDir, "graphql")
 	state.GraphQLModels = scanGraphQLPolicies(graphqlDir)
 	state.GraphQLActions = scanGraphQLActions(graphqlDir)
+
+	project, projectErr := generator.DetectProject(projectDir)
+	if projectErr == nil {
+		tables, _, _, schemaErr := generator.RunSchemaInspector(project)
+		rows, rowErr := generator.ParseRowPolicyOps(policiesDir)
+		if schemaErr != nil {
+			state.RowPolicyError = schemaErr.Error()
+		} else if rowErr != nil {
+			state.RowPolicyError = rowErr.Error()
+		} else {
+			state.RowPolicies, rowErr = generator.ResolveRowPolicies(rows, tables, state.Roles)
+			if rowErr != nil {
+				state.RowPolicyError = rowErr.Error()
+			}
+		}
+	}
 
 	return state
 }
@@ -212,6 +230,11 @@ func (s *Server) registerRBACTools() {
 		Name:        "graphql_schema",
 		Description: "Show the current generated GraphQL SDL schema.",
 	}, s.graphqlSchema)
+
+	mcp.AddTool(s.server, &mcp.Tool{Name: "policies_rows", Description: "List Pickle row-protected tables, enforcement classifications, required identities, operations, and supporting rule IDs."}, s.policiesRows)
+	mcp.AddTool(s.server, &mcp.Tool{Name: "policies_row", Description: "Show normalized row-policy subjects, operations, identities, classification, and source policies for one table."}, s.policiesRow)
+	mcp.AddTool(s.server, &mcp.Tool{Name: "policies_explain", Description: "Explain one normalized row-policy operation and subject, including application query enforcement and PostgreSQL RLS compatibility."}, s.policiesExplain)
+	mcp.AddTool(s.server, &mcp.Tool{Name: "rls_status", Description: "Show desired generated PostgreSQL RLS state and proof metadata. This read-only MCP tool does not connect to a live database."}, s.rlsStatus)
 }
 
 func (s *Server) rolesList(_ context.Context, _ *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {

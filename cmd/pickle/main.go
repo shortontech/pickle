@@ -46,7 +46,7 @@ func main() {
 			return
 		}
 		cmdMigrate()
-	case "policies:rollback", "policies:status":
+	case "policies:rollback", "policies:status", "rls:status":
 		cmdMigrate()
 	case "graphql:rollback", "graphql:status":
 		cmdMigrate()
@@ -128,6 +128,7 @@ Commands:
   db:seed           Run a compiled database seed scenario
   policies:rollback Roll back the last batch of role policies
   policies:status   Show role policy status
+  rls:status        Inspect PostgreSQL RLS drift and runtime role privileges
   graphql:rollback  Roll back the last batch of GraphQL policies
   graphql:status    Show GraphQL policy status
   make:controller   Scaffold a new controller

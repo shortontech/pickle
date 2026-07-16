@@ -31,6 +31,15 @@ type PolicyStatus struct {
 	Applied bool
 }
 
+// RowPolicyDrift describes a desired-vs-catalog comparison for one protected
+// table. Drift is read-only and is never repaired by status inspection.
+type RowPolicyDrift struct {
+	Table       string
+	Fingerprint string
+	State       string
+	Problems    []string
+}
+
 // PolicyRunner executes role policies against the database.
 type PolicyRunner struct {
 	DB     *sql.DB
@@ -373,6 +382,117 @@ func (r *PolicyRunner) reconcileGeneratedRowPolicies() error {
 	return tx.Commit()
 }
 
+// RowPolicyStatus explicitly inspects PostgreSQL catalogs for generated RLS,
+// force/enabled state, managed fingerprints, unexpected permissive policies,
+// and privileges of the connected runtime role.
+func (r *PolicyRunner) RowPolicyStatus() ([]RowPolicyDrift, error) {
+	if r.Driver != "pgsql" && r.Driver != "postgres" {
+		var statuses []RowPolicyDrift
+		for table := range GeneratedRowPolicyDesired {
+			statuses = append(statuses, RowPolicyDrift{Table: table, Fingerprint: GeneratedRowPolicyFingerprintValue, State: "application-only-driver", Problems: []string{"PostgreSQL RLS is unavailable for " + r.Driver}})
+		}
+		return statuses, nil
+	}
+	var superuser, bypass bool
+	if err := r.DB.QueryRow(`SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`).Scan(&superuser, &bypass); err != nil {
+		return nil, fmt.Errorf("inspecting runtime role: %w", err)
+	}
+	expected := map[string]map[string]GeneratedRowPolicyObject{}
+	for _, object := range GeneratedRowPolicyCatalog {
+		if expected[object.Table] == nil {
+			expected[object.Table] = map[string]GeneratedRowPolicyObject{}
+		}
+		expected[object.Table][object.Name] = object
+	}
+	var statuses []RowPolicyDrift
+	for table, objects := range expected {
+		schemaName, tableName := policySplitQualifiedName(table)
+		status := RowPolicyDrift{Table: table, Fingerprint: GeneratedRowPolicyFingerprintValue, State: "in-sync"}
+		var enabled, forced, owned bool
+		err := r.DB.QueryRow(`SELECT c.relrowsecurity, c.relforcerowsecurity, pg_get_userbyid(c.relowner) = current_user FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname=$2`, schemaName, tableName).Scan(&enabled, &forced, &owned)
+		if err != nil {
+			status.Problems = append(status.Problems, "protected table missing or not inspectable")
+		} else {
+			if !enabled {
+				status.Problems = append(status.Problems, "RLS disabled")
+			}
+			if !forced {
+				status.Problems = append(status.Problems, "RLS not forced")
+			}
+			if owned && !forced {
+				status.Problems = append(status.Problems, "runtime role owns table while RLS is not forced")
+			}
+		}
+		if superuser {
+			status.Problems = append(status.Problems, "runtime role is superuser")
+		}
+		if bypass {
+			status.Problems = append(status.Problems, "runtime role has BYPASSRLS")
+		}
+		rows, err := r.DB.Query(`SELECT p.polname, CASE p.polcmd WHEN 'r' THEN 'SELECT' WHEN 'a' THEN 'INSERT' WHEN 'w' THEN 'UPDATE' WHEN 'd' THEN 'DELETE' ELSE 'ALL' END, p.polpermissive, COALESCE(obj_description(p.oid, 'pg_policy'),'') FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname=$2`, schemaName, tableName)
+		if err != nil {
+			return nil, fmt.Errorf("inspecting policies for %s: %w", table, err)
+		}
+		seen := map[string]bool{}
+		for rows.Next() {
+			var name, command, comment string
+			var permissive bool
+			if err := rows.Scan(&name, &command, &permissive, &comment); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			object, managed := objects[name]
+			if managed {
+				seen[name] = true
+				if !strings.EqualFold(command, object.Command) {
+					status.Problems = append(status.Problems, "command mismatch for "+name)
+				}
+				if permissive != object.Permissive {
+					status.Problems = append(status.Problems, "permissiveness mismatch for "+name)
+				}
+				if comment != "pickle:fingerprint:"+object.Fingerprint {
+					status.Problems = append(status.Problems, "fingerprint mismatch for "+name)
+				}
+			} else if permissive {
+				status.Problems = append(status.Problems, "unexpected permissive policy "+name)
+			}
+			if strings.HasPrefix(name, "pickle_") && !managed {
+				status.Problems = append(status.Problems, "orphaned generated policy "+name)
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+		for name := range objects {
+			if !seen[name] {
+				status.Problems = append(status.Problems, "missing generated policy "+name)
+			}
+		}
+		if len(status.Problems) > 0 {
+			status.State = "drift"
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
+}
+
+func policySplitQualifiedName(table string) (string, string) {
+	parts := strings.Split(table, ".")
+	if len(parts) == 1 {
+		return "public", parts[0]
+	}
+	return strings.Join(parts[:len(parts)-1], "."), parts[len(parts)-1]
+}
+
+func PrintRowPolicyStatus(statuses []RowPolicyDrift) {
+	for _, status := range statuses {
+		fmt.Printf("%-40s %s fingerprint=%s\n", status.Table, status.State, status.Fingerprint)
+		for _, problem := range status.Problems {
+			fmt.Printf("  - %s\n", problem)
+		}
+	}
+}
+
 func policyQuoteIdent(value string) string { return `"` + strings.ReplaceAll(value, `"`, `""`) + `"` }
 func policyQuoteQualifiedIdent(value string) string {
 	parts := strings.Split(value, ".")
@@ -492,6 +612,16 @@ func (r *PolicyRunner) Status(entries []PolicyEntry) ([]PolicyStatus, error) {
 		}
 	}
 	return result, nil
+}
+
+func PrintStatus(statuses []PolicyStatus) {
+	for _, status := range statuses {
+		fmt.Printf("%-50s %s", status.ID, status.State)
+		if status.Batch > 0 {
+			fmt.Printf(" (batch %d)", status.Batch)
+		}
+		fmt.Println()
+	}
 }
 
 // DeriveRoles replays all applied role policies in order and returns the

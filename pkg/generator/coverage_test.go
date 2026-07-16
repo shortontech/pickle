@@ -825,6 +825,19 @@ func TestGenerateCommandsGlueWithSeeders(t *testing.T) {
 	}
 }
 
+func TestGenerateCommandsGlueWithRowPolicyStatus(t *testing.T) {
+	out, err := GenerateCommandsGlue("github.com/example/myapp", "database/migrations", nil, []string{"API"}, false, false, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(out)
+	for _, want := range []string{`"github.com/example/myapp/database/policies"`, `Name() string { return "policies:status" }`, `Name() string { return "rls:status" }`, "RowPolicyStatus()", "PrintRowPolicyStatus"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("generated commands missing %q", want)
+		}
+	}
+}
+
 // ─── model_generator.go ──────────────────────────────────────────────────────
 
 func TestGenerateModelWithPublicProjection(t *testing.T) {

@@ -274,6 +274,7 @@ import (
 {{ end }}
 {{ if .HasAuth }}	"{{ .AuthImport }}"
 {{ end }}{{ if .HasSchedule }}	"{{ .ScheduleImport }}"
+{{ end }}{{ if .HasPolicies }}	"{{ .PoliciesImport }}"
 {{ end }})
 
 // migrateCommand runs pending migrations.
@@ -328,6 +329,40 @@ func (c migrateStatusCommand) Run(args []string) error {
 	migrations.PrintStatus(statuses)
 	return nil
 }
+
+{{ if .HasPolicies }}type policiesStatusCommand struct{}
+func (c policiesStatusCommand) Name() string { return "policies:status" }
+func (c policiesStatusCommand) Description() string { return "Show role policy and generated row-policy status" }
+func (c policiesStatusCommand) Run(args []string) error {
+	runner := policies.NewPolicyRunner(models.DB, config.Database.Connection().Driver)
+	statuses, err := runner.Status(policies.Registry)
+	if err != nil { return err }
+	policies.PrintStatus(statuses)
+	rowStatuses, err := runner.RowPolicyStatus()
+	if err != nil { return err }
+	policies.PrintRowPolicyStatus(rowStatuses)
+	return nil
+}
+
+type policiesRollbackCommand struct{}
+func (c policiesRollbackCommand) Name() string { return "policies:rollback" }
+func (c policiesRollbackCommand) Description() string { return "Roll back the last role policy batch" }
+func (c policiesRollbackCommand) Run(args []string) error {
+	runner := policies.NewPolicyRunner(models.DB, config.Database.Connection().Driver)
+	return runner.Rollback(policies.Registry)
+}
+
+type rlsStatusCommand struct{}
+func (c rlsStatusCommand) Name() string { return "rls:status" }
+func (c rlsStatusCommand) Description() string { return "Inspect generated PostgreSQL RLS drift and runtime bypass privileges" }
+func (c rlsStatusCommand) Run(args []string) error {
+	runner := policies.NewPolicyRunner(models.DB, config.Database.Connection().Driver)
+	statuses, err := runner.RowPolicyStatus()
+	if err != nil { return err }
+	policies.PrintRowPolicyStatus(statuses)
+	return nil
+}
+{{ end }}
 
 {{ if .HasSeeders }}// dbSeedCommand runs an explicit root seed scenario.
 type dbSeedCommand struct{}
@@ -401,6 +436,10 @@ func BuiltinCommands() []pickle.Command {
 		migrateRollbackCommand{},
 		migrateFreshCommand{},
 		migrateStatusCommand{},
+{{ if .HasPolicies }}		policiesStatusCommand{},
+		policiesRollbackCommand{},
+		rlsStatusCommand{},
+{{ end }}
 {{ if .HasSeeders }}		dbSeedCommand{},
 {{ end }}	}
 }
@@ -456,7 +495,7 @@ func NewApp() *pickle.App {
 `))
 
 // GenerateCommandsGlue produces app/commands/pickle_gen.go.
-func GenerateCommandsGlue(modulePath string, migrationsRel string, userCommands []string, routeVars []string, hasAuth bool, hasSchedule bool, seeders ...bool) ([]byte, error) {
+func GenerateCommandsGlue(modulePath string, migrationsRel string, userCommands []string, routeVars []string, hasAuth bool, hasSchedule bool, features ...bool) ([]byte, error) {
 	// Default to "API" if no route vars found
 	if len(routeVars) == 0 {
 		routeVars = []string{"API"}
@@ -471,11 +510,13 @@ func GenerateCommandsGlue(modulePath string, migrationsRel string, userCommands 
 		AuthImport       string
 		ScheduleImport   string
 		SeedersImport    string
+		PoliciesImport   string
 		UserCommands     []string
 		RouteVars        []string
 		HasAuth          bool
 		HasSchedule      bool
 		HasSeeders       bool
+		HasPolicies      bool
 	}{
 		HTTPImport:       modulePath + "/app/http",
 		ModelsImport:     modulePath + "/app/models",
@@ -485,11 +526,13 @@ func GenerateCommandsGlue(modulePath string, migrationsRel string, userCommands 
 		AuthImport:       modulePath + "/app/http/auth",
 		ScheduleImport:   modulePath + "/schedule",
 		SeedersImport:    modulePath + "/database/seeders",
+		PoliciesImport:   modulePath + "/database/policies",
 		UserCommands:     userCommands,
 		RouteVars:        routeVars,
 		HasAuth:          hasAuth,
 		HasSchedule:      hasSchedule,
-		HasSeeders:       len(seeders) > 0 && seeders[0],
+		HasSeeders:       len(features) > 0 && features[0],
+		HasPolicies:      len(features) > 1 && features[1],
 	}
 
 	var buf bytes.Buffer

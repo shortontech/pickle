@@ -127,6 +127,51 @@ func (p *Bad_2026_07_16_120000) Up() { if true { p.Protect("messages", func(rows
 	}
 }
 
+func TestParseRowPoliciesAllowsDeclarativeRoleActionSlice(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "2026_07_16_120000_role_actions.go")
+	src := `package policies
+type RoleActions_2026_07_16_120000 struct{ Policy }
+func (p *RoleActions_2026_07_16_120000) Up() {
+	write := []string{"people.view", "people.create"}
+	p.AlterRole("member").Can(write...)
+}`
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := ParseRowPolicyOps(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("role-only policy produced row operations: %#v", rows)
+	}
+	roles, err := ParsePolicyOps(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roles) != 1 || len(roles[0].Ops) != 1 || strings.Join(roles[0].Ops[0].Actions, ",") != "people.view,people.create" {
+		t.Fatalf("role action slice was not statically expanded: %#v", roles)
+	}
+}
+
+func TestParseRowPoliciesRejectsComputedAssignment(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "2026_07_16_120000_bad_assignment.go")
+	src := `package policies
+type Bad_2026_07_16_120000 struct{ Policy }
+func (p *Bad_2026_07_16_120000) Up() {
+	write := loadActions()
+	p.AlterRole("member").Can(write...)
+}`
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseRowPolicyOps(dir); err == nil || !strings.Contains(err.Error(), "unsupported assignment") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestResolveImmutableRowPolicyRequiresApplicationOnly(t *testing.T) {
 	pred := schema.Allow()
 	files := []ParsedRowPolicyFile{{PolicyID: "p1", Operations: []schema.RowPolicyOperation{{Type: "protect", Protection: schema.RowProtection{Table: "messages", Rules: []schema.RowRule{{Key: "read", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &pred}}}}}}}

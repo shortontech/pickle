@@ -74,6 +74,12 @@ func parseRowPolicyFile(path string) (ParsedRowPolicyFile, error) {
 			continue
 		}
 		for _, stmt := range fn.Body.List {
+			if assign, ok := stmt.(*ast.AssignStmt); ok {
+				if _, _, valid := parseLocalStringSliceAssignment(assign); valid {
+					continue
+				}
+				return out, fmt.Errorf("unsupported assignment in row policy Up")
+			}
 			exprStmt, ok := stmt.(*ast.ExprStmt)
 			if !ok {
 				return out, fmt.Errorf("unsupported statement in row policy Up: %T", stmt)

@@ -117,12 +117,20 @@ func parsePolicyFileOps(filePath string) ([]StaticRoleOp, error) {
 		if fn.Body == nil {
 			continue
 		}
+		locals := map[string][]string{}
 		for _, stmt := range fn.Body.List {
+			if assign, ok := stmt.(*ast.AssignStmt); ok {
+				name, values, ok := parseLocalStringSliceAssignment(assign)
+				if ok {
+					locals[name] = values
+				}
+				continue
+			}
 			exprStmt, ok := stmt.(*ast.ExprStmt)
 			if !ok {
 				continue
 			}
-			op := parseRoleChain(exprStmt.X)
+			op := parseRoleChainWithLocals(exprStmt.X, locals)
 			if op != nil {
 				ops = append(ops, *op)
 			}
@@ -138,6 +146,10 @@ func parsePolicyFileOps(filePath string) ([]StaticRoleOp, error) {
 //
 // or m.DropRole("viewer")
 func parseRoleChain(expr ast.Expr) *StaticRoleOp {
+	return parseRoleChainWithLocals(expr, nil)
+}
+
+func parseRoleChainWithLocals(expr ast.Expr, locals map[string][]string) *StaticRoleOp {
 	// Collect the chain of method calls from outermost to innermost
 	calls := collectCallChain(expr)
 	if len(calls) == 0 {
@@ -201,18 +213,56 @@ func parseRoleChain(expr ast.Expr) *StaticRoleOp {
 			for _, arg := range call.Args {
 				if s := extractStringLit(arg); s != "" {
 					op.Actions = append(op.Actions, s)
+				} else if id, ok := arg.(*ast.Ident); ok {
+					op.Actions = append(op.Actions, locals[id.Name]...)
 				}
 			}
 		case "RevokeCan":
 			for _, arg := range call.Args {
 				if s := extractStringLit(arg); s != "" {
 					op.RevokeActions = append(op.RevokeActions, s)
+				} else if id, ok := arg.(*ast.Ident); ok {
+					op.RevokeActions = append(op.RevokeActions, locals[id.Name]...)
 				}
 			}
 		}
 	}
 
 	return op
+}
+
+// parseLocalStringSliceAssignment accepts the declarative convenience form
+// used by policy files: actions := []string{"one", "two"}. Arbitrary local
+// computation remains outside the statically analyzable policy language.
+func parseLocalStringSliceAssignment(assign *ast.AssignStmt) (string, []string, bool) {
+	if assign.Tok != token.DEFINE || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+		return "", nil, false
+	}
+	name, ok := assign.Lhs[0].(*ast.Ident)
+	if !ok || name.Name == "_" {
+		return "", nil, false
+	}
+	lit, ok := assign.Rhs[0].(*ast.CompositeLit)
+	if !ok {
+		return "", nil, false
+	}
+	array, ok := lit.Type.(*ast.ArrayType)
+	if !ok || array.Len != nil {
+		return "", nil, false
+	}
+	element, ok := array.Elt.(*ast.Ident)
+	if !ok || element.Name != "string" {
+		return "", nil, false
+	}
+	values := make([]string, 0, len(lit.Elts))
+	for _, item := range lit.Elts {
+		value := extractStringLit(item)
+		if value == "" {
+			return "", nil, false
+		}
+		values = append(values, value)
+	}
+	return name.Name, values, true
 }
 
 // collectCallChain flattens a chain like a.B().C().D() into [a.B(), a.B().C(), a.B().C().D()]

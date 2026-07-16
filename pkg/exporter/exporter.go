@@ -6854,11 +6854,12 @@ func InspectRowPolicies(db *gorm.DB, driver string) ([]RowPolicyStatus, error) {
 func PrintRowPolicyStatus(statuses []RowPolicyStatus) { sort.Slice(statuses,func(i,j int)bool{return statuses[i].Table<statuses[j].Table});for _,status:=range statuses{fmt.Printf("%-40s %-8s %s\n",status.Table,status.State,status.Detail)} }
 
 func ensureRBACSchema(db *gorm.DB) error {
+	timestampType:="DATETIME";if dialect:=gormDialectName(db);dialect=="postgres"||dialect=="pgsql"{timestampType="TIMESTAMPTZ"}
 	stmts := []string{
 		` + "`" + `CREATE TABLE IF NOT EXISTS roles (id TEXT PRIMARY KEY, slug VARCHAR(50) NOT NULL UNIQUE, name VARCHAR(100) NOT NULL, manages BOOLEAN NOT NULL DEFAULT false, is_default BOOLEAN NOT NULL DEFAULT false, birth_policy VARCHAR(100) NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
 		` + "`" + `CREATE TABLE IF NOT EXISTS role_actions (id TEXT PRIMARY KEY, role_slug VARCHAR(50) NOT NULL, action VARCHAR(100) NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, UNIQUE(role_slug, action))` + "`" + `,
 		` + "`" + `CREATE TABLE IF NOT EXISTS role_user (user_id TEXT NOT NULL, role_id TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, PRIMARY KEY(user_id, role_id))` + "`" + `,
-		` + "`" + `CREATE TABLE IF NOT EXISTS rbac_changelog (id VARCHAR(255) PRIMARY KEY, batch INTEGER NOT NULL, state VARCHAR(20) NOT NULL, error TEXT, started_at DATETIME, completed_at DATETIME)` + "`" + `,
+		fmt.Sprintf("CREATE TABLE IF NOT EXISTS rbac_changelog (id VARCHAR(255) PRIMARY KEY, batch INTEGER NOT NULL, state VARCHAR(20) NOT NULL, error TEXT, started_at %s, completed_at %s)",timestampType,timestampType),
 	}
 	for _, stmt := range stmts {
 		if err := db.Exec(stmt).Error; err != nil { return policyDatabaseError() }
@@ -6867,12 +6868,13 @@ func ensureRBACSchema(db *gorm.DB) error {
 }
 
 func ensureRowPolicySchema(db *gorm.DB) error {
-	if err:=db.Exec(` + "`" + `CREATE TABLE IF NOT EXISTS row_policy_changelog (id VARCHAR(255) PRIMARY KEY, batch INTEGER NOT NULL, state VARCHAR(20) NOT NULL, error TEXT, started_at DATETIME, completed_at DATETIME)` + "`" + `).Error;err!=nil{return policyDatabaseError()};return nil
+	timestampType:="DATETIME";if dialect:=gormDialectName(db);dialect=="postgres"||dialect=="pgsql"{timestampType="TIMESTAMPTZ"};statement:=fmt.Sprintf("CREATE TABLE IF NOT EXISTS row_policy_changelog (id VARCHAR(255) PRIMARY KEY, batch INTEGER NOT NULL, state VARCHAR(20) NOT NULL, error TEXT, started_at %s, completed_at %s)",timestampType,timestampType);if err:=db.Exec(statement).Error;err!=nil{return policyDatabaseError()};return nil
 }
 
 func ensureGraphQLPolicySchema(db *gorm.DB) error {
+	timestampType:="DATETIME";if dialect:=gormDialectName(db);dialect=="postgres"||dialect=="pgsql"{timestampType="TIMESTAMPTZ"}
 	stmts := []string{
-		` + "`" + `CREATE TABLE IF NOT EXISTS graphql_changelog (id VARCHAR(255) PRIMARY KEY, batch INTEGER NOT NULL, state VARCHAR(20) NOT NULL, error TEXT, started_at DATETIME, completed_at DATETIME)` + "`" + `,
+		fmt.Sprintf("CREATE TABLE IF NOT EXISTS graphql_changelog (id VARCHAR(255) PRIMARY KEY, batch INTEGER NOT NULL, state VARCHAR(20) NOT NULL, error TEXT, started_at %s, completed_at %s)",timestampType,timestampType),
 		` + "`" + `CREATE TABLE IF NOT EXISTS graphql_exposures (id TEXT PRIMARY KEY, model VARCHAR(100) NOT NULL, operation VARCHAR(20) NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, UNIQUE(model, operation))` + "`" + `,
 		` + "`" + `CREATE TABLE IF NOT EXISTS graphql_actions (id TEXT PRIMARY KEY, name VARCHAR(100) NOT NULL UNIQUE, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)` + "`" + `,
 	}

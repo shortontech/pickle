@@ -22,7 +22,7 @@ go run ./cmd/server migrate
 go run ./cmd/server
 ```
 
-Open <http://localhost:8080/login>, use the deterministic demo login, and the
+Open <http://localhost:18081/login>, use the deterministic demo login, and the
 browser will receive a database-backed Pickle session before redirecting to the
 dashboard. `SESSION_SECURE_COOKIE=false` is intentionally limited to this local
 HTTP fixture; deployed HTTPS applications should retain the secure default.

@@ -74,7 +74,7 @@ func (m *CreateUsers_2026_07_16_000000) Down(){ m.DropTableIfExists("users") }
 type ProtectUsers_2026_07_16_000001 struct{ Policy }
 func (p *ProtectUsers_2026_07_16_000001) Up(){
  p.IdentityUUID("user_id")
- p.Protect("users", func(rows *Rows){ rows.Rule("owner").ForAuthenticated().Select(Owner("id", Identity("user_id"))) })
+ p.Protect("users", func(rows *Rows){ rows.ExistingRowsAlreadyValid("fixture table empty"); rows.Rule("owner").ForAuthenticated().Select(Owner("id", Identity("user_id"))) })
 }
 `,
 	}

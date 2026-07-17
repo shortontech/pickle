@@ -156,6 +156,7 @@ Commands:
 Options:
   --project <dir>   Project directory (default: current directory)
   --app <name>      Target a specific app in a monorepo (requires pickle.yaml with apps)
+  --live            With squeeze, inspect live PostgreSQL RLS through the generated app
   --help, -h        Show this help
   --version, -v     Show version`)
 }
@@ -1051,6 +1052,7 @@ func cmdSqueeze() {
 	projectDir := "."
 	hard := false
 	noSuppress := false
+	live := false
 	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--project" && i+1 < len(args) {
@@ -1060,11 +1062,23 @@ func cmdSqueeze() {
 			hard = true
 		} else if args[i] == "--no-suppress" {
 			noSuppress = true
+		} else if args[i] == "--live" {
+			live = true
 		}
 	}
 
 	fmt.Println("\nAnalyzing Pickle project...")
-	result, err := squeeze.RunWithOptions(projectDir, squeeze.RunOptions{NoSuppress: noSuppress})
+	var liveRLS []squeeze.LiveRLSObservation
+	if live {
+		fmt.Println("  inspecting live PostgreSQL RLS state...")
+		var err error
+		liveRLS, err = squeeze.InspectProjectRLS(projectDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	result, err := squeeze.RunWithOptions(projectDir, squeeze.RunOptions{NoSuppress: noSuppress, LiveRLS: liveRLS})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
 		os.Exit(1)

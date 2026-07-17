@@ -152,6 +152,9 @@ type RunOptions struct {
 	// NoSuppress disables //squeeze:ignore directives: suppressed findings are
 	// kept in the result (Suppressed still reports how many matched a directive).
 	NoSuppress bool
+	// LiveRLS contains explicit, sanitized PostgreSQL catalog evidence. Offline
+	// runs leave it empty and never open or delegate a database connection.
+	LiveRLS []LiveRLSObservation
 }
 
 // RunResult is the outcome of a squeeze run.
@@ -190,6 +193,7 @@ func RunWithOptions(projectDir string, opts RunOptions) (*RunResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	actx.LiveRLS = append([]LiveRLSObservation(nil), opts.LiveRLS...)
 
 	// Run enabled rules
 	var findings []Finding

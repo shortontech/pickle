@@ -48,7 +48,7 @@ func TestGenerateRowPolicyRuntimeRegistryUsesSealedAuthSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(src)
-	for _, want := range []string{`auth "example.com/app/app/http/auth"`, `func PolicyContextFromVerified(source auth.VerifiedPolicySource)`, `newVerifiedPolicyContext(`} {
+	for _, want := range []string{`auth "example.com/app/app/http/auth"`, `func PolicyContextFromVerified(source auth.VerifiedPolicySource)`, `func PolicyContextFromHTTP`, `func AuthenticateJobPolicyContext`, `func AuthenticateCLIPolicyContext`, `newVerifiedPolicyContext(`} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q in %s", want, text)
 		}

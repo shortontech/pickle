@@ -5,6 +5,7 @@ import "testing"
 func TestPolicyProtectBuildsNormalizedRowRules(t *testing.T) {
 	p := &Policy{}
 	p.Protect("messages", func(rows *Rows) {
+		rows.ExistingRowsAlreadyValid("table created empty")
 		rows.Rule("member_workspace").ForRole("member").
 			Select(Owner("workspace_id", Identity("workspace_id"))).
 			Insert(Owner("workspace_id", Identity("workspace_id"))).
@@ -31,6 +32,7 @@ func TestPolicyProtectRejectsDuplicateStableKeys(t *testing.T) {
 	}()
 	p := &Policy{}
 	p.Protect("messages", func(rows *Rows) {
+		rows.ExistingRowsAlreadyValid("table created empty")
 		rows.Rule("same").ForPublic().Select(Allow())
 		rows.Rule("same").ForAuthenticated().Select(Allow())
 	})

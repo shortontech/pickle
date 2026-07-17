@@ -40,6 +40,7 @@ type RowProtection struct {
 	SubjectCombination     SubjectCombination
 	Rules                  []RowRule
 	ApplicationOnlyReasons []string
+	ExistingRowsDecision   string
 }
 
 type SubjectCombination string
@@ -189,6 +190,16 @@ func (r *Rows) CombineSubjects(mode SubjectCombination) {
 func (r *Rows) AllowApplicationOnly(reason string) {
 	rowPolicyName("application-only reason", reason)
 	r.protection.ApplicationOnlyReasons = append(r.protection.ApplicationOnlyReasons, reason)
+}
+
+// ExistingRowsAlreadyValid records the deployment decision made before a
+// table is protected for the first time. The reason should identify the
+// completed backfill or state that the table is known to be empty.
+func (r *Rows) ExistingRowsAlreadyValid(reason string) {
+	if strings.TrimSpace(reason) == "" {
+		panic("pickle: existing-row decision must not be empty")
+	}
+	r.protection.ExistingRowsDecision = reason
 }
 
 func (r *Rows) Rule(key string) *RowRuleBuilder {

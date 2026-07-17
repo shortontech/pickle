@@ -17,6 +17,7 @@ func (p *MessageAccess_2026_07_16_120000) Up() {
 	p.IdentityUUID("workspace_id")
 	p.CreateRole("member")
 	p.Protect("messages", func(rows *Rows) {
+		rows.ExistingRowsAlreadyValid("table created empty")
 		rows.Rule("member_workspace").ForRole("member").
 			Select(Owner("workspace_id", Identity("workspace_id"))).
 			Insert(Owner("workspace_id", Identity("workspace_id"))).
@@ -47,6 +48,15 @@ func (p *MessageAccess_2026_07_16_120000) Up() {
 	}
 }
 
+func TestResolveRowPoliciesRequiresExistingRowsDecision(t *testing.T) {
+	allow := schema.Allow()
+	files := []ParsedRowPolicyFile{{PolicyID: "p1", Operations: []schema.RowPolicyOperation{{Type: "protect", Protection: schema.RowProtection{Table: "messages", Rules: []schema.RowRule{{Key: "read", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &allow}}}}}}}
+	_, err := ResolveRowPolicies(files, []*schema.Table{{Name: "messages"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "ExistingRowsAlreadyValid") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestResolveRowPoliciesRequiresApplicationOnlyAcknowledgement(t *testing.T) {
 	files := []ParsedRowPolicyFile{{
 		PolicyID:   "p1",
@@ -54,8 +64,9 @@ func TestResolveRowPoliciesRequiresApplicationOnlyAcknowledgement(t *testing.T) 
 		Operations: []schema.RowPolicyOperation{{
 			Type: "protect",
 			Protection: schema.RowProtection{
-				Table:              "messages",
-				SubjectCombination: schema.AnyOfSubjects,
+				Table:                "messages",
+				ExistingRowsDecision: "table created empty",
+				SubjectCombination:   schema.AnyOfSubjects,
 				Rules: []schema.RowRule{{
 					Key: "owner", Subject: schema.RowSubject{Kind: schema.SubjectAuthenticated},
 					UpdateOld: &schema.RowPredicate{Kind: schema.PredicateAllow},
@@ -76,7 +87,7 @@ func TestResolveRowPoliciesRejectsUnknownIdentityAndColumn(t *testing.T) {
 		PolicyID: "p1",
 		Operations: []schema.RowPolicyOperation{{
 			Type: "protect",
-			Protection: schema.RowProtection{Table: "messages", Rules: []schema.RowRule{{
+			Protection: schema.RowProtection{Table: "messages", ExistingRowsDecision: "table created empty", Rules: []schema.RowRule{{
 				Key: "owner", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &pred,
 			}}},
 		}},
@@ -89,7 +100,7 @@ func TestResolveRowPoliciesRejectsUnknownIdentityAndColumn(t *testing.T) {
 
 func TestResolveRowPoliciesResolvesExistingRowRelationship(t *testing.T) {
 	pred := schema.Exists("memberships", schema.Equal(schema.PolicyColumn("workspace_id"), schema.Identity("workspace_id")))
-	files := []ParsedRowPolicyFile{{PolicyID: "p1", Identities: []schema.PolicyIdentityDefinition{{Name: "workspace_id", Type: schema.PolicyIdentityUUID}}, Operations: []schema.RowPolicyOperation{{Type: "protect", Protection: schema.RowProtection{Table: "users", Rules: []schema.RowRule{{Key: "member", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &pred}}}}}}}
+	files := []ParsedRowPolicyFile{{PolicyID: "p1", Identities: []schema.PolicyIdentityDefinition{{Name: "workspace_id", Type: schema.PolicyIdentityUUID}}, Operations: []schema.RowPolicyOperation{{Type: "protect", Protection: schema.RowProtection{Table: "users", ExistingRowsDecision: "table created empty", Rules: []schema.RowRule{{Key: "member", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &pred}}}}}}}
 	users := &schema.Table{Name: "users", Columns: []*schema.Column{{Name: "id", Type: schema.UUID, IsPrimaryKey: true}}}
 	memberships := &schema.Table{Name: "memberships", Columns: []*schema.Column{{Name: "user_id", Type: schema.UUID, ForeignKeyTable: "users", ForeignKeyColumn: "id"}, {Name: "workspace_id", Type: schema.UUID}}}
 	resolved, err := ResolveRowPolicies(files, []*schema.Table{users, memberships}, nil, []SchemaRelationship{{ParentTable: "users", ChildTable: "memberships"}})
@@ -104,7 +115,7 @@ func TestResolveRowPoliciesResolvesExistingRowRelationship(t *testing.T) {
 
 func TestResolveRowPoliciesRejectsRelationshipInProposedRow(t *testing.T) {
 	pred := schema.Exists("memberships", schema.Allow())
-	files := []ParsedRowPolicyFile{{PolicyID: "p1", Operations: []schema.RowPolicyOperation{{Type: "protect", Protection: schema.RowProtection{Table: "users", Rules: []schema.RowRule{{Key: "member", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Insert: &pred}}}}}}}
+	files := []ParsedRowPolicyFile{{PolicyID: "p1", Operations: []schema.RowPolicyOperation{{Type: "protect", Protection: schema.RowProtection{Table: "users", ExistingRowsDecision: "table created empty", Rules: []schema.RowRule{{Key: "member", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Insert: &pred}}}}}}}
 	users := &schema.Table{Name: "users", Columns: []*schema.Column{{Name: "id", IsPrimaryKey: true}}}
 	memberships := &schema.Table{Name: "memberships", Columns: []*schema.Column{{Name: "user_id", ForeignKeyTable: "users"}}}
 	_, err := ResolveRowPolicies(files, []*schema.Table{users, memberships}, nil, []SchemaRelationship{{ParentTable: "users", ChildTable: "memberships"}})
@@ -174,7 +185,7 @@ func (p *Bad_2026_07_16_120000) Up() {
 
 func TestResolveImmutableRowPolicyRequiresApplicationOnly(t *testing.T) {
 	pred := schema.Allow()
-	files := []ParsedRowPolicyFile{{PolicyID: "p1", Operations: []schema.RowPolicyOperation{{Type: "protect", Protection: schema.RowProtection{Table: "messages", Rules: []schema.RowRule{{Key: "read", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &pred}}}}}}}
+	files := []ParsedRowPolicyFile{{PolicyID: "p1", Operations: []schema.RowPolicyOperation{{Type: "protect", Protection: schema.RowProtection{Table: "messages", ExistingRowsDecision: "table created empty", Rules: []schema.RowRule{{Key: "read", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &pred}}}}}}}
 	_, err := ResolveRowPolicies(files, []*schema.Table{{Name: "messages", IsImmutable: true}}, nil)
 	if err == nil || !strings.Contains(err.Error(), `AllowApplicationOnly("non_bijective_physical_plan")`) {
 		t.Fatalf("unexpected error: %v", err)
@@ -184,7 +195,7 @@ func TestResolveImmutableRowPolicyRequiresApplicationOnly(t *testing.T) {
 func TestResolveRelationshipRejectsProtectedReferencedTable(t *testing.T) {
 	exists := schema.Exists("memberships", schema.Equal(schema.PolicyColumn("workspace_id"), schema.Identity("workspace_id")))
 	allow := schema.Allow()
-	files := []ParsedRowPolicyFile{{PolicyID: "p1", Identities: []schema.PolicyIdentityDefinition{{Name: "workspace_id", Type: schema.PolicyIdentityUUID}}, Operations: []schema.RowPolicyOperation{{Type: "protect", Protection: schema.RowProtection{Table: "users", Rules: []schema.RowRule{{Key: "member", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &exists}}}}, {Type: "protect", Protection: schema.RowProtection{Table: "memberships", Rules: []schema.RowRule{{Key: "visible", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &allow}}}}}}}
+	files := []ParsedRowPolicyFile{{PolicyID: "p1", Identities: []schema.PolicyIdentityDefinition{{Name: "workspace_id", Type: schema.PolicyIdentityUUID}}, Operations: []schema.RowPolicyOperation{{Type: "protect", Protection: schema.RowProtection{Table: "users", ExistingRowsDecision: "table created empty", Rules: []schema.RowRule{{Key: "member", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &exists}}}}, {Type: "protect", Protection: schema.RowProtection{Table: "memberships", ExistingRowsDecision: "table created empty", Rules: []schema.RowRule{{Key: "visible", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &allow}}}}}}}
 	users := &schema.Table{Name: "users", Columns: []*schema.Column{{Name: "id", Type: schema.UUID, IsPrimaryKey: true}}}
 	memberships := &schema.Table{Name: "memberships", Columns: []*schema.Column{{Name: "user_id", Type: schema.UUID, ForeignKeyTable: "users"}, {Name: "workspace_id", Type: schema.UUID}}}
 	_, err := ResolveRowPolicies(files, []*schema.Table{users, memberships}, nil, []SchemaRelationship{{ParentTable: "users", ChildTable: "memberships"}})

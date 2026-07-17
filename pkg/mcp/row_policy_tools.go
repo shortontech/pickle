@@ -146,6 +146,7 @@ func (s *Server) findRowPolicy(table string) (generator.ResolvedRowPolicy, *mcp.
 func RenderRowPolicy(policy generator.ResolvedRowPolicy) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Table: %s\nClassification: %s\nSubject combination: %s\n", policy.Protection.Table, rowPolicyClassification(policy), policy.Protection.SubjectCombination)
+	fmt.Fprintf(&b, "Existing rows: %s\n", policy.Protection.ExistingRowsDecision)
 	for _, name := range sortedIdentityNames(policy.Identities) {
 		fmt.Fprintf(&b, "Identity: %s (%s)\n", name, policy.Identities[name])
 	}

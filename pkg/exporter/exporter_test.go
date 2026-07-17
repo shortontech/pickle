@@ -11354,7 +11354,7 @@ func TestExportedRowPolicyLifecycleExecutesBatchesAndRollsBackAtomically(t *test
 	}
 	for _, id := range []string{"2026_07_16_100000_first", "2026_07_16_110000_second"} {
 		typeName := "P_" + strings.ReplaceAll(id, "-", "_")
-		source := "package policies\ntype " + typeName + " struct{ Policy }\nfunc(p *" + typeName + ") Up(){p.IdentityUUID(\"user_id\");p.Protect(\"messages\",func(rows *Rows){rows.Rule(\"owner\").ForAuthenticated().Select(Owner(\"user_id\",Identity(\"user_id\")))})}\nfunc(p *" + typeName + ") Down(){p.Unprotect(\"messages\")}\n"
+		source := "package policies\ntype " + typeName + " struct{ Policy }\nfunc(p *" + typeName + ") Up(){p.IdentityUUID(\"user_id\");p.Protect(\"messages\",func(rows *Rows){rows.ExistingRowsAlreadyValid(\"fixture table empty\");rows.Rule(\"owner\").ForAuthenticated().Select(Owner(\"user_id\",Identity(\"user_id\")))})}\nfunc(p *" + typeName + ") Down(){p.Unprotect(\"messages\")}\n"
 		if err := os.WriteFile(filepath.Join(policyDir, id+".go"), []byte(source), 0o644); err != nil {
 			t.Fatal(err)
 		}

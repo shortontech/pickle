@@ -173,6 +173,15 @@ func parseProtectionCall(call *ast.CallExpr, kind string) (schema.RowPolicyOpera
 			return schema.RowPolicyOperation{}, fmt.Errorf("Protect callback calls must target Rows")
 		}
 		switch rootSel.Sel.Name {
+		case "ExistingRowsAlreadyValid":
+			if len(calls[0].Args) != 1 {
+				return schema.RowPolicyOperation{}, fmt.Errorf("ExistingRowsAlreadyValid requires a reason")
+			}
+			reason := extractStringLit(calls[0].Args[0])
+			if strings.TrimSpace(reason) == "" {
+				return schema.RowPolicyOperation{}, fmt.Errorf("existing-row decision must be a non-empty literal")
+			}
+			p.ExistingRowsDecision = reason
 		case "CombineSubjects":
 			if len(calls[0].Args) != 1 {
 				return schema.RowPolicyOperation{}, fmt.Errorf("CombineSubjects requires a mode")
@@ -376,6 +385,12 @@ func ResolveRowPolicies(files []ParsedRowPolicyFile, tables []*schema.Table, rol
 			if op.Type == "unprotect" {
 				delete(state, op.Protection.Table)
 				continue
+			}
+			if op.Type == "protect" && strings.TrimSpace(op.Protection.ExistingRowsDecision) == "" {
+				return nil, fmt.Errorf("row policy %s: first protection of table %q requires ExistingRowsAlreadyValid(\"completed backfill or known-empty reason\")", file.PolicyID, table.Name)
+			}
+			if op.Type == "alter_protection" && state[table.Name] == nil {
+				return nil, fmt.Errorf("row policy %s: table %q is not protected; use Protect with ExistingRowsAlreadyValid", file.PolicyID, table.Name)
 			}
 			if err := validateResolvedProtection(op.Protection, table, identities, roleMap); err != nil {
 				return nil, fmt.Errorf("row policy %s: %w", file.PolicyID, err)

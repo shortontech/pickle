@@ -24,6 +24,7 @@ func (p *MessageAccess_2026_07_16_120000) Up() {
     p.IdentityUUID("workspace_id")
 
     p.Protect("messages", func(rows *Rows) {
+		rows.ExistingRowsAlreadyValid("ownership backfill 2026-07-16 completed")
         rows.Rule("workspace_member").ForAuthenticated().
             Select(Owner("workspace_id", Identity("workspace_id"))).
             Insert(Owner("workspace_id", Identity("workspace_id"))).

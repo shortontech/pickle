@@ -383,9 +383,6 @@ func (q *ImmutableQueryBuilder[T]) buildSelect(limit int) (string, []any) {
 		b.WriteString(" t WHERE t.version_id = (SELECT version_id FROM ")
 		b.WriteString(q.table)
 		b.WriteString(" WHERE id = t.id")
-		if q.softDeletes {
-			b.WriteString(" AND deleted_at IS NULL")
-		}
 		b.WriteString(" ORDER BY version_id DESC LIMIT 1)")
 
 		var extra []string
@@ -445,9 +442,6 @@ func (q *ImmutableQueryBuilder[T]) buildCount() (string, []any) {
 	b.WriteString(" t WHERE t.version_id = (SELECT version_id FROM ")
 	b.WriteString(q.table)
 	b.WriteString(" WHERE id = t.id")
-	if q.softDeletes {
-		b.WriteString(" AND deleted_at IS NULL")
-	}
 	b.WriteString(" ORDER BY version_id DESC LIMIT 1)")
 
 	var extra []string
@@ -483,9 +477,6 @@ func (q *ImmutableQueryBuilder[T]) buildAggregate(fn, column string) (string, []
 	b.WriteString(" t WHERE t.version_id = (SELECT version_id FROM ")
 	b.WriteString(q.table)
 	b.WriteString(" WHERE id = t.id")
-	if q.softDeletes {
-		b.WriteString(" AND deleted_at IS NULL")
-	}
 	b.WriteString(" ORDER BY version_id DESC LIMIT 1)")
 
 	var extra []string

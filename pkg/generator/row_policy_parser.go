@@ -395,6 +395,13 @@ func ResolveRowPolicies(files []ParsedRowPolicyFile, tables []*schema.Table, rol
 			if err := validateResolvedProtection(op.Protection, table, identities, roleMap); err != nil {
 				return nil, fmt.Errorf("row policy %s: %w", file.PolicyID, err)
 			}
+			if table.IsAppendOnly {
+				for _, rule := range op.Protection.Rules {
+					if rule.UpdateOld != nil || rule.UpdateNew != nil || rule.Delete != nil {
+						return nil, fmt.Errorf("row policy %s: append-only table %q cannot declare update or delete rules", file.PolicyID, table.Name)
+					}
+				}
+			}
 			if err := resolveRowPolicyRelationships(&op.Protection, table, tableMap, relationships, identities); err != nil {
 				return nil, fmt.Errorf("row policy %s: %w", file.PolicyID, err)
 			}

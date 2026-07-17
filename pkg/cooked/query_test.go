@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 // --- dbColumns / dbValues / dbScanDest ---
@@ -58,6 +59,33 @@ func TestDBScanDest(t *testing.T) {
 	*idPtr = "set-via-ptr"
 	if m.ID != "set-via-ptr" {
 		t.Errorf("dbScanDest pointer didn't update struct field")
+	}
+}
+
+func TestImmutableSoftDeleteFiltersAfterGlobalLatestVersion(t *testing.T) {
+	type versionedRecord struct {
+		ID        string     `db:"id"`
+		VersionID string     `db:"version_id"`
+		DeletedAt *time.Time `db:"deleted_at"`
+		Amount    int        `db:"amount"`
+	}
+
+	q := ImmutableQuery[versionedRecord]("records", true)
+	queries := map[string]string{}
+	queries["select"], _ = q.buildSelect(0)
+	queries["count"], _ = q.buildCount()
+	queries["aggregate"], _ = q.buildAggregate("SUM", "amount")
+
+	for surface, query := range queries {
+		t.Run(surface, func(t *testing.T) {
+			latest := "WHERE id = t.id ORDER BY version_id DESC LIMIT 1)"
+			if !strings.Contains(query, latest) {
+				t.Fatalf("latest-version reduction is not global: %s", query)
+			}
+			if strings.Count(query, "deleted_at IS NULL") != 1 || !strings.Contains(query, "t.deleted_at IS NULL") {
+				t.Fatalf("soft-delete filter must apply once, outside latest-version reduction: %s", query)
+			}
+		})
 	}
 }
 

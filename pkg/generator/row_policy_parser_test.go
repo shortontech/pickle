@@ -81,6 +81,27 @@ func TestResolveRowPoliciesRequiresApplicationOnlyAcknowledgement(t *testing.T) 
 	}
 }
 
+func TestResolveRowPoliciesRejectsAppendOnlyMutationRules(t *testing.T) {
+	allow := schema.Allow()
+	for _, mutation := range []string{"update", "delete"} {
+		t.Run(mutation, func(t *testing.T) {
+			rule := schema.RowRule{Key: mutation, Subject: schema.RowSubject{Kind: schema.SubjectPublic}}
+			if mutation == "update" {
+				rule.UpdateOld, rule.UpdateNew = &allow, &allow
+			} else {
+				rule.Delete = &allow
+			}
+			files := []ParsedRowPolicyFile{{PolicyID: "p1", Operations: []schema.RowPolicyOperation{{
+				Type: "protect", Protection: schema.RowProtection{Table: "events", ExistingRowsDecision: "table created empty", Rules: []schema.RowRule{rule}},
+			}}}}
+			_, err := ResolveRowPolicies(files, []*schema.Table{{Name: "events", IsAppendOnly: true}}, nil)
+			if err == nil || !strings.Contains(err.Error(), "append-only") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestResolveRowPoliciesRejectsUnknownIdentityAndColumn(t *testing.T) {
 	pred := schema.RowPredicate{Kind: schema.PredicateEqual, Children: []schema.RowPredicate{{Kind: schema.PredicateColumn, Name: "tenant_id"}, {Kind: schema.PredicateIdentity, Name: "tenant_id"}}}
 	files := []ParsedRowPolicyFile{{

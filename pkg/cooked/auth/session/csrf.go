@@ -15,12 +15,14 @@ import (
 var csrfConfig struct {
 	secret     []byte
 	cookieName string
+	secure     bool
 }
 
 // initCSRF configures CSRF protection. Called by NewDriver so CSRF is ready
 // whenever the session driver is initialized.
 func initCSRF(env func(string, string) string) {
 	csrfConfig.cookieName = env("CSRF_COOKIE", "csrf_token")
+	csrfConfig.secure = env("SESSION_SECURE_COOKIE", "true") != "false"
 
 	secret := env("SESSION_SECRET", "")
 	if secret != "" {
@@ -61,7 +63,12 @@ func CSRF(ctx *pickle.Context, next func() pickle.Response) pickle.Response {
 	// State-changing methods: validate the token.
 	headerToken := ctx.Request().Header.Get("X-CSRF-TOKEN")
 	if headerToken == "" {
-		return ctx.Forbidden("CSRF token missing")
+		if err := ctx.Request().ParseForm(); err == nil {
+			headerToken = ctx.Request().Form.Get("_token")
+		}
+		if headerToken == "" {
+			return ctx.Forbidden("CSRF token missing")
+		}
 	}
 
 	if !validateCSRFToken(headerToken, sessionID, csrfConfig.secret) {
@@ -90,7 +97,7 @@ func newCSRFCookie(sessionID string) *http.Cookie {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: false, // JS must be able to read this
-		Secure:   true,
+		Secure:   csrfConfig.secure,
 		SameSite: http.SameSiteStrictMode,
 	}
 }

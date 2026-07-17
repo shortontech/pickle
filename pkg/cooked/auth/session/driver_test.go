@@ -35,7 +35,7 @@ func (c *mockConn) Prepare(query string) (sqldriver.Stmt, error) {
 	}
 	return &mockStmt{conn: c, query: query}, nil
 }
-func (c *mockConn) Close() error                    { return nil }
+func (c *mockConn) Close() error { return nil }
 func (c *mockConn) Begin() (sqldriver.Tx, error) {
 	return &mockTx{}, nil
 }
@@ -50,8 +50,8 @@ type mockStmt struct {
 	query string
 }
 
-func (s *mockStmt) Close() error    { return nil }
-func (s *mockStmt) NumInput() int   { return -1 }
+func (s *mockStmt) Close() error  { return nil }
+func (s *mockStmt) NumInput() int { return -1 }
 func (s *mockStmt) Exec(args []sqldriver.Value) (sqldriver.Result, error) {
 	if s.conn.exec != nil {
 		return s.conn.exec(s.query, args)
@@ -117,14 +117,18 @@ func TestNewDriver_DefaultValues(t *testing.T) {
 	if d.TTL() != 86400 {
 		t.Errorf("TTL = %d, want 86400", d.TTL())
 	}
+	if !d.secure {
+		t.Error("secure cookies must default to true")
+	}
 }
 
 func TestNewDriver_CustomValues(t *testing.T) {
 	db := openDB(t, &mockConn{})
 	d := NewDriver(testEnv(map[string]string{
-		"SESSION_SECRET": "s3cr3t",
-		"SESSION_COOKIE": "my_sess",
-		"SESSION_TTL":    "3600",
+		"SESSION_SECRET":        "s3cr3t",
+		"SESSION_COOKIE":        "my_sess",
+		"SESSION_TTL":           "3600",
+		"SESSION_SECURE_COOKIE": "false",
 	}), db)
 
 	if d.CookieName() != "my_sess" {
@@ -132,6 +136,9 @@ func TestNewDriver_CustomValues(t *testing.T) {
 	}
 	if d.TTL() != 3600 {
 		t.Errorf("TTL = %d, want 3600", d.TTL())
+	}
+	if d.secure {
+		t.Error("SESSION_SECURE_COOKIE=false was ignored")
 	}
 }
 
@@ -274,7 +281,7 @@ func TestCreate_Success(t *testing.T) {
 	db := openDB(t, conn)
 
 	initCSRF(testEnv(map[string]string{"SESSION_SECRET": "test-secret"}))
-	activeDriver = &Driver{db: db, cookieName: "session_id", ttl: 3600}
+	activeDriver = &Driver{db: db, cookieName: "session_id", ttl: 3600, secure: true}
 
 	req := httptest.NewRequest("POST", "/login", nil)
 	w := httptest.NewRecorder()

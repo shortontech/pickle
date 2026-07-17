@@ -144,12 +144,11 @@ func TestGenerateAuthRegistry(t *testing.T) {
 		t.Error("missing jwt driver import")
 	}
 
-	// Should register both drivers
-	if !strings.Contains(content, `registry["jwt"]`) {
-		t.Error("missing jwt registration")
-	}
-	if !strings.Contains(content, `registry["session"]`) {
-		t.Error("missing session registration")
+	// Should initialize the selected driver and retain lazy named access.
+	for _, want := range []string{`Driver(activeDriverName())`, `case "jwt":`, `case "session":`, `registry[name] = d`} {
+		if !strings.Contains(content, want) {
+			t.Errorf("missing lazy driver wiring %q", want)
+		}
 	}
 
 	// Should have the interface

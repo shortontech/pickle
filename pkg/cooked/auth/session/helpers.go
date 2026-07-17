@@ -44,7 +44,7 @@ func Create(ctx *pickle.Context, userID, role string) (*SessionCookies, error) {
 		Path:     "/",
 		Expires:  expiresAt,
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   d.secure,
 		SameSite: http.SameSiteStrictMode,
 	}
 
@@ -58,7 +58,7 @@ func Create(ctx *pickle.Context, userID, role string) (*SessionCookies, error) {
 			Path:     "/",
 			Expires:  expiresAt,
 			HttpOnly: false,
-			Secure:   true,
+			Secure:   d.secure,
 			SameSite: http.SameSiteStrictMode,
 		}
 	}
@@ -105,7 +105,7 @@ func Destroy(ctx *pickle.Context) (pickle.Response, error) {
 			Expires:  expired,
 			MaxAge:   -1,
 			HttpOnly: true,
-			Secure:   true,
+			Secure:   d.secure,
 		}).
 		WithCookie(&http.Cookie{
 			Name:    csrfConfig.cookieName,
@@ -113,7 +113,7 @@ func Destroy(ctx *pickle.Context) (pickle.Response, error) {
 			Path:    "/",
 			Expires: expired,
 			MaxAge:  -1,
-			Secure:  true,
+			Secure:  d.secure,
 		})
 
 	return resp, nil

@@ -81,6 +81,8 @@ func resolveMiddleware(mw []any) []MiddlewareFunc {
 		switch v := m.(type) {
 		case MiddlewareFunc:
 			resolved = append(resolved, v)
+		case func(*Context, func() Response) Response:
+			resolved = append(resolved, MiddlewareFunc(v))
 		case MiddlewareProvider:
 			resolved = append(resolved, v.Middleware())
 		default:

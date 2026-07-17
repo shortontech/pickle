@@ -16,6 +16,7 @@ type Driver struct {
 	db         *sql.DB
 	cookieName string
 	ttl        int // seconds
+	secure     bool
 }
 
 // activeDriver holds the initialized driver instance for use by session helpers.
@@ -24,7 +25,7 @@ var activeDriver *Driver
 // NewDriver creates a session auth driver. Config is read from environment:
 //   - SESSION_COOKIE: cookie name (default: "session_id")
 //   - SESSION_TTL: session lifetime in seconds (default: 86400)
-//
+//   - SESSION_SECURE_COOKIE: require HTTPS for cookies (default: true)
 func NewDriver(env func(string, string) string, db *sql.DB) *Driver {
 	ttl := 86400
 	if v := env("SESSION_TTL", ""); v != "" {
@@ -40,6 +41,7 @@ func NewDriver(env func(string, string) string, db *sql.DB) *Driver {
 	}
 
 	cookieName := env("SESSION_COOKIE", "session_id")
+	secure := env("SESSION_SECURE_COOKIE", "true") != "false"
 
 	// Configure CSRF middleware with access to session cookie name.
 	sessionCookieName = cookieName
@@ -49,6 +51,7 @@ func NewDriver(env func(string, string) string, db *sql.DB) *Driver {
 		db:         db,
 		cookieName: cookieName,
 		ttl:        ttl,
+		secure:     secure,
 	}
 	activeDriver = d
 	return d

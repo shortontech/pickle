@@ -115,6 +115,14 @@ func TestContextResponseHelpers(t *testing.T) {
 	}
 }
 
+func TestContextRedirect(t *testing.T) {
+	ctx := NewContext(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	response := ctx.Redirect("/login")
+	if response.StatusCode != http.StatusSeeOther || response.Headers["Location"] != "/login" {
+		t.Fatalf("redirect response = %#v", response)
+	}
+}
+
 func TestContextRoles(t *testing.T) {
 	ctx := NewContext(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
 

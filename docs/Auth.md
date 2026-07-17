@@ -142,10 +142,13 @@ AUTH_DRIVER=session
 SESSION_COOKIE=session_id
 SESSION_TTL=86400
 SESSION_SECRET=your-csrf-secret
+SESSION_SECURE_COOKIE=true
 CSRF_COOKIE=csrf_token
 ```
 
 `SESSION_SECRET` is required for CSRF protection.
+`SESSION_SECURE_COOKIE` defaults to `true`. Set it to `false` only for local
+HTTP development; production HTTPS applications should retain the default.
 
 ## OAuth2 Client Credentials
 

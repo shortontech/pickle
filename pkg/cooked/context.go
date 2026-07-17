@@ -195,6 +195,15 @@ func (c *Context) NoContent() Response {
 	return Response{StatusCode: http.StatusNoContent}
 }
 
+// Redirect returns a 303 See Other response for a fixed application location.
+// Control characters are rejected to prevent response-header injection.
+func (c *Context) Redirect(location string) Response {
+	if location == "" || strings.ContainsAny(location, "\r\n") {
+		panic("pickle: redirect location must be non-empty and contain no control characters")
+	}
+	return Response{StatusCode: http.StatusSeeOther, Headers: map[string]string{"Location": location}}
+}
+
 // httpStatusError is implemented by errors that know their own HTTP status code.
 // The query builder's typed errors (StaleVersionError, DeadlockError, etc.)
 // implement this interface, keeping the mapping close to the error definition

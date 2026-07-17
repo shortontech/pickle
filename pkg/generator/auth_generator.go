@@ -202,24 +202,33 @@ type AuthDriver interface {
 var registry = map[string]AuthDriver{}
 
 var envFunc func(string, string) string
+var dbConn *sql.DB
 
-// Init initializes all auth drivers with the given env lookup function and database connection.
+// Init initializes the selected auth driver with the given env lookup function and database connection.
+// Other named drivers are initialized lazily if explicitly requested.
 // Must be called after config and database are initialized.
 func Init(env func(string, string) string, db *sql.DB) {
 	envFunc = env
-{{ range .Drivers }}	registry["{{ .Name }}"] = {{ .Name }}.NewDriver(env, db)
-{{ end }}}
+	dbConn = db
+	Driver(activeDriverName())
+}
+
+func initializeDriver(name string) AuthDriver {
+	switch name {
+{{ range .Drivers }}	case "{{ .Name }}": return {{ .Name }}.NewDriver(envFunc, dbConn)
+{{ end }}	default: return nil
+	}
+}
 
 // Driver returns the named auth driver, or panics if not found.
 func Driver(name string) AuthDriver {
 	d, ok := registry[name]
-	if !ok {
-		available := make([]string, 0, len(registry))
-		for k := range registry {
-			available = append(available, k)
-		}
-		panic(fmt.Sprintf("auth: unknown driver %q (available: %v)", name, available))
+	if ok { return d }
+	d = initializeDriver(name)
+	if d == nil {
+		panic(fmt.Sprintf("auth: unknown driver %q", name))
 	}
+	registry[name] = d
 	return d
 }
 

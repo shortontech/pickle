@@ -3,6 +3,8 @@ package session
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
 	pickle "github.com/shortontech/pickle/pkg/cooked"
@@ -175,6 +177,22 @@ func TestCSRF_POSTWithValidToken(t *testing.T) {
 	}
 	if resp.StatusCode != 201 {
 		t.Errorf("status = %d, want 201", resp.StatusCode)
+	}
+}
+
+func TestCSRF_POSTWithValidFormToken(t *testing.T) {
+	setupCSRF(t)
+	sessionID := "sess-form"
+	token := generateCSRFToken(sessionID, csrfConfig.secret)
+	body := url.Values{"_token": {token}}.Encode()
+	req := httptest.NewRequest("POST", "/logout", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+	ctx := pickle.NewContext(httptest.NewRecorder(), req)
+	called := false
+	response := CSRF(ctx, func() pickle.Response { called = true; return ctx.NoContent() })
+	if !called || response.StatusCode != http.StatusNoContent {
+		t.Fatalf("form CSRF response = %#v, called=%v", response, called)
 	}
 }
 

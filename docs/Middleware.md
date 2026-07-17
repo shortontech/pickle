@@ -86,7 +86,7 @@ Any layer can short-circuit by returning without calling `next()`. The response 
 
 ## Built-in: CSRF protection
 
-The session auth driver ships `session.CSRF` middleware for cross-site request forgery protection. It uses the HMAC double-submit cookie pattern — a token bound to the session ID is set as a JS-readable cookie and must be echoed back in the `X-CSRF-TOKEN` header on state-changing requests.
+The session auth driver ships `session.CSRF` middleware for cross-site request forgery protection. It uses the HMAC double-submit cookie pattern — a token bound to the session ID is set as a browser-readable cookie and must be echoed back in the `X-CSRF-TOKEN` header or a form field named `_token` on state-changing requests.
 
 ```go
 r.Group("/app", auth.DefaultAuthMiddleware, session.CSRF, func(r *pickle.Router) {
@@ -97,7 +97,7 @@ r.Group("/app", auth.DefaultAuthMiddleware, session.CSRF, func(r *pickle.Router)
 
 Behavior:
 - **GET/HEAD/OPTIONS** — sets the `csrf_token` cookie if missing, passes through
-- **POST/PUT/PATCH/DELETE** — validates `X-CSRF-TOKEN` header against the session, returns 403 if missing or invalid
+- **POST/PUT/PATCH/DELETE** — validates the `X-CSRF-TOKEN` header or `_token` form field against the session, returning 403 if missing or invalid
 - **Bearer token requests** — bypasses CSRF entirely (API clients using `Authorization: Bearer` don't need it)
 
 Requires `SESSION_SECRET` in your `.env`. The squeeze `csrf_missing` rule flags any state-changing route missing CSRF when your project uses sessions.

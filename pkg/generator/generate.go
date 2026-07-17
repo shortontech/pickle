@@ -610,6 +610,46 @@ func Generate(project *Project, picklePkgDir string) error {
 	// are a Pickle toolchain feature and never require PHP at build or runtime.
 	viewsDir := filepath.Join(project.Dir, "resources", "views")
 	if info, err := os.Stat(viewsDir); err == nil && info.IsDir() {
+		assetManifest := map[string]string{}
+		assetsDir := filepath.Join(project.Dir, "resources", "assets")
+		if assetInfo, assetErr := os.Stat(assetsDir); assetErr == nil && assetInfo.IsDir() {
+			var assets []blade.AssetSource
+			err := filepath.WalkDir(assetsDir, func(path string, entry os.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+				if entry.IsDir() {
+					return nil
+				}
+				if entry.Type()&os.ModeSymlink != 0 {
+					return fmt.Errorf("asset %s is a symbolic link", path)
+				}
+				rel, err := filepath.Rel(assetsDir, path)
+				if err != nil {
+					return err
+				}
+				body, err := os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+				assets = append(assets, blade.AssetSource{Name: filepath.ToSlash(rel), Body: body})
+				return nil
+			})
+			if err != nil {
+				return fmt.Errorf("compiling assets: %w", err)
+			}
+			if len(assets) > 0 {
+				fmt.Println("  generating assets_gen.go")
+				src, manifest, err := blade.CompileAssetsGo(httpPkg, assets)
+				if err != nil {
+					return fmt.Errorf("compiling assets: %w", err)
+				}
+				assetManifest = manifest
+				if err := writeFile(filepath.Join(layout.HTTPDir, "assets_gen.go"), src); err != nil {
+					return err
+				}
+			}
+		}
 		var docs []*blade.Document
 		err := filepath.WalkDir(viewsDir, func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
@@ -639,7 +679,7 @@ func Generate(project *Project, picklePkgDir string) error {
 		sort.Slice(docs, func(i, j int) bool { return docs[i].Name < docs[j].Name })
 		if len(docs) > 0 {
 			fmt.Println("  generating views_gen.go")
-			src, err := blade.CompileGo(httpPkg, docs)
+			src, err := blade.CompileGoWithAssets(httpPkg, docs, assetManifest)
 			if err != nil {
 				return fmt.Errorf("compiling views: %w", err)
 			}

@@ -7,6 +7,7 @@ import (
 )
 
 var Web = pickle.Routes(func(r *pickle.Router) {
+	r.Get("/assets/:asset", controllers.DashboardController{}.Asset)
 	r.Post("/login", controllers.SessionController{}.Store)
 	r.Post("/logout", controllers.SessionController{}.Destroy, middleware.Auth)
 	r.Get("/", controllers.DashboardController{}.Index, middleware.Auth)

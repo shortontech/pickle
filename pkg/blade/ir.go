@@ -42,6 +42,16 @@ type Escaped struct {
 func (Escaped) node()              {}
 func (n Escaped) SourceSpan() Span { return n.Span }
 
+// Asset is a statically named asset dependency. The authored name is resolved
+// to a content-addressed URL before Go emission.
+type Asset struct {
+	Name string
+	Span Span
+}
+
+func (Asset) node()              {}
+func (n Asset) SourceSpan() Span { return n.Span }
+
 type If struct {
 	Condition []string
 	Then      []Node

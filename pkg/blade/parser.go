@@ -10,6 +10,7 @@ var (
 	directiveRE = regexp.MustCompile(`^@(if|foreach)\s*\(([^)\n]*)\)`)
 	pathRE      = regexp.MustCompile(`^\$[A-Za-z_][A-Za-z0-9_]*(?:->[A-Za-z_][A-Za-z0-9_]*)*$`)
 	foreachRE   = regexp.MustCompile(`^(\$[A-Za-z_][A-Za-z0-9_]*(?:->[A-Za-z_][A-Za-z0-9_]*)*)\s+as\s+(\$[A-Za-z_][A-Za-z0-9_]*)$`)
+	assetRE     = regexp.MustCompile(`^asset\(\s*(['"])([^'"]+)['"]\s*\)$`)
 )
 
 // Parse converts an authored template to target-neutral IR. It deliberately
@@ -28,7 +29,9 @@ func Parse(name, source string) (*Document, error) {
 	if stop != "" {
 		return nil, diagnostic(name, source, p.pos, "unexpected @%s", stop)
 	}
-	return &Document{Name: name, Nodes: nodes}, nil
+	doc := &Document{Name: name, Nodes: nodes}
+	collectDependencies(nodes, &doc.Dependencies)
+	return doc, nil
 }
 
 type parser struct {
@@ -55,11 +58,19 @@ func (p *parser) nodes(stops map[string]bool) ([]Node, string, error) {
 				return nil, "", diagnostic(p.name, p.source, start, "unterminated escaped expression")
 			}
 			raw := strings.TrimSpace(p.source[p.pos+2 : p.pos+2+end])
+			p.pos += 2 + end + 2
+			if match := assetRE.FindStringSubmatch(raw); match != nil {
+				name := strings.TrimPrefix(match[2], "/")
+				if name == "" || strings.Contains(name, "..") || strings.ContainsRune(name, '\\') {
+					return nil, "", diagnostic(p.name, p.source, start, "invalid asset path %q", match[2])
+				}
+				out = append(out, Asset{Name: name, Span: Span{Start: start, End: p.pos}})
+				continue
+			}
 			path, err := parsePath(raw)
 			if err != nil {
 				return nil, "", diagnostic(p.name, p.source, start, "%v", err)
 			}
-			p.pos += 2 + end + 2
 			out = append(out, Escaped{Path: path, Span: Span{Start: start, End: p.pos}})
 			continue
 		}
@@ -128,6 +139,20 @@ func (p *parser) nodes(stops map[string]bool) ([]Node, string, error) {
 		out = append(out, Text{Value: p.source[start:p.pos], Span: Span{Start: start, End: p.pos}})
 	}
 	return out, "", nil
+}
+
+func collectDependencies(nodes []Node, dependencies *[]Dependency) {
+	for _, node := range nodes {
+		switch node := node.(type) {
+		case Asset:
+			*dependencies = append(*dependencies, Dependency{Kind: "asset", Name: node.Name, Span: node.Span})
+		case If:
+			collectDependencies(node.Then, dependencies)
+			collectDependencies(node.Else, dependencies)
+		case ForEach:
+			collectDependencies(node.Body, dependencies)
+		}
+	}
 }
 
 func directiveWord(s string) string {

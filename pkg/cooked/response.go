@@ -19,12 +19,18 @@ type Response struct {
 // serialization; controllers cannot bless arbitrary request strings as HTML.
 type renderedView string
 
+type renderedAsset []byte
+
 func renderedViewResponse(_ *Context, body string) Response {
 	return Response{
 		StatusCode: http.StatusOK,
 		Body:       renderedView(body),
 		Headers:    map[string]string{"Content-Type": "text/html; charset=utf-8"},
 	}
+}
+
+func renderedAssetResponse(body []byte, headers map[string]string) Response {
+	return Response{StatusCode: http.StatusOK, Body: renderedAsset(body), Headers: headers}
 }
 
 // Header returns a copy of the response with an additional header set.
@@ -67,6 +73,13 @@ func (r Response) Write(w http.ResponseWriter) {
 		w.WriteHeader(r.StatusCode)
 		if _, err := w.Write([]byte(body)); err != nil {
 			log.Printf("pickle: failed to write response: %v", err)
+		}
+		return
+	}
+	if body, ok := r.Body.(renderedAsset); ok {
+		w.WriteHeader(r.StatusCode)
+		if _, err := w.Write(body); err != nil {
+			log.Printf("pickle: failed to write asset response: %v", err)
 		}
 		return
 	}

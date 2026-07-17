@@ -37,3 +37,30 @@ func TestCompileRejectsIncompatibleShape(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestAssetIntrinsicRecordsStaticDependency(t *testing.T) {
+	doc, err := Parse("app.blade.php", `<link href="{{ asset('css/app.css') }}">`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Dependencies) != 1 || doc.Dependencies[0].Kind != "asset" || doc.Dependencies[0].Name != "css/app.css" {
+		t.Fatalf("dependencies = %#v", doc.Dependencies)
+	}
+	src, err := CompileGoWithAssets("pickle", []*Document{doc}, map[string]string{"css/app.css": "/assets/app.123.css"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), `/assets/app.123.css`) {
+		t.Fatalf("generated source missing asset URL:\n%s", src)
+	}
+}
+
+func TestAssetIntrinsicRejectsMissingAsset(t *testing.T) {
+	doc, err := Parse("app.blade.php", `{{ asset('missing.css') }}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CompileGoWithAssets("pickle", []*Document{doc}, nil); err == nil || !strings.Contains(err.Error(), `asset "missing.css" does not exist`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

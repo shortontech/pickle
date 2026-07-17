@@ -65,5 +65,5 @@ func (SessionController) Destroy(ctx *pickle.Context) pickle.Response {
 		return ctx.Error(err)
 	}
 	response.StatusCode = 303
-	return response.Header("Location", ctx.RouteURL("login", nil)).Header("Cache-Control", "no-store")
+	return response.Header("Location", ctx.RouteURL("auth.login", nil)).Header("Cache-Control", "no-store")
 }

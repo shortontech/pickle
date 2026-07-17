@@ -73,6 +73,6 @@ func TestDashboardAssetIsContentAddressedAndCacheable(t *testing.T) {
 func dashboardTestRouter() *Router {
 	return Routes(func(r *Router) {
 		r.Get("/", func(*Context) Response { return Response{} }).Name("dashboard")
-		r.Post("/logout", func(*Context) Response { return Response{} }).Name("logout")
+		r.Post("/auth/logout", func(*Context) Response { return Response{} }).Name("auth.logout")
 	})
 }

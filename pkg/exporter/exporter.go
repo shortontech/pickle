@@ -9844,14 +9844,17 @@ func (r *Route) Name(name string) *Route { if r == nil { panic("cannot name a ni
 type RouteParams map[string]any
 type ResourceRoutes struct { router *Router; start int }
 func (rr *ResourceRoutes) Names(prefix string) *ResourceRoutes { if rr == nil || rr.router == nil || len(rr.router.routes) < rr.start+5 { panic("invalid resource route set") }; for i, suffix := range []string{"index", "show", "store", "update", "destroy"} { rr.router.routes[rr.start+i].Name(prefix+"."+suffix) }; return rr }
+type RouteGroup struct { router *Router; start int; end int }
+func (g *RouteGroup) Name(prefix string) *RouteGroup { if g == nil || g.router == nil { panic("invalid route group") }; prefix = strings.TrimSpace(prefix); if prefix == "" { panic("route group name prefix must not be empty") }; for i := g.start; i < g.end; i++ { if g.router.routes[i].NameValue != "" { g.router.routes[i].NameValue = prefix + g.router.routes[i].NameValue } }; return g }
 type Router struct{ prefix string; middleware []MiddlewareFunc; routes []Route; onError ErrorReporter }
 func Routes(fn func(*Router)) *Router { r := &Router{}; if fn != nil { fn(r) }; return r }
 func (r *Router) OnError(fn ErrorReporter) { if r != nil { r.onError = fn } }
 func (r *Router) OnRateLimit(fn func(*Context, RateLimitEvent)) { rateLimitCallback = fn }
-func (r *Router) Group(path string, args ...any) {
+func (r *Router) Group(path string, args ...any) *RouteGroup {
 	if r == nil {
-		return
+		return nil
 	}
+	start := len(r.routes)
 	child := &Router{prefix: joinPath(r.prefix, path), middleware: append([]MiddlewareFunc{}, r.middleware...)}
 	var bodies []func(*Router)
 	for _, arg := range args {
@@ -9868,6 +9871,7 @@ func (r *Router) Group(path string, args ...any) {
 	}
 	for _, body := range bodies { body(child) }
 	r.routes = append(r.routes, child.routes...)
+	return &RouteGroup{router: r, start: start, end: len(r.routes)}
 }
 func (r *Router) Get(path string, handler HandlerFunc, middleware ...any) *Route { return r.add("GET", path, handler, middleware...) }
 func (r *Router) Post(path string, handler HandlerFunc, middleware ...any) *Route { return r.add("POST", path, handler, middleware...) }

@@ -125,3 +125,21 @@ func TestNamedRouteValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestRouteGroupPathAndNamePrefixes(t *testing.T) {
+	router := Routes(func(r *Router) {
+		r.Group("/admin", func(r *Router) {
+			r.Get("/users", noop).Name("users.index")
+			r.Group("/reports", func(r *Router) {
+				r.Get("/daily", noop).Name("daily")
+			}).Name("reports.")
+		}).Name("admin.")
+	})
+
+	if got := router.URL("admin.users.index", nil); got != "/admin/users" {
+		t.Fatalf("admin.users.index = %q", got)
+	}
+	if got := router.URL("admin.reports.daily", nil); got != "/admin/reports/daily" {
+		t.Fatalf("admin.reports.daily = %q", got)
+	}
+}

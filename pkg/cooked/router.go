@@ -54,6 +54,32 @@ type ResourceRoutes struct {
 	start  int
 }
 
+type RouteGroup struct{ router *Router }
+
+// Name prefixes every named route in the group, including nested groups.
+func (g *RouteGroup) Name(prefix string) *RouteGroup {
+	if g == nil || g.router == nil {
+		panic("pickle: invalid route group")
+	}
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		panic("pickle: route group name prefix must not be empty")
+	}
+	g.router.prefixRouteNames(prefix)
+	return g
+}
+
+func (r *Router) prefixRouteNames(prefix string) {
+	for i := range r.routes {
+		if r.routes[i].NameValue != "" {
+			r.routes[i].NameValue = prefix + r.routes[i].NameValue
+		}
+	}
+	for _, group := range r.groups {
+		group.prefixRouteNames(prefix)
+	}
+}
+
 func (rr *ResourceRoutes) Names(prefix string) *ResourceRoutes {
 	if rr == nil || rr.router == nil || len(rr.router.routes) < rr.start+5 {
 		panic("pickle: invalid resource route set")
@@ -154,10 +180,11 @@ func (r *Router) Delete(path string, handler HandlerFunc, mw ...any) *Route {
 }
 
 // Group creates a sub-router with a shared prefix and optional middleware.
-func (r *Router) Group(prefix string, body func(*Router), mw ...any) {
+func (r *Router) Group(prefix string, body func(*Router), mw ...any) *RouteGroup {
 	g := &Router{prefix: prefix, middleware: resolveMiddleware(mw)}
 	body(g)
 	r.groups = append(r.groups, g)
+	return &RouteGroup{router: g}
 }
 
 // Resource registers standard CRUD routes for a controller.

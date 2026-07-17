@@ -75,6 +75,23 @@ ctx.RouteIs("users.*")    // true
 
 Literal paths and `ctx.Redirect("/fixed/path")` remain supported.
 
+### Group path and name prefixes
+
+Groups can prefix both paths and names, including nested groups:
+
+```go
+r.Group("/admin", func(r *pickle.Router) {
+    r.Get("/users", controllers.UserController{}.Index).Name("users.index")
+
+    r.Group("/reports", func(r *pickle.Router) {
+        r.Get("/daily", controllers.ReportController{}.Daily).Name("daily")
+    }).Name("reports.")
+}).Name("admin.")
+```
+
+This produces `/admin/users` as `admin.users.index` and
+`/admin/reports/daily` as `admin.reports.daily`.
+
 ## Path parameters
 
 Use `:name` syntax. Parameters are read via `ctx.Param("name")`:
@@ -153,7 +170,7 @@ routes.API.ListenAndServe(":8080")
 |--------|-------------|
 | `Routes(fn)` | Create a new Router via a configuration function |
 | `Get/Post/Put/Patch/Delete(path, handler, ...mw)` | Register and return a nameable route |
-| `Group(prefix, fn, ...mw)` | Create a sub-router with shared prefix and middleware |
+| `Group(prefix, fn, ...mw)` | Create a nameable sub-router with shared path prefix and middleware |
 | `Resource(prefix, controller, ...mw)` | Register CRUD routes and return a nameable route set |
 | `URL(name, params)` | Build a URL for a named route |
 | `AllRoutes()` | Return flattened list of all routes with resolved prefixes/middleware |

@@ -478,6 +478,17 @@ func NewApp() *pickle.App {
 			config.Init()
 			models.DB = config.Database.Open()
 {{ if .HasAuth }}			auth.Init(config.Env, models.DB)
+{{ if .HasPolicies }}			pickle.RegisterHTTPPolicyAuthenticator(func(r *http.Request) (any, *pickle.AuthInfo, error) {
+				source, present, err := auth.TryAuthenticatePolicySource(r)
+				if err != nil { return nil, nil, err }
+				if !present { return models.PublicPolicyContext(), nil, nil }
+				identities := source.PolicyIdentities()
+				roles := source.PolicyRoles()
+				role := ""
+				if len(roles) > 0 { role = roles[0] }
+				return models.PolicyContextFromVerified(source), &pickle.AuthInfo{UserID: identities["user_id"], Role: role}, nil
+			})
+{{ end }}
 {{ end }}		},
 		func() {
 {{ if .HasSchedule }}			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)

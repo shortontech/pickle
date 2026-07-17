@@ -838,6 +838,19 @@ func TestGenerateCommandsGlueWithRowPolicyStatus(t *testing.T) {
 	}
 }
 
+func TestGenerateCommandsGlueRegistersAutomaticHTTPPolicyBoundary(t *testing.T) {
+	out, err := GenerateCommandsGlue("github.com/example/myapp", "database/migrations", nil, []string{"API"}, true, false, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(out)
+	for _, want := range []string{"pickle.RegisterHTTPPolicyAuthenticator", "auth.TryAuthenticatePolicySource", "models.PublicPolicyContext", "models.PolicyContextFromVerified", "source.PolicyIdentities", "source.PolicyRoles"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("generated HTTP policy boundary missing %q", want)
+		}
+	}
+}
+
 // ─── model_generator.go ──────────────────────────────────────────────────────
 
 func TestGenerateModelWithPublicProjection(t *testing.T) {

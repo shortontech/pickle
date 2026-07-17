@@ -14,8 +14,8 @@ import (
   models %q
 )
 func init(){ authenticateGraphQLPolicy=func(r *http.Request)(any,*AuthClaims,error){
-  if r.Header.Get("Authorization")=="" { return models.PublicPolicyContext(),nil,nil }
-  source,err:=auth.AuthenticatePolicySource(r);if err!=nil{return nil,nil,err}
+  source,present,err:=auth.TryAuthenticatePolicySource(r);if err!=nil{return nil,nil,err}
+  if !present { return models.PublicPolicyContext(),nil,nil }
   identities:=source.PolicyIdentities();roles:=source.PolicyRoles();role:="";if len(roles)>0{role=roles[0]}
   return models.PolicyContextFromVerified(source),&AuthClaims{UserID:identities["user_id"],Role:role},nil
 }}

@@ -10,6 +10,14 @@ import (
 	"time"
 )
 
+var authenticateHTTPPolicy func(*http.Request) (any, *AuthInfo, error)
+
+// RegisterHTTPPolicyAuthenticator installs the generated sealed auth-to-model
+// bridge without introducing an HTTP/auth/models import cycle.
+func RegisterHTTPPolicyAuthenticator(authenticator func(*http.Request) (any, *AuthInfo, error)) {
+	authenticateHTTPPolicy = authenticator
+}
+
 // MiddlewareFunc is the signature for middleware functions.
 type MiddlewareFunc func(ctx *Context, next func() Response) Response
 
@@ -192,6 +200,17 @@ func (r *Router) RegisterRoutes(mux *http.ServeMux) {
 			}
 
 			ctx := NewContext(w, req)
+			if authenticateHTTPPolicy != nil {
+				policyContext, authInfo, err := authenticateHTTPPolicy(req)
+				if err != nil {
+					ctx.Unauthorized("invalid credentials").Write(w)
+					return
+				}
+				ctx.SetPolicyContext(policyContext)
+				if authInfo != nil {
+					ctx.SetAuth(authInfo)
+				}
+			}
 
 			defer func() {
 				if rv := recover(); rv != nil {

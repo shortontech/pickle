@@ -272,6 +272,25 @@ func AuthenticatePolicySource(r *http.Request) (VerifiedPolicySource, error) {
 	return verifiedPolicySource{identities:identities,roles:roles},nil
 }
 
+// TryAuthenticatePolicySource authenticates when the active driver's native
+// credential is present and otherwise reports an unauthenticated/public entry.
+// Invalid credentials are never downgraded to public access.
+func TryAuthenticatePolicySource(r *http.Request) (VerifiedPolicySource, bool, error) {
+	present := false
+	switch ActiveDriverName() {
+	case "session":
+		name := "session_id"
+		if envFunc != nil { name = envFunc("SESSION_COOKIE", name) }
+		_, err := r.Cookie(name)
+		present = err == nil
+	default:
+		present = strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
+	}
+	if !present { return nil, false, nil }
+	source, err := AuthenticatePolicySource(r)
+	return source, true, err
+}
+
 // AuthenticateJobPolicySource authenticates a driver-native credential for a
 // background job. Jobs must construct the same request-shaped credential the
 // active driver verifies; raw identity maps are deliberately not accepted.

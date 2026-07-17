@@ -22,14 +22,24 @@ type AuthInfo struct {
 
 // Context wraps an HTTP request and response, providing helpers for controllers and middleware.
 type Context struct {
-	request  *http.Request
-	response http.ResponseWriter
-	params   map[string]string
-	auth     *AuthInfo
-	bodyBuf  []byte // cached request body for PeekJSON
-	roles    []string
-	isAdmin  bool
+	request       *http.Request
+	response      http.ResponseWriter
+	params        map[string]string
+	auth          *AuthInfo
+	bodyBuf       []byte // cached request body for PeekJSON
+	roles         []string
+	isAdmin       bool
+	policyContext any
 }
+
+// PolicyContext returns the generated model policy context established at the
+// verified HTTP boundary. Its concrete type belongs to the generated models
+// package, avoiding an import cycle in the HTTP package.
+func (c *Context) PolicyContext() any { return c.policyContext }
+
+// SetPolicyContext is framework wiring for the generated HTTP authenticator.
+// Application code should consume PolicyContext, not construct its value.
+func (c *Context) SetPolicyContext(context any) { c.policyContext = context }
 
 // NewContext creates a Context from an HTTP request/response pair.
 func NewContext(w http.ResponseWriter, r *http.Request) *Context {

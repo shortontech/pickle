@@ -156,7 +156,7 @@ func TestGenerateAuthRegistry(t *testing.T) {
 	if !strings.Contains(content, "type AuthDriver interface") {
 		t.Error("missing AuthDriver interface")
 	}
-	for _, want := range []string{"type VerifiedPolicySource interface", "policySourceSeal()", "AuthenticatePolicySource", "AuthenticateJobPolicySource", "AuthenticateCLIPolicySource"} {
+	for _, want := range []string{"type VerifiedPolicySource interface", "policySourceSeal()", "AuthenticatePolicySource", "TryAuthenticatePolicySource", `case "session"`, `envFunc("SESSION_COOKIE", name)`, "AuthenticateJobPolicySource", "AuthenticateCLIPolicySource"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("generated auth registry missing %q", want)
 		}

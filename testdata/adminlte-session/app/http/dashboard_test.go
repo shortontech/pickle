@@ -12,6 +12,8 @@ func TestDashboardRendersHTMLAndEscapesData(t *testing.T) {
 	request := httptest.NewRequest("GET", "/", nil)
 	recorder := httptest.NewRecorder()
 	ctx := NewContext(recorder, request)
+	ctx.router = dashboardTestRouter()
+	ctx.routeName = "dashboard"
 	data := DashboardData{}
 	data.Page.Title = `<script>alert("title")</script>`
 	data.Page.Heading = "Dashboard"
@@ -33,6 +35,8 @@ func TestDashboardRendersHTMLAndEscapesData(t *testing.T) {
 func TestDashboardAssetIsContentAddressedAndCacheable(t *testing.T) {
 	pageRecorder := httptest.NewRecorder()
 	pageContext := NewContext(pageRecorder, httptest.NewRequest("GET", "/", nil))
+	pageContext.router = dashboardTestRouter()
+	pageContext.routeName = "dashboard"
 	data := DashboardData{}
 	Dashboard(pageContext, data).Write(pageRecorder)
 	match := regexp.MustCompile(`href="(/assets/[^"]+\.css)"`).FindStringSubmatch(pageRecorder.Body.String())
@@ -64,4 +68,11 @@ func TestDashboardAssetIsContentAddressedAndCacheable(t *testing.T) {
 	if notModifiedRecorder.Code != 304 || notModifiedRecorder.Body.Len() != 0 {
 		t.Fatalf("conditional response = %d %q", notModifiedRecorder.Code, notModifiedRecorder.Body.String())
 	}
+}
+
+func dashboardTestRouter() *Router {
+	return Routes(func(r *Router) {
+		r.Get("/", func(*Context) Response { return Response{} }).Name("dashboard")
+		r.Post("/logout", func(*Context) Response { return Response{} }).Name("logout")
+	})
 }

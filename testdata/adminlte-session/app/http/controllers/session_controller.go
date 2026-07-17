@@ -43,7 +43,7 @@ func (SessionController) Store(ctx *pickle.Context) pickle.Response {
 	if err != nil {
 		return ctx.Error(err)
 	}
-	return cookies.Apply(ctx.Redirect("/"))
+	return cookies.Apply(ctx.RedirectToRoute("dashboard", nil))
 }
 
 func invalidLogin(ctx *pickle.Context, email string) pickle.Response {
@@ -65,5 +65,5 @@ func (SessionController) Destroy(ctx *pickle.Context) pickle.Response {
 		return ctx.Error(err)
 	}
 	response.StatusCode = 303
-	return response.Header("Location", "/login").Header("Cache-Control", "no-store")
+	return response.Header("Location", ctx.RouteURL("login", nil)).Header("Cache-Control", "no-store")
 }

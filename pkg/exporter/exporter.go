@@ -9771,6 +9771,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -9786,7 +9787,7 @@ type Controller struct{}
 type Response struct { Status int; StatusCode int; Body any; Headers map[string]string; Cookies []*http.Cookie }
 type AuthInfo struct { UserID string; Role string; Claims any }
 type RoleInfo struct { Slug string; Manages bool }
-type Context struct { request *http.Request; response http.ResponseWriter; auth *AuthInfo; params map[string]string; roles []string; rolesLoaded bool; isAdmin bool }
+type Context struct { request *http.Request; response http.ResponseWriter; auth *AuthInfo; params map[string]string; roles []string; rolesLoaded bool; isAdmin bool; router *Router; routeName string }
 
 const maxBearerTokenHeaderBytes = 12 << 10
 
@@ -9817,6 +9818,11 @@ func (c *Context) Unauthorized(msg string) Response { return c.JSON(401, map[str
 func (c *Context) Forbidden(msg string) Response { return c.JSON(403, map[string]string{"error": msg}) }
 func (c *Context) NotFound(msg string) Response { return c.JSON(404, map[string]string{"error": msg}) }
 func (c *Context) NoContent() Response { return Response{Status: 204, StatusCode: 204} }
+func (c *Context) Redirect(location string) Response { if location == "" || strings.ContainsAny(location, "\r\n") { panic("redirect location must be safe") }; return Response{Status: http.StatusSeeOther, StatusCode: http.StatusSeeOther, Headers: map[string]string{"Location": location}} }
+func (c *Context) RouteName() string { if c == nil { return "" }; return c.routeName }
+func (c *Context) RouteIs(patterns ...string) bool { if c == nil { return false }; for _, pattern := range patterns { expression := regexp.QuoteMeta(pattern); expression = strings.ReplaceAll(expression, ` + "`" + `\*` + "`" + `, ".*"); if matched, _ := regexp.MatchString("^"+expression+"$", c.routeName); matched { return true } }; return false }
+func (c *Context) RouteURL(name string, params RouteParams) string { if c == nil || c.router == nil { panic("named routes are unavailable outside a routed request") }; return c.router.URL(name, params) }
+func (c *Context) RedirectToRoute(name string, params RouteParams) Response { return c.Redirect(c.RouteURL(name, params)) }
 
 type ResourceQuery interface { FetchResource(ownerID string) (any, error) }
 type ResourceListQuery interface { FetchResources(ownerID string) (any, error) }
@@ -9833,7 +9839,11 @@ type MiddlewareFunc func(*Context, func() Response) Response
 type MiddlewareProvider interface { Middleware() MiddlewareFunc }
 type ResourceController interface { Index(*Context) Response; Show(*Context) Response; Store(*Context) Response; Update(*Context) Response; Destroy(*Context) Response }
 type ErrorReporter func(*Context, error)
-type Route struct { Method string; Path string; Handler HandlerFunc; Middleware []MiddlewareFunc }
+type Route struct { NameValue string; Method string; Path string; Handler HandlerFunc; Middleware []MiddlewareFunc }
+func (r *Route) Name(name string) *Route { if r == nil { panic("cannot name a nil route") }; name = strings.TrimSpace(name); if name == "" { panic("route name must not be empty") }; r.NameValue = name; return r }
+type RouteParams map[string]any
+type ResourceRoutes struct { router *Router; start int }
+func (rr *ResourceRoutes) Names(prefix string) *ResourceRoutes { if rr == nil || rr.router == nil || len(rr.router.routes) < rr.start+5 { panic("invalid resource route set") }; for i, suffix := range []string{"index", "show", "store", "update", "destroy"} { rr.router.routes[rr.start+i].Name(prefix+"."+suffix) }; return rr }
 type Router struct{ prefix string; middleware []MiddlewareFunc; routes []Route; onError ErrorReporter }
 func Routes(fn func(*Router)) *Router { r := &Router{}; if fn != nil { fn(r) }; return r }
 func (r *Router) OnError(fn ErrorReporter) { if r != nil { r.onError = fn } }
@@ -9859,15 +9869,17 @@ func (r *Router) Group(path string, args ...any) {
 	for _, body := range bodies { body(child) }
 	r.routes = append(r.routes, child.routes...)
 }
-func (r *Router) Get(path string, handler HandlerFunc, middleware ...any) { r.add("GET", path, handler, middleware...) }
-func (r *Router) Post(path string, handler HandlerFunc, middleware ...any) { r.add("POST", path, handler, middleware...) }
-func (r *Router) Put(path string, handler HandlerFunc, middleware ...any) { r.add("PUT", path, handler, middleware...) }
-func (r *Router) Patch(path string, handler HandlerFunc, middleware ...any) { r.add("PATCH", path, handler, middleware...) }
-func (r *Router) Delete(path string, handler HandlerFunc, middleware ...any) { r.add("DELETE", path, handler, middleware...) }
-func (r *Router) add(method, path string, handler HandlerFunc, middleware ...any) { if r == nil { return }; r.routes = append(r.routes, Route{Method: method, Path: joinPath(r.prefix, path), Handler: handler, Middleware: append(append([]MiddlewareFunc{}, r.middleware...), resolveMiddleware(middleware)...)} ) }
-func (r *Router) Resource(prefix string, c ResourceController, middleware ...any) { r.Get(prefix, c.Index, middleware...); r.Get(prefix + "/:id", c.Show, middleware...); r.Post(prefix, c.Store, middleware...); r.Put(prefix + "/:id", c.Update, middleware...); r.Delete(prefix + "/:id", c.Destroy, middleware...) }
+func (r *Router) Get(path string, handler HandlerFunc, middleware ...any) *Route { return r.add("GET", path, handler, middleware...) }
+func (r *Router) Post(path string, handler HandlerFunc, middleware ...any) *Route { return r.add("POST", path, handler, middleware...) }
+func (r *Router) Put(path string, handler HandlerFunc, middleware ...any) *Route { return r.add("PUT", path, handler, middleware...) }
+func (r *Router) Patch(path string, handler HandlerFunc, middleware ...any) *Route { return r.add("PATCH", path, handler, middleware...) }
+func (r *Router) Delete(path string, handler HandlerFunc, middleware ...any) *Route { return r.add("DELETE", path, handler, middleware...) }
+func (r *Router) add(method, path string, handler HandlerFunc, middleware ...any) *Route { if r == nil { return nil }; r.routes = append(r.routes, Route{Method: method, Path: joinPath(r.prefix, path), Handler: handler, Middleware: append(append([]MiddlewareFunc{}, r.middleware...), resolveMiddleware(middleware)...)} ); return &r.routes[len(r.routes)-1] }
+func (r *Router) Resource(prefix string, c ResourceController, middleware ...any) *ResourceRoutes { start := len(r.routes); r.Get(prefix, c.Index, middleware...); r.Get(prefix + "/:id", c.Show, middleware...); r.Post(prefix, c.Store, middleware...); r.Put(prefix + "/:id", c.Update, middleware...); r.Delete(prefix + "/:id", c.Destroy, middleware...); return &ResourceRoutes{router: r, start: start} }
 func resolveMiddleware(middleware []any) []MiddlewareFunc { resolved := make([]MiddlewareFunc, 0, len(middleware)); for _, mw := range middleware { switch v := mw.(type) { case MiddlewareFunc: resolved = append(resolved, v); case func(*Context, func() Response) Response: resolved = append(resolved, MiddlewareFunc(v)); case MiddlewareProvider: resolved = append(resolved, v.Middleware()); default: panic("invalid middleware type") } }; return resolved }
 func (r *Router) AllRoutes() []Route { if r == nil { return nil }; routes := make([]Route, len(r.routes)); copy(routes, r.routes); return routes }
+func (r *Router) namedRoutes() map[string]Route { named := map[string]Route{}; for _, route := range r.AllRoutes() { if route.NameValue == "" { continue }; if _, exists := named[route.NameValue]; exists { panic("duplicate route name: " + route.NameValue) }; named[route.NameValue] = route }; return named }
+func (r *Router) URL(name string, params RouteParams) string { route, ok := r.namedRoutes()[name]; if !ok { panic("unknown route name: " + name) }; used := map[string]bool{}; path := paramPattern.ReplaceAllStringFunc(route.Path, func(token string) string { key := strings.TrimPrefix(token, ":"); value, exists := params[key]; if !exists { panic("missing route parameter: " + key) }; used[key] = true; return url.PathEscape(fmt.Sprint(value)) }); for key := range params { if !used[key] { panic("extra route parameter: " + key) } }; return path }
 func writeRecoveredError(w http.ResponseWriter) { Response{StatusCode: http.StatusInternalServerError, Body: map[string]string{"error": "internal server error"}}.Write(w) }
 func writeRouterBadRequest(w http.ResponseWriter) { Response{StatusCode: http.StatusBadRequest, Body: map[string]string{"error": "bad request"}}.Write(w) }
 func writeRouterNotFound(w http.ResponseWriter) { Response{StatusCode: http.StatusNotFound, Body: map[string]string{"error": "not found"}}.Write(w) }
@@ -9901,7 +9913,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		params, ok := matchPath(rt.Path, req.URL.Path)
 		if !ok { continue }
 		if rt.Method != req.Method { allowedMethods = appendAllowedMethod(allowedMethods, rt.Method); continue }
-		ctx = NewContext(req); ctx.response = w; ctx.params = params
+		ctx = NewContext(req); ctx.response = w; ctx.params = params; ctx.router = r; ctx.routeName = rt.NameValue
 		next := func() Response { return rt.Handler(ctx) }
 		for i := len(rt.Middleware) - 1; i >= 0; i-- {
 			mw := rt.Middleware[i]
@@ -9925,6 +9937,7 @@ func (r *Router) RegisterRoutes(mux *http.ServeMux) {
 	if r == nil || mux == nil {
 		return
 	}
+	_ = r.namedRoutes()
 	registered := map[string]bool{}
 	for _, route := range r.AllRoutes() {
 		goPath := paramPattern.ReplaceAllString(route.Path, "{$1}")

@@ -78,6 +78,13 @@ func infer(nodes []Node, root *field, locals map[string]*field) error {
 			if err := infer(n.Else, root, locals); err != nil {
 				return err
 			}
+		case RouteIs:
+			if err := infer(n.Then, root, locals); err != nil {
+				return err
+			}
+			if err := infer(n.Else, root, locals); err != nil {
+				return err
+			}
 		case ForEach:
 			f, err := requireField(root, locals, n.Collection, collection)
 			if err != nil {
@@ -178,6 +185,20 @@ func writeNodes(b *bytes.Buffer, nodes []Node, root string, locals map[string]st
 				return fmt.Errorf("asset %q does not exist", n.Name)
 			}
 			fmt.Fprintf(b, "%sout.WriteString(%q)\n", indent, url)
+		case RouteURL:
+			fmt.Fprintf(b, "%sout.WriteString(html.EscapeString(ctx.RouteURL(%q, nil)))\n", indent, n.Name)
+		case RouteIs:
+			fmt.Fprintf(b, "%sif ctx.RouteIs(%q) {\n", indent, n.Pattern)
+			if err := writeNodes(b, n.Then, root, locals, assets, indent+"\t"); err != nil {
+				return err
+			}
+			if len(n.Else) > 0 {
+				fmt.Fprintf(b, "%s} else {\n", indent)
+				if err := writeNodes(b, n.Else, root, locals, assets, indent+"\t"); err != nil {
+					return err
+				}
+			}
+			fmt.Fprintf(b, "%s}\n", indent)
 		case If:
 			fmt.Fprintf(b, "%sif %s {\n", indent, goPath(root, locals, n.Condition))
 			if err := writeNodes(b, n.Then, root, locals, assets, indent+"\t"); err != nil {

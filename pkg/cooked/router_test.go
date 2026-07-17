@@ -1,6 +1,10 @@
 package cooked
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 func noop(ctx *Context) Response { return Response{} }
 
@@ -65,5 +69,59 @@ func TestRoutesPerRouteMiddleware(t *testing.T) {
 	routes := r.AllRoutes()
 	if len(routes[0].Middleware) != 2 {
 		t.Errorf("middleware count = %d, want 2 (group + per-route)", len(routes[0].Middleware))
+	}
+}
+
+func TestNamedRouteURLAndCurrentRoute(t *testing.T) {
+	router := Routes(func(r *Router) {
+		r.Get("/users/:id", func(ctx *Context) Response {
+			if ctx.RouteName() != "users.show" || !ctx.RouteIs("users.*") {
+				t.Fatalf("current route = %q", ctx.RouteName())
+			}
+			return ctx.RedirectToRoute("users.show", RouteParams{"id": "a/b"})
+		}).Name("users.show")
+	})
+
+	if got := router.URL("users.show", RouteParams{"id": "a/b"}); got != "/users/a%2Fb" {
+		t.Fatalf("URL() = %q", got)
+	}
+	mux := http.NewServeMux()
+	router.RegisterRoutes(mux)
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/users/123", nil))
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/users/a%2Fb" {
+		t.Fatalf("response = %d Location %q", recorder.Code, recorder.Header().Get("Location"))
+	}
+}
+
+func TestNamedRouteValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func()
+	}{
+		{"unknown", func() { Routes(func(*Router) {}).URL("missing", nil) }},
+		{"missing parameter", func() {
+			Routes(func(r *Router) { r.Get("/users/:id", noop).Name("users.show") }).URL("users.show", nil)
+		}},
+		{"extra parameter", func() {
+			Routes(func(r *Router) { r.Get("/users", noop).Name("users.index") }).URL("users.index", RouteParams{"id": 1})
+		}},
+		{"duplicate name", func() {
+			router := Routes(func(r *Router) {
+				r.Get("/one", noop).Name("same")
+				r.Get("/two", noop).Name("same")
+			})
+			router.RegisterRoutes(http.NewServeMux())
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("expected panic")
+				}
+			}()
+			tt.fn()
+		})
 	}
 }

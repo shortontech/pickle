@@ -55,6 +55,22 @@ func TestAssetIntrinsicRecordsStaticDependency(t *testing.T) {
 	}
 }
 
+func TestNamedRouteIntrinsics(t *testing.T) {
+	doc, err := Parse("nav.blade.php", `<a href="{{ route('dashboard') }}">Dashboard</a>@routeIs('dashboard') active @endrouteIs`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Dependencies) != 1 || doc.Dependencies[0].Kind != "route" || doc.Dependencies[0].Name != "dashboard" {
+		t.Fatalf("dependencies = %#v", doc.Dependencies)
+	}
+	if _, ok := doc.Nodes[1].(RouteURL); !ok {
+		t.Fatalf("node[1] = %T", doc.Nodes[1])
+	}
+	if _, ok := doc.Nodes[3].(RouteIs); !ok {
+		t.Fatalf("node[3] = %T", doc.Nodes[3])
+	}
+}
+
 func TestAssetIntrinsicRejectsMissingAsset(t *testing.T) {
 	doc, err := Parse("app.blade.php", `{{ asset('missing.css') }}`)
 	if err != nil {

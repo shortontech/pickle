@@ -11,6 +11,8 @@ var (
 	pathRE      = regexp.MustCompile(`^\$[A-Za-z_][A-Za-z0-9_]*(?:->[A-Za-z_][A-Za-z0-9_]*)*$`)
 	foreachRE   = regexp.MustCompile(`^(\$[A-Za-z_][A-Za-z0-9_]*(?:->[A-Za-z_][A-Za-z0-9_]*)*)\s+as\s+(\$[A-Za-z_][A-Za-z0-9_]*)$`)
 	assetRE     = regexp.MustCompile(`^asset\(\s*(['"])([^'"]+)['"]\s*\)$`)
+	routeRE     = regexp.MustCompile(`^route\(\s*(['"])([^'"]+)['"]\s*\)$`)
+	routeIsRE   = regexp.MustCompile(`^@routeIs\s*\(\s*['"]([^'"]+)['"]\s*\)`)
 	viewCallRE  = regexp.MustCompile(`^@(extends|include|section|yield)\s*\(\s*['"]([^'"]+)['"]\s*\)`)
 )
 
@@ -68,6 +70,10 @@ func (p *parser) nodes(stops map[string]bool) ([]Node, string, error) {
 				out = append(out, Asset{Name: name, Span: Span{Start: start, End: p.pos}})
 				continue
 			}
+			if match := routeRE.FindStringSubmatch(raw); match != nil {
+				out = append(out, RouteURL{Name: match[2], Span: Span{Start: start, End: p.pos}})
+				continue
+			}
 			path, err := parsePath(raw)
 			if err != nil {
 				return nil, "", diagnostic(p.name, p.source, start, "%v", err)
@@ -82,6 +88,25 @@ func (p *parser) nodes(stops map[string]bool) ([]Node, string, error) {
 				return out, word, nil
 			}
 			start := p.pos
+			if match := routeIsRE.FindStringSubmatch(p.source[p.pos:]); match != nil {
+				p.pos += len(match[0])
+				then, stop, err := p.nodes(map[string]bool{"else": true, "endrouteIs": true})
+				if err != nil {
+					return nil, "", err
+				}
+				var otherwise []Node
+				if stop == "else" {
+					otherwise, stop, err = p.nodes(map[string]bool{"endrouteIs": true})
+					if err != nil {
+						return nil, "", err
+					}
+				}
+				if stop != "endrouteIs" {
+					return nil, "", diagnostic(p.name, p.source, start, "unterminated @routeIs")
+				}
+				out = append(out, RouteIs{Pattern: match[1], Then: then, Else: otherwise, Span: Span{Start: start, End: p.pos}})
+				continue
+			}
 			if call := viewCallRE.FindStringSubmatch(p.source[p.pos:]); call != nil {
 				p.pos += len(call[0])
 				name := call[2]
@@ -169,6 +194,11 @@ func collectDependencies(nodes []Node, dependencies *[]Dependency) {
 		switch node := node.(type) {
 		case Asset:
 			*dependencies = append(*dependencies, Dependency{Kind: "asset", Name: node.Name, Span: node.Span})
+		case RouteURL:
+			*dependencies = append(*dependencies, Dependency{Kind: "route", Name: node.Name, Span: node.Span})
+		case RouteIs:
+			collectDependencies(node.Then, dependencies)
+			collectDependencies(node.Else, dependencies)
 		case If:
 			collectDependencies(node.Then, dependencies)
 			collectDependencies(node.Else, dependencies)
@@ -197,7 +227,7 @@ func normalizeViewName(name string) string {
 
 func directiveWord(s string) string {
 	i := 0
-	for i < len(s) && ((s[i] >= 'a' && s[i] <= 'z') || s[i] == '_') {
+	for i < len(s) && ((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= 'A' && s[i] <= 'Z') || s[i] == '_') {
 		i++
 	}
 	return s[:i]

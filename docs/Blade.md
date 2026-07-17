@@ -4,6 +4,24 @@ Pickle can compile a safe, typed subset of Laravel-shaped `*.blade.php` files
 into ordinary Go. PHP is never invoked, embedded, or available as a fallback.
 This feature is under active development in spec 081.
 
+## Named routes
+
+Static named routes can be used for links, form actions, and current-route
+navigation state:
+
+```blade
+<a href="{{ route('dashboard') }}">Dashboard</a>
+
+@routeIs('dashboard')
+    <span class="active">Dashboard</span>
+@endrouteIs
+```
+
+Route names are static and compiled into calls against the request's router.
+Dynamic route names and arbitrary PHP are never evaluated. Parameterized Blade
+route generation is reserved for a later typed-expression slice; Go code can
+use `ctx.RouteURL(name, pickle.RouteParams{...})` today.
+
 ## Source files
 
 Place authored templates under `resources/views/` and run `pickle generate`.

@@ -53,6 +53,24 @@ type Asset struct {
 func (Asset) node()              {}
 func (n Asset) SourceSpan() Span { return n.Span }
 
+type RouteURL struct {
+	Name string
+	Span Span
+}
+
+func (RouteURL) node()              {}
+func (n RouteURL) SourceSpan() Span { return n.Span }
+
+type RouteIs struct {
+	Pattern string
+	Then    []Node
+	Else    []Node
+	Span    Span
+}
+
+func (RouteIs) node()              {}
+func (n RouteIs) SourceSpan() Span { return n.Span }
+
 type If struct {
 	Condition []string
 	Then      []Node

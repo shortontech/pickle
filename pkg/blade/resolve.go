@@ -143,6 +143,17 @@ func expandNodes(nodes []Node, sections map[string][]Node, documents map[string]
 			}
 			node.Then, node.Else = thenNodes, elseNodes
 			out = append(out, node)
+		case RouteIs:
+			thenNodes, err := expandNodes(node.Then, sections, documents, stack)
+			if err != nil {
+				return nil, err
+			}
+			elseNodes, err := expandNodes(node.Else, sections, documents, stack)
+			if err != nil {
+				return nil, err
+			}
+			node.Then, node.Else = thenNodes, elseNodes
+			out = append(out, node)
 		case ForEach:
 			body, err := expandNodes(node.Body, sections, documents, stack)
 			if err != nil {

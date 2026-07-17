@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"runtime/debug"
 	"strings"
@@ -26,10 +27,41 @@ type HandlerFunc func(ctx *Context) Response
 
 // Route describes a single registered route.
 type Route struct {
+	NameValue  string
 	Method     string
 	Path       string
 	Handler    HandlerFunc
 	Middleware []MiddlewareFunc
+}
+
+// Name assigns a stable application name to a route.
+func (r *Route) Name(name string) *Route {
+	if r == nil {
+		panic("pickle: cannot name a nil route")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		panic("pickle: route name must not be empty")
+	}
+	r.NameValue = name
+	return r
+}
+
+type RouteParams map[string]any
+
+type ResourceRoutes struct {
+	router *Router
+	start  int
+}
+
+func (rr *ResourceRoutes) Names(prefix string) *ResourceRoutes {
+	if rr == nil || rr.router == nil || len(rr.router.routes) < rr.start+5 {
+		panic("pickle: invalid resource route set")
+	}
+	for i, suffix := range []string{"index", "show", "store", "update", "destroy"} {
+		rr.router.routes[rr.start+i].Name(prefix + "." + suffix)
+	}
+	return rr
 }
 
 // ErrorReporter is called when ctx.Error() handles an unrecoverable error or
@@ -64,13 +96,17 @@ func Routes(fn func(r *Router)) *Router {
 	return r
 }
 
-func (r *Router) addRoute(method, path string, handler HandlerFunc, mw []any) {
+func (r *Router) addRoute(method, path string, handler HandlerFunc, mw []any) *Route {
+	if r == nil {
+		return nil
+	}
 	r.routes = append(r.routes, Route{
 		Method:     method,
 		Path:       path,
 		Handler:    handler,
 		Middleware: resolveMiddleware(mw),
 	})
+	return &r.routes[len(r.routes)-1]
 }
 
 // resolveMiddleware converts a slice of any (MiddlewareFunc or MiddlewareProvider)
@@ -93,28 +129,28 @@ func resolveMiddleware(mw []any) []MiddlewareFunc {
 }
 
 // Get registers a GET route.
-func (r *Router) Get(path string, handler HandlerFunc, mw ...any) {
-	r.addRoute("GET", path, handler, mw)
+func (r *Router) Get(path string, handler HandlerFunc, mw ...any) *Route {
+	return r.addRoute("GET", path, handler, mw)
 }
 
 // Post registers a POST route.
-func (r *Router) Post(path string, handler HandlerFunc, mw ...any) {
-	r.addRoute("POST", path, handler, mw)
+func (r *Router) Post(path string, handler HandlerFunc, mw ...any) *Route {
+	return r.addRoute("POST", path, handler, mw)
 }
 
 // Put registers a PUT route.
-func (r *Router) Put(path string, handler HandlerFunc, mw ...any) {
-	r.addRoute("PUT", path, handler, mw)
+func (r *Router) Put(path string, handler HandlerFunc, mw ...any) *Route {
+	return r.addRoute("PUT", path, handler, mw)
 }
 
 // Patch registers a PATCH route.
-func (r *Router) Patch(path string, handler HandlerFunc, mw ...any) {
-	r.addRoute("PATCH", path, handler, mw)
+func (r *Router) Patch(path string, handler HandlerFunc, mw ...any) *Route {
+	return r.addRoute("PATCH", path, handler, mw)
 }
 
 // Delete registers a DELETE route.
-func (r *Router) Delete(path string, handler HandlerFunc, mw ...any) {
-	r.addRoute("DELETE", path, handler, mw)
+func (r *Router) Delete(path string, handler HandlerFunc, mw ...any) *Route {
+	return r.addRoute("DELETE", path, handler, mw)
 }
 
 // Group creates a sub-router with a shared prefix and optional middleware.
@@ -133,12 +169,14 @@ type ResourceController interface {
 	Destroy(*Context) Response
 }
 
-func (r *Router) Resource(prefix string, c ResourceController, mw ...any) {
+func (r *Router) Resource(prefix string, c ResourceController, mw ...any) *ResourceRoutes {
+	start := len(r.routes)
 	r.addRoute("GET", prefix, c.Index, mw)
 	r.addRoute("GET", prefix+"/:id", c.Show, mw)
 	r.addRoute("POST", prefix, c.Store, mw)
 	r.addRoute("PUT", prefix+"/:id", c.Update, mw)
 	r.addRoute("DELETE", prefix+"/:id", c.Destroy, mw)
+	return &ResourceRoutes{router: r, start: start}
 }
 
 // AllRoutes returns a flattened list of all routes with prefixes and
@@ -154,6 +192,7 @@ func (r *Router) collectRoutes(parentPrefix string, parentMW []MiddlewareFunc) [
 	var routes []Route
 	for _, route := range r.routes {
 		resolved := Route{
+			NameValue:  route.NameValue,
 			Method:     route.Method,
 			Path:       fullPrefix + route.Path,
 			Handler:    route.Handler,
@@ -169,6 +208,44 @@ func (r *Router) collectRoutes(parentPrefix string, parentMW []MiddlewareFunc) [
 	return routes
 }
 
+func (r *Router) namedRoutes() map[string]Route {
+	named := map[string]Route{}
+	for _, route := range r.AllRoutes() {
+		if route.NameValue == "" {
+			continue
+		}
+		if _, exists := named[route.NameValue]; exists {
+			panic("pickle: duplicate route name: " + route.NameValue)
+		}
+		named[route.NameValue] = route
+	}
+	return named
+}
+
+// URL builds a path for a named route.
+func (r *Router) URL(name string, params RouteParams) string {
+	route, ok := r.namedRoutes()[name]
+	if !ok {
+		panic("pickle: unknown route name: " + name)
+	}
+	used := map[string]bool{}
+	path := paramPattern.ReplaceAllStringFunc(route.Path, func(token string) string {
+		key := strings.TrimPrefix(token, ":")
+		value, exists := params[key]
+		if !exists {
+			panic("pickle: route " + name + " requires parameter " + key)
+		}
+		used[key] = true
+		return url.PathEscape(fmt.Sprint(value))
+	})
+	for key := range params {
+		if !used[key] {
+			panic("pickle: route " + name + " does not define parameter " + key)
+		}
+	}
+	return path
+}
+
 var paramPattern = regexp.MustCompile(`:(\w+)`)
 
 // RegisterRoutes wires all routes onto the given ServeMux.
@@ -177,6 +254,7 @@ func (r *Router) RegisterRoutes(mux *http.ServeMux) {
 	// Register Pickle's internal operations endpoints
 	RegisterPickleEndpoints(mux)
 
+	_ = r.namedRoutes()
 	registered := map[string]bool{}
 	for _, route := range r.AllRoutes() {
 		route := route // capture
@@ -202,6 +280,8 @@ func (r *Router) RegisterRoutes(mux *http.ServeMux) {
 			}
 
 			ctx := NewContext(w, req)
+			ctx.router = r
+			ctx.routeName = route.NameValue
 			if authenticateHTTPPolicy != nil {
 				policyContext, authInfo, err := authenticateHTTPPolicy(req)
 				if err != nil {

@@ -8,7 +8,7 @@ import (
 func Auth(ctx *pickle.Context, next func() pickle.Response) pickle.Response {
 	info, err := auth.Authenticate(ctx.Request())
 	if err != nil {
-		return ctx.Redirect("/login")
+		return ctx.RedirectToRoute("login", nil)
 	}
 	ctx.SetAuth(info)
 	return next()

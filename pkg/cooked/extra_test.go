@@ -256,7 +256,7 @@ func TestRouterPutPatch(t *testing.T) {
 func TestRouterResource(t *testing.T) {
 	ctrl := &mockResourceController{}
 	r := Routes(func(r *Router) {
-		r.Resource("/posts", ctrl)
+		r.Resource("/posts", ctrl).Names("posts")
 	})
 	routes := r.AllRoutes()
 	if len(routes) != 5 {
@@ -265,6 +265,11 @@ func TestRouterResource(t *testing.T) {
 	methods := map[string]bool{}
 	for _, route := range routes {
 		methods[route.Method] = true
+	}
+	for i, name := range []string{"posts.index", "posts.show", "posts.store", "posts.update", "posts.destroy"} {
+		if routes[i].NameValue != name {
+			t.Errorf("route[%d].NameValue = %q, want %q", i, routes[i].NameValue, name)
+		}
 	}
 	for _, m := range []string{"GET", "POST", "PUT", "DELETE"} {
 		if !methods[m] {

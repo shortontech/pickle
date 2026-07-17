@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/google/uuid"
@@ -30,6 +31,32 @@ type Context struct {
 	roles         []string
 	isAdmin       bool
 	policyContext any
+	router        *Router
+	routeName     string
+}
+
+func (c *Context) RouteName() string { return c.routeName }
+
+func (c *Context) RouteIs(patterns ...string) bool {
+	for _, pattern := range patterns {
+		expression := regexp.QuoteMeta(pattern)
+		expression = strings.ReplaceAll(expression, `\*`, `.*`)
+		if matched, _ := regexp.MatchString("^"+expression+"$", c.routeName); matched {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Context) RouteURL(name string, params RouteParams) string {
+	if c.router == nil {
+		panic("pickle: named routes are unavailable outside a routed request")
+	}
+	return c.router.URL(name, params)
+}
+
+func (c *Context) RedirectToRoute(name string, params RouteParams) Response {
+	return c.Redirect(c.RouteURL(name, params))
 }
 
 // PolicyContext returns the generated model policy context established at the

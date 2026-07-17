@@ -23,10 +23,10 @@ type ActionDef struct {
 
 // GateDef describes a gate function for an action.
 type GateDef struct {
-	Name       string // e.g. "CanBan"
-	ActionName string // e.g. "Ban"
-	SourceFile string
-	IsGenerated bool  // true if from _gate_gen.go
+	Name        string // e.g. "CanBan"
+	ActionName  string // e.g. "Ban"
+	SourceFile  string
+	IsGenerated bool // true if from _gate_gen.go
 }
 
 // ActionSet groups actions and gates for a model.

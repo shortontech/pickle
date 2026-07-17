@@ -71,6 +71,7 @@ func GenerateQueryScopes(table *schema.Table, blocks []tickle.ScopeBlock, packag
 		}
 	}
 	b.WriteString("}\n\n")
+	b.WriteString(fmt.Sprintf("// ApplyPolicyContext attaches verified row-policy identity while preserving typed query chaining.\nfunc (q *%s) ApplyPolicyContext(context PolicyContext) *%s {\n\tq.%s.WithPolicyContext(context)\n\treturn q\n}\n\n", queryType, queryType, builderType))
 	// Generate eager loading methods from foreign keys
 	for _, col := range table.Columns {
 		if col.ForeignKeyTable != "" {

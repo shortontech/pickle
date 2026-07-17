@@ -2095,7 +2095,7 @@ func (e *exporter) writeHTTPX() error {
 }
 
 func (e *exporter) writeModels(tables []*schema.Table, views []*schema.View) error {
-	dbSource, err := exportedModelsDBSource(len(e.rowPolicies) > 0)
+	dbSource, err := exportedModelsDBSource(true)
 	if err != nil {
 		return err
 	}
@@ -2166,14 +2166,18 @@ func (e *exporter) writeModels(tables []*schema.Table, views []*schema.View) err
 			}
 		}
 	}
+	runtimeSource := exportedRowPolicyRuntimeSource
+	if len(e.rowPolicies) == 0 {
+		runtimeSource = exportedEmptyRowPolicyRuntimeSource
+	}
+	base, err := format.Source([]byte(runtimeSource))
+	if err != nil {
+		return fmt.Errorf("formatting exported row-policy runtime: %w", err)
+	}
+	if err := e.writeFile(filepath.Join("app", "models", "row_policy_support.go"), base); err != nil {
+		return err
+	}
 	if len(e.rowPolicies) > 0 {
-		base, err := format.Source([]byte(exportedRowPolicyRuntimeSource))
-		if err != nil {
-			return fmt.Errorf("formatting exported row-policy runtime: %w", err)
-		}
-		if err := e.writeFile(filepath.Join("app", "models", "row_policy_support.go"), base); err != nil {
-			return err
-		}
 		registry, err := generator.GenerateRowPolicyRuntimeRegistry("models", e.rowPolicies, e.modulePath+"/app/http/auth")
 		if err != nil {
 			return err
@@ -2182,6 +2186,14 @@ func (e *exporter) writeModels(tables []*schema.Table, views []*schema.View) err
 			return err
 		}
 		if err := e.writeFile(filepath.Join("app", "models", "row_policy_test_adapter_gen_test.go"), generator.GenerateRowPolicyTestAdapter("models")); err != nil {
+			return err
+		}
+	} else {
+		registry, err := generator.GenerateRowPolicyRuntimeRegistry("models", nil, e.modulePath+"/app/http/auth")
+		if err != nil {
+			return err
+		}
+		if err := e.writeFile(filepath.Join("app", "models", "row_policies_gen.go"), registry); err != nil {
 			return err
 		}
 	}
@@ -11274,6 +11286,17 @@ func main() {
 }
 `
 
+const exportedEmptyRowPolicyRuntimeSource = `package models
+
+type PolicyContext struct{}
+
+func newVerifiedPolicyContext(_ map[string]string, _ []string) PolicyContext {
+	return PolicyContext{}
+}
+
+func PublicPolicyContext() PolicyContext { return PolicyContext{} }
+`
+
 const exportedRowPolicyRuntimeSource = `package models
 
 import (
@@ -11302,6 +11325,7 @@ func newVerifiedPolicyContext(identities map[string]string, roles []string) Poli
     roleSet := map[string]bool{}; for _, role := range roles { if role != "" && len(role) <= 1024 { roleSet[role] = true } }
     return PolicyContext{identities:ids, roles:roleSet}
 }
+func PublicPolicyContext() PolicyContext { return newVerifiedPolicyContext(nil,nil) }
 func (c PolicyContext) identity(name string) (string,bool) { value, ok := c.identities[name]; return value, ok && value != "" }
 func (c PolicyContext) encodedRoles() string { values:=make([]string,0,len(c.roles)); for role:=range c.roles { values=append(values,role) }; sort.Strings(values); data,_:=json.Marshal(values); return string(data) }
 

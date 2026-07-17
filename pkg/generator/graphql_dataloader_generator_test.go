@@ -16,8 +16,8 @@ func TestDataloaderGeneratorEmpty(t *testing.T) {
 	if !strings.Contains(s, "type DataLoaderRegistry struct{}") {
 		t.Error("empty registry should be an empty struct")
 	}
-	if !strings.Contains(s, "func newDataLoaderRegistry(_ VisibilityTier)") {
-		t.Error("constructor should accept VisibilityTier even when empty")
+	if !strings.Contains(s, "func newDataLoaderRegistry(_ VisibilityTier, _ any)") {
+		t.Error("constructor should accept visibility and policy context even when empty")
 	}
 }
 
@@ -65,7 +65,7 @@ func TestDataloaderGeneratorHasMany(t *testing.T) {
 	}
 
 	// Should use WhereIn
-	if !strings.Contains(s, "WhereUserIDIn(ids...)") {
+	if !strings.Contains(s, "WhereUserIDIn(ids)") {
 		t.Error("batch function should call WhereUserIDIn")
 	}
 	if !strings.Contains(s, "q.Limit(maxGraphQLPageSize*len(ids) + 1)") {
@@ -81,8 +81,11 @@ func TestDataloaderGeneratorHasMany(t *testing.T) {
 	}
 
 	// Constructor accepts visibility
-	if !strings.Contains(s, "func newDataLoaderRegistry(vis VisibilityTier)") {
-		t.Error("constructor should accept VisibilityTier")
+	if !strings.Contains(s, "func newDataLoaderRegistry(vis VisibilityTier, policyContext any)") {
+		t.Error("constructor should accept visibility and policy context")
+	}
+	if !strings.Contains(s, "ApplyPolicyContext(r.policyContext.(models.PolicyContext))") {
+		t.Error("batch queries should inherit the request policy context")
 	}
 }
 

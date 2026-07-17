@@ -3,7 +3,6 @@ package generator
 import (
 	"bytes"
 	"fmt"
-	"go/format"
 )
 
 // AdapterConfig holds configuration for generating controller action adapter resolvers.
@@ -47,7 +46,7 @@ func GenerateGraphQLAdapterResolvers(cfg AdapterConfig) ([]byte, error) {
 		writeAdapterResolver(&b, action)
 	}
 
-	return format.Source(b.Bytes())
+	return formatGraphQLWithPolicyContext(b.Bytes())
 }
 
 // writeAdapterResolver generates a single adapter resolver for a controller action.

@@ -43,13 +43,20 @@ func Handler() http.Handler {
 			return
 		}
 
-		// Build resolve context — extract auth from request
+		// Build resolve context from the configured verified auth boundary.
 		auth := extractAuth(r)
+		var policyContext any
+		if authenticateGraphQLPolicy != nil {
+			verifiedContext, verifiedAuth, err := authenticateGraphQLPolicy(r)
+			if err != nil { writeError(w, "unauthorized", CodeUnauthenticated); return }
+			policyContext, auth = verifiedContext, verifiedAuth
+		}
 		ctx := &ResolveContext{
 			auth:      auth,
+			policyContext: policyContext,
 			variables: body.Variables,
 		}
-		ctx.loaders = newDataLoaderRegistry(ctx.Visibility())
+		ctx.loaders = newDataLoaderRegistry(ctx.Visibility(), policyContext)
 
 		// Parse and validate against schema
 		doc, err := parseDocument(parsedSchema, body.Query)

@@ -124,6 +124,13 @@ func GenerateGraphQL(project *Project, tables []*schema.Table, relationships []S
 			return err
 		}
 	}
+	policyBoundary, err := GenerateGraphQLPolicyBoundary(graphqlPackageName, project.ModulePath)
+	if err != nil {
+		return fmt.Errorf("GraphQL policy boundary generation: %w", err)
+	}
+	if err := writeFile(filepath.Join(graphqlDir, "policy_context_gen.go"), policyBoundary); err != nil {
+		return err
+	}
 
 	// 8. Zero-controller CRUD resolvers (spec 018)
 	// Generate CRUD resolvers for tables that don't have user-written resolver overrides.

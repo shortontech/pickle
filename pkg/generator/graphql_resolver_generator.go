@@ -3,7 +3,6 @@ package generator
 import (
 	"bytes"
 	"fmt"
-	"go/format"
 	"strings"
 
 	"github.com/shortontech/pickle/pkg/schema"
@@ -93,7 +92,7 @@ func GenerateGraphQLResolversWithPlans(plans []GraphQLModelPlan, relationships [
 		writeFieldResolver(&b, tbl, relByParent[tbl.Name])
 	}
 
-	return format.Source(b.Bytes())
+	return formatGraphQLWithPolicyContext(b.Bytes())
 }
 
 func writeListResolver(b *bytes.Buffer, tbl *schema.Table) {

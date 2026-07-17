@@ -50,6 +50,11 @@ func newVerifiedPolicyContext(identities map[string]string, roles []string) Poli
 	}
 	return PolicyContext{identities: copyIDs, roles: roleSet}
 }
+
+// PublicPolicyContext creates an identity-free context. It is safe for
+// unauthenticated entry points because it can match only explicitly public
+// policy subjects.
+func PublicPolicyContext() PolicyContext { return newVerifiedPolicyContext(nil,nil) }
 func (c PolicyContext) identity(name string) (string, bool) {
 	value, ok := c.identities[name]
 	return value, ok && value != ""

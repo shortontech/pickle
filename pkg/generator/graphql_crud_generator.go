@@ -3,7 +3,6 @@ package generator
 import (
 	"bytes"
 	"fmt"
-	"go/format"
 	"strings"
 
 	"github.com/shortontech/pickle/pkg/schema"
@@ -92,7 +91,7 @@ func GenerateGraphQLCRUDResolvers(cfg CRUDConfig) ([]byte, error) {
 	// Generate constraint validation helpers
 	writeConstraintValidators(&b, cfg.Tables)
 
-	return format.Source(b.Bytes())
+	return formatGraphQLWithPolicyContext(b.Bytes())
 }
 
 // ownerColumn returns the IsOwner column for a table, or nil if none.

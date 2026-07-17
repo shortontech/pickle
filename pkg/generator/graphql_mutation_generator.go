@@ -3,7 +3,6 @@ package generator
 import (
 	"bytes"
 	"fmt"
-	"go/format"
 	"strings"
 
 	"github.com/shortontech/pickle/pkg/schema"
@@ -169,7 +168,7 @@ func GenerateGraphQLMutationsWithPlans(plans []GraphQLModelPlan, modelsImport, p
 		}
 	}
 
-	return format.Source(b.Bytes())
+	return formatGraphQLWithPolicyContext(b.Bytes())
 }
 
 // inputToModelConversion returns the Go code to convert a GQL input field (string)

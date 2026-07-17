@@ -23,6 +23,11 @@ func TestHandlerGeneratorIncludesQueryBudgeting(t *testing.T) {
 	}
 }
 
+func TestGraphQLPolicyBoundaryUsesSealedAuthentication(t *testing.T) {
+	src,err:=GenerateGraphQLPolicyBoundary("graphql","example.com/app");if err!=nil{t.Fatal(err)};text:=string(src)
+	for _,want:=range []string{"auth.AuthenticatePolicySource", "models.PolicyContextFromVerified", "models.PublicPolicyContext", `example.com/app/app/http/auth`}{if !strings.Contains(text,want){t.Fatalf("missing %q in %s",want,text)}}
+}
+
 func TestHandlerGeneratorIncludesIntrospectionControl(t *testing.T) {
 	src, err := GenerateGraphQLHandler("graphql")
 	if err != nil {

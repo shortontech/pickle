@@ -14,9 +14,9 @@ import (
 
 // ScopeDef describes a user-defined scope function parsed from database/scopes/.
 type ScopeDef struct {
-	Name       string   // exported function name, e.g. "Active"
+	Name        string       // exported function name, e.g. "Active"
 	ExtraParams []ScopeParam // parameters beyond the first ScopeBuilder param
-	SourceFile string   // relative path to the source file
+	SourceFile  string       // relative path to the source file
 }
 
 // ScopeParam describes an additional parameter on a scope function.

@@ -47,12 +47,12 @@ func GenerateViewModel(view *schema.View, packageName string) ([]byte, error) {
 			colName = vc.Name
 		}
 		col := &schema.Column{
-			Name:      colName,
-			Type:      vc.Type,
+			Name:       colName,
+			Type:       vc.Type,
 			IsNullable: vc.IsNullable,
-			Precision: vc.Precision,
-			Scale:     vc.Scale,
-			Length:    vc.Length,
+			Precision:  vc.Precision,
+			Scale:      vc.Scale,
+			Length:     vc.Length,
 		}
 		goType := columnGoType(col)
 		if imp := columnImport(col); imp != "" {

@@ -97,9 +97,9 @@ func TestGenerateScopeWiring(t *testing.T) {
 			SourceFile: "database/scopes/user/active.go",
 		},
 		{
-			Name:       "InRegion",
+			Name:        "InRegion",
 			ExtraParams: []ScopeParam{{Name: "region", Type: "string"}},
-			SourceFile: "database/scopes/user/region.go",
+			SourceFile:  "database/scopes/user/region.go",
 		},
 	}
 

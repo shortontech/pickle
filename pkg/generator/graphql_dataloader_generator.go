@@ -3,7 +3,6 @@ package generator
 import (
 	"bytes"
 	"fmt"
-	"go/format"
 	"strings"
 
 	"github.com/shortontech/pickle/pkg/schema"
@@ -20,8 +19,8 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 		// No relationships — empty registry, no imports needed
 		b.WriteString("// DataLoaderRegistry holds per-request loader instances.\n")
 		b.WriteString("type DataLoaderRegistry struct{}\n\n")
-		b.WriteString("func newDataLoaderRegistry(_ VisibilityTier) *DataLoaderRegistry {\n\treturn &DataLoaderRegistry{}\n}\n")
-		return format.Source(b.Bytes())
+		b.WriteString("func newDataLoaderRegistry(_ VisibilityTier, _ any) *DataLoaderRegistry {\n\treturn &DataLoaderRegistry{}\n}\n")
+		return formatGraphQLWithPolicyContextExpression(b.Bytes(), `r.policyContext.(models.PolicyContext)`)
 	}
 
 	// Build table lookup for visibility checks
@@ -40,6 +39,7 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 	b.WriteString("// DataLoaderRegistry holds per-request loader instances.\n")
 	b.WriteString("type DataLoaderRegistry struct {\n")
 	b.WriteString("\tvisibility VisibilityTier\n")
+	b.WriteString("\tpolicyContext any\n")
 	for _, rel := range relationships {
 		fkCol := strings.TrimSuffix(rel.ParentTable, "s") + "_id"
 		childStruct := tableToStructName(rel.ChildTable)
@@ -54,8 +54,8 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 	b.WriteString("}\n\n")
 
 	// Constructor — accepts visibility tier from the request context
-	b.WriteString("func newDataLoaderRegistry(vis VisibilityTier) *DataLoaderRegistry {\n")
-	b.WriteString("\tr := &DataLoaderRegistry{visibility: vis}\n")
+	b.WriteString("func newDataLoaderRegistry(vis VisibilityTier, policyContext any) *DataLoaderRegistry {\n")
+	b.WriteString("\tr := &DataLoaderRegistry{visibility: vis, policyContext: policyContext}\n")
 	for _, rel := range relationships {
 		fkCol := strings.TrimSuffix(rel.ParentTable, "s") + "_id"
 		loaderField := snakeToCamel(rel.ChildTable) + "By" + snakeToPascal(fkCol)
@@ -91,7 +91,7 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 
 			// Batch function
 			b.WriteString(fmt.Sprintf("func (r *DataLoaderRegistry) %s(ids []uuid.UUID) []batchResult[[]*models.%s] {\n", batchFn, childStruct))
-			b.WriteString(fmt.Sprintf("\tq := models.Query%s().%s(ids...)\n", childStruct, whereFn))
+			b.WriteString(fmt.Sprintf("\tq := models.Query%s().%s(ids)\n", childStruct, whereFn))
 			b.WriteString("\tq.Limit(maxGraphQLPageSize*len(ids) + 1)\n")
 			if hasVis {
 				writeVisibilitySwitch(&b, "\t")
@@ -127,7 +127,7 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 
 			// Batch function
 			b.WriteString(fmt.Sprintf("func (r *DataLoaderRegistry) %s(ids []uuid.UUID) []batchResult[*models.%s] {\n", batchFn, childStruct))
-			b.WriteString(fmt.Sprintf("\tq := models.Query%s().%s(ids...)\n", childStruct, whereFn))
+			b.WriteString(fmt.Sprintf("\tq := models.Query%s().%s(ids)\n", childStruct, whereFn))
 			if hasVis {
 				writeVisibilitySwitch(&b, "\t")
 			}
@@ -147,7 +147,7 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 		}
 	}
 
-	return format.Source(b.Bytes())
+	return formatGraphQLWithPolicyContextExpression(b.Bytes(), `r.policyContext.(models.PolicyContext)`)
 }
 
 // writeVisibilitySwitch emits a switch on r.visibility that calls SelectPublic/SelectOwner.

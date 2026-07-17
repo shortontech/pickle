@@ -19,6 +19,8 @@ type AuthClaims struct {
 	Role   string
 }
 
+var authenticateGraphQLPolicy func(*http.Request) (any, *AuthClaims, error)
+
 // CoerceResourceIDInput applies GraphQL ResourceID scalar input semantics.
 // GraphQL values must arrive as canonical strings; numeric coercion is never
 // accepted.
@@ -41,11 +43,16 @@ func MarshalGraphQLResourceID(id ResourceID) (string, error) {
 
 // ResolveContext carries auth, variables, and dataloaders for a single GraphQL request.
 type ResolveContext struct {
-	auth       *AuthClaims
-	variables  map[string]any
-	loaders    any // *DataLoaderRegistry — defined in dataloader_gen.go
-	queryStats *QueryStats
+	auth          *AuthClaims
+	policyContext any
+	variables     map[string]any
+	loaders       any // *DataLoaderRegistry — defined in dataloader_gen.go
+	queryStats    *QueryStats
 }
+
+// PolicyContext returns the generated models.PolicyContext stored by the
+// verified GraphQL HTTP boundary.
+func (c *ResolveContext) PolicyContext() any { return c.policyContext }
 
 // IsAuthenticated returns true if the request has valid auth.
 func (c *ResolveContext) IsAuthenticated() bool {

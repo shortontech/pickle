@@ -112,7 +112,7 @@ func ruleRLSNotForced(ctx *AnalysisContext) []Finding {
 func ruleRLSRuntimeBypass(ctx *AnalysisContext) []Finding {
 	var out []Finding
 	for _, o := range ctx.LiveRLS {
-		if o.RuntimeSuperuser || o.RuntimeBypass || o.RuntimeOwner && !o.Forced {
+		if o.RuntimeSuperuser || o.RuntimeBypass || o.RuntimeOwner {
 			out = append(out, Finding{Rule: "rls_runtime_bypass", Severity: SeverityError, File: "postgres:" + o.Table, Message: "runtime database role can bypass row policy on " + o.Table})
 		}
 	}

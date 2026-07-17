@@ -112,6 +112,13 @@ func TestLiveRLSRulesUseExplicitCatalogEvidence(t *testing.T) {
 	}
 }
 
+func TestLiveRLSRuntimeOwnerIsRejectedEvenWhenForced(t *testing.T) {
+	findings := ruleRLSRuntimeBypass(&AnalysisContext{LiveRLS: []LiveRLSObservation{{Table: "messages", Enabled: true, Forced: true, RuntimeOwner: true}}})
+	if len(findings) != 1 || findings[0].Rule != "rls_runtime_bypass" {
+		t.Fatalf("forced runtime owner was not reported: %+v", findings)
+	}
+}
+
 func TestRowPolicyProjectionConflictRequiresContradictoryVisibility(t *testing.T) {
 	table := &schema.Table{Name: "messages", Columns: []*schema.Column{{Name: "secret", IsPublic: true, IsOwnerSees: true}}}
 	findings := ruleRowPolicyProjectionConflict(&AnalysisContext{Tables: []*schema.Table{table}, RowPolicies: protectedMessages()})

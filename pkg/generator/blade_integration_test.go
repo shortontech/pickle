@@ -20,7 +20,9 @@ func TestGenerateCompilesBladeViewContract(t *testing.T) {
 		}
 	}
 	mustWrite("go.mod", "module example.test/views\n\ngo 1.24\n")
-	mustWrite("resources/views/dashboard.blade.php", `<h1>{{ $page->title }}</h1>@if ($authenticated)<p>{{ $user->name }}</p>@endif`)
+	mustWrite("resources/views/layouts/app.blade.php", `<html><body>@include('partials.nav')@yield('content')</body></html>`)
+	mustWrite("resources/views/partials/nav.blade.php", `<nav>{{ $page->title }}</nav>`)
+	mustWrite("resources/views/dashboard.blade.php", `@extends('layouts.app')@section('content')@if ($authenticated)<p>{{ $user->name }}</p>@endif@endsection`)
 	for _, dir := range []string{"app/http", "app/http/requests", "app/models"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
 			t.Fatal(err)

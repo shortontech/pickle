@@ -11,6 +11,7 @@ type Span struct {
 // or PHP renderer fragments.
 type Document struct {
 	Name         string
+	Source       string
 	Nodes        []Node
 	Dependencies []Dependency
 }
@@ -71,3 +72,36 @@ type ForEach struct {
 
 func (ForEach) node()              {}
 func (n ForEach) SourceSpan() Span { return n.Span }
+
+type Extends struct {
+	Name string
+	Span Span
+}
+
+func (Extends) node()              {}
+func (n Extends) SourceSpan() Span { return n.Span }
+
+type Section struct {
+	Name string
+	Body []Node
+	Span Span
+}
+
+func (Section) node()              {}
+func (n Section) SourceSpan() Span { return n.Span }
+
+type Yield struct {
+	Name string
+	Span Span
+}
+
+func (Yield) node()              {}
+func (n Yield) SourceSpan() Span { return n.Span }
+
+type Include struct {
+	Name string
+	Span Span
+}
+
+func (Include) node()              {}
+func (n Include) SourceSpan() Span { return n.Span }

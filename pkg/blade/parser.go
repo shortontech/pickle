@@ -11,6 +11,7 @@ var (
 	pathRE      = regexp.MustCompile(`^\$[A-Za-z_][A-Za-z0-9_]*(?:->[A-Za-z_][A-Za-z0-9_]*)*$`)
 	foreachRE   = regexp.MustCompile(`^(\$[A-Za-z_][A-Za-z0-9_]*(?:->[A-Za-z_][A-Za-z0-9_]*)*)\s+as\s+(\$[A-Za-z_][A-Za-z0-9_]*)$`)
 	assetRE     = regexp.MustCompile(`^asset\(\s*(['"])([^'"]+)['"]\s*\)$`)
+	viewCallRE  = regexp.MustCompile(`^@(extends|include|section|yield)\s*\(\s*['"]([^'"]+)['"]\s*\)`)
 )
 
 // Parse converts an authored template to target-neutral IR. It deliberately
@@ -29,7 +30,7 @@ func Parse(name, source string) (*Document, error) {
 	if stop != "" {
 		return nil, diagnostic(name, source, p.pos, "unexpected @%s", stop)
 	}
-	doc := &Document{Name: name, Nodes: nodes}
+	doc := &Document{Name: name, Source: source, Nodes: nodes}
 	collectDependencies(nodes, &doc.Dependencies)
 	return doc, nil
 }
@@ -81,6 +82,28 @@ func (p *parser) nodes(stops map[string]bool) ([]Node, string, error) {
 				return out, word, nil
 			}
 			start := p.pos
+			if call := viewCallRE.FindStringSubmatch(p.source[p.pos:]); call != nil {
+				p.pos += len(call[0])
+				name := call[2]
+				switch call[1] {
+				case "extends":
+					out = append(out, Extends{Name: normalizeViewName(name), Span: Span{Start: start, End: p.pos}})
+				case "include":
+					out = append(out, Include{Name: normalizeViewName(name), Span: Span{Start: start, End: p.pos}})
+				case "yield":
+					out = append(out, Yield{Name: name, Span: Span{Start: start, End: p.pos}})
+				case "section":
+					body, stop, err := p.nodes(map[string]bool{"endsection": true})
+					if err != nil {
+						return nil, "", err
+					}
+					if stop != "endsection" {
+						return nil, "", diagnostic(p.name, p.source, start, "unterminated @section")
+					}
+					out = append(out, Section{Name: name, Body: body, Span: Span{Start: start, End: p.pos}})
+				}
+				continue
+			}
 			m := directiveRE.FindStringSubmatch(p.source[p.pos:])
 			if m == nil {
 				return nil, "", diagnostic(p.name, p.source, p.pos, "unsupported directive @%s", word)
@@ -151,8 +174,25 @@ func collectDependencies(nodes []Node, dependencies *[]Dependency) {
 			collectDependencies(node.Else, dependencies)
 		case ForEach:
 			collectDependencies(node.Body, dependencies)
+		case Extends:
+			*dependencies = append(*dependencies, Dependency{Kind: "layout", Name: node.Name, Span: node.Span})
+		case Include:
+			*dependencies = append(*dependencies, Dependency{Kind: "include", Name: node.Name, Span: node.Span})
+		case Section:
+			collectDependencies(node.Body, dependencies)
 		}
 	}
+}
+
+func normalizeViewName(name string) string {
+	name = strings.TrimSpace(strings.TrimPrefix(name, "/"))
+	if strings.HasSuffix(name, ".blade.php") {
+		return name
+	}
+	if !strings.Contains(name, "/") {
+		name = strings.ReplaceAll(name, ".", "/")
+	}
+	return name + ".blade.php"
 }
 
 func directiveWord(s string) string {

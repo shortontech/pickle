@@ -28,6 +28,19 @@ such as `{{ $user->name }}`, `@if`/`@else`/`@endif`, and
 `@foreach ($items as $item)`/`@endforeach`. Static assets use the compiler
 intrinsic `{{ asset('css/app.css') }}`.
 
+Static composition uses Laravel-shaped names:
+
+```blade
+@extends('layouts.app')
+@section('content')
+    @include('partials.summary')
+@endsection
+```
+
+Layouts place sections with `@yield('content')`. Names are resolved at
+generation time; missing dependencies, duplicate sections, missing yields,
+content outside sections, and include/layout cycles are generation errors.
+
 Expressions are paths, not PHP expressions. Arbitrary calls, raw output,
 unknown directives, `<?php`, `<?=`, `@php`, and `@endphp` fail generation with
 a source location.

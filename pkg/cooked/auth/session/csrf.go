@@ -53,9 +53,16 @@ func CSRF(ctx *pickle.Context, next func() pickle.Response) pickle.Response {
 	// Safe methods: ensure a CSRF cookie is set, then pass through.
 	method := ctx.Request().Method
 	if method == "GET" || method == "HEAD" || method == "OPTIONS" {
+		token, err := ctx.Cookie(csrfConfig.cookieName)
+		var cookie *http.Cookie
+		if err != nil {
+			cookie = newCSRFCookie(sessionID)
+			token = cookie.Value
+		}
+		ctx.SetCSRFToken(token)
 		resp := next()
-		if _, err := ctx.Cookie(csrfConfig.cookieName); err != nil {
-			resp = resp.WithCookie(newCSRFCookie(sessionID))
+		if cookie != nil {
+			resp = resp.WithCookie(cookie)
 		}
 		return resp
 	}
@@ -75,6 +82,7 @@ func CSRF(ctx *pickle.Context, next func() pickle.Response) pickle.Response {
 		return ctx.Forbidden("CSRF token invalid")
 	}
 
+	ctx.SetCSRFToken(headerToken)
 	return next()
 }
 

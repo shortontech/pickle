@@ -13,7 +13,6 @@ func (DashboardController) Index(ctx *pickle.Context) pickle.Response {
 	data.Page.Title = "Warehouse dashboard"
 	data.Page.Heading = "Dashboard"
 	data.User.Name = ctx.Auth().UserID
-	data.CsrfToken, _ = ctx.Cookie("csrf_token")
 	data.Orders.Value = "12"
 	data.Shipments.Value = "8"
 	data.Inventory.Value = "5"

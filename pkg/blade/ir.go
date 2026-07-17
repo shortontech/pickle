@@ -61,6 +61,11 @@ type RouteURL struct {
 func (RouteURL) node()              {}
 func (n RouteURL) SourceSpan() Span { return n.Span }
 
+type CSRF struct{ Span Span }
+
+func (CSRF) node()              {}
+func (n CSRF) SourceSpan() Span { return n.Span }
+
 type RouteIs struct {
 	Pattern string
 	Then    []Node

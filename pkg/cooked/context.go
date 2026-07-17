@@ -33,6 +33,18 @@ type Context struct {
 	policyContext any
 	router        *Router
 	routeName     string
+	csrfToken     string
+}
+
+// SetCSRFToken makes the verified session token available to compiled views.
+func (c *Context) SetCSRFToken(token string) { c.csrfToken = token }
+
+// CSRFToken returns the token established by session.CSRF middleware.
+func (c *Context) CSRFToken() string {
+	if c.csrfToken == "" {
+		panic("pickle: @csrf requires session.CSRF middleware on this route")
+	}
+	return c.csrfToken
 }
 
 func (c *Context) RouteName() string { return c.routeName }

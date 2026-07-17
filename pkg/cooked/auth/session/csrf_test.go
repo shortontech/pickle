@@ -92,7 +92,9 @@ func TestCSRF_GETSetsTokenCookie(t *testing.T) {
 	w := httptest.NewRecorder()
 	ctx := pickle.NewContext(w, req)
 
+	var renderedToken string
 	handler := func() pickle.Response {
+		renderedToken = ctx.CSRFToken()
 		return ctx.JSON(200, map[string]string{"ok": "true"})
 	}
 
@@ -108,6 +110,9 @@ func TestCSRF_GETSetsTokenCookie(t *testing.T) {
 			}
 			if !c.Secure {
 				t.Error("CSRF cookie should be Secure")
+			}
+			if renderedToken != c.Value {
+				t.Error("rendered CSRF token should match the response cookie")
 			}
 		}
 	}

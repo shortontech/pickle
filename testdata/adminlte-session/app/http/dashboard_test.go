@@ -14,6 +14,7 @@ func TestDashboardRendersHTMLAndEscapesData(t *testing.T) {
 	ctx := NewContext(recorder, request)
 	ctx.router = dashboardTestRouter()
 	ctx.routeName = "dashboard"
+	ctx.SetCSRFToken("test-csrf-token")
 	data := DashboardData{}
 	data.Page.Title = `<script>alert("title")</script>`
 	data.Page.Heading = "Dashboard"
@@ -37,6 +38,7 @@ func TestDashboardAssetIsContentAddressedAndCacheable(t *testing.T) {
 	pageContext := NewContext(pageRecorder, httptest.NewRequest("GET", "/", nil))
 	pageContext.router = dashboardTestRouter()
 	pageContext.routeName = "dashboard"
+	pageContext.SetCSRFToken("test-csrf-token")
 	data := DashboardData{}
 	Dashboard(pageContext, data).Write(pageRecorder)
 	match := regexp.MustCompile(`href="(/assets/[^"]+\.css)"`).FindStringSubmatch(pageRecorder.Body.String())

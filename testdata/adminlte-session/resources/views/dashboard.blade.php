@@ -43,7 +43,7 @@
         <div class="card mb-4">
             <div class="card-header"><h3 class="card-title">Session</h3></div>
             <div class="card-body"><p>Signed in as <strong>{{ $user->name }}</strong></p>
-                <form method="post" action="{{ route('auth.logout') }}"><input type="hidden" name="_token" value="{{ $csrf_token }}"><button class="btn btn-outline-danger" type="submit">Sign out</button></form>
+                <form method="post" action="{{ route('auth.logout') }}">@csrf<button class="btn btn-outline-danger" type="submit">Sign out</button></form>
             </div>
         </div>
     </div>

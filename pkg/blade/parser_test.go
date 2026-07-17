@@ -71,6 +71,26 @@ func TestNamedRouteIntrinsics(t *testing.T) {
 	}
 }
 
+func TestCSRFIntrinsic(t *testing.T) {
+	doc, err := Parse("form.blade.php", `<form method="post">@csrf</form>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Nodes) != 3 {
+		t.Fatalf("nodes = %#v", doc.Nodes)
+	}
+	if _, ok := doc.Nodes[1].(CSRF); !ok {
+		t.Fatalf("node[1] = %T", doc.Nodes[1])
+	}
+	output, err := CompileGo("pickle", []*Document{doc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(output), "ctx.CSRFToken()") {
+		t.Fatalf("generated output missing CSRFToken():\n%s", output)
+	}
+}
+
 func TestAssetIntrinsicRejectsMissingAsset(t *testing.T) {
 	doc, err := Parse("app.blade.php", `{{ asset('missing.css') }}`)
 	if err != nil {

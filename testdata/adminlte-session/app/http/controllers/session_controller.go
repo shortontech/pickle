@@ -19,7 +19,6 @@ func (SessionController) Create(ctx *pickle.Context) pickle.Response {
 	data.Page.Title = "Sign in"
 	data.Page.Heading = "AdminLTE session demo"
 	data.Email = "admin@example.test"
-	data.CsrfToken, _ = ctx.Cookie("csrf_token")
 	return pickle.Login(ctx, data)
 }
 
@@ -53,7 +52,6 @@ func invalidLogin(ctx *pickle.Context, email string) pickle.Response {
 	data.Email = email
 	data.HasError = true
 	data.Error = "The provided credentials do not match our records."
-	data.CsrfToken, _ = ctx.Cookie("csrf_token")
 	response := pickle.Login(ctx, data)
 	response.StatusCode = 422
 	return response

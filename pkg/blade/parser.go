@@ -88,6 +88,11 @@ func (p *parser) nodes(stops map[string]bool) ([]Node, string, error) {
 				return out, word, nil
 			}
 			start := p.pos
+			if word == "csrf" {
+				p.pos += len("@csrf")
+				out = append(out, CSRF{Span: Span{Start: start, End: p.pos}})
+				continue
+			}
 			if match := routeIsRE.FindStringSubmatch(p.source[p.pos:]); match != nil {
 				p.pos += len(match[0])
 				then, stop, err := p.nodes(map[string]bool{"else": true, "endrouteIs": true})

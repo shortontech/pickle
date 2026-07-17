@@ -1539,14 +1539,18 @@ func TestExportedSessionCSRFBoundary(t *testing.T) {
 	}
 
 	anonymousGetCtx := httpx.NewContext(httptest.NewRequest(http.MethodGet, "/", nil))
+	var anonymousRenderedToken string
 	anonymousGetResp := CSRF(anonymousGetCtx, func() httpx.Response {
+		anonymousRenderedToken = anonymousGetCtx.CSRFToken()
 		return anonymousGetCtx.NoContent()
 	})
 	if anonymousGetResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("anonymous GET status = %d", anonymousGetResp.StatusCode)
 	}
-	if cookie := findCookie(anonymousGetResp.Cookies, "csrf_token"); cookie != nil {
-		t.Fatalf("anonymous safe request should not receive CSRF cookie: %#v", cookie)
+	if cookie := findCookie(anonymousGetResp.Cookies, "csrf_token"); cookie == nil {
+		t.Fatal("anonymous safe request should receive a CSRF cookie")
+	} else if anonymousRenderedToken != cookie.Value {
+		t.Fatal("anonymous rendered token should match its response cookie")
 	}
 
 	oversizedSessionGetCtx := httpx.NewContext(requestWithSession(http.MethodGet, strings.Repeat("x", 256)))
@@ -1556,8 +1560,8 @@ func TestExportedSessionCSRFBoundary(t *testing.T) {
 	if oversizedSessionGetResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("oversized session safe request status = %d", oversizedSessionGetResp.StatusCode)
 	}
-	if cookie := findCookie(oversizedSessionGetResp.Cookies, "csrf_token"); cookie != nil {
-		t.Fatalf("oversized session cookie should not receive CSRF cookie: %#v", cookie)
+	if cookie := findCookie(oversizedSessionGetResp.Cookies, "csrf_token"); cookie == nil {
+		t.Fatal("safe request with an invalid session should receive an anonymous CSRF cookie")
 	}
 
 	postCtx := httpx.NewContext(requestWithSession(http.MethodPost, sessionID))
@@ -1595,10 +1599,9 @@ func TestExportedSessionCSRFBoundary(t *testing.T) {
 	anonymousPostReq.Header.Set("X-CSRF-TOKEN", generateCSRFToken("", csrfConfig.secret))
 	anonymousPostCtx := httpx.NewContext(anonymousPostReq)
 	anonymousPost := CSRF(anonymousPostCtx, func() httpx.Response {
-		t.Fatal("CSRF should block unsafe request without session")
-		return httpx.Response{}
+		return anonymousPostCtx.NoContent()
 	})
-	if anonymousPost.StatusCode != http.StatusForbidden {
+	if anonymousPost.StatusCode != http.StatusNoContent {
 		t.Fatalf("anonymous POST status = %d", anonymousPost.StatusCode)
 	}
 

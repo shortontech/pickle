@@ -10,7 +10,7 @@
             <div class="alert alert-danger" role="alert">{{ $error }}</div>
             @endif
             <form method="post" action="{{ route('auth.login.store') }}">
-                <input id="csrf-token" type="hidden" name="_token" value="{{ $csrfToken }}">
+                @csrf
                 <div class="input-group mb-3"><input class="form-control" type="email" name="email" value="{{ $email }}" aria-label="Email" autocomplete="username" required autofocus><div class="input-group-text">&#64;</div></div>
                 <div class="input-group mb-3"><input class="form-control" type="password" name="password" aria-label="Password" autocomplete="current-password" minlength="8" required><div class="input-group-text">•••</div></div>
                 <div class="d-grid gap-2"><button class="btn btn-primary" type="submit">Sign in</button></div>
@@ -19,7 +19,4 @@
         </div>
     </div>
 </div>
-<script>
-document.getElementById('csrf-token').value = decodeURIComponent((document.cookie.match('(?:^|; )csrf_token=([^;]*)') || [])[1] || '');
-</script>
 @endsection

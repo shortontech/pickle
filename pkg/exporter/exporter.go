@@ -9787,7 +9787,7 @@ type Controller struct{}
 type Response struct { Status int; StatusCode int; Body any; Headers map[string]string; Cookies []*http.Cookie }
 type AuthInfo struct { UserID string; Role string; Claims any }
 type RoleInfo struct { Slug string; Manages bool }
-type Context struct { request *http.Request; response http.ResponseWriter; auth *AuthInfo; params map[string]string; roles []string; rolesLoaded bool; isAdmin bool; router *Router; routeName string }
+type Context struct { request *http.Request; response http.ResponseWriter; auth *AuthInfo; params map[string]string; roles []string; rolesLoaded bool; isAdmin bool; router *Router; routeName string; csrfToken string }
 
 const maxBearerTokenHeaderBytes = 12 << 10
 
@@ -9823,6 +9823,8 @@ func (c *Context) RouteName() string { if c == nil { return "" }; return c.route
 func (c *Context) RouteIs(patterns ...string) bool { if c == nil { return false }; for _, pattern := range patterns { expression := regexp.QuoteMeta(pattern); expression = strings.ReplaceAll(expression, ` + "`" + `\*` + "`" + `, ".*"); if matched, _ := regexp.MatchString("^"+expression+"$", c.routeName); matched { return true } }; return false }
 func (c *Context) RouteURL(name string, params RouteParams) string { if c == nil || c.router == nil { panic("named routes are unavailable outside a routed request") }; return c.router.URL(name, params) }
 func (c *Context) RedirectToRoute(name string, params RouteParams) Response { return c.Redirect(c.RouteURL(name, params)) }
+func (c *Context) SetCSRFToken(token string) { if c != nil { c.csrfToken = token } }
+func (c *Context) CSRFToken() string { if c == nil || c.csrfToken == "" { panic("@csrf requires session.CSRF middleware on this route") }; return c.csrfToken }
 
 type ResourceQuery interface { FetchResource(ownerID string) (any, error) }
 type ResourceListQuery interface { FetchResources(ownerID string) (any, error) }
@@ -11010,16 +11012,19 @@ func CSRF(ctx *httpx.Context, next func() httpx.Response) httpx.Response {
 	sessionID := sessionIDFromRequest(r)
 	method := r.Method
 	if method == "GET" || method == "HEAD" || method == "OPTIONS" {
+		token, err := ctx.Cookie(csrfConfig.cookieName)
+		var cookie *http.Cookie
+		if err != nil { cookie = newCSRFCookie(sessionID); token = cookie.Value }
+		ctx.SetCSRFToken(token)
 		resp := next()
-		if sessionID != "" {
-			if _, err := ctx.Cookie(csrfConfig.cookieName); err != nil { resp = resp.WithCookie(newCSRFCookie(sessionID)) }
-		}
+		if cookie != nil { resp = resp.WithCookie(cookie) }
 		return resp
 	}
-	if sessionID == "" { return ctx.Forbidden("CSRF session missing") }
 	token := r.Header.Get("X-CSRF-TOKEN")
+	if token == "" { if err := r.ParseForm(); err == nil { token = r.Form.Get("_token") } }
 	if token == "" { return ctx.Forbidden("CSRF token missing") }
 	if !validateCSRFToken(token, sessionID, csrfConfig.secret) { return ctx.Forbidden("CSRF token invalid") }
+	ctx.SetCSRFToken(token)
 	return next()
 }
 

@@ -22,6 +22,21 @@ Dynamic route names and arbitrary PHP are never evaluated. Parameterized Blade
 route generation is reserved for a later typed-expression slice; Go code can
 use `ctx.RouteURL(name, pickle.RouteParams{...})` today.
 
+## CSRF forms
+
+Use `@csrf` inside any state-changing form:
+
+```blade
+<form method="post" action="{{ route('sessions.store') }}">
+    @csrf
+    <button type="submit">Sign in</button>
+</form>
+```
+
+Pickle compiles it to an escaped hidden `_token` field. The route must include
+`session.CSRF` middleware; the middleware makes the token available before the
+view renders and validates the submitted field before the controller runs.
+
 ## Source files
 
 Place authored templates under `resources/views/` and run `pickle generate`.

@@ -187,6 +187,10 @@ func writeNodes(b *bytes.Buffer, nodes []Node, root string, locals map[string]st
 			fmt.Fprintf(b, "%sout.WriteString(%q)\n", indent, url)
 		case RouteURL:
 			fmt.Fprintf(b, "%sout.WriteString(html.EscapeString(ctx.RouteURL(%q, nil)))\n", indent, n.Name)
+		case CSRF:
+			fmt.Fprintf(b, "%sout.WriteString(%q)\n", indent, `<input type="hidden" name="_token" value="`)
+			fmt.Fprintf(b, "%sout.WriteString(html.EscapeString(ctx.CSRFToken()))\n", indent)
+			fmt.Fprintf(b, "%sout.WriteString(%q)\n", indent, `">`)
 		case RouteIs:
 			fmt.Fprintf(b, "%sif ctx.RouteIs(%q) {\n", indent, n.Pattern)
 			if err := writeNodes(b, n.Then, root, locals, assets, indent+"\t"); err != nil {

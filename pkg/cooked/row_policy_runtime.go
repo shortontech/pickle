@@ -49,14 +49,14 @@ func newVerifiedPolicyContext(identities map[string]string, roles []string) Poli
 			value = strconv.FormatInt(parsed, 10)
 		}
 		if kind == "int64s" {
-			var numbers []json.Number
+			var numbers []json.RawMessage
 			if err := json.Unmarshal([]byte(value), &numbers); err != nil || len(numbers) > 1024 {
 				continue
 			}
 			set := map[int64]bool{}
 			valid := true
 			for _, number := range numbers {
-				raw := number.String()
+				raw := string(number)
 				parsed, err := strconv.ParseInt(raw, 10, 64)
 				if err != nil || strconv.FormatInt(parsed, 10) != raw {
 					valid = false

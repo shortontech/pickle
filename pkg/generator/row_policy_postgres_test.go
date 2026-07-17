@@ -80,3 +80,33 @@ func TestPostgresRowPredicateLowersInt64AndMembership(t *testing.T) {
 		}
 	}
 }
+
+func TestNumericRowPolicyFingerprintIncludesIdentityPredicateAndColumnType(t *testing.T) {
+	resolved := func(columnType schema.ColumnType, membership bool) ResolvedRowPolicy {
+		column := schema.PolicyColumn("company_id")
+		column.ColumnType, column.HasColumnType = columnType, true
+		identityType := schema.PolicyIdentityInt64
+		predicate := schema.Equal(column, schema.Identity("companies"))
+		if membership {
+			identityType = schema.PolicyIdentityInt64s
+			predicate = schema.In(column, schema.Identity("companies"))
+		}
+		return ResolvedRowPolicy{
+			Protection:       schema.RowProtection{Table: "items", Rules: []schema.RowRule{{Key: "companies", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &predicate}}},
+			EnforcementClass: "portable", Identities: map[string]schema.PolicyIdentityType{"companies": identityType}, PhysicalPlans: map[string]string{"select": "select"},
+		}
+	}
+	fingerprint := func(policy ResolvedRowPolicy) string {
+		plans, err := LowerPostgresRowPolicies([]ResolvedRowPolicy{policy})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return GeneratedRowPolicyFingerprint(plans)
+	}
+	scalarInteger := fingerprint(resolved(schema.Integer, false))
+	setInteger := fingerprint(resolved(schema.Integer, true))
+	setBigInteger := fingerprint(resolved(schema.BigInteger, true))
+	if scalarInteger == setInteger || setInteger == setBigInteger || scalarInteger == setBigInteger {
+		t.Fatalf("fingerprints did not preserve normalized type transitions: scalar=%s set-int=%s set-bigint=%s", scalarInteger, setInteger, setBigInteger)
+	}
+}

@@ -134,6 +134,27 @@ func TestNestedCreateMutation(t *testing.T) {
 	}
 }
 
+func TestNestedCreateMutationWithStringParentPrimaryKey(t *testing.T) {
+	tables := []*schema.Table{
+		{Name: "accounts", Columns: []*schema.Column{{Name: "id", Type: schema.String, IsPrimaryKey: true}}},
+		{Name: "entries", Columns: []*schema.Column{{Name: "id", Type: schema.UUID, IsPrimaryKey: true}, {Name: "account_id", Type: schema.String}}},
+	}
+	src, err := GenerateGraphQLCRUDResolvers(CRUDConfig{
+		Tables: tables, Relationships: []SchemaRelationship{{ParentTable: "accounts", ChildTable: "entries", Type: "has_many"}},
+		ModelsImport: "myapp/app/models", PackageName: "graphql",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	if !strings.Contains(text, "parentID := parentIDStr") || !strings.Contains(text, "_, err := models.QueryAccount()") || !strings.Contains(text, "WhereID(parentID).First()") {
+		t.Fatalf("string parent key nested create has invalid assignment:\n%s", text)
+	}
+	if strings.Contains(text, "parentID, err := parentIDStr") {
+		t.Fatalf("string parent key was treated as a two-result parser:\n%s", text)
+	}
+}
+
 func TestConstraintValidation(t *testing.T) {
 	tables := []*schema.Table{
 		{

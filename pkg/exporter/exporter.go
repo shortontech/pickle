@@ -2303,8 +2303,15 @@ func (e *exporter) writeGraphQLTargetFiles(schemaSDL string, actions []exportedG
 	b.WriteString("  package: resolver\n\n")
 	b.WriteString("autobind:\n")
 	fmt.Fprintf(&b, "  - %s/app/models\n", e.modulePath)
-	if len(actions) > 0 {
+	if strings.Contains(schemaSDL, "scalar BigInt") || len(actions) > 0 {
 		b.WriteString("\nmodels:\n")
+	}
+	if strings.Contains(schemaSDL, "scalar BigInt") {
+		b.WriteString("  BigInt:\n")
+		b.WriteString("    model:\n")
+		b.WriteString("      - github.com/99designs/gqlgen/graphql.Int64\n")
+	}
+	if len(actions) > 0 {
 		b.WriteString("  JSON:\n")
 		b.WriteString("    model:\n")
 		b.WriteString("      - map[string]interface{}\n")
@@ -3761,7 +3768,13 @@ func writeGraphQLAPIAssignInputField(b *strings.Builder, col *schema.Column, exp
 		} else {
 			fmt.Fprintf(b, "\trecord.%s = %s\n", field, expr)
 		}
-	case schema.Integer, schema.BigInteger, schema.Boolean:
+	case schema.BigInteger:
+		if col.IsNullable && update {
+			fmt.Fprintf(b, "\tvalue := int64(%s)\n\trecord.%s = &value\n", expr, field)
+		} else {
+			fmt.Fprintf(b, "\trecord.%s = int64(%s)\n", field, expr)
+		}
+	case schema.Integer, schema.Boolean:
 		if col.IsNullable && update {
 			fmt.Fprintf(b, "\tvalue := %s\n\trecord.%s = &value\n", expr, field)
 		} else {
@@ -11354,7 +11367,7 @@ func newVerifiedPolicyContext(identities map[string]string, roles []string) Poli
         kind, ok := types[name]; if !ok || value == "" || len(value) > 65536 { continue }
         if kind == "uuid" { parsed, err := uuid.Parse(value); if err != nil { continue }; value = parsed.String() }
         if kind == "int64" { parsed, err := strconv.ParseInt(value,10,64); if err != nil || strconv.FormatInt(parsed,10) != value { continue }; value = strconv.FormatInt(parsed,10) }
-        if kind == "int64s" { var numbers []json.Number; if err:=json.Unmarshal([]byte(value),&numbers);err!=nil||len(numbers)>1024{continue};set:=map[int64]bool{};valid:=true;for _,number:=range numbers{raw:=number.String();parsed,err:=strconv.ParseInt(raw,10,64);if err!=nil||strconv.FormatInt(parsed,10)!=raw{valid=false;break};set[parsed]=true};if !valid{continue};canonical:=make([]int64,0,len(set));for number:=range set{canonical=append(canonical,number)};sort.Slice(canonical,func(i,j int)bool{return canonical[i]<canonical[j]});encoded,_:=json.Marshal(canonical);value=string(encoded) }
+        if kind == "int64s" { var numbers []json.RawMessage; if err:=json.Unmarshal([]byte(value),&numbers);err!=nil||len(numbers)>1024{continue};set:=map[int64]bool{};valid:=true;for _,number:=range numbers{raw:=string(number);parsed,err:=strconv.ParseInt(raw,10,64);if err!=nil||strconv.FormatInt(parsed,10)!=raw{valid=false;break};set[parsed]=true};if !valid{continue};canonical:=make([]int64,0,len(set));for number:=range set{canonical=append(canonical,number)};sort.Slice(canonical,func(i,j int)bool{return canonical[i]<canonical[j]});encoded,_:=json.Marshal(canonical);value=string(encoded) }
         ids[name] = value
     }
     roleSet := map[string]bool{}; for _, role := range roles { if role != "" && len(role) <= 1024 { roleSet[role] = true } }

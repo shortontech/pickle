@@ -13,8 +13,10 @@ func graphqlType(col *schema.Column) string {
 		return "ID"
 	case schema.String, schema.Text:
 		return "String"
-	case schema.Integer, schema.BigInteger:
+	case schema.Integer:
 		return "Int"
+	case schema.BigInteger:
+		return "BigInt"
 	case schema.Decimal:
 		return "String" // precision-safe
 	case schema.Boolean:
@@ -154,6 +156,12 @@ func pkParseExpr(tbl *schema.Table, varName string) (string, bool) {
 	if pk == nil || pk.Type == schema.UUID {
 		return fmt.Sprintf("uuid.Parse(%s)", varName), true
 	}
-	// String PKs don't need parsing
+	if pk.Type == schema.BigInteger {
+		return fmt.Sprintf("strconv.ParseInt(%s, 10, 64)", varName), true
+	}
+	if pk.Type == schema.Integer {
+		return fmt.Sprintf("strconv.Atoi(%s)", varName), true
+	}
+	// String-compatible PKs don't need parsing.
 	return varName, false
 }

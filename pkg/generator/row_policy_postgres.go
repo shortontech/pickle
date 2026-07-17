@@ -2,6 +2,7 @@ package generator
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 
 type GeneratedPostgresRowPolicy struct {
 	Name, Table, Using, WithCheck string
+	Normalized                    string
 	Command                       schema.RLSPolicyCommand
 	RuleKeys                      []string
 }
@@ -88,7 +90,15 @@ func lowerPostgresOperation(resolved ResolvedRowPolicy, operation string) (Gener
 		join = " AND "
 	}
 	command := map[string]schema.RLSPolicyCommand{"select": schema.RLSSelect, "insert": schema.RLSInsert, "update": schema.RLSUpdate, "delete": schema.RLSDelete}[operation]
-	return GeneratedPostgresRowPolicy{Name: generatedRowPolicyName(resolved.Protection.Table, operation), Table: resolved.Protection.Table, Command: command, Using: joinPredicates(usingParts, join), WithCheck: joinPredicates(checkParts, join), RuleKeys: keys}, true, nil
+	normalized, err := json.Marshal(struct {
+		Operation  string
+		Identities map[string]schema.PolicyIdentityType
+		Rules      []schema.RowRule
+	}{Operation: operation, Identities: resolved.Identities, Rules: resolved.Protection.Rules})
+	if err != nil {
+		return GeneratedPostgresRowPolicy{}, false, fmt.Errorf("encoding normalized policy: %w", err)
+	}
+	return GeneratedPostgresRowPolicy{Name: generatedRowPolicyName(resolved.Protection.Table, operation), Table: resolved.Protection.Table, Command: command, Using: joinPredicates(usingParts, join), WithCheck: joinPredicates(checkParts, join), Normalized: string(normalized), RuleKeys: keys}, true, nil
 }
 
 func postgresSubjectPredicate(subject schema.RowSubject, identities map[string]schema.PolicyIdentityType) (string, error) {

@@ -318,6 +318,37 @@ func TestGraphQLOperationExposureMutationOnly(t *testing.T) {
 	}
 }
 
+func TestGraphQLBigIntegerUsesInt64ScalarAndParsers(t *testing.T) {
+	table := &schema.Table{Name: "movements", Columns: []*schema.Column{
+		{Name: "id", Type: schema.BigInteger, IsPrimaryKey: true},
+		{Name: "organization_id", Type: schema.BigInteger},
+	}}
+	plans := []GraphQLModelPlan{{Table: table, Operations: map[string]bool{"list": true, "create": true}}}
+	sdl := BuildSDLWithPlans(plans, nil, nil)
+	for _, want := range []string{"scalar BigInt", "id: BigInt!", "organizationId: BigInt!", "eq: BigInt", "in: [BigInt!]"} {
+		if !strings.Contains(sdl, want) {
+			t.Errorf("BIGINT SDL missing %q:\n%s", want, sdl)
+		}
+	}
+	resolvers, err := GenerateGraphQLResolversWithPlans(plans, nil, "myapp/app/models", "graphql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(resolvers), "strconv.ParseInt(v, 10, 64)") || strings.Contains(string(resolvers), "int64(parseInt(v))") {
+		t.Fatalf("BIGINT filter does not parse directly to int64:\n%s", resolvers)
+	}
+	if !strings.Contains(string(resolvers), `return fmt.Errorf("invalid BigInt eq filter")`) || !strings.Contains(string(resolvers), `return fmt.Errorf("invalid BigInt in filter")`) {
+		t.Fatalf("BIGINT invalid filters do not fail closed:\n%s", resolvers)
+	}
+	mutations, err := GenerateGraphQLMutationsWithPlans(plans, "myapp/app/models", "graphql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mutations), "strconv.ParseInt(s, 10, 64)") || strings.Contains(string(mutations), "int64(parseInt(s))") {
+		t.Fatalf("BIGINT mutation does not parse directly to int64:\n%s", mutations)
+	}
+}
+
 func TestGraphQLLegacyOperationExposureStillFullCRUD(t *testing.T) {
 	table := &schema.Table{
 		Name: "posts",

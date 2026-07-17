@@ -30,3 +30,19 @@ func TestRowPolicyApplicationOnlyClassificationIsHonest(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestRenderRowPolicyIncludesNumericMembership(t *testing.T) {
+	predicate := schema.In(schema.PolicyColumn("suborganization_id"), schema.Identity("allowed_company_ids"))
+	policy := generator.ResolvedRowPolicy{
+		Protection:       schema.RowProtection{Table: "inventory_movements", Rules: []schema.RowRule{{Key: "allowed_company", Subject: schema.RowSubject{Kind: schema.SubjectAuthenticated}, Select: &predicate}}},
+		Identities:       map[string]schema.PolicyIdentityType{"user_id": schema.PolicyIdentityInt64, "allowed_company_ids": schema.PolicyIdentityInt64s},
+		EnforcementClass: "portable",
+		PhysicalPlans:    map[string]string{"select": "select"},
+	}
+	output := RenderRowPolicy(policy)
+	for _, want := range []string{"user_id (int64)", "allowed_company_ids (int64s)", "in(column(suborganization_id), identity(allowed_company_ids))"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output missing %q: %s", want, output)
+		}
+	}
+}

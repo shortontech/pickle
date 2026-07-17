@@ -39,6 +39,7 @@ func GenerateGraphQLResolversWithPlans(plans []GraphQLModelPlan, relationships [
 	b.WriteString(fmt.Sprintf("package %s\n\n", packageName))
 	b.WriteString("import (\n")
 	b.WriteString("\t\"fmt\"\n")
+	b.WriteString("\t\"strconv\"\n")
 	b.WriteString("\t\"strings\"\n")
 	b.WriteString("\t\"time\"\n\n")
 	b.WriteString(fmt.Sprintf("\t\"%s\"\n", modelsImport))
@@ -49,6 +50,7 @@ func GenerateGraphQLResolversWithPlans(plans []GraphQLModelPlan, relationships [
 	b.WriteString("var _ = time.RFC3339\n")
 	b.WriteString("var _ = uuid.Nil\n")
 	b.WriteString("var _ = strings.ToLower\n\n")
+	b.WriteString("var _ = strconv.IntSize\n\n")
 
 	// RootResolver dispatches GraphQL operations.
 	b.WriteString("// RootResolver dispatches GraphQL queries and mutations.\n")
@@ -197,7 +199,7 @@ func writeFilterApplier(b *bytes.Buffer, tbl *schema.Table) {
 				writeFilterLikeOp(b, goMethod)
 			}
 			writeFilterInOp(b, goMethod, col)
-		case "Int":
+		case "Int", "BigInt":
 			writeFilterOp(b, "eq", goMethod, col, "string")
 			writeFilterComparisonOps(b, goMethod, col)
 			writeFilterInOp(b, goMethod, col)
@@ -229,7 +231,9 @@ func writeFilterOp(b *bytes.Buffer, op, goMethod string, col *schema.Column, goT
 		b.WriteString("\t\t\t}\n")
 	case schema.BigInteger:
 		b.WriteString(fmt.Sprintf("\t\t\tif v, ok := fm[\"%s\"].(string); ok {\n", op))
-		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s(int64(parseInt(v)))\n", goMethod))
+		b.WriteString("\t\t\t\tn, err := strconv.ParseInt(v, 10, 64)\n")
+		b.WriteString(fmt.Sprintf("\t\t\t\tif err != nil { return fmt.Errorf(\"invalid BigInt %s filter\") }\n", op))
+		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s(n)\n", goMethod))
 		b.WriteString("\t\t\t}\n")
 	default:
 		b.WriteString(fmt.Sprintf("\t\t\tif v, ok := fm[\"%s\"].(string); ok {\n", op))
@@ -272,6 +276,16 @@ func writeFilterInOp(b *bytes.Buffer, goMethod string, col *schema.Column) {
 		b.WriteString("\t\t\t\t\t}\n")
 		b.WriteString("\t\t\t\t}\n")
 		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%sIn(ints)\n", goMethod))
+	case schema.BigInteger:
+		b.WriteString("\t\t\t\tints := make([]int64, 0, len(v))\n")
+		b.WriteString("\t\t\t\tfor _, item := range v {\n")
+		b.WriteString("\t\t\t\t\ts, ok := item.(string)\n")
+		b.WriteString("\t\t\t\t\tif !ok { return fmt.Errorf(\"invalid BigInt in filter\") }\n")
+		b.WriteString("\t\t\t\t\tn, err := strconv.ParseInt(s, 10, 64)\n")
+		b.WriteString("\t\t\t\t\tif err != nil { return fmt.Errorf(\"invalid BigInt in filter\") }\n")
+		b.WriteString("\t\t\t\t\tints = append(ints, n)\n")
+		b.WriteString("\t\t\t\t}\n")
+		b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%sIn(ints)\n", goMethod))
 	default:
 		if col.IsNullable {
 			b.WriteString("\t\t\t\tstrs := make([]*string, 0, len(v))\n")
@@ -309,7 +323,9 @@ func writeFilterComparisonOps(b *bytes.Buffer, goMethod string, col *schema.Colu
 			b.WriteString("\t\t\t}\n")
 		case schema.BigInteger:
 			b.WriteString(fmt.Sprintf("\t\t\tif v, ok := fm[\"%s\"].(string); ok {\n", op.gqlOp))
-			b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s%s(int64(parseInt(v)))\n", goMethod, op.goSuffix))
+			b.WriteString("\t\t\t\tn, err := strconv.ParseInt(v, 10, 64)\n")
+			b.WriteString(fmt.Sprintf("\t\t\t\tif err != nil { return fmt.Errorf(\"invalid BigInt %s filter\") }\n", op.gqlOp))
+			b.WriteString(fmt.Sprintf("\t\t\t\tq.Where%s%s(n)\n", goMethod, op.goSuffix))
 			b.WriteString("\t\t\t}\n")
 		}
 	}

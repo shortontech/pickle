@@ -95,6 +95,37 @@ func TestRowPolicyConformanceMatrixEnumeratesEverySurface(t *testing.T) {
 	}
 }
 
+func TestNumericIdentityConformanceCorpusIsVersioned(t *testing.T) {
+	var corpus struct {
+		Version int `json:"version"`
+		Cases   []struct {
+			ID, Kind, Input, Canonical string
+			Valid                      bool
+		} `json:"cases"`
+	}
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "row-policy-conformance", "numeric_identities.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	if corpus.Version < 1 || len(corpus.Cases) == 0 {
+		t.Fatalf("invalid numeric identity corpus version=%d cases=%d", corpus.Version, len(corpus.Cases))
+	}
+	seen := map[string]bool{}
+	kinds := map[string]bool{}
+	for _, test := range corpus.Cases {
+		if test.ID == "" || seen[test.ID] || (test.Kind != "int64" && test.Kind != "int64s") || (test.Valid && test.Canonical == "") {
+			t.Fatalf("invalid numeric identity case: %#v", test)
+		}
+		seen[test.ID], kinds[test.Kind] = true, true
+	}
+	if !kinds["int64"] || !kinds["int64s"] {
+		t.Fatalf("numeric identity corpus kinds=%v", kinds)
+	}
+}
+
 func TestEveryPredicateLowersInEveryLegalOperationPosition(t *testing.T) {
 	identity := schema.Identity("user_id")
 	column := schema.PolicyColumn("user_id")

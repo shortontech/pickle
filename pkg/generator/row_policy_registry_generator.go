@@ -273,7 +273,7 @@ func GeneratedRowPolicyFingerprint(plans []PostgresRowPolicyPlan) string {
 	var parts []string
 	for _, plan := range plans {
 		for _, policy := range plan.Policies {
-			parts = append(parts, plan.Table+":"+policy.Name+":"+string(policy.Command)+":"+policy.Using+":"+policy.WithCheck)
+			parts = append(parts, plan.Table+":"+policy.Name+":"+string(policy.Command)+":"+policy.Using+":"+policy.WithCheck+":"+policy.Normalized)
 		}
 	}
 	sort.Strings(parts)

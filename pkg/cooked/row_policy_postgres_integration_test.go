@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -328,6 +329,42 @@ func runPostgresDillTenantConformance(t *testing.T, admin, runtimeDB *sql.DB, ta
 			t.Fatalf("tenant RLS DDL %s: %v", stmt, err)
 		}
 	}
+	var numericCorpus struct {
+		Cases []struct {
+			ID, Kind, Input, Canonical string
+			Valid                      bool
+		} `json:"cases"`
+	}
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "row-policy-conformance", "numeric_identities.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &numericCorpus); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range numericCorpus.Cases {
+		t.Run("postgres_canonical_"+test.ID, func(t *testing.T) {
+			setting, expression := "pickle.identity.organization_id", "pickle_identity_int64('organization_id')::text"
+			if test.Kind == "int64s" {
+				setting, expression = "pickle.identity.allowed_company_ids", "array_to_json(pickle_identity_int64s('allowed_company_ids'))::text"
+			}
+			tx, err := runtimeDB.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if _, err := tx.Exec("SELECT set_config($1,$2,true)", setting, test.Input); err != nil {
+				t.Fatal(err)
+			}
+			var got sql.NullString
+			if err := tx.QueryRow("SELECT " + expression).Scan(&got); err != nil {
+				t.Fatalf("helper raised for input classification %s: %v", test.ID, err)
+			}
+			if got.Valid != test.Valid || (got.Valid && got.String != test.Canonical) {
+				t.Fatalf("helper canonical=%q valid=%t want=%q/%t", got.String, got.Valid, test.Canonical, test.Valid)
+			}
+		})
+	}
 	for _, policy := range plans[0].Policies {
 		stmt := "CREATE POLICY " + quote(policy.Name) + " ON " + quote(table) + " FOR " + string(policy.Command) + " TO PUBLIC"
 		if policy.Using != "" {
@@ -343,6 +380,35 @@ func runPostgresDillTenantConformance(t *testing.T, admin, runtimeDB *sql.DB, ta
 	var count int
 	if err := withSQLPolicyContext(runtimeDB, ctx, func(tx *sql.Tx) error { return tx.QueryRow("SELECT count(*) FROM " + quote(table)).Scan(&count) }); err != nil || count != 2 {
 		t.Fatalf("tenant RLS lane count=%d err=%v", count, err)
+	}
+	contexts := []struct {
+		organization, companies string
+		want                    int
+	}{{"10", `[101]`, 1}, {"11", `[103]`, 1}}
+	var wg sync.WaitGroup
+	errors := make(chan error, len(contexts))
+	for _, test := range contexts {
+		test := test
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			isolated := NewVerifiedPolicyContext(map[string]string{"organization_id": test.organization, "allowed_company_ids": test.companies}, nil)
+			var got int
+			err := withSQLPolicyContext(runtimeDB, isolated, func(tx *sql.Tx) error {
+				return tx.QueryRow("SELECT count(*) FROM " + quote(table)).Scan(&got)
+			})
+			if err != nil || got != test.want {
+				errors <- fmt.Errorf("context %s/%s count=%d want=%d err=%v", test.organization, test.companies, got, test.want, err)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errors)
+	for err := range errors {
+		t.Error(err)
+	}
+	if err := runtimeDB.QueryRow("SELECT count(*) FROM " + quote(table)).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("pooled integer policy context leaked count=%d err=%v", count, err)
 	}
 	if err := withSQLPolicyContext(runtimeDB, ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec("INSERT INTO " + quote(table) + " VALUES (10,10,101)")

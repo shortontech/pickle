@@ -34,6 +34,7 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 	b.WriteString(fmt.Sprintf("\t\"%s\"\n", modelsImport))
 	b.WriteString("\t\"github.com/google/uuid\"\n")
 	b.WriteString(")\n\n")
+	b.WriteString("var _ = uuid.Nil\n\n")
 
 	// Registry struct — holds per-request loaders and visibility tier
 	b.WriteString("// DataLoaderRegistry holds per-request loader instances.\n")
@@ -44,11 +45,12 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 		fkCol := strings.TrimSuffix(rel.ParentTable, "s") + "_id"
 		childStruct := tableToStructName(rel.ChildTable)
 		loaderField := snakeToCamel(rel.ChildTable) + "By" + snakeToPascal(fkCol)
+		keyType := pkGoType(tableByName[rel.ParentTable])
 		switch rel.Type {
 		case "has_many":
-			b.WriteString(fmt.Sprintf("\t%s *batchLoader[uuid.UUID, []*models.%s]\n", loaderField, childStruct))
+			b.WriteString(fmt.Sprintf("\t%s *batchLoader[%s, []*models.%s]\n", loaderField, keyType, childStruct))
 		case "has_one":
-			b.WriteString(fmt.Sprintf("\t%s *batchLoader[uuid.UUID, *models.%s]\n", loaderField, childStruct))
+			b.WriteString(fmt.Sprintf("\t%s *batchLoader[%s, *models.%s]\n", loaderField, keyType, childStruct))
 		}
 	}
 	b.WriteString("}\n\n")
@@ -70,6 +72,7 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 		loaderField := snakeToCamel(rel.ChildTable) + "By" + snakeToPascal(fkCol)
 		batchFn := "batch" + snakeToPascal(rel.ChildTable) + "By" + snakeToPascal(fkCol)
 		whereFn := "Where" + snakeToPascal(fkCol) + "In"
+		keyType := pkGoType(tableByName[rel.ParentTable])
 
 		childTable := tableByName[rel.ChildTable]
 		hasVis := childTable != nil && hasVisibilityAnnotations(childTable)
@@ -77,8 +80,8 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 		switch rel.Type {
 		case "has_many":
 			// Load function (called from field resolver)
-			b.WriteString(fmt.Sprintf("func (r *RootResolver) load%sBy%s(ctx *ResolveContext, parentID uuid.UUID, selections []Field) (any, error) {\n",
-				childStruct+"List", snakeToPascal(fkCol)))
+			b.WriteString(fmt.Sprintf("func (r *RootResolver) load%sBy%s(ctx *ResolveContext, parentID %s, selections []Field) (any, error) {\n",
+				childStruct+"List", snakeToPascal(fkCol), keyType))
 			b.WriteString(fmt.Sprintf("\trecords, err := ctx.loaders.(*DataLoaderRegistry).%s.load(parentID)\n", loaderField))
 			b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n")
 			b.WriteString("\tresult := make([]map[string]any, len(records))\n")
@@ -90,7 +93,7 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 			b.WriteString("\treturn result, nil\n}\n\n")
 
 			// Batch function
-			b.WriteString(fmt.Sprintf("func (r *DataLoaderRegistry) %s(ids []uuid.UUID) []batchResult[[]*models.%s] {\n", batchFn, childStruct))
+			b.WriteString(fmt.Sprintf("func (r *DataLoaderRegistry) %s(ids []%s) []batchResult[[]*models.%s] {\n", batchFn, keyType, childStruct))
 			b.WriteString(fmt.Sprintf("\tq := models.Query%s().%s(ids)\n", childStruct, whereFn))
 			b.WriteString("\tq.Limit(maxGraphQLPageSize*len(ids) + 1)\n")
 			if hasVis {
@@ -102,7 +105,7 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 			b.WriteString("\t\tfor i := range results {\n")
 			b.WriteString(fmt.Sprintf("\t\t\tresults[i] = batchResult[[]*models.%s]{err: err}\n", childStruct))
 			b.WriteString("\t\t}\n\t\treturn results\n\t}\n\n")
-			b.WriteString(fmt.Sprintf("\tgrouped := make(map[uuid.UUID][]*models.%s)\n", childStruct))
+			b.WriteString(fmt.Sprintf("\tgrouped := make(map[%s][]*models.%s)\n", keyType, childStruct))
 			b.WriteString(fmt.Sprintf("\tfor i := range records {\n"))
 			b.WriteString(fmt.Sprintf("\t\tgrouped[records[i].%s] = append(grouped[records[i].%s], &records[i])\n",
 				snakeToPascal(fkCol), snakeToPascal(fkCol)))
@@ -117,8 +120,8 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 
 		case "has_one":
 			// Load function
-			b.WriteString(fmt.Sprintf("func (r *RootResolver) load%sBy%s(ctx *ResolveContext, parentID uuid.UUID, selections []Field) (any, error) {\n",
-				childStruct, snakeToPascal(fkCol)))
+			b.WriteString(fmt.Sprintf("func (r *RootResolver) load%sBy%s(ctx *ResolveContext, parentID %s, selections []Field) (any, error) {\n",
+				childStruct, snakeToPascal(fkCol), keyType))
 			b.WriteString(fmt.Sprintf("\trecord, err := ctx.loaders.(*DataLoaderRegistry).%s.load(parentID)\n", loaderField))
 			b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n")
 			b.WriteString("\tif record == nil {\n\t\treturn nil, nil\n\t}\n")
@@ -126,7 +129,7 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 			b.WriteString("}\n\n")
 
 			// Batch function
-			b.WriteString(fmt.Sprintf("func (r *DataLoaderRegistry) %s(ids []uuid.UUID) []batchResult[*models.%s] {\n", batchFn, childStruct))
+			b.WriteString(fmt.Sprintf("func (r *DataLoaderRegistry) %s(ids []%s) []batchResult[*models.%s] {\n", batchFn, keyType, childStruct))
 			b.WriteString(fmt.Sprintf("\tq := models.Query%s().%s(ids)\n", childStruct, whereFn))
 			if hasVis {
 				writeVisibilitySwitch(&b, "\t")
@@ -137,7 +140,7 @@ func GenerateGraphQLDataloaders(tables []*schema.Table, relationships []SchemaRe
 			b.WriteString("\t\tfor i := range results {\n")
 			b.WriteString(fmt.Sprintf("\t\t\tresults[i] = batchResult[*models.%s]{err: err}\n", childStruct))
 			b.WriteString("\t\t}\n\t\treturn results\n\t}\n\n")
-			b.WriteString(fmt.Sprintf("\tbyKey := make(map[uuid.UUID]*models.%s)\n", childStruct))
+			b.WriteString(fmt.Sprintf("\tbyKey := make(map[%s]*models.%s)\n", keyType, childStruct))
 			b.WriteString(fmt.Sprintf("\tfor i := range records {\n"))
 			b.WriteString(fmt.Sprintf("\t\tbyKey[records[i].%s] = &records[i]\n", snakeToPascal(fkCol)))
 			b.WriteString("\t}\n")

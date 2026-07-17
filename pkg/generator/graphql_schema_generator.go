@@ -73,6 +73,7 @@ func BuildSDLWithPlans(plans []GraphQLModelPlan, relationships []SchemaRelations
 
 	// Custom scalars
 	b.WriteString("scalar DateTime\n\n")
+	b.WriteString("scalar BigInt\n\n")
 	if HasResourceIDFields(requests) {
 		b.WriteString("scalar ResourceID\n\n")
 	}
@@ -205,6 +206,8 @@ func filterTypeForGraphQL(gqlType string) string {
 		return "StringFilter"
 	case "Int":
 		return "IntFilter"
+	case "BigInt":
+		return "BigIntFilter"
 	case "Boolean":
 		return "BooleanFilter"
 	case "DateTime":
@@ -258,6 +261,15 @@ input IntFilter {
   lt: Int
   lte: Int
   in: [Int!]
+}
+
+input BigIntFilter {
+  eq: BigInt
+  gt: BigInt
+  gte: BigInt
+  lt: BigInt
+  lte: BigInt
+  in: [BigInt!]
 }
 
 input BooleanFilter {

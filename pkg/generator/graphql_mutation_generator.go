@@ -61,6 +61,7 @@ func GenerateGraphQLMutationsWithPlans(plans []GraphQLModelPlan, modelsImport, p
 	b.WriteString(fmt.Sprintf("package %s\n\n", packageName))
 	b.WriteString("import (\n")
 	b.WriteString("\t\"fmt\"\n")
+	b.WriteString("\t\"strconv\"\n")
 	if needsJSON {
 		b.WriteString("\t\"encoding/json\"\n")
 	}
@@ -80,6 +81,7 @@ func GenerateGraphQLMutationsWithPlans(plans []GraphQLModelPlan, modelsImport, p
 	b.WriteString(")\n\n")
 
 	b.WriteString("var _ = uuid.Nil\n")
+	b.WriteString("var _ = strconv.IntSize\n")
 	if needsTime {
 		b.WriteString("var _ = time.RFC3339\n")
 	}
@@ -342,6 +344,7 @@ func writeInputExtractor(b *bytes.Buffer, tbl *schema.Table, prefix string) {
 	b.WriteString("\tif !ok {\n")
 	b.WriteString(fmt.Sprintf("\t\treturn nil, fmt.Errorf(\"%s: expected object\")\n", fnName))
 	b.WriteString("\t}\n")
+	b.WriteString("\t_ = m\n")
 	b.WriteString(fmt.Sprintf("\tinput := &%s{}\n", inputType))
 
 	for _, col := range tbl.Columns {
@@ -378,7 +381,8 @@ func writeInputExtractor(b *bytes.Buffer, tbl *schema.Table, prefix string) {
 			b.WriteString("\t\t}\n")
 		case "int64":
 			b.WriteString("\t\tif s, ok := v.(string); ok {\n")
-			b.WriteString("\t\t\tn := int64(parseInt(s))\n")
+			b.WriteString("\t\t\tn, err := strconv.ParseInt(s, 10, 64)\n")
+			b.WriteString("\t\t\tif err != nil { return input, fmt.Errorf(\"invalid BigInt input for %s\", s) }\n")
 			if isPointer {
 				b.WriteString(fmt.Sprintf("\t\t\tinput.%s = &n\n", goFieldName))
 			} else {

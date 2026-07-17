@@ -11361,10 +11361,23 @@ import "gorm.io/gorm"
 type Tx struct { policyContext *PolicyContext; DB *gorm.DB }
 `,
 		"row_policy_runtime_test.go": `package models
-import "testing"
+import (
+ "strings"
+ "testing"
+)
 func TestNumericPolicy(t *testing.T) {
 	rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{"movements": {Table:"movements", IdentityTypes:map[string]string{"organization_id":"int64", "allowed_company_ids":"int64s"}}}
 	ctx := newVerifiedPolicyContext(map[string]string{"organization_id":"10", "allowed_company_ids":"[102,101,102]"}, nil)
+	if got,ok:=ctx.identity("allowed_company_ids");!ok||got!="[101,102]"{t.Fatalf("canonical set=%q present=%t",got,ok)}
+	for name,value:=range map[string]string{"empty":"","space":" 1","plus":"+1","zero":"01","decimal":"1.0","exponent":"1e2","hex":"0x10","overflow":"9223372036854775808"}{
+		invalid:=newVerifiedPolicyContext(map[string]string{"organization_id":value},nil);if _,ok:=invalid.identity("organization_id");ok{t.Fatalf("%s scalar admitted",name)}
+	}
+	for name,value:=range map[string]string{"string":"[\"1\"]","float":"[1.0]","exponent":"[1e2]","null":"[null]","nested":"[[1]]","object":"[{\"id\":1}]","boolean":"[true]","trailing":"[1]x","overflow":"[9223372036854775808]"}{
+		invalid:=newVerifiedPolicyContext(map[string]string{"allowed_company_ids":value},nil);if _,ok:=invalid.identity("allowed_company_ids");ok{t.Fatalf("%s set admitted",name)}
+	}
+	overCount:="["+strings.TrimSuffix(strings.Repeat("1,",1025),",")+"]"
+	overLength:="["+strings.Repeat(" ",65536)+"]"
+	for name,value:=range map[string]string{"over_count":overCount,"over_length":overLength}{invalid:=newVerifiedPolicyContext(map[string]string{"allowed_company_ids":value},nil);if _,ok:=invalid.identity("allowed_company_ids");ok{t.Fatalf("%s set admitted",name)}}
 	organization := int64(10)
 	company := int64(102)
 	record := struct { OrganizationID *int64 ` + "`gorm:\"column:organization_id\"`" + `; CompanyID *int64 ` + "`gorm:\"column:company_id\"`" + ` }{&organization,&company}
@@ -11388,6 +11401,104 @@ func TestNumericPolicy(t *testing.T) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("exported numeric row-policy runtime failed: %v\n%s", err, output)
 	}
+}
+
+func TestDillTenantPolicyGeneratedProjectAndExportCompile(t *testing.T) {
+	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "zero-graphql"))
+	fixtures := map[string]string{
+		"database/migrations/2026_07_16_100000_create_dill_tenant_fixture.go": `package migrations
+type CreateDillTenantFixture_2026_07_16_100000 struct{ Migration }
+func (m *CreateDillTenantFixture_2026_07_16_100000) Up() {
+	m.CreateTable("organizations", func(t *Table) { t.BigInteger("id").PrimaryKey(); t.String("name", 255).NotNull() })
+	m.CreateTable("suborganizations", func(t *Table) {
+		t.BigInteger("id").PrimaryKey()
+		t.BigInteger("organization_id").NotNull().ForeignKey("organizations", "id")
+	})
+	m.CreateTable("inventory_movements", func(t *Table) {
+		t.BigInteger("id").PrimaryKey()
+		t.BigInteger("organization_id").NotNull().ForeignKey("organizations", "id")
+		t.BigInteger("suborganization_id").NotNull().ForeignKey("suborganizations", "id")
+		t.Integer("quantity").NotNull()
+	})
+	m.CreateTable("inventory_snapshots", func(t *Table) {
+		t.Immutable()
+		t.BigInteger("organization_id").NotNull().ForeignKey("organizations", "id")
+		t.BigInteger("suborganization_id").NotNull().ForeignKey("suborganizations", "id")
+		t.Integer("quantity").NotNull()
+	})
+}
+func (m *CreateDillTenantFixture_2026_07_16_100000) Down() {
+	m.DropTableIfExists("inventory_snapshots")
+	m.DropTableIfExists("inventory_movements")
+	m.DropTableIfExists("suborganizations")
+	m.DropTableIfExists("organizations")
+}
+`,
+		"database/policies/2026_07_16_110000_inventory_access.go": `package policies
+type InventoryAccess_2026_07_16_110000 struct{ Policy }
+func (p *InventoryAccess_2026_07_16_110000) Up() {
+	p.IdentityInt64("user_id")
+	p.IdentityInt64("organization_id")
+	p.IdentityInt64s("allowed_company_ids")
+	p.Protect("inventory_movements", func(rows *Rows) {
+		rows.ExistingRowsAlreadyValid("tenant fixture starts empty")
+		rows.Rule("organization_companies").ForAuthenticated().
+			Select(And(Equal(PolicyColumn("organization_id"), Identity("organization_id")), In(PolicyColumn("suborganization_id"), Identity("allowed_company_ids")))).
+			Insert(And(Equal(PolicyColumn("organization_id"), Identity("organization_id")), In(PolicyColumn("suborganization_id"), Identity("allowed_company_ids")))).
+			Update(
+				Existing(And(Equal(PolicyColumn("organization_id"), Identity("organization_id")), In(PolicyColumn("suborganization_id"), Identity("allowed_company_ids")))),
+				Proposed(And(Equal(PolicyColumn("organization_id"), Identity("organization_id")), In(PolicyColumn("suborganization_id"), Identity("allowed_company_ids")))),
+			).
+			Delete(And(Equal(PolicyColumn("organization_id"), Identity("organization_id")), In(PolicyColumn("suborganization_id"), Identity("allowed_company_ids"))))
+	})
+	p.Protect("inventory_snapshots", func(rows *Rows) {
+		rows.ExistingRowsAlreadyValid("tenant fixture starts empty")
+		rows.AllowApplicationOnly("non_bijective_physical_plan")
+		rows.Rule("organization_companies").ForAuthenticated().
+			Select(And(Equal(PolicyColumn("organization_id"), Identity("organization_id")), In(PolicyColumn("suborganization_id"), Identity("allowed_company_ids")))).
+			Insert(And(Equal(PolicyColumn("organization_id"), Identity("organization_id")), In(PolicyColumn("suborganization_id"), Identity("allowed_company_ids"))))
+	})
+}
+func (p *InventoryAccess_2026_07_16_110000) Down() {
+	p.Unprotect("inventory_snapshots")
+	p.Unprotect("inventory_movements")
+}
+`,
+	}
+	for name, contents := range fixtures {
+		path := filepath.Join(projectDir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	project, err := generator.DetectProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := generator.Generate(project, filepath.Join("..", "..", "pkg")); err != nil {
+		t.Fatalf("generate Dill-shaped fixture: %v", err)
+	}
+	assertFileContains(t, filepath.Join(projectDir, "app", "models", "row_policies_gen.go"), `"allowed_company_ids": "int64s"`)
+	assertFileContains(t, filepath.Join(projectDir, "app", "models", "row_policies_gen.go"), `Kind: "in"`)
+	assertFileContains(t, filepath.Join(projectDir, "database", "policies", "row_policies_gen.go"), `pickle_identity_int64s`)
+	assertFileNotContains(t, filepath.Join(projectDir, "database", "policies", "row_policies_gen.go"), `pickle_inventory_snapshots_select`)
+	runExported(t, projectDir, "go", "test", "./...")
+
+	out := filepath.Join(t.TempDir(), "exported")
+	if _, err := Export(Options{ProjectDir: projectDir, OutDir: out, Force: true, PicklePkgDir: filepath.Join("..", "..", "pkg")}); err != nil {
+		schema, _ := os.ReadFile(filepath.Join(out, "app", "graphqlapi", "schema.graphqls"))
+		t.Fatalf("export Dill-shaped fixture: %v\n%s", err, schema)
+	}
+	assertNoExportFileContains(t, out, "github.com/shortontech/pickle")
+	assertNoGoListDependency(t, out, "github.com/shortontech/pickle")
+	assertFileContains(t, filepath.Join(out, "app", "models", "row_policies_gen.go"), `"allowed_company_ids": "int64s"`)
+	assertFileContains(t, filepath.Join(out, "app", "graphqlapi", "schema.graphqls"), "scalar BigInt")
+	assertFileContains(t, filepath.Join(out, "gqlgen.yml"), "github.com/99designs/gqlgen/graphql.Int64")
+	assertFileContains(t, filepath.Join(out, "app", "models", "row_policies_gen.go"), `EnforcementClass: "application_only"`)
+	runExported(t, out, "go", "test", "./...")
 }
 
 func TestExportedIntegrityQuerySupportPreservesStructuralSemantics(t *testing.T) {

@@ -28,6 +28,10 @@ func GenerateGraphQLCRUDResolvers(cfg CRUDConfig) ([]byte, error) {
 
 	relByParent := map[string][]SchemaRelationship{}
 	childToParent := map[string]SchemaRelationship{}
+	tablesByName := map[string]*schema.Table{}
+	for _, table := range cfg.Tables {
+		tablesByName[table.Name] = table
+	}
 	for _, rel := range cfg.Relationships {
 		relByParent[rel.ParentTable] = append(relByParent[rel.ParentTable], rel)
 		childToParent[rel.ChildTable] = rel
@@ -39,6 +43,7 @@ func GenerateGraphQLCRUDResolvers(cfg CRUDConfig) ([]byte, error) {
 	b.WriteString("import (\n")
 	b.WriteString("\t\"encoding/json\"\n")
 	b.WriteString("\t\"fmt\"\n")
+	b.WriteString("\t\"strconv\"\n")
 	b.WriteString("\t\"strings\"\n")
 	b.WriteString("\t\"time\"\n\n")
 	b.WriteString(fmt.Sprintf("\t\"%s\"\n", cfg.ModelsImport))
@@ -49,6 +54,7 @@ func GenerateGraphQLCRUDResolvers(cfg CRUDConfig) ([]byte, error) {
 	b.WriteString("var _ = uuid.Nil\n")
 	b.WriteString("var _ = strings.ToLower\n")
 	b.WriteString("var _ = fmt.Sprintf\n\n")
+	b.WriteString("var _ = strconv.IntSize\n\n")
 
 	// Generate ownership-scoped create mutations
 	for _, plan := range plans {
@@ -84,7 +90,7 @@ func GenerateGraphQLCRUDResolvers(cfg CRUDConfig) ([]byte, error) {
 			if !ok {
 				continue
 			}
-			writeNestedCreateMutation(&b, tbl, rel)
+			writeNestedCreateMutation(&b, tbl, rel, tablesByName[rel.ParentTable])
 		}
 	}
 
@@ -291,7 +297,7 @@ func writeCRUDDeleteMutation(b *bytes.Buffer, tbl *schema.Table) {
 
 // writeNestedCreateMutation generates a parent-scoped create mutation for child tables.
 // e.g., createPost(userId: ID!, input: CreatePostInput!) sets the FK automatically.
-func writeNestedCreateMutation(b *bytes.Buffer, tbl *schema.Table, rel SchemaRelationship) {
+func writeNestedCreateMutation(b *bytes.Buffer, tbl *schema.Table, rel SchemaRelationship, parentTable *schema.Table) {
 	structName := tableToStructName(tbl.Name)
 	parentSingular := strings.TrimSuffix(rel.ParentTable, "s")
 	fkCol := parentSingular + "_id"
@@ -308,13 +314,22 @@ func writeNestedCreateMutation(b *bytes.Buffer, tbl *schema.Table, rel SchemaRel
 	b.WriteString("\tif !ok {\n")
 	b.WriteString(fmt.Sprintf("\t\treturn nil, BadInput(\"create%s: %s argument required\")\n", structName, parentArgName))
 	b.WriteString("\t}\n")
-	b.WriteString("\tparentID, err := uuid.Parse(parentIDStr)\n")
-	b.WriteString("\tif err != nil {\n")
-	b.WriteString(fmt.Sprintf("\t\treturn nil, BadInput(\"create%s: invalid %s\")\n", structName, parentArgName))
-	b.WriteString("\t}\n\n")
+	parseExpr, needsError := pkParseExpr(parentTable, "parentIDStr")
+	if needsError {
+		b.WriteString(fmt.Sprintf("\tparentID, err := %s\n", parseExpr))
+		b.WriteString("\tif err != nil {\n")
+		b.WriteString(fmt.Sprintf("\t\treturn nil, BadInput(\"create%s: invalid %s\")\n", structName, parentArgName))
+		b.WriteString("\t}\n\n")
+	} else {
+		b.WriteString(fmt.Sprintf("\tparentID := %s\n\n", parseExpr))
+	}
 
 	// Verify parent exists
-	b.WriteString(fmt.Sprintf("\t_, err = models.Query%s().WhereID(parentID).First()\n", parentStructName))
+	if needsError {
+		b.WriteString(fmt.Sprintf("\t_, err = models.Query%s().WhereID(parentID).First()\n", parentStructName))
+	} else {
+		b.WriteString(fmt.Sprintf("\t_, err := models.Query%s().WhereID(parentID).First()\n", parentStructName))
+	}
 	b.WriteString("\tif err != nil {\n")
 	b.WriteString(fmt.Sprintf("\t\treturn nil, NotFound(\"%s\")\n", parentSingular))
 	b.WriteString("\t}\n\n")

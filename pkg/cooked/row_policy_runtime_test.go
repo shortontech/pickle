@@ -1,6 +1,9 @@
 package cooked
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -206,10 +209,82 @@ func TestVerifiedPolicyContextCanonicalizesInt64AndSets(t *testing.T) {
 	if value, ok := ctx.identity("allowed_company_ids"); !ok || value != `[-4,101,102]` {
 		t.Fatalf("company identities=%q %t", value, ok)
 	}
-	for name, value := range map[string]string{"leading_zero": "01", "plus": "+1", "overflow": "9223372036854775808"} {
+	for name, value := range map[string]string{
+		"empty": "", "whitespace": " 1", "plus": "+1", "leading_zero": "01",
+		"negative_zero": "-0", "decimal": "1.0", "exponent": "1e2", "hex": "0x10",
+		"malformed": "nope", "overflow_positive": "9223372036854775808",
+		"overflow_negative": "-9223372036854775809",
+	} {
 		invalid := NewVerifiedPolicyContext(map[string]string{"organization_id": value}, nil)
 		if _, ok := invalid.identity("organization_id"); ok {
 			t.Fatalf("%s int64 was admitted", name)
+		}
+	}
+	for name, value := range map[string]string{
+		"zero": "0", "positive": "42", "negative": "-42",
+		"minimum": "-9223372036854775808", "maximum": "9223372036854775807",
+	} {
+		valid := NewVerifiedPolicyContext(map[string]string{"organization_id": value}, nil)
+		if got, ok := valid.identity("organization_id"); !ok || got != value {
+			t.Fatalf("%s int64=%q present=%t", name, got, ok)
+		}
+	}
+
+	validSets := map[string]string{
+		"empty": "[]", "one": "[1]", "duplicate_unsorted": "[2,1,2]",
+		"boundaries": "[-9223372036854775808,0,9223372036854775807]",
+	}
+	wantSets := map[string]string{
+		"empty": "[]", "one": "[1]", "duplicate_unsorted": "[1,2]",
+		"boundaries": "[-9223372036854775808,0,9223372036854775807]",
+	}
+	for name, value := range validSets {
+		valid := NewVerifiedPolicyContext(map[string]string{"allowed_company_ids": value}, nil)
+		if got, ok := valid.identity("allowed_company_ids"); !ok || got != wantSets[name] {
+			t.Fatalf("%s int64s=%q present=%t", name, got, ok)
+		}
+	}
+	invalidSets := map[string]string{
+		"string": `["1"]`, "float": `[1.0]`, "exponent": `[1e2]`, "null": `[null]`,
+		"nested": `[[1]]`, "object": `[{"id":1}]`, "boolean": `[true]`,
+		"trailing": `[1] garbage`, "malformed": `[1,`, "overflow": `[9223372036854775808]`,
+	}
+	for name, value := range invalidSets {
+		invalid := NewVerifiedPolicyContext(map[string]string{"allowed_company_ids": value}, nil)
+		if _, ok := invalid.identity("allowed_company_ids"); ok {
+			t.Fatalf("%s int64s was admitted", name)
+		}
+	}
+	overCount := "[" + strings.TrimSuffix(strings.Repeat("1,", 1025), ",") + "]"
+	overLength := "[" + strings.Repeat(" ", 65536) + "]"
+	for name, value := range map[string]string{"over_count": overCount, "over_length": overLength} {
+		invalid := NewVerifiedPolicyContext(map[string]string{"allowed_company_ids": value}, nil)
+		if _, ok := invalid.identity("allowed_company_ids"); ok {
+			t.Fatalf("%s int64s was admitted", name)
+		}
+	}
+	var corpus struct {
+		Cases []struct {
+			ID, Kind, Input, Canonical string
+			Valid                      bool
+		} `json:"cases"`
+	}
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "row-policy-conformance", "numeric_identities.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range corpus.Cases {
+		name := "organization_id"
+		if test.Kind == "int64s" {
+			name = "allowed_company_ids"
+		}
+		context := NewVerifiedPolicyContext(map[string]string{name: test.Input}, nil)
+		got, ok := context.identity(name)
+		if ok != test.Valid || (ok && got != test.Canonical) {
+			t.Errorf("corpus %s canonical=%q present=%t want=%q/%t", test.ID, got, ok, test.Canonical, test.Valid)
 		}
 	}
 }

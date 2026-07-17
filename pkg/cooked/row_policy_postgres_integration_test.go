@@ -24,6 +24,11 @@ type postgresTextPolicyMessage struct {
 	ID        string `db:"id"`
 	TenantKey string `db:"tenant_key"`
 }
+type postgresNullablePolicyMessage struct {
+	ID     string  `db:"id"`
+	UserID *string `db:"user_id"`
+	Marker int     `db:"marker"`
+}
 
 func TestPostgresRowPolicyThreeLaneConformance(t *testing.T) {
 	dsn := os.Getenv("PICKLE_POSTGRES_TEST_DSN")
@@ -231,9 +236,277 @@ func TestPostgresRowPolicyThreeLaneConformance(t *testing.T) {
 		t.Fatal(err)
 	}
 	runPostgresPredicateCorpus(t, admin, runtimeDB, table, quote)
+	runPostgresOperationPositionCorpus(t, admin, runtimeDB, table, quote)
 	runPostgresSubjectCorpus(t, admin, runtimeDB, table, quote)
 	runPostgresPolicyTransitionConformance(t, admin, runtimeDB, table, quote)
 	runPostgresTextIdentityConformance(t, admin, runtimeDB, table+"_text", quote)
+}
+
+func runPostgresOperationPositionCorpus(t *testing.T, admin, runtimeDB *sql.DB, table string, quote func(string) string) {
+	t.Helper()
+	if _, err := admin.Exec("ALTER TABLE " + quote(table) + " ADD COLUMN marker integer NOT NULL DEFAULT 0"); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Exec("ALTER TABLE " + quote(table) + " DROP COLUMN marker")
+	type corpusCase struct {
+		ID, Predicate, Identity, Row string
+		Decision                     bool
+	}
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "row-policy-conformance", "cases.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []corpusCase
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	related := table + "_operation_memberships"
+	if _, err := admin.Exec("CREATE TABLE " + quote(related) + " (parent_id uuid, user_id uuid)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec("GRANT SELECT ON " + quote(related) + " TO PUBLIC"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { admin.Exec("DROP TABLE IF EXISTS " + quote(related) + " CASCADE") })
+	matching := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	different := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	rowID := "77777777-7777-4777-8777-777777777777"
+	insertID := "66666666-6666-4666-8666-666666666666"
+	positions := []string{"insert", "update_old", "update_new", "delete"}
+
+	for _, tc := range cases {
+		for _, position := range positions {
+			if tc.Predicate == "exists" && (position == "insert" || position == "update_new") {
+				continue
+			}
+			t.Run("position_"+tc.ID+"_"+position, func(t *testing.T) {
+				if _, err := admin.Exec("ALTER TABLE " + quote(table) + " DISABLE ROW LEVEL SECURITY"); err != nil {
+					t.Fatal(err)
+				}
+				rows, err := admin.Query("SELECT policyname FROM pg_policies WHERE schemaname='public' AND tablename=$1", table)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var names []string
+				for rows.Next() {
+					var name string
+					if err := rows.Scan(&name); err != nil {
+						t.Fatal(err)
+					}
+					names = append(names, name)
+				}
+				rows.Close()
+				for _, name := range names {
+					if _, err := admin.Exec("DROP POLICY " + quote(name) + " ON " + quote(table)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := admin.Exec("DELETE FROM " + quote(table)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.Exec("DELETE FROM " + quote(related)); err != nil {
+					t.Fatal(err)
+				}
+				rowValue := matching
+				if tc.Row == "different" {
+					rowValue = different
+				}
+				var stored any = rowValue
+				if tc.Row == "null" {
+					stored = nil
+				}
+				existingValue := stored
+				if position == "update_new" {
+					existingValue = matching
+				}
+				if position != "insert" {
+					if _, err := admin.Exec("INSERT INTO "+quote(table)+" (id,user_id) VALUES ($1,$2)", rowID, existingValue); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if tc.Predicate == "exists" && tc.Row == "related_matching" {
+					if _, err := admin.Exec("INSERT INTO "+quote(related)+" VALUES ($1,$2)", rowID, matching); err != nil {
+						t.Fatal(err)
+					}
+				}
+
+				base := schema.Equal(schema.PolicyColumn("user_id"), schema.Identity("user_id"))
+				predicate := base
+				switch tc.Predicate {
+				case "allow":
+					predicate = schema.Allow()
+				case "deny":
+					predicate = schema.Deny()
+				case "not_equal":
+					predicate = schema.NotEqual(schema.PolicyColumn("user_id"), schema.Identity("user_id"))
+				case "and":
+					predicate = schema.And(base, schema.Allow())
+				case "or":
+					predicate = schema.Or(base, schema.Deny())
+				case "not":
+					predicate = schema.Not(base)
+				case "exists":
+					predicate = schema.Exists("memberships", base)
+					predicate.RelatedTable, predicate.LocalColumn, predicate.ForeignColumn = related, "id", "parent_id"
+				}
+				ctxIDs := map[string]string{"user_id": matching}
+				if tc.Identity == "missing" {
+					ctxIDs = nil
+				}
+				ctx := NewVerifiedPolicyContext(ctxIDs, nil)
+				runtimePredicate := postgresTestRuntimePredicate(predicate)
+				runtimeRule := rowPolicyRuntimeRule{Key: "matrix", SubjectKind: "public"}
+				schemaRule := schema.RowRule{Key: "matrix", Subject: schema.RowSubject{Kind: schema.SubjectPublic}}
+				switch position {
+				case "insert":
+					runtimeRule.Insert, schemaRule.Insert = runtimePredicate, &predicate
+				case "update_old":
+					allowRuntime := postgresTestRuntimePredicate(schema.Allow())
+					allowSchema := schema.Allow()
+					runtimeRule.UpdateOld, runtimeRule.UpdateNew = runtimePredicate, allowRuntime
+					schemaRule.UpdateOld, schemaRule.UpdateNew = &predicate, &allowSchema
+				case "update_new":
+					allowRuntime := postgresTestRuntimePredicate(schema.Allow())
+					allowSchema := schema.Allow()
+					runtimeRule.UpdateOld, runtimeRule.UpdateNew = allowRuntime, runtimePredicate
+					schemaRule.UpdateOld, schemaRule.UpdateNew = &allowSchema, &predicate
+				case "delete":
+					runtimeRule.Delete, schemaRule.Delete = runtimePredicate, &predicate
+				}
+				rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{}
+				registerRowPolicyRuntime(rowPolicyRuntimeDefinition{Table: table, SubjectCombination: "any", IdentityTypes: map[string]string{"user_id": "uuid"}, Rules: []rowPolicyRuntimeRule{runtimeRule}})
+				applicationAllowed := runApplicationPolicyOperation(runtimeDB, table, position, rowID, insertID, stored, ctx)
+				if applicationAllowed != tc.Decision {
+					t.Fatalf("application decision=%t want %t", applicationAllowed, tc.Decision)
+				}
+
+				operation := position
+				if strings.HasPrefix(position, "update_") {
+					operation = "update"
+				}
+				resolved := generator.ResolvedRowPolicy{Protection: schema.RowProtection{Table: table, SubjectCombination: schema.AnyOfSubjects, Rules: []schema.RowRule{schemaRule}}, EnforcementClass: "portable", Identities: map[string]schema.PolicyIdentityType{"user_id": schema.PolicyIdentityUUID}, PhysicalPlans: map[string]string{operation: operation}}
+				plans, err := generator.LowerPostgresRowPolicies([]generator.ResolvedRowPolicy{resolved})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, policy := range plans[0].Policies {
+					statement := "CREATE POLICY " + quote(policy.Name) + " ON " + quote(table) + " FOR " + string(policy.Command) + " TO PUBLIC"
+					if policy.Using != "" {
+						statement += " USING (" + policy.Using + ")"
+					}
+					if policy.WithCheck != "" {
+						statement += " WITH CHECK (" + policy.WithCheck + ")"
+					}
+					if _, err := admin.Exec(statement); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := admin.Exec("CREATE POLICY " + quote("pickle_conformance_select") + " ON " + quote(table) + " FOR SELECT TO PUBLIC USING (TRUE)"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.Exec("ALTER TABLE " + quote(table) + " ENABLE ROW LEVEL SECURITY"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.Exec("ALTER TABLE " + quote(table) + " FORCE ROW LEVEL SECURITY"); err != nil {
+					t.Fatal(err)
+				}
+				if got := runDirectPolicyOperation(runtimeDB, table, position, rowID, insertID, stored, ctx); got != tc.Decision {
+					t.Fatalf("RLS decision=%t want %t", got, tc.Decision)
+				}
+				if got := runDualPolicyOperation(runtimeDB, table, position, rowID, insertID, stored, ctx); got != tc.Decision {
+					t.Fatalf("dual decision=%t want %t", got, tc.Decision)
+				}
+			})
+		}
+	}
+}
+
+func runApplicationPolicyOperation(db *sql.DB, table, position, rowID, insertID string, value any, ctx PolicyContext) bool {
+	tx, err := db.Begin()
+	if err != nil {
+		return false
+	}
+	defer tx.Rollback()
+	q := Query[postgresNullablePolicyMessage](table).UseTransaction(tx).WithPolicyContext(ctx)
+	record := &postgresNullablePolicyMessage{ID: rowID}
+	if text, ok := value.(string); ok {
+		record.UserID = &text
+	}
+	switch position {
+	case "insert":
+		return evaluateRowPolicyRecord(table, "insert", &ctx, record) == nil
+	case "update_new":
+		return evaluateRowPolicyRecord(table, "update_new", &ctx, record) == nil
+	case "update_old", "delete":
+		operation := position
+		if err := q.preparePolicy(operation); err != nil {
+			return false
+		}
+		query, args := q.where("id", rowID).Limit(1).buildSelect()
+		var found postgresNullablePolicyMessage
+		return tx.QueryRow(query, args...).Scan(dbScanDest(&found)...) == nil
+	}
+	return false
+}
+
+func runDirectPolicyOperation(db *sql.DB, table, position, rowID, insertID string, value any, ctx PolicyContext) bool {
+	tx, err := db.Begin()
+	if err != nil {
+		return false
+	}
+	defer tx.Rollback()
+	if err := setSQLPolicyContext(tx, ctx); err != nil {
+		return false
+	}
+	var result sql.Result
+	switch position {
+	case "insert":
+		result, err = tx.Exec("INSERT INTO "+quoteRuntimeQualifiedIdent(table)+" (id,user_id) VALUES ($1,$2)", insertID, value)
+	case "update_old", "update_new":
+		result, err = tx.Exec("UPDATE "+quoteRuntimeQualifiedIdent(table)+" SET user_id=$1, marker=1 WHERE id=$2", value, rowID)
+	case "delete":
+		result, err = tx.Exec("DELETE FROM "+quoteRuntimeQualifiedIdent(table)+" WHERE id=$1", rowID)
+	}
+	if err != nil {
+		return false
+	}
+	rows, _ := result.RowsAffected()
+	return rows > 0
+}
+
+func runDualPolicyOperation(db *sql.DB, table, position, rowID, insertID string, value any, ctx PolicyContext) bool {
+	tx, err := db.Begin()
+	if err != nil {
+		return false
+	}
+	defer tx.Rollback()
+	wrapped := &Tx{conn: tx}
+	if err := wrapped.WithPostgresPolicyContext(ctx); err != nil {
+		return false
+	}
+	q := Query[postgresNullablePolicyMessage](table).UseTransaction(tx).WithPolicyContext(ctx)
+	record := &postgresNullablePolicyMessage{ID: rowID, Marker: 1}
+	if text, ok := value.(string); ok {
+		record.UserID = &text
+	}
+	switch position {
+	case "insert":
+		record.ID = insertID
+		return q.Create(record) == nil
+	case "update_old", "update_new":
+		if q.where("id", rowID).Update(record) != nil {
+			return false
+		}
+		var marker int
+		return tx.QueryRow("SELECT marker FROM "+quoteRuntimeQualifiedIdent(table)+" WHERE id=$1", rowID).Scan(&marker) == nil && marker == 1
+	case "delete":
+		if q.where("id", rowID).Delete(record) != nil {
+			return false
+		}
+		var count int
+		return tx.QueryRow("SELECT count(*) FROM "+quoteRuntimeQualifiedIdent(table)+" WHERE id=$1", rowID).Scan(&count) == nil && count == 0
+	}
+	return false
 }
 
 func runPostgresTextIdentityConformance(t *testing.T, admin, runtimeDB *sql.DB, table string, quote func(string) string) {
@@ -730,6 +1003,13 @@ func withSQLPolicyContext(db *sql.DB, ctx PolicyContext, fn func(*sql.Tx) error)
 		return err
 	}
 	defer tx.Rollback()
+	if err := setSQLPolicyContext(tx, ctx); err != nil {
+		return err
+	}
+	return fn(tx)
+}
+
+func setSQLPolicyContext(tx *sql.Tx, ctx PolicyContext) error {
 	for name, value := range ctx.identities {
 		if _, err := tx.Exec("SELECT set_config($1,$2,true)", "pickle.identity."+name, value); err != nil {
 			return err
@@ -738,5 +1018,5 @@ func withSQLPolicyContext(db *sql.DB, ctx PolicyContext, fn func(*sql.Tx) error)
 	if _, err := tx.Exec("SELECT set_config($1,$2,true)", "pickle.identity.roles", ctx.encodedRoles()); err != nil {
 		return err
 	}
-	return fn(tx)
+	return nil
 }

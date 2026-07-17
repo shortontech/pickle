@@ -173,3 +173,24 @@ func TestVerifiedPolicyContextCanonicalizesTypedIdentities(t *testing.T) {
 		t.Fatal("malformed UUID was admitted")
 	}
 }
+
+func TestRuntimePredicateDereferencesNullablePolicyColumn(t *testing.T) {
+	old := rowPolicyRuntimeRegistry
+	rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{"users": {Table: "users", IdentityTypes: map[string]string{"user_id": "uuid"}}}
+	t.Cleanup(func() { rowPolicyRuntimeRegistry = old })
+	value := "11111111-1111-4111-8111-111111111111"
+	record := struct {
+		WorkspaceID *string `db:"user_id"`
+	}{WorkspaceID: &value}
+	ctx := NewVerifiedPolicyContext(map[string]string{"user_id": value}, nil)
+	predicate := rowPolicyRuntimePredicate{Kind: "equal", Children: []rowPolicyRuntimePredicate{{Kind: "column", Name: "user_id"}, {Kind: "identity", Name: "user_id"}}}
+	allowed, err := evaluateRuntimePredicate(predicate, ctx, record)
+	if err != nil || !allowed {
+		t.Fatalf("nullable policy column allowed=%t err=%v", allowed, err)
+	}
+	record.WorkspaceID = nil
+	allowed, err = evaluateRuntimePredicate(predicate, ctx, record)
+	if err != nil || allowed {
+		t.Fatalf("null policy column allowed=%t err=%v", allowed, err)
+	}
+}

@@ -54,7 +54,7 @@ func newVerifiedPolicyContext(identities map[string]string, roles []string) Poli
 // PublicPolicyContext creates an identity-free context. It is safe for
 // unauthenticated entry points because it can match only explicitly public
 // policy subjects.
-func PublicPolicyContext() PolicyContext { return newVerifiedPolicyContext(nil,nil) }
+func PublicPolicyContext() PolicyContext { return newVerifiedPolicyContext(nil, nil) }
 func (c PolicyContext) identity(name string) (string, bool) {
 	value, ok := c.identities[name]
 	return value, ok && value != ""
@@ -374,7 +374,14 @@ func runtimePredicateValue(p rowPolicyRuntimePredicate, context PolicyContext, r
 		rt := rv.Type()
 		for i := 0; i < rt.NumField(); i++ {
 			if rt.Field(i).Tag.Get("db") == p.Name {
-				return rv.Field(i).Interface(), nil
+				value := rv.Field(i)
+				if value.Kind() == reflect.Pointer {
+					if value.IsNil() {
+						return nil, nil
+					}
+					value = value.Elem()
+				}
+				return value.Interface(), nil
 			}
 		}
 		return nil, fmt.Errorf("record missing policy column %q", p.Name)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -40,6 +41,40 @@ func newVerifiedPolicyContext(identities map[string]string, roles []string) Poli
 			}
 			value = parsed.String()
 		}
+		if kind == "int64" {
+			parsed, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || strconv.FormatInt(parsed, 10) != value {
+				continue
+			}
+			value = strconv.FormatInt(parsed, 10)
+		}
+		if kind == "int64s" {
+			var numbers []json.Number
+			if err := json.Unmarshal([]byte(value), &numbers); err != nil || len(numbers) > 1024 {
+				continue
+			}
+			set := map[int64]bool{}
+			valid := true
+			for _, number := range numbers {
+				raw := number.String()
+				parsed, err := strconv.ParseInt(raw, 10, 64)
+				if err != nil || strconv.FormatInt(parsed, 10) != raw {
+					valid = false
+					break
+				}
+				set[parsed] = true
+			}
+			if !valid {
+				continue
+			}
+			canonical := make([]int64, 0, len(set))
+			for number := range set {
+				canonical = append(canonical, number)
+			}
+			sort.Slice(canonical, func(i, j int) bool { return canonical[i] < canonical[j] })
+			encoded, _ := json.Marshal(canonical)
+			value = string(encoded)
+		}
 		copyIDs[key] = value
 	}
 	roleSet := make(map[string]bool, len(roles))
@@ -71,7 +106,7 @@ func (c PolicyContext) encodedRoles() string {
 }
 
 type rowPolicyRuntimePredicate struct {
-	Kind, Name                               string
+	Kind, Name, ColumnType                   string
 	RelatedTable, LocalColumn, ForeignColumn string
 	Children                                 []rowPolicyRuntimePredicate
 }
@@ -171,11 +206,31 @@ func compileRuntimePredicate(p rowPolicyRuntimePredicate, alias string, context 
 		}
 		return prefix + quoteRuntimeIdent(p.Name), nil, nil
 	case "identity":
-		value, ok := context.identity(p.Name)
+		value, ok := runtimePolicyIdentityValue(context, p.Name)
 		if !ok {
 			return "", nil, fmt.Errorf("missing identity %q", p.Name)
 		}
 		return "?", []any{value}, nil
+	case "in":
+		if len(p.Children) != 2 || p.Children[0].Kind != "column" || p.Children[1].Kind != "identity" {
+			return "", nil, fmt.Errorf("invalid In predicate")
+		}
+		column, _, err := compileRuntimePredicate(p.Children[0], alias, context)
+		if err != nil {
+			return "", nil, err
+		}
+		value, ok := context.identity(p.Children[1].Name)
+		if !ok {
+			return "", nil, fmt.Errorf("missing identity %q", p.Children[1].Name)
+		}
+		var numbers []int64
+		if err := json.Unmarshal([]byte(value), &numbers); err != nil {
+			return "", nil, fmt.Errorf("invalid identity set %q", p.Children[1].Name)
+		}
+		if len(numbers) == 0 {
+			return "FALSE", nil, nil
+		}
+		return column + " IN (" + strings.TrimSuffix(strings.Repeat("?,", len(numbers)), ",") + ")", int64Values(numbers), nil
 	case "exists":
 		if len(p.Children) != 1 || p.RelatedTable == "" || p.LocalColumn == "" || p.ForeignColumn == "" {
 			return "", nil, fmt.Errorf("invalid relationship predicate")
@@ -321,6 +376,32 @@ func evaluateRuntimePredicate(p rowPolicyRuntimePredicate, context PolicyContext
 			equal = !equal
 		}
 		return equal, nil
+	case "in":
+		if len(p.Children) != 2 {
+			return false, fmt.Errorf("invalid In predicate")
+		}
+		left, err := runtimePredicateValue(p.Children[0], context, record)
+		if err != nil || isRuntimePolicyNull(left) {
+			return false, err
+		}
+		raw, ok := context.identity(p.Children[1].Name)
+		if !ok {
+			return false, nil
+		}
+		var numbers []int64
+		if err := json.Unmarshal([]byte(raw), &numbers); err != nil {
+			return false, nil
+		}
+		candidate, ok := runtimeInt64(left)
+		if !ok {
+			return false, nil
+		}
+		for _, number := range numbers {
+			if candidate == number {
+				return true, nil
+			}
+		}
+		return false, nil
 	case "and":
 		for _, child := range p.Children {
 			ok, err := evaluateRuntimePredicate(child, context, record)
@@ -360,7 +441,7 @@ func isRuntimePolicyNull(value any) bool {
 }
 func runtimePredicateValue(p rowPolicyRuntimePredicate, context PolicyContext, record any) (any, error) {
 	if p.Kind == "identity" {
-		value, ok := context.identity(p.Name)
+		value, ok := runtimePolicyIdentityValue(context, p.Name)
 		if !ok {
 			return nil, fmt.Errorf("missing identity %q", p.Name)
 		}
@@ -381,10 +462,56 @@ func runtimePredicateValue(p rowPolicyRuntimePredicate, context PolicyContext, r
 					}
 					value = value.Elem()
 				}
-				return value.Interface(), nil
+				result := value.Interface()
+				if p.ColumnType == "integer" {
+					number, ok := runtimeInt64(result)
+					if !ok || number < -2147483648 || number > 2147483647 {
+						return nil, nil
+					}
+				}
+				return result, nil
 			}
 		}
 		return nil, fmt.Errorf("record missing policy column %q", p.Name)
 	}
 	return nil, fmt.Errorf("predicate %q has no scalar value", p.Kind)
+}
+
+func runtimePolicyIdentityValue(context PolicyContext, name string) (any, bool) {
+	value, ok := context.identity(name)
+	if !ok {
+		return nil, false
+	}
+	kind := ""
+	for _, definition := range rowPolicyRuntimeRegistry {
+		if candidate := definition.IdentityTypes[name]; candidate != "" {
+			kind = candidate
+			break
+		}
+	}
+	if kind == "int64" {
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		return parsed, err == nil
+	}
+	return value, true
+}
+
+func runtimeInt64(value any) (int64, bool) {
+	switch number := value.(type) {
+	case int:
+		return int64(number), true
+	case int32:
+		return int64(number), true
+	case int64:
+		return number, true
+	}
+	return 0, false
+}
+
+func int64Values(values []int64) []any {
+	result := make([]any, len(values))
+	for i, value := range values {
+		result[i] = value
+	}
+	return result
 }

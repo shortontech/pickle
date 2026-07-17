@@ -4,6 +4,8 @@
 
 Row admission is its own normalized policy layer, distinct from RBAC actions, GraphQL exposure, and column projection. Application SQL predicates and portable PostgreSQL RLS consume the same resolved rule. Runtime context is write-once; PostgreSQL identity is transaction-local; generated RLS is enabled and forced; and live proof requires catalog inspection of policy fingerprints and runtime bypass privileges.
 
+Numeric policy identities are canonicalized before entering the opaque context. Scalar `int64` values are bound numerically; bounded `int64s` sets are all-or-nothing JSON inputs normalized to sorted unique values. PostgreSQL helpers repeat the same shape, range, and canonical-text checks without throwing, and membership lowers only from the normalized `in(integer_column, int64s_identity)` node. Immutable logical-version plans never receive a portable RLS claim.
+
 Manual permissive RLS cannot coexist with a managed table because PostgreSQL would OR it with generated admission. Explicit structured restrictive defense-in-depth is allowed and remains database-only. Raw query access or unresolved entry points prevent a dual-layer proof claim.
 
 Pickle makes the secure path the default, keeps security-relevant structure visible, and flags many framework-level mistakes before deployment.

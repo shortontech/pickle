@@ -76,11 +76,11 @@ func TestRowPolicyConformanceMatrixEnumeratesEverySurface(t *testing.T) {
 		got  []string
 		want []string
 	}{
-		{"predicates", got.PredicateNodes, []string{"allow", "deny", "identity", "column", "equal", "not_equal", "and", "or", "not", "exists"}},
+		{"predicates", got.PredicateNodes, []string{"allow", "deny", "identity", "column", "equal", "not_equal", "in", "and", "or", "not", "exists"}},
 		{"positions", got.OperationPositions, []string{"select", "insert", "update_old", "update_new", "delete"}},
 		{"exists positions", got.ExistsPositions, []string{"select", "update_old", "delete"}},
 		{"subjects", got.SubjectCombinations, []string{"any", "all"}},
-		{"identity types", got.IdentityTypes, []string{"uuid", "string", "strings"}},
+		{"identity types", got.IdentityTypes, []string{"uuid", "string", "strings", "int64", "int64s"}},
 		{"null states", got.NullStates, []string{"value", "null", "missing_identity"}},
 	}
 	for _, check := range checks {

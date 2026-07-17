@@ -2,6 +2,8 @@
 
 Pickle normally generates PostgreSQL row-level security from the portable subset of [row policies](Policies.md). Define authorization once: generated query builders enforce the normalized rule on every driver, while PostgreSQL receives an equivalent `ENABLE` + `FORCE ROW LEVEL SECURITY` policy generated from that same rule.
 
+`IdentityInt64` is transported as canonical signed decimal text and decoded by a non-throwing PostgreSQL helper to `bigint`. `IdentityInt64s` is transported as a bounded canonical JSON array and decoded to a sorted, distinct `bigint[]`; `In(column, identity)` lowers to typed `= ANY(...)`. Invalid or overflowing settings return `NULL` and deny rather than raising inside an RLS policy. Immutable/versioned tables remain explicitly application-only because physical-row RLS cannot preserve Pickle's global-current-version semantics.
+
 Do not copy a portable Pickle row policy into hand-written RLS. PostgreSQL permissive policies combine with `OR`, so an independent manual policy can silently broaden access.
 
 ## Generated RLS

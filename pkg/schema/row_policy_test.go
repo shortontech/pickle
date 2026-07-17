@@ -50,3 +50,23 @@ func TestPolicyResetClearsRowOperations(t *testing.T) {
 		t.Fatal("identity definitions not cleared")
 	}
 }
+
+func TestPolicyBuildsNumericMembershipIdentity(t *testing.T) {
+	p := &Policy{}
+	p.IdentityInt64("organization_id")
+	p.IdentityInt64s("allowed_company_ids")
+	p.Protect("movements", func(rows *Rows) {
+		rows.ExistingRowsAlreadyValid("empty")
+		rows.Rule("tenant").ForPublic().Select(And(
+			Equal(PolicyColumn("organization_id"), Identity("organization_id")),
+			In(PolicyColumn("suborganization_id"), Identity("allowed_company_ids")),
+		))
+	})
+	identities := p.GetIdentityDefinitions()
+	if len(identities) != 2 || identities[0].Type != PolicyIdentityInt64 || identities[1].Type != PolicyIdentityInt64s {
+		t.Fatalf("unexpected identities: %#v", identities)
+	}
+	if got := p.GetRowOperations()[0].Protection.Rules[0].Select.Children[1].Kind; got != PredicateIn {
+		t.Fatalf("predicate kind=%s", got)
+	}
+}

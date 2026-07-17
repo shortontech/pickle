@@ -194,3 +194,68 @@ func TestRuntimePredicateDereferencesNullablePolicyColumn(t *testing.T) {
 		t.Fatalf("null policy column allowed=%t err=%v", allowed, err)
 	}
 }
+
+func TestVerifiedPolicyContextCanonicalizesInt64AndSets(t *testing.T) {
+	old := rowPolicyRuntimeRegistry
+	rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{"movements": {Table: "movements", IdentityTypes: map[string]string{"organization_id": "int64", "allowed_company_ids": "int64s"}}}
+	t.Cleanup(func() { rowPolicyRuntimeRegistry = old })
+	ctx := NewVerifiedPolicyContext(map[string]string{"organization_id": "-42", "allowed_company_ids": `[102,101,102,-4]`}, nil)
+	if value, ok := ctx.identity("organization_id"); !ok || value != "-42" {
+		t.Fatalf("organization identity=%q %t", value, ok)
+	}
+	if value, ok := ctx.identity("allowed_company_ids"); !ok || value != `[-4,101,102]` {
+		t.Fatalf("company identities=%q %t", value, ok)
+	}
+	for name, value := range map[string]string{"leading_zero": "01", "plus": "+1", "overflow": "9223372036854775808"} {
+		invalid := NewVerifiedPolicyContext(map[string]string{"organization_id": value}, nil)
+		if _, ok := invalid.identity("organization_id"); ok {
+			t.Fatalf("%s int64 was admitted", name)
+		}
+	}
+}
+
+func TestRuntimeInt64MembershipCompilesAndEvaluates(t *testing.T) {
+	old := rowPolicyRuntimeRegistry
+	rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{"movements": {Table: "movements", IdentityTypes: map[string]string{"organization_id": "int64", "allowed_company_ids": "int64s"}}}
+	t.Cleanup(func() { rowPolicyRuntimeRegistry = old })
+	ctx := NewVerifiedPolicyContext(map[string]string{"organization_id": "10", "allowed_company_ids": `[101,102]`}, nil)
+	predicate := rowPolicyRuntimePredicate{Kind: "and", Children: []rowPolicyRuntimePredicate{
+		{Kind: "equal", Children: []rowPolicyRuntimePredicate{{Kind: "column", Name: "organization_id"}, {Kind: "identity", Name: "organization_id"}}},
+		{Kind: "in", Children: []rowPolicyRuntimePredicate{{Kind: "column", Name: "suborganization_id"}, {Kind: "identity", Name: "allowed_company_ids"}}},
+	}}
+	record := struct {
+		OrganizationID    int64 `db:"organization_id"`
+		SuborganizationID int64 `db:"suborganization_id"`
+	}{10, 102}
+	allowed, err := evaluateRuntimePredicate(predicate, ctx, record)
+	if err != nil || !allowed {
+		t.Fatalf("allowed=%t err=%v", allowed, err)
+	}
+	record.SuborganizationID = 103
+	allowed, err = evaluateRuntimePredicate(predicate, ctx, record)
+	if err != nil || allowed {
+		t.Fatalf("denied=%t err=%v", allowed, err)
+	}
+	sql, args, err := compileRuntimePredicate(predicate, "t", ctx)
+	if err != nil || !strings.Contains(sql, `t."suborganization_id" IN (?,?)`) || len(args) != 3 || args[0] != int64(10) {
+		t.Fatalf("sql=%s args=%#v err=%v", sql, args, err)
+	}
+}
+
+func TestProposedIntegerPolicyColumnRejectsOutOfRangeValue(t *testing.T) {
+	old := rowPolicyRuntimeRegistry
+	rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{"items": {Table: "items", IdentityTypes: map[string]string{"company_id": "int64"}}}
+	t.Cleanup(func() { rowPolicyRuntimeRegistry = old })
+	ctx := NewVerifiedPolicyContext(map[string]string{"company_id": "2147483648"}, nil)
+	predicate := rowPolicyRuntimePredicate{Kind: "equal", Children: []rowPolicyRuntimePredicate{
+		{Kind: "column", Name: "company_id", ColumnType: "integer"},
+		{Kind: "identity", Name: "company_id"},
+	}}
+	record := struct {
+		CompanyID int64 `db:"company_id"`
+	}{CompanyID: 2147483648}
+	allowed, err := evaluateRuntimePredicate(predicate, ctx, record)
+	if err != nil || allowed {
+		t.Fatalf("out-of-range integer allowed=%t err=%v", allowed, err)
+	}
+}

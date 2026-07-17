@@ -4,6 +4,8 @@
 
 When a table has a Pickle row policy, every supported generated terminal operation (`First`, `All`, `Count`, aggregates, relationship loaders, locks, `Create`, `Update`, and `Delete`) compiles the normalized predicate automatically. Attach verified identity with `.WithPolicyContext(policyContext)`. PostgreSQL callers should use a policy-scoped transaction so the same context also reaches RLS. Append-only generated query types omit `Update` and `Delete` entirely; raw and unclassified bulk surfaces are prohibited instead of receiving a bypass switch.
 
+Numeric ownership predicates bind `IdentityInt64` as an integer driver value. `In(PolicyColumn("suborganization_id"), Identity("allowed_company_ids"))` expands a canonical `IdentityInt64s` set into bound placeholders; an empty set compiles to false, never invalid `IN ()` SQL. Proposed-row checks use the same typed membership semantics.
+
 Denials are expressed without disclosing whether a protected row exists. Immutable reads reduce to the globally newest version before applying admission. Immutable logical updates/deletes enforce their distinct existing/proposed rules even though their physical storage operation is an insert/update.
 
 The generic typed query builder for all models. Pickle generates a model-specific wrapper (e.g. `UserQuery`) with typed `Where*` scope methods, but the underlying CRUD and query building is handled by `QueryBuilder[T]`.

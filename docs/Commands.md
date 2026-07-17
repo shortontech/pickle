@@ -14,6 +14,8 @@ pickle squeeze --live   # static report plus explicit live RLS evidence
 
 MCP exposes `policies_rows`, `policies_row`, `policies_explain`, and `rls_status`. MCP RLS status reports desired generated state only and does not unexpectedly open a production connection; use the CLI for explicit live inspection.
 
+Policy inspection renders numeric identity declarations as `int64`/`int64s` and membership as `in(column(...), identity(...))`. The same normalized representation is used by CLI output, MCP inspection, drift fingerprints, and standalone exports.
+
 The CLI command system for your compiled binary. The generated `App` handles initialization, command dispatch, and HTTP serving.
 
 ## How it works

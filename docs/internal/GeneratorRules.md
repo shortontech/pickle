@@ -44,6 +44,14 @@ This applies everywhere: migrations, models, config, auth drivers. If a driver s
 - One controller per resource.
 - Controllers never contain raw SQL. If the query is complex, it belongs in a view definition in a migration.
 
+## Row Policy Normalization
+
+- Policy source is statically parsed into typed nodes; generated application SQL and PostgreSQL RLS must consume that same normalized tree.
+- `IdentityInt64` is compatible only with `Integer` and `BigInteger` columns. `IdentityInt64s` is a bounded set identity and may appear only as the right operand of `In(PolicyColumn(...), Identity(...))` with an integer column on the left.
+- Numeric claims are canonical signed base-10 values. Collection claims are all-or-nothing JSON arrays normalized to sorted unique values. Generated SQL binds typed values and never interpolates claim contents.
+- New predicate or identity kinds must be implemented in cooked generation and standalone export together, represented in inspection/fingerprints, and covered by application, direct-RLS, and dual-layer conformance.
+- Immutable/versioned row policies remain `application_only:global_current_version_requires_pre_rls_reduction`; never emit a physical-row RLS proof for them.
+
 ## What the Generator Must Never Do
 
 - **Never merge multiple structs into one file** to "simplify" output.

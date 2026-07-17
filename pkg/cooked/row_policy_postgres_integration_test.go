@@ -30,6 +30,12 @@ type postgresNullablePolicyMessage struct {
 	Marker int     `db:"marker"`
 }
 
+type postgresTenantMovement struct {
+	ID                int64  `db:"id"`
+	OrganizationID    *int64 `db:"organization_id"`
+	SuborganizationID *int64 `db:"suborganization_id"`
+}
+
 func TestPostgresRowPolicyThreeLaneConformance(t *testing.T) {
 	dsn := os.Getenv("PICKLE_POSTGRES_TEST_DSN")
 	if dsn == "" {
@@ -240,6 +246,181 @@ func TestPostgresRowPolicyThreeLaneConformance(t *testing.T) {
 	runPostgresSubjectCorpus(t, admin, runtimeDB, table, quote)
 	runPostgresPolicyTransitionConformance(t, admin, runtimeDB, table, quote)
 	runPostgresTextIdentityConformance(t, admin, runtimeDB, table+"_text", quote)
+	runPostgresDillTenantConformance(t, admin, runtimeDB, table+"_tenant", quote)
+}
+
+func runPostgresDillTenantConformance(t *testing.T, admin, runtimeDB *sql.DB, table string, quote func(string) string) {
+	t.Helper()
+	for _, stmt := range []string{
+		"CREATE TABLE " + quote(table) + " (id bigint PRIMARY KEY, organization_id bigint, suborganization_id bigint)",
+		"GRANT SELECT, INSERT, UPDATE, DELETE ON " + quote(table) + " TO PUBLIC",
+		"INSERT INTO " + quote(table) + " VALUES (1,10,101),(2,10,102),(3,10,103),(4,11,101),(5,11,103),(6,NULL,101),(7,10,NULL)",
+	} {
+		if _, err := admin.Exec(stmt); err != nil {
+			t.Fatalf("tenant fixture %s: %v", stmt, err)
+		}
+	}
+	t.Cleanup(func() { admin.Exec("DROP TABLE IF EXISTS " + quote(table) + " CASCADE") })
+
+	organization := schema.Equal(schema.PolicyColumn("organization_id"), schema.Identity("organization_id"))
+	companies := schema.In(schema.PolicyColumn("suborganization_id"), schema.Identity("allowed_company_ids"))
+	predicate := schema.And(organization, companies)
+	resolved := generator.ResolvedRowPolicy{
+		Protection:       schema.RowProtection{Table: table, SubjectCombination: schema.AnyOfSubjects, Rules: []schema.RowRule{{Key: "tenant", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &predicate, Insert: &predicate, UpdateOld: &predicate, UpdateNew: &predicate, Delete: &predicate}}},
+		EnforcementClass: "portable",
+		Identities:       map[string]schema.PolicyIdentityType{"organization_id": schema.PolicyIdentityInt64, "allowed_company_ids": schema.PolicyIdentityInt64s},
+		PhysicalPlans:    map[string]string{"select": "select", "insert": "insert", "update": "update", "delete": "delete"},
+	}
+	plans, err := generator.LowerPostgresRowPolicies([]generator.ResolvedRowPolicy{resolved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimePredicate := postgresTestRuntimePredicate(predicate)
+	registerRowPolicyRuntime(rowPolicyRuntimeDefinition{Table: table, SubjectCombination: "any", IdentityTypes: map[string]string{"organization_id": "int64", "allowed_company_ids": "int64s"}, Rules: []rowPolicyRuntimeRule{{Key: "tenant", SubjectKind: "public", Select: runtimePredicate, Insert: runtimePredicate, UpdateOld: runtimePredicate, UpdateNew: runtimePredicate, Delete: runtimePredicate}}})
+	ctx := NewVerifiedPolicyContext(map[string]string{"organization_id": "10", "allowed_company_ids": `[102,101,101]`}, nil)
+
+	if _, err := admin.Exec("ALTER TABLE " + quote(table) + " DISABLE ROW LEVEL SECURITY"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := Query[postgresTenantMovement](table).WithPolicyContext(ctx).All()
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("tenant application lane rows=%d err=%v", len(rows), err)
+	}
+	if count, err := Query[postgresTenantMovement](table).WithPolicyContext(ctx).Count(); err != nil || count != 2 {
+		t.Fatalf("tenant application count=%d err=%v", count, err)
+	}
+	if row, err := Query[postgresTenantMovement](table).WithPolicyContext(ctx).where("id", int64(1)).First(); err != nil || row == nil || row.ID != 1 {
+		t.Fatalf("tenant application first=%#v err=%v", row, err)
+	}
+	org, allowed, denied := int64(10), int64(101), int64(103)
+	appRecord := &postgresTenantMovement{ID: 8, OrganizationID: &org, SuborganizationID: &allowed}
+	if err := Query[postgresTenantMovement](table).WithPolicyContext(ctx).Create(appRecord); err != nil {
+		t.Fatalf("tenant application insert: %v", err)
+	}
+	if err := Query[postgresTenantMovement](table).WithPolicyContext(ctx).Create(&postgresTenantMovement{ID: 9, OrganizationID: &org, SuborganizationID: &denied}); err == nil {
+		t.Fatal("tenant application admitted disallowed insert")
+	}
+	company102 := int64(102)
+	appRecord.SuborganizationID = &company102
+	if err := Query[postgresTenantMovement](table).WithPolicyContext(ctx).where("id", appRecord.ID).Update(appRecord); err != nil {
+		t.Fatalf("tenant application allowed update: %v", err)
+	}
+	appRecord.SuborganizationID = &denied
+	if err := Query[postgresTenantMovement](table).WithPolicyContext(ctx).where("id", appRecord.ID).Update(appRecord); err == nil {
+		t.Fatal("tenant application admitted disallowed transfer")
+	}
+	appRecord.SuborganizationID = &company102
+	if err := Query[postgresTenantMovement](table).WithPolicyContext(ctx).where("id", appRecord.ID).Delete(appRecord); err != nil {
+		t.Fatalf("tenant application delete: %v", err)
+	}
+	for _, malformed := range []map[string]string{
+		{"organization_id": "+10", "allowed_company_ids": `[101]`},
+		{"organization_id": "10", "allowed_company_ids": `[101,1e2]`},
+		{"organization_id": "9223372036854775808", "allowed_company_ids": `[101]`},
+	} {
+		if _, err := Query[postgresTenantMovement](table).WithPolicyContext(NewVerifiedPolicyContext(malformed, nil)).All(); err == nil {
+			t.Fatalf("malformed tenant context did not fail closed: %#v", malformed)
+		}
+	}
+
+	for _, stmt := range append(generator.PostgresPolicyIdentityHelpers(), "ALTER TABLE "+quote(table)+" ENABLE ROW LEVEL SECURITY", "ALTER TABLE "+quote(table)+" FORCE ROW LEVEL SECURITY") {
+		if _, err := admin.Exec(stmt); err != nil {
+			t.Fatalf("tenant RLS DDL %s: %v", stmt, err)
+		}
+	}
+	for _, policy := range plans[0].Policies {
+		stmt := "CREATE POLICY " + quote(policy.Name) + " ON " + quote(table) + " FOR " + string(policy.Command) + " TO PUBLIC"
+		if policy.Using != "" {
+			stmt += " USING (" + policy.Using + ")"
+		}
+		if policy.WithCheck != "" {
+			stmt += " WITH CHECK (" + policy.WithCheck + ")"
+		}
+		if _, err := admin.Exec(stmt); err != nil {
+			t.Fatalf("tenant policy %s: %v", stmt, err)
+		}
+	}
+	var count int
+	if err := withSQLPolicyContext(runtimeDB, ctx, func(tx *sql.Tx) error { return tx.QueryRow("SELECT count(*) FROM " + quote(table)).Scan(&count) }); err != nil || count != 2 {
+		t.Fatalf("tenant RLS lane count=%d err=%v", count, err)
+	}
+	if err := withSQLPolicyContext(runtimeDB, ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec("INSERT INTO " + quote(table) + " VALUES (10,10,101)")
+		return err
+	}); err != nil {
+		t.Fatalf("tenant RLS allowed insert: %v", err)
+	}
+	if err := withSQLPolicyContext(runtimeDB, ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec("INSERT INTO " + quote(table) + " VALUES (11,10,103)")
+		return err
+	}); err == nil {
+		t.Fatal("RLS admitted disallowed tenant insert")
+	}
+	if err := withSQLPolicyContext(runtimeDB, ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec("UPDATE " + quote(table) + " SET suborganization_id=102 WHERE id=1")
+		return err
+	}); err != nil {
+		t.Fatalf("tenant RLS allowed update: %v", err)
+	}
+	if err := withSQLPolicyContext(runtimeDB, ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec("UPDATE " + quote(table) + " SET suborganization_id=103 WHERE id=1")
+		return err
+	}); err == nil {
+		t.Fatal("RLS admitted disallowed tenant transfer")
+	}
+	if err := withSQLPolicyContext(runtimeDB, ctx, func(tx *sql.Tx) error { _, err := tx.Exec("DELETE FROM " + quote(table) + " WHERE id=2"); return err }); err != nil {
+		t.Fatalf("tenant RLS delete: %v", err)
+	}
+	for _, malformed := range [][2]string{{"+10", `[101]`}, {"10", `[101,1e2]`}, {"9223372036854775808", `[101]`}} {
+		tx, err := runtimeDB.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = tx.Exec("SELECT set_config('pickle.identity.organization_id',$1,true), set_config('pickle.identity.allowed_company_ids',$2,true)", malformed[0], malformed[1])
+		if err == nil {
+			err = tx.QueryRow("SELECT count(*) FROM " + quote(table)).Scan(&count)
+		}
+		rollbackErr := tx.Rollback()
+		if err != nil || rollbackErr != nil || count != 0 {
+			t.Fatalf("malformed direct RLS context=%q/%q count=%d err=%v rollback=%v", malformed[0], malformed[1], count, err, rollbackErr)
+		}
+	}
+	if err := TransactionOn(runtimeDB, func(tx *Tx) error {
+		if err := tx.WithPostgresPolicyContext(ctx); err != nil {
+			return err
+		}
+		rows, err := Query[postgresTenantMovement](table).UseTransaction(tx.conn).WithPolicyContext(ctx).All()
+		if err == nil && len(rows) != 2 {
+			return fmt.Errorf("tenant dual rows=%d", len(rows))
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("tenant dual lane: %v", err)
+	}
+	dualRecord := &postgresTenantMovement{ID: 12, OrganizationID: &org, SuborganizationID: &allowed}
+	if err := TransactionOn(runtimeDB, func(tx *Tx) error {
+		if err := tx.WithPostgresPolicyContext(ctx); err != nil {
+			return err
+		}
+		q := Query[postgresTenantMovement](table).UseTransaction(tx.conn).WithPolicyContext(ctx)
+		if err := q.Create(dualRecord); err != nil {
+			return err
+		}
+		dualRecord.SuborganizationID = &company102
+		if err := Query[postgresTenantMovement](table).UseTransaction(tx.conn).WithPolicyContext(ctx).where("id", dualRecord.ID).Update(dualRecord); err != nil {
+			return err
+		}
+		return Query[postgresTenantMovement](table).UseTransaction(tx.conn).WithPolicyContext(ctx).where("id", dualRecord.ID).Delete(dualRecord)
+	}); err != nil {
+		t.Fatalf("tenant dual write matrix: %v", err)
+	}
+
+	if err := evaluateRowPolicyRecord(table, "insert", &ctx, &postgresTenantMovement{ID: 8, OrganizationID: &org, SuborganizationID: &allowed}); err != nil {
+		t.Fatalf("tenant proposed row denied: %v", err)
+	}
+	if err := evaluateRowPolicyRecord(table, "insert", &ctx, &postgresTenantMovement{ID: 9, OrganizationID: &org, SuborganizationID: &denied}); err == nil {
+		t.Fatal("tenant proposed row admitted disallowed company")
+	}
 }
 
 func runPostgresOperationPositionCorpus(t *testing.T, admin, runtimeDB *sql.DB, table string, quote func(string) string) {

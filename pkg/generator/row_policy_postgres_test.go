@@ -55,3 +55,28 @@ func TestPostgresRowPredicateLowersResolvedRelationship(t *testing.T) {
 		}
 	}
 }
+
+func TestPostgresRowPredicateLowersInt64AndMembership(t *testing.T) {
+	predicate := schema.And(
+		schema.Equal(schema.PolicyColumn("organization_id"), schema.Identity("organization_id")),
+		schema.In(schema.PolicyColumn("suborganization_id"), schema.Identity("allowed_company_ids")),
+	)
+	sql, err := postgresRowPredicate(predicate, map[string]schema.PolicyIdentityType{
+		"organization_id":     schema.PolicyIdentityInt64,
+		"allowed_company_ids": schema.PolicyIdentityInt64s,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"organization_id" = pickle_identity_int64('organization_id')`, `"suborganization_id" = ANY(pickle_identity_int64s('allowed_company_ids'))`} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("missing %q in %s", want, sql)
+		}
+	}
+	helpers := strings.Join(PostgresPolicyIdentityHelpers(), "\n")
+	for _, want := range []string{"pickle_identity_int64(identity_name text)", "pickle_identity_int64s(identity_name text)", "json_array_length(parsed) > 1024"} {
+		if !strings.Contains(helpers, want) {
+			t.Fatalf("missing helper %q", want)
+		}
+	}
+}

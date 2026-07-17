@@ -6,6 +6,8 @@ Squeeze normalizes row policies and prints an affirmative classification with su
 
 Row-policy rules cover incomplete operations (`row_policy_missing`), identity/type failures, unequal lowering, missing or spoofed context, bypass paths, projection conflicts, explicit application-only classification, missing/unforced live RLS, runtime-role bypass, catalog drift, and manual RLS broadening. Static Squeeze emits only what source and normalized metadata prove; live-only `rls_not_enabled`, `rls_not_forced`, `rls_runtime_bypass`, and `rls_drift` evidence comes from `pickle squeeze --live` or the focused `pickle rls:status` command. Unknown/raw query paths remain `unproven`. Compatible generated RLS does not trigger generic RLS guidance; that warning is for manual RLS or an incomplete migration from it.
 
+Normalized inspection preserves `int64`, `int64s`, and `in(column(...), identity(...))`. Squeeze rejects incompatible membership operands during policy resolution and includes the normalized node and identity types in generated proof fingerprints; it does not infer entitlement sets from controller values.
+
 Static security analysis for Pickle projects. Squeeze understands routes, middleware, migrations, request classes, generated query builders, RBAC policies, and actions. It complements generic Go linters by checking framework-level invariants.
 
 ## Running squeeze

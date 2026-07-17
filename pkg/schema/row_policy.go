@@ -8,6 +8,8 @@ const (
 	PolicyIdentityUUID    PolicyIdentityType = "uuid"
 	PolicyIdentityString  PolicyIdentityType = "string"
 	PolicyIdentityStrings PolicyIdentityType = "strings"
+	PolicyIdentityInt64   PolicyIdentityType = "int64"
+	PolicyIdentityInt64s  PolicyIdentityType = "int64s"
 )
 
 type PolicyIdentityDefinition struct {
@@ -18,6 +20,8 @@ type PolicyIdentityDefinition struct {
 func (p *Policy) IdentityUUID(name string)    { p.declareIdentity(name, PolicyIdentityUUID) }
 func (p *Policy) IdentityString(name string)  { p.declareIdentity(name, PolicyIdentityString) }
 func (p *Policy) IdentityStrings(name string) { p.declareIdentity(name, PolicyIdentityStrings) }
+func (p *Policy) IdentityInt64(name string)   { p.declareIdentity(name, PolicyIdentityInt64) }
+func (p *Policy) IdentityInt64s(name string)  { p.declareIdentity(name, PolicyIdentityInt64s) }
 func (p *Policy) declareIdentity(name string, kind PolicyIdentityType) {
 	rowPolicyName("identity", name)
 	for _, existing := range p.IdentityDefinitions {
@@ -86,6 +90,7 @@ const (
 	PredicateOr       RowPredicateKind = "or"
 	PredicateNot      RowPredicateKind = "not"
 	PredicateExists   RowPredicateKind = "exists"
+	PredicateIn       RowPredicateKind = "in"
 )
 
 // RowPredicate is a database-independent authorization expression. It never
@@ -93,6 +98,8 @@ const (
 type RowPredicate struct {
 	Kind                                     RowPredicateKind
 	Name                                     string
+	ColumnType                               ColumnType
+	HasColumnType                            bool
 	Children                                 []RowPredicate
 	RelatedTable, LocalColumn, ForeignColumn string
 }
@@ -112,6 +119,9 @@ func Equal(left, right RowPredicate) RowPredicate {
 }
 func NotEqual(left, right RowPredicate) RowPredicate {
 	return RowPredicate{Kind: PredicateNotEqual, Children: []RowPredicate{left, right}}
+}
+func In(left, right RowPredicate) RowPredicate {
+	return RowPredicate{Kind: PredicateIn, Children: []RowPredicate{left, right}}
 }
 func Owner(column string, identity RowPredicate) RowPredicate {
 	return Equal(PolicyColumn(column), identity)
@@ -293,7 +303,7 @@ func validateRowPredicate(predicate RowPredicate) {
 		if len(predicate.Children) != 0 {
 			panic("pickle: named row predicate cannot have children")
 		}
-	case PredicateEqual, PredicateNotEqual:
+	case PredicateEqual, PredicateNotEqual, PredicateIn:
 		if len(predicate.Children) != 2 {
 			panic("pickle: comparison row predicate requires two children")
 		}

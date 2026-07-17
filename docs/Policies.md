@@ -43,7 +43,22 @@ func (p *MessageAccess_2026_07_16_120000) Down() {
 }
 ```
 
-Identity declarations are `IdentityUUID`, `IdentityString`, and `IdentityStrings`. Subjects are `ForPublic`, `ForAuthenticated`, and `ForRole`. Matching subjects use `AnyOfSubjects` by default; call `rows.CombineSubjects(AllOfSubjects)` when every matching subject predicate must pass.
+Identity declarations are `IdentityUUID`, `IdentityString`, `IdentityStrings`, `IdentityInt64`, and `IdentityInt64s`. Scalar integer identities compare numerically with `Integer` and `BigInteger` policy columns. `IdentityInt64s` is a bounded JSON array of signed integers used only by `In(PolicyColumn(...), Identity(...))`; Pickle sorts and deduplicates it, binds every value, and treats an empty, missing, malformed, or oversized set as no match. Subjects are `ForPublic`, `ForAuthenticated`, and `ForRole`. `ForAuthenticated` also requires a declared `user_id` identity. Matching subjects use `AnyOfSubjects` by default; call `rows.CombineSubjects(AllOfSubjects)` when every matching subject predicate must pass.
+
+For an organization plus allowed-company boundary:
+
+```go
+p.IdentityInt64("user_id")
+p.IdentityInt64("organization_id")
+p.IdentityInt64s("allowed_company_ids")
+
+rows.Rule("organization_companies").ForAuthenticated().All(And(
+    Equal(PolicyColumn("organization_id"), Identity("organization_id")),
+    In(PolicyColumn("suborganization_id"), Identity("allowed_company_ids")),
+))
+```
+
+The left side of `In` must be an `Integer` or `BigInteger` policy column and the right side must be an `IdentityInt64s` identity. Reversed operands and scalar identities fail generation. Use explicit `Existing(...)` and `Proposed(...)` predicates when a tenant column can change; policy source remains statically normalized.
 
 Predicates are a typed tree, not Go or SQL strings:
 

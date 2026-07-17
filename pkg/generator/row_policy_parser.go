@@ -93,7 +93,7 @@ func parseRowPolicyFile(path string) (ParsedRowPolicyFile, error) {
 				return out, fmt.Errorf("unsupported unqualified call in row policy Up")
 			}
 			switch sel.Sel.Name {
-			case "IdentityUUID", "IdentityString", "IdentityStrings":
+			case "IdentityUUID", "IdentityString", "IdentityStrings", "IdentityInt64", "IdentityInt64s":
 				if len(call.Args) != 1 {
 					return out, fmt.Errorf("%s requires one string argument", sel.Sel.Name)
 				}
@@ -107,6 +107,12 @@ func parseRowPolicyFile(path string) (ParsedRowPolicyFile, error) {
 				}
 				if sel.Sel.Name == "IdentityStrings" {
 					kind = schema.PolicyIdentityStrings
+				}
+				if sel.Sel.Name == "IdentityInt64" {
+					kind = schema.PolicyIdentityInt64
+				}
+				if sel.Sel.Name == "IdentityInt64s" {
+					kind = schema.PolicyIdentityInt64s
 				}
 				out.Identities = append(out.Identities, schema.PolicyIdentityDefinition{Name: name, Type: kind})
 			case "Protect", "AlterProtection":
@@ -341,12 +347,12 @@ func parseRowPredicateExpr(expr ast.Expr) (schema.RowPredicate, error) {
 			return schema.RowPredicate{}, err
 		}
 		return schema.RowPredicate{Kind: schema.PredicateExists, Name: extractStringLit(call.Args[0]), Children: []schema.RowPredicate{child}}, nil
-	case "Equal", "NotEqual", "And", "Or", "Not":
+	case "Equal", "NotEqual", "In", "And", "Or", "Not":
 		ch, err := children()
 		if err != nil {
 			return schema.RowPredicate{}, err
 		}
-		kinds := map[string]schema.RowPredicateKind{"Equal": schema.PredicateEqual, "NotEqual": schema.PredicateNotEqual, "And": schema.PredicateAnd, "Or": schema.PredicateOr, "Not": schema.PredicateNot}
+		kinds := map[string]schema.RowPredicateKind{"Equal": schema.PredicateEqual, "NotEqual": schema.PredicateNotEqual, "In": schema.PredicateIn, "And": schema.PredicateAnd, "Or": schema.PredicateOr, "Not": schema.PredicateNot}
 		return schema.RowPredicate{Kind: kinds[id.Name], Children: ch}, nil
 	default:
 		return schema.RowPredicate{}, fmt.Errorf("unsupported row predicate %s", id.Name)
@@ -515,7 +521,7 @@ func validateResolvedProtection(p schema.RowProtection, table *schema.Table, ide
 		}
 		for _, pred := range []*schema.RowPredicate{rule.Select, rule.Insert, rule.UpdateOld, rule.UpdateNew, rule.Delete} {
 			if pred != nil {
-				if err := validateResolvedPredicate(*pred, cols, identities); err != nil {
+				if err := validateResolvedPredicate(pred, cols, identities); err != nil {
 					return fmt.Errorf("rule %q: %w", rule.Key, err)
 				}
 			}
@@ -550,22 +556,25 @@ func predicateDefaultedColumn(predicate schema.RowPredicate, table *schema.Table
 	return ""
 }
 
-func validateResolvedPredicate(p schema.RowPredicate, cols map[string]schema.ColumnType, identities map[string]schema.PolicyIdentityType) error {
+func validateResolvedPredicate(p *schema.RowPredicate, cols map[string]schema.ColumnType, identities map[string]schema.PolicyIdentityType) error {
 	if p.Kind == schema.PredicateExists {
 		return nil
 	}
 	if p.Kind == schema.PredicateColumn {
-		if _, ok := cols[p.Name]; !ok {
+		columnType, ok := cols[p.Name]
+		if !ok {
 			return fmt.Errorf("unknown column %q", p.Name)
 		}
+		p.ColumnType = columnType
+		p.HasColumnType = true
 	}
 	if p.Kind == schema.PredicateIdentity {
 		if _, ok := identities[p.Name]; !ok {
 			return fmt.Errorf("unknown identity %q", p.Name)
 		}
 	}
-	for _, child := range p.Children {
-		if err := validateResolvedPredicate(child, cols, identities); err != nil {
+	for i := range p.Children {
+		if err := validateResolvedPredicate(&p.Children[i], cols, identities); err != nil {
 			return err
 		}
 	}
@@ -579,6 +588,15 @@ func validateResolvedPredicate(p schema.RowPredicate, cols map[string]schema.Col
 		}
 		if !rowPolicyTypesCompatible(cols[left.Name], identities[right.Name]) {
 			return fmt.Errorf("column %q and identity %q have incompatible types", left.Name, right.Name)
+		}
+	}
+	if p.Kind == schema.PredicateIn && len(p.Children) == 2 {
+		left, right := p.Children[0], p.Children[1]
+		if left.Kind != schema.PredicateColumn || right.Kind != schema.PredicateIdentity {
+			return fmt.Errorf("In must pair one policy column with one collection identity")
+		}
+		if identities[right.Name] != schema.PolicyIdentityInt64s || (cols[left.Name] != schema.Integer && cols[left.Name] != schema.BigInteger) {
+			return fmt.Errorf("column %q and collection identity %q have incompatible types", left.Name, right.Name)
 		}
 	}
 	return nil
@@ -630,7 +648,7 @@ func resolveRowPolicyRelationships(protection *schema.RowProtection, table *sche
 			for _, column := range related.Columns {
 				cols[column.Name] = column.Type
 			}
-			if err := validateResolvedPredicate(node.Children[0], cols, identities); err != nil {
+			if err := validateResolvedPredicate(&node.Children[0], cols, identities); err != nil {
 				return fmt.Errorf("relationship %q: %w", node.Name, err)
 			}
 			for i := range node.Children {
@@ -692,7 +710,7 @@ func foreignKeyPolicyColumn(table *schema.Table, target string) string {
 }
 
 func rowPolicyTypesCompatible(column schema.ColumnType, identity schema.PolicyIdentityType) bool {
-	return (column == schema.UUID && identity == schema.PolicyIdentityUUID) || ((column == schema.String || column == schema.Text) && identity == schema.PolicyIdentityString)
+	return (column == schema.UUID && identity == schema.PolicyIdentityUUID) || ((column == schema.String || column == schema.Text) && identity == schema.PolicyIdentityString) || ((column == schema.Integer || column == schema.BigInteger) && identity == schema.PolicyIdentityInt64)
 }
 func rowPolicyPhysicalPlans(table *schema.Table, p schema.RowProtection) map[string]string {
 	plans := map[string]string{}

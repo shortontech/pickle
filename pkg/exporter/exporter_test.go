@@ -11344,6 +11344,50 @@ func TestExportedRowPolicyQuerySupportEnforcesEveryTerminal(t *testing.T) {
 	if strings.Contains(exportedRowPolicyRuntimeSource, "func NewVerifiedPolicyContext") {
 		t.Fatal("exported runtime exposes forgeable verified context constructor")
 	}
+	for _, want := range []string{`kind == "int64"`, `kind == "int64s"`, `case "in"`, "strconv.ParseInt", ` IN (`, `value.Kind()==reflect.Pointer`, `value=value.Elem()`} {
+		if !strings.Contains(exportedRowPolicyRuntimeSource, want) {
+			t.Fatalf("exported row policy runtime missing numeric membership support %q", want)
+		}
+	}
+}
+
+func TestExportedNumericRowPolicyRuntimeCompilesAndEvaluatesNullableColumns(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"go.mod":                "module example.com/exported-policy-test\n\ngo 1.24\n\nrequire (\n github.com/google/uuid v1.6.0\n gorm.io/gorm v1.31.1\n)\n",
+		"row_policy_runtime.go": exportedRowPolicyRuntimeSource,
+		"tx.go": `package models
+import "gorm.io/gorm"
+type Tx struct { policyContext *PolicyContext; DB *gorm.DB }
+`,
+		"row_policy_runtime_test.go": `package models
+import "testing"
+func TestNumericPolicy(t *testing.T) {
+	rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{"movements": {Table:"movements", IdentityTypes:map[string]string{"organization_id":"int64", "allowed_company_ids":"int64s"}}}
+	ctx := newVerifiedPolicyContext(map[string]string{"organization_id":"10", "allowed_company_ids":"[102,101,102]"}, nil)
+	organization := int64(10)
+	company := int64(102)
+	record := struct { OrganizationID *int64 ` + "`gorm:\"column:organization_id\"`" + `; CompanyID *int64 ` + "`gorm:\"column:company_id\"`" + ` }{&organization,&company}
+	equal := rowPolicyRuntimePredicate{Kind:"equal", Children:[]rowPolicyRuntimePredicate{{Kind:"column",Name:"organization_id",ColumnType:"bigint"},{Kind:"identity",Name:"organization_id"}}}
+	in := rowPolicyRuntimePredicate{Kind:"in", Children:[]rowPolicyRuntimePredicate{{Kind:"column",Name:"company_id",ColumnType:"bigint"},{Kind:"identity",Name:"allowed_company_ids"}}}
+	if ok,err:=evaluateExportedPredicate(equal,ctx,record);err!=nil||!ok{t.Fatalf("nullable equality ok=%t err=%v",ok,err)}
+	if ok,err:=evaluateExportedPredicate(in,ctx,record);err!=nil||!ok{t.Fatalf("nullable membership ok=%t err=%v",ok,err)}
+	record.OrganizationID=nil
+	if ok,err:=evaluateExportedPredicate(equal,ctx,record);err!=nil||ok{t.Fatalf("null equality ok=%t err=%v",ok,err)}
+}
+`,
+	}
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command("go", "test", "-mod=mod", "./...")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("exported numeric row-policy runtime failed: %v\n%s", err, output)
+	}
 }
 
 func TestExportedIntegrityQuerySupportPreservesStructuralSemantics(t *testing.T) {

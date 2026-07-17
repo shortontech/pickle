@@ -103,6 +103,9 @@ func postgresSubjectPredicate(subject schema.RowSubject, identities map[string]s
 		if kind == schema.PolicyIdentityUUID {
 			return `(pickle_identity_uuid('user_id') IS NOT NULL)`, nil
 		}
+		if kind == schema.PolicyIdentityInt64 {
+			return `(pickle_identity_int64('user_id') IS NOT NULL)`, nil
+		}
 		return `(pickle_identity_text('user_id') IS NOT NULL)`, nil
 	case schema.SubjectRole:
 		return "pickle_identity_has_role(" + quotePolicyLiteral(subject.Name) + ")", nil
@@ -136,7 +139,10 @@ func postgresRowPredicateAlias(predicate schema.RowPredicate, identities map[str
 		if kind == schema.PolicyIdentityUUID {
 			fn = "pickle_identity_uuid"
 		}
-		if kind == schema.PolicyIdentityStrings {
+		if kind == schema.PolicyIdentityInt64 {
+			fn = "pickle_identity_int64"
+		}
+		if kind == schema.PolicyIdentityStrings || kind == schema.PolicyIdentityInt64s {
 			return "", fmt.Errorf("identity set %q cannot be scalar", predicate.Name)
 		}
 		return fn + "(" + quotePolicyLiteral(predicate.Name) + ")", nil
@@ -157,6 +163,19 @@ func postgresRowPredicateAlias(predicate schema.RowPredicate, identities map[str
 			op = "<>"
 		}
 		return "COALESCE((" + left + " " + op + " " + right + "), FALSE)", nil
+	case schema.PredicateIn:
+		if len(predicate.Children) != 2 || predicate.Children[0].Kind != schema.PredicateColumn || predicate.Children[1].Kind != schema.PredicateIdentity {
+			return "", fmt.Errorf("In requires column and collection identity")
+		}
+		identity := predicate.Children[1].Name
+		if identities[identity] != schema.PolicyIdentityInt64s {
+			return "", fmt.Errorf("In identity %q must be int64s", identity)
+		}
+		column, err := postgresRowPredicateAlias(predicate.Children[0], identities, alias)
+		if err != nil {
+			return "", err
+		}
+		return "COALESCE((" + column + " = ANY(pickle_identity_int64s(" + quotePolicyLiteral(identity) + "))), FALSE)", nil
 	case schema.PredicateAnd, schema.PredicateOr:
 		parts := make([]string, len(predicate.Children))
 		for i, child := range predicate.Children {
@@ -231,6 +250,8 @@ func PostgresPolicyIdentityHelpers() []string {
 		`CREATE OR REPLACE FUNCTION pickle_identity_present(identity_name text) RETURNS boolean LANGUAGE sql STABLE AS $$ SELECT length(NULLIF(current_setting('pickle.identity.' || identity_name, true), '')) BETWEEN 1 AND 65536 $$`,
 		`CREATE OR REPLACE FUNCTION pickle_identity_text(identity_name text) RETURNS text LANGUAGE sql STABLE AS $$ SELECT CASE WHEN length(NULLIF(current_setting('pickle.identity.' || identity_name, true), '')) BETWEEN 1 AND 65536 THEN NULLIF(current_setting('pickle.identity.' || identity_name, true), '') ELSE NULL END $$`,
 		`CREATE OR REPLACE FUNCTION pickle_identity_uuid(identity_name text) RETURNS uuid LANGUAGE plpgsql STABLE AS $$ DECLARE raw text; BEGIN raw := NULLIF(current_setting('pickle.identity.' || identity_name, true), ''); IF raw IS NULL THEN RETURN NULL; END IF; BEGIN RETURN raw::uuid; EXCEPTION WHEN invalid_text_representation THEN RETURN NULL; END; END $$`,
+		`CREATE OR REPLACE FUNCTION pickle_identity_int64(identity_name text) RETURNS bigint LANGUAGE plpgsql STABLE AS $$ DECLARE raw text; value numeric; BEGIN raw := NULLIF(current_setting('pickle.identity.' || identity_name, true), ''); IF raw IS NULL OR length(raw) > 20 OR raw !~ '^(0|-?[1-9][0-9]*)$' THEN RETURN NULL; END IF; BEGIN value := raw::numeric; IF value < -9223372036854775808 OR value > 9223372036854775807 THEN RETURN NULL; END IF; RETURN value::bigint; EXCEPTION WHEN OTHERS THEN RETURN NULL; END; END $$`,
+		`CREATE OR REPLACE FUNCTION pickle_identity_int64s(identity_name text) RETURNS bigint[] LANGUAGE plpgsql STABLE AS $$ DECLARE raw text; parsed json; item json; item_text text; numeric_value numeric; result bigint[] := ARRAY[]::bigint[]; BEGIN raw := NULLIF(current_setting('pickle.identity.' || identity_name, true), ''); IF raw IS NULL OR length(raw) > 65536 THEN RETURN NULL; END IF; BEGIN parsed := raw::json; IF json_typeof(parsed) <> 'array' OR json_array_length(parsed) > 1024 THEN RETURN NULL; END IF; FOR item IN SELECT element FROM json_array_elements(parsed) AS elements(element) LOOP IF json_typeof(item) <> 'number' THEN RETURN NULL; END IF; item_text := item #>> '{}'; IF item_text !~ '^(0|-?[1-9][0-9]*)$' THEN RETURN NULL; END IF; numeric_value := item_text::numeric; IF numeric_value < -9223372036854775808 OR numeric_value > 9223372036854775807 THEN RETURN NULL; END IF; result := array_append(result, numeric_value::bigint); END LOOP; RETURN ARRAY(SELECT DISTINCT element FROM unnest(result) AS element ORDER BY element); EXCEPTION WHEN OTHERS THEN RETURN NULL; END; END $$`,
 		`CREATE OR REPLACE FUNCTION pickle_identity_has_role(role_name text) RETURNS boolean LANGUAGE plpgsql STABLE AS $$ DECLARE raw text; BEGIN raw := NULLIF(current_setting('pickle.identity.roles', true), ''); IF raw IS NULL OR length(raw) > 65536 THEN RETURN FALSE; END IF; BEGIN RETURN raw::jsonb ? role_name; EXCEPTION WHEN invalid_text_representation THEN RETURN FALSE; END; END $$`,
 	}
 }

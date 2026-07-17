@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "predicate_nodes": ["allow", "deny", "identity", "column", "equal", "not_equal", "and", "or", "not", "exists"],
+  "predicate_nodes": ["allow", "deny", "identity", "column", "equal", "not_equal", "in", "and", "or", "not", "exists"],
   "operation_positions": ["select", "insert", "update_old", "update_new", "delete"],
   "exists_positions": ["select", "update_old", "delete"],
   "subject_combinations": ["any", "all"],
-  "identity_types": ["uuid", "string", "strings"],
+  "identity_types": ["uuid", "string", "strings", "int64", "int64s"],
   "null_states": ["value", "null", "missing_identity"],
   "physical_plans": ["select", "insert", "update", "delete", "soft_delete_update", "immutable_version_insert", "immutable_tombstone_insert", "application_only"],
   "terminal_surfaces": {

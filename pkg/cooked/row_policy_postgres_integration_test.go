@@ -20,6 +20,10 @@ type postgresPolicyMessage struct {
 	ID     string `db:"id"`
 	UserID string `db:"user_id"`
 }
+type postgresTextPolicyMessage struct {
+	ID        string `db:"id"`
+	TenantKey string `db:"tenant_key"`
+}
 
 func TestPostgresRowPolicyThreeLaneConformance(t *testing.T) {
 	dsn := os.Getenv("PICKLE_POSTGRES_TEST_DSN")
@@ -229,6 +233,67 @@ func TestPostgresRowPolicyThreeLaneConformance(t *testing.T) {
 	runPostgresPredicateCorpus(t, admin, runtimeDB, table, quote)
 	runPostgresSubjectCorpus(t, admin, runtimeDB, table, quote)
 	runPostgresPolicyTransitionConformance(t, admin, runtimeDB, table, quote)
+	runPostgresTextIdentityConformance(t, admin, runtimeDB, table+"_text", quote)
+}
+
+func runPostgresTextIdentityConformance(t *testing.T, admin, runtimeDB *sql.DB, table string, quote func(string) string) {
+	t.Helper()
+	if _, err := admin.Exec("CREATE TABLE " + quote(table) + " (id uuid PRIMARY KEY, tenant_key text)"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { admin.Exec("DROP TABLE IF EXISTS " + quote(table) + " CASCADE") })
+	if _, err := admin.Exec("GRANT SELECT ON " + quote(table) + " TO PUBLIC"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec("INSERT INTO " + quote(table) + " VALUES ('aaaaaaaa-1111-4111-8111-111111111111','tenant-a'),('bbbbbbbb-2222-4222-8222-222222222222','tenant-b')"); err != nil {
+		t.Fatal(err)
+	}
+	predicate := schema.Equal(schema.PolicyColumn("tenant_key"), schema.Identity("tenant_key"))
+	runtimePredicate := postgresTestRuntimePredicate(predicate)
+	rowPolicyRuntimeRegistry = map[string]rowPolicyRuntimeDefinition{}
+	registerRowPolicyRuntime(rowPolicyRuntimeDefinition{Table: table, SubjectCombination: "any", IdentityTypes: map[string]string{"tenant_key": "string"}, Rules: []rowPolicyRuntimeRule{{Key: "tenant", SubjectKind: "public", Select: runtimePredicate}}})
+	ctx := NewVerifiedPolicyContext(map[string]string{"tenant_key": "tenant-a"}, nil)
+	rows, err := Query[postgresTextPolicyMessage](table).WithPolicyContext(ctx).All()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("text application rows=%d err=%v", len(rows), err)
+	}
+	resolved := generator.ResolvedRowPolicy{Protection: schema.RowProtection{Table: table, SubjectCombination: schema.AnyOfSubjects, Rules: []schema.RowRule{{Key: "tenant", Subject: schema.RowSubject{Kind: schema.SubjectPublic}, Select: &predicate}}}, EnforcementClass: "portable", Identities: map[string]schema.PolicyIdentityType{"tenant_key": schema.PolicyIdentityString}, PhysicalPlans: map[string]string{"select": "select"}}
+	plans, err := generator.LowerPostgresRowPolicies([]generator.ResolvedRowPolicy{resolved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := plans[0].Policies[0]
+	for _, statement := range generator.PostgresPolicyIdentityHelpers() {
+		if _, err := admin.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := admin.Exec("ALTER TABLE " + quote(table) + " ENABLE ROW LEVEL SECURITY"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec("ALTER TABLE " + quote(table) + " FORCE ROW LEVEL SECURITY"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec("CREATE POLICY " + quote(policy.Name) + " ON " + quote(table) + " FOR SELECT TO PUBLIC USING (" + policy.Using + ")"); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := withSQLPolicyContext(runtimeDB, ctx, func(tx *sql.Tx) error { return tx.QueryRow("SELECT count(*) FROM " + quote(table)).Scan(&count) }); err != nil || count != 1 {
+		t.Fatalf("text RLS count=%d err=%v", count, err)
+	}
+	err = TransactionOn(runtimeDB, func(tx *Tx) error {
+		if err := tx.WithPostgresPolicyContext(ctx); err != nil {
+			return err
+		}
+		rows, err := Query[postgresTextPolicyMessage](table).UseTransaction(tx.conn).WithPolicyContext(ctx).All()
+		if err == nil && len(rows) != 1 {
+			return fmt.Errorf("text dual rows=%d", len(rows))
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func runPostgresPolicyTransitionConformance(t *testing.T, admin, runtimeDB *sql.DB, table string, quote func(string) string) {

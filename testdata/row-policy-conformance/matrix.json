@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "predicate_nodes": ["allow", "deny", "identity", "column", "equal", "not_equal", "and", "or", "not", "exists"],
+  "operation_positions": ["select", "insert", "update_old", "update_new", "delete"],
+  "exists_positions": ["select", "update_old", "delete"],
+  "subject_combinations": ["any", "all"],
+  "identity_types": ["uuid", "string", "strings"],
+  "null_states": ["value", "null", "missing_identity"],
+  "physical_plans": ["select", "insert", "update", "delete", "soft_delete_update", "immutable_version_insert", "immutable_tombstone_insert", "application_only"],
+  "terminal_surfaces": {
+    "first": "select",
+    "all": "select",
+    "count": "select",
+    "aggregate": "select",
+    "lock_first": "select",
+    "lock_all": "select",
+    "graphql_relationship_loader": "select",
+    "create": "insert",
+    "update": "update_old+update_new",
+    "delete": "delete",
+    "immutable_update": "update_old+update_new",
+    "immutable_delete": "delete",
+    "append_only_update": "structurally_absent",
+    "append_only_delete": "structurally_absent",
+    "restore": "not_generated",
+    "bulk_update": "not_generated",
+    "bulk_delete": "not_generated",
+    "raw_builder": "prohibited"
+  }
+}

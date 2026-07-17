@@ -67,6 +67,57 @@ func TestProtectedReadAddsPolicyPredicate(t *testing.T) {
 	}
 }
 
+func TestProtectedReadTerminalMatrixAddsPolicyPredicate(t *testing.T) {
+	installPolicyTestDefinition(t)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	oldDB := DB
+	DB = db
+	t.Cleanup(func() { DB = oldDB })
+	ctx := NewVerifiedPolicyContext(map[string]string{"workspace_id": "workspace-1"}, []string{"member"})
+	clause := `WHERE ((COALESCE(("workspace_id" = $1), FALSE)))`
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, workspace_id FROM messages ` + clause + ` LIMIT 1`)).WithArgs("workspace-1").WillReturnRows(sqlmock.NewRows([]string{"id", "workspace_id"}).AddRow("m1", "workspace-1"))
+	if _, err := Query[policyTestMessage]("messages").WithPolicyContext(ctx).First(); err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM messages ` + clause)).WithArgs("workspace-1").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	if count, err := Query[policyTestMessage]("messages").WithPolicyContext(ctx).Count(); err != nil || count != 1 {
+		t.Fatalf("count=%d err=%v", count, err)
+	}
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT SUM(workspace_id) FROM messages ` + clause)).WithArgs("workspace-1").WillReturnRows(sqlmock.NewRows([]string{"sum"}).AddRow(1.0))
+	if value, err := Query[policyTestMessage]("messages").WithPolicyContext(ctx).aggregate("SUM", "workspace_id"); err != nil || value == nil || *value != 1 {
+		t.Fatalf("aggregate=%v err=%v", value, err)
+	}
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, workspace_id FROM messages ` + clause)).WithArgs("workspace-1").WillReturnRows(sqlmock.NewRows([]string{"id", "workspace_id"}).AddRow("m1", "workspace-1"))
+	if rows, err := Query[policyTestMessage]("messages").WithPolicyContext(ctx).EagerLoad("comments").All(); err != nil || len(rows) != 1 {
+		t.Fatalf("eager rows=%d err=%v", len(rows), err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProtectedLockSurfacesRetainPolicyPredicate(t *testing.T) {
+	installPolicyTestDefinition(t)
+	ctx := NewVerifiedPolicyContext(map[string]string{"workspace_id": "workspace-1"}, []string{"member"})
+	for _, lock := range []func(*QueryBuilder[policyTestMessage]) *QueryBuilder[policyTestMessage]{
+		func(q *QueryBuilder[policyTestMessage]) *QueryBuilder[policyTestMessage] { return q.LockForUpdate() },
+		func(q *QueryBuilder[policyTestMessage]) *QueryBuilder[policyTestMessage] { return q.LockForShare() },
+	} {
+		q := lock(Query[policyTestMessage]("messages").WithPolicyContext(ctx))
+		if err := q.preparePolicy("select"); err != nil {
+			t.Fatal(err)
+		}
+		sql, args := q.buildSelect()
+		if !strings.Contains(sql, `COALESCE(("workspace_id" = $1), FALSE)`) || len(args) != 1 {
+			t.Fatalf("lock query lost policy: %s args=%#v", sql, args)
+		}
+	}
+}
+
 func TestProtectedReadWithoutMatchingContextFailsBeforeSQL(t *testing.T) {
 	installPolicyTestDefinition(t)
 	_, err := Query[policyTestMessage]("messages").All()

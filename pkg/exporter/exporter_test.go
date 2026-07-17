@@ -8927,7 +8927,7 @@ func TestGraphQLQuerySupportUsesEncryptedStorageAndFailsClosed(t *testing.T) {
 		{Name: "id", Type: schema.UUID, IsPrimaryKey: true},
 		{Name: "email", Type: schema.String, IsEncrypted: true},
 		{Name: "private_key", Type: schema.String, IsSealed: true},
-	}, false)
+	}, false, false, false, false, false)
 	src := b.String()
 	for _, want := range []string{
 		`WhereEmail(value any) *UserQuery { q.db = graphQLEncryptedWhere(q.db, "email_encrypted", "=", value); return q }`,
@@ -11331,7 +11331,7 @@ func assertPathMissing(t *testing.T, path string) {
 
 func TestExportedRowPolicyQuerySupportEnforcesEveryTerminal(t *testing.T) {
 	var b strings.Builder
-	writeGraphQLModelQuerySupport(&b, "messages", []*schema.Column{{Name: "id", Type: schema.UUID}, {Name: "workspace_id", Type: schema.UUID}}, false, true)
+	writeGraphQLModelQuerySupport(&b, "messages", []*schema.Column{{Name: "id", Type: schema.UUID}, {Name: "workspace_id", Type: schema.UUID}}, false, true, false, false, false)
 	text := b.String()
 	for _, want := range []string{"WithPolicyContext", `applyExportedRowPolicy(q.db, "messages", "select"`, `evaluateRowPolicyRecord("messages", "insert"`, `evaluateRowPolicyRecord("messages", "update_new"`, `applyExportedRowPolicy(q.db, "messages", "update_old"`, `applyExportedRowPolicy(q.db, "messages", "delete"`} {
 		if !strings.Contains(text, want) {
@@ -11343,6 +11343,29 @@ func TestExportedRowPolicyQuerySupportEnforcesEveryTerminal(t *testing.T) {
 	}
 	if strings.Contains(exportedRowPolicyRuntimeSource, "func NewVerifiedPolicyContext") {
 		t.Fatal("exported runtime exposes forgeable verified context constructor")
+	}
+}
+
+func TestExportedIntegrityQuerySupportPreservesStructuralSemantics(t *testing.T) {
+	columns := []*schema.Column{{Name: "id", Type: schema.UUID}, {Name: "version_id", Type: schema.UUID}, {Name: "deleted_at", Type: schema.Timestamp, IsNullable: true}}
+
+	var appendOnly strings.Builder
+	writeGraphQLModelQuerySupport(&appendOnly, "events", columns, false, true, true, false, false)
+	appendText := appendOnly.String()
+	if !strings.Contains(appendText, "createIntegrityRecord") || strings.Contains(appendText, "func (q *EventQuery) Update") || strings.Contains(appendText, "func (q *EventQuery) Delete") {
+		t.Fatalf("append-only query surface is mutable:\n%s", appendText)
+	}
+
+	var immutable strings.Builder
+	writeGraphQLModelQuerySupport(&immutable, "messages", columns, false, true, false, true, true)
+	immutableText := immutable.String()
+	for _, want := range []string{"ApplyPolicyContext", "SELECT version_id FROM", "ORDER BY version_id DESC LIMIT 1", `.Where("deleted_at IS NULL")`, "updateImmutableRecord", `applyExportedRowPolicy(q.db, "messages", "delete"`} {
+		if !strings.Contains(immutableText, want) {
+			t.Fatalf("immutable query support missing %q:\n%s", want, immutableText)
+		}
+	}
+	if strings.Contains(immutableText, ".Updates(record)") || strings.Contains(immutableText, ".Save(record)") {
+		t.Fatalf("immutable query support emits in-place mutation:\n%s", immutableText)
 	}
 }
 

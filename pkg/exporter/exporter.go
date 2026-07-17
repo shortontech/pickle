@@ -4079,6 +4079,13 @@ func (e *exporter) needsModelQuerySupport() bool {
 
 func (e *exporter) generateModelQuerySupport(tables []*schema.Table, views []*schema.View, graphQLErrors bool) ([]byte, error) {
 	hasEncrypted := tablesHaveEncryptedColumns(tables)
+	hasImmutableSoftDeletes := false
+	for _, table := range tables {
+		if table.IsImmutable && table.HasSoftDelete {
+			hasImmutableSoftDeletes = true
+			break
+		}
+	}
 	var b strings.Builder
 	b.WriteString("package models\n\n")
 	b.WriteString("import (\n")
@@ -4086,6 +4093,9 @@ func (e *exporter) generateModelQuerySupport(tables []*schema.Table, views []*sc
 		b.WriteString("\t\"errors\"\n")
 	}
 	b.WriteString("\t\"strings\"\n")
+	if hasImmutableSoftDeletes {
+		b.WriteString("\t\"time\"\n")
+	}
 	b.WriteString("\n")
 	if graphQLErrors {
 		b.WriteString("\t\"github.com/vektah/gqlparser/v2/gqlerror\"\n")
@@ -4106,14 +4116,14 @@ func (e *exporter) generateModelQuerySupport(tables []*schema.Table, views []*sc
 		}
 	}
 	for _, table := range tables {
-		writeGraphQLModelQuerySupport(&b, table.Name, table.Columns, false, len(e.rowPolicies) > 0)
+		writeGraphQLModelQuerySupport(&b, table.Name, table.Columns, false, len(e.rowPolicies) > 0, table.IsAppendOnly, table.IsImmutable, table.HasSoftDelete)
 	}
 	for _, view := range views {
 		var cols []*schema.Column
 		for i := range view.Columns {
 			cols = append(cols, &view.Columns[i].Column)
 		}
-		writeGraphQLModelQuerySupport(&b, view.Name, cols, true, len(e.rowPolicies) > 0)
+		writeGraphQLModelQuerySupport(&b, view.Name, cols, true, len(e.rowPolicies) > 0, false, false, false)
 	}
 	formatted, err := format.Source([]byte(b.String()))
 	if err != nil {
@@ -4318,7 +4328,7 @@ func lowerFirst(s string) string {
 	return strings.ToLower(s[:1]) + s[1:]
 }
 
-func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns []*schema.Column, readOnly bool, rowPolicies ...bool) {
+func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns []*schema.Column, readOnly, hasRowPolicies, appendOnly, immutable, softDeletes bool) {
 	structName := tableToStruct(tableName)
 	queryName := structName + "Query"
 	scopeBuilderName := structName + "ScopeBuilder"
@@ -4328,22 +4338,31 @@ func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns
 	ownerCols := graphQLVisibilitySelectColumns(columns, func(col *schema.Column) bool {
 		return col.IsPublic || col.IsOwnerSees
 	})
-	hasRowPolicies := len(rowPolicies) > 0 && rowPolicies[0]
 	if hasRowPolicies {
 		b.WriteString(fmt.Sprintf("type %s struct { db *gorm.DB; policyContext *PolicyContext }\n\n", queryName))
 	} else {
 		b.WriteString(fmt.Sprintf("type %s struct { db *gorm.DB }\n\n", queryName))
 	}
-	b.WriteString(fmt.Sprintf("func Query%s() *%s { return &%s{db: DB.Model(&%s{})} }\n\n", structName, queryName, queryName, structName))
+	baseDB := fmt.Sprintf("DB.Model(&%s{})", structName)
+	if immutable {
+		baseDB += fmt.Sprintf(".Where(%q)", fmt.Sprintf(`version_id = (SELECT version_id FROM %s AS pickle_latest WHERE pickle_latest.id = %s.id ORDER BY version_id DESC LIMIT 1)`, quoteQualifiedIdent(tableName), quoteQualifiedIdent(tableName)))
+		if softDeletes {
+			baseDB += `.Where("deleted_at IS NULL")`
+		}
+	}
+	b.WriteString(fmt.Sprintf("func Query%s() *%s { return &%s{db: %s} }\n\n", structName, queryName, queryName, baseDB))
 	b.WriteString(fmt.Sprintf("func (tx *Tx) Query%s() *%s {\n", structName, queryName))
 	if hasRowPolicies {
-		b.WriteString(fmt.Sprintf("\treturn &%s{db: tx.DB.Model(&%s{}), policyContext: tx.policyContext}\n", queryName, structName))
+		txBaseDB := strings.Replace(baseDB, "DB.Model", "tx.DB.Model", 1)
+		b.WriteString(fmt.Sprintf("\treturn &%s{db: %s, policyContext: tx.policyContext}\n", queryName, txBaseDB))
 	} else {
-		b.WriteString(fmt.Sprintf("\treturn &%s{db: tx.DB.Model(&%s{})}\n", queryName, structName))
+		txBaseDB := strings.Replace(baseDB, "DB.Model", "tx.DB.Model", 1)
+		b.WriteString(fmt.Sprintf("\treturn &%s{db: %s}\n", queryName, txBaseDB))
 	}
 	b.WriteString("}\n")
 	if hasRowPolicies {
 		b.WriteString(fmt.Sprintf("func (q *%s) WithPolicyContext(context PolicyContext) *%s { q.policyContext = &context; return q }\n", queryName, queryName))
+		b.WriteString(fmt.Sprintf("func (q *%s) ApplyPolicyContext(context PolicyContext) *%s { return q.WithPolicyContext(context) }\n", queryName, queryName))
 	}
 	b.WriteString(fmt.Sprintf("func (q *%s) SelectPublic() *%s { q.db = q.db.Select([]string{%s}); return q }\n", queryName, queryName, quotedStringList(publicCols)))
 	b.WriteString(fmt.Sprintf("func (q *%s) SelectOwner() *%s { q.db = q.db.Select([]string{%s}); return q }\n", queryName, queryName, quotedStringList(ownerCols)))
@@ -4438,10 +4457,26 @@ func writeGraphQLModelQuerySupport(b *strings.Builder, tableName string, columns
 		b.WriteString(fmt.Sprintf("func (q *%s) All() ([]%s, error) { var records []%s; err := q.db.Find(&records).Error; return records, err }\n", queryName, structName, structName))
 		b.WriteString(fmt.Sprintf("func (q *%s) Count() (int64, error) { var count int64; err := q.db.Count(&count).Error; return count, err }\n", queryName))
 	}
-	if !readOnly && hasRowPolicies {
+	if !readOnly && immutable && hasRowPolicies {
+		b.WriteString(fmt.Sprintf("func (q *%s) Create(record *%s) error { if err := evaluateRowPolicyRecord(%q, \"insert\", q.policyContext, record); err != nil { return err }; return createIntegrityRecord(q.db.Session(&gorm.Session{NewDB: true}), %q, record, true, %q, %sIntegrityColumns) }\n", queryName, structName, tableName, tableName, "version_id DESC", structName))
+		b.WriteString(fmt.Sprintf("func (q *%s) Update(record *%s) error { if err := evaluateRowPolicyRecord(%q, \"update_new\", q.policyContext, record); err != nil { return err }; db, err := applyExportedRowPolicy(q.db, %q, \"update_old\", q.policyContext); if err != nil { return err }; return updateImmutableRecord(db, %q, record, %q, %sIntegrityColumns) }\n", queryName, structName, tableName, tableName, tableName, "version_id DESC", structName))
+		if softDeletes {
+			b.WriteString(fmt.Sprintf("func (q *%s) Delete(record *%s) error { db, err := applyExportedRowPolicy(q.db, %q, \"delete\", q.policyContext); if err != nil { return err }; now := time.Now().UTC(); record.DeletedAt = &now; return updateImmutableRecord(db, %q, record, %q, %sIntegrityColumns) }\n", queryName, structName, tableName, tableName, "version_id DESC", structName))
+		}
+	} else if !readOnly && appendOnly && hasRowPolicies {
+		b.WriteString(fmt.Sprintf("func (q *%s) Create(record *%s) error { if err := evaluateRowPolicyRecord(%q, \"insert\", q.policyContext, record); err != nil { return err }; return createIntegrityRecord(q.db.Session(&gorm.Session{NewDB: true}), %q, record, false, %q, %sIntegrityColumns) }\n", queryName, structName, tableName, tableName, "id DESC", structName))
+	} else if !readOnly && hasRowPolicies {
 		b.WriteString(fmt.Sprintf("func (q *%s) Create(record *%s) error { if err := evaluateRowPolicyRecord(%q, \"insert\", q.policyContext, record); err != nil { return err }; return q.db.Session(&gorm.Session{NewDB: true}).Create(record).Error }\n", queryName, structName, tableName))
 		b.WriteString(fmt.Sprintf("func (q *%s) Update(record *%s) error { if err := evaluateRowPolicyRecord(%q, \"update_new\", q.policyContext, record); err != nil { return err }; db, err := applyExportedRowPolicy(q.db, %q, \"update_old\", q.policyContext); if err != nil { return err }; result := db.Model(record).Updates(record); if result.Error != nil { return result.Error }; if result.RowsAffected == 0 { return gorm.ErrRecordNotFound }; return nil }\n", queryName, structName, tableName, tableName))
 		b.WriteString(fmt.Sprintf("func (q *%s) Delete(record *%s) error { db, err := applyExportedRowPolicy(q.db, %q, \"delete\", q.policyContext); if err != nil { return err }; result := db.Delete(record); if result.Error != nil { return result.Error }; if result.RowsAffected == 0 { return gorm.ErrRecordNotFound }; return nil }\n", queryName, structName, tableName))
+	} else if !readOnly && immutable {
+		b.WriteString(fmt.Sprintf("func (q *%s) Create(record *%s) error { return createIntegrityRecord(q.db.Session(&gorm.Session{NewDB: true}), %q, record, true, %q, %sIntegrityColumns) }\n", queryName, structName, tableName, "version_id DESC", structName))
+		b.WriteString(fmt.Sprintf("func (q *%s) Update(record *%s) error { return updateImmutableRecord(q.db, %q, record, %q, %sIntegrityColumns) }\n", queryName, structName, tableName, "version_id DESC", structName))
+		if softDeletes {
+			b.WriteString(fmt.Sprintf("func (q *%s) Delete(record *%s) error { now := time.Now().UTC(); record.DeletedAt = &now; return updateImmutableRecord(q.db, %q, record, %q, %sIntegrityColumns) }\n", queryName, structName, tableName, "version_id DESC", structName))
+		}
+	} else if !readOnly && appendOnly {
+		b.WriteString(fmt.Sprintf("func (q *%s) Create(record *%s) error { return createIntegrityRecord(q.db.Session(&gorm.Session{NewDB: true}), %q, record, false, %q, %sIntegrityColumns) }\n", queryName, structName, tableName, "id DESC", structName))
 	} else if !readOnly {
 		b.WriteString(fmt.Sprintf("func (q *%s) Create(record *%s) error { return q.db.Session(&gorm.Session{NewDB: true}).Create(record).Error }\n", queryName, structName))
 		b.WriteString(fmt.Sprintf("func (q *%s) Update(record *%s) error { return q.db.Session(&gorm.Session{NewDB: true}).Save(record).Error }\n", queryName, structName))
@@ -8985,20 +9020,16 @@ func (e *ChainError) Error() string {
 		fmt.Fprintf(&b, "func Create%s(record *%s) error {\n", model, model)
 		fmt.Fprintf(&b, "\treturn createIntegrityRecord(DB, %q, record, %t, %q, %sIntegrityColumns)\n", table.Name, table.IsImmutable, latestOrder, model)
 		b.WriteString("}\n\n")
-		fmt.Fprintf(&b, "func Update%s(record *%s) error {\n", model, model)
 		if table.IsImmutable {
+			fmt.Fprintf(&b, "func Update%s(record *%s) error {\n", model, model)
 			fmt.Fprintf(&b, "\treturn updateImmutableRecord(DB, %q, record, %q, %sIntegrityColumns)\n", table.Name, latestOrder, model)
-		} else {
-			b.WriteString("\treturn errors.New(\"append-only records cannot be updated\")\n")
+			b.WriteString("}\n\n")
+			if tableHasColumn(table, "deleted_at") {
+				fmt.Fprintf(&b, "func Delete%s(record *%s) error {\n", model, model)
+				fmt.Fprintf(&b, "\tnow := time.Now().UTC()\n\trecord.DeletedAt = &now\n\treturn Update%s(record)\n", model)
+				b.WriteString("}\n\n")
+			}
 		}
-		b.WriteString("}\n\n")
-		fmt.Fprintf(&b, "func Delete%s(record *%s) error {\n", model, model)
-		if table.IsImmutable && tableHasColumn(table, "deleted_at") {
-			fmt.Fprintf(&b, "\tnow := time.Now().UTC()\n\trecord.DeletedAt = &now\n\treturn Update%s(record)\n", model)
-		} else {
-			b.WriteString("\treturn errors.New(\"integrity records cannot be deleted\")\n")
-		}
-		b.WriteString("}\n\n")
 		fmt.Fprintf(&b, "func Verify%sRow(record *%s) error {\n", model, model)
 		fmt.Fprintf(&b, "\treturn verifyIntegrityRow(%q, record, %sIntegrityColumns)\n", table.Name, model)
 		b.WriteString("}\n\n")
@@ -10205,6 +10236,7 @@ func (verifiedPolicySource) policySourceSeal() {}
 func (v verifiedPolicySource) PolicyIdentities() map[string]string { out:=map[string]string{};for key,value:=range v.identities{out[key]=value};return out }
 func (v verifiedPolicySource) PolicyRoles() []string { return append([]string(nil),v.roles...) }
 func AuthenticatePolicySource(r *http.Request) (VerifiedPolicySource,error) { info,err:=Authenticate(r);if err!=nil{return nil,err};identities:=policyClaimIdentities(info.Claims);identities["user_id"]=info.UserID;roles:=[]string{};if info.Role!=""{roles=append(roles,info.Role)};return verifiedPolicySource{identities:identities,roles:roles},nil }
+func TryAuthenticatePolicySource(r *http.Request) (VerifiedPolicySource,bool,error) { present:=false;if ActiveDriverName()=="session"{name:="session_id";if envFunc!=nil{name=envFunc("SESSION_COOKIE",name)};_,err:=r.Cookie(name);present=err==nil}else{present=strings.HasPrefix(r.Header.Get("Authorization"),"Bearer ")};if !present{return nil,false,nil};source,err:=AuthenticatePolicySource(r);return source,true,err }
 func AuthenticateJobPolicySource(r *http.Request) (VerifiedPolicySource,error) { return AuthenticatePolicySource(r) }
 func AuthenticateCLIPolicySource(r *http.Request) (VerifiedPolicySource,error) { return AuthenticatePolicySource(r) }
 func policyClaimIdentities(claims any)map[string]string{out:=map[string]string{};rv:=reflect.ValueOf(claims);if rv.Kind()==reflect.Pointer{if rv.IsNil(){return out};rv=rv.Elem()};if rv.Kind()!=reflect.Struct{return out};rt:=rv.Type();for i:=0;i<rv.NumField();i++{field:=rv.Field(i);meta:=rt.Field(i);name:=meta.Tag.Get("json");if comma:=strings.IndexByte(name,',');comma>=0{name=name[:comma]};if name==""||name=="-"{name=meta.Name};if field.Kind()==reflect.String&&field.String()!=""{out[name]=field.String()};if meta.Name=="Extra"&&field.Kind()==reflect.Map{iter:=field.MapRange();for iter.Next(){if iter.Key().Kind()==reflect.String{value:=iter.Value();if value.Kind()==reflect.Interface&&!value.IsNil(){value=value.Elem()};if value.Kind()==reflect.String&&value.String()!=""{out[iter.Key().String()]=value.String()}}}}};return out}

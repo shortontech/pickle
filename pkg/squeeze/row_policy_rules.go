@@ -2,6 +2,7 @@ package squeeze
 
 import (
 	"go/ast"
+	"go/token"
 	"strconv"
 	"strings"
 
@@ -154,26 +155,6 @@ func ruleRowPolicyContextMissing(ctx *AnalysisContext) []Finding {
 	var findings []Finding
 	for name, method := range ctx.Methods {
 		chains := ExtractCallChainsRecursive(method.Body, method.Fset, ctx.FuncRegistry, nil)
-		policyScopedAt := map[string]int{}
-		ast.Inspect(method.Body, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			selector, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || selector.Sel.Name != "WithPolicyContext" && selector.Sel.Name != "WithPostgresPolicyContext" {
-				return true
-			}
-			receiver, ok := selector.X.(*ast.Ident)
-			if !ok {
-				return true
-			}
-			line := method.Fset.Position(call.Pos()).Line
-			if previous := policyScopedAt[receiver.Name]; previous == 0 || line < previous {
-				policyScopedAt[receiver.Name] = line
-			}
-			return true
-		})
 		type access struct {
 			query string
 			table string
@@ -197,7 +178,7 @@ func ruleRowPolicyContextMissing(ctx *AnalysisContext) []Finding {
 			if table == "" {
 				continue
 			}
-			safe := len(names) > 0 && policyScopedAt[names[0]] > 0 && policyScopedAt[names[0]] < chain.Line
+			safe := len(names) > 0 && transactionPolicyContextDominates(method.Body, method.Fset, names[0], chain.Line)
 			for _, segment := range names {
 				if segment == "WithPolicyContext" {
 					safe = true
@@ -216,6 +197,102 @@ func ruleRowPolicyContextMissing(ctx *AnalysisContext) []Finding {
 		}
 	}
 	return findings
+}
+
+func transactionPolicyContextDominates(root *ast.BlockStmt, fset *token.FileSet, receiver string, queryLine int) bool {
+	var target *ast.BlockStmt
+	ast.Inspect(root, func(node ast.Node) bool {
+		block, ok := node.(*ast.BlockStmt)
+		if !ok {
+			return true
+		}
+		start, end := fset.Position(block.Pos()).Line, fset.Position(block.End()).Line
+		if start <= queryLine && queryLine <= end {
+			if target == nil || end-start < fset.Position(target.End()).Line-fset.Position(target.Pos()).Line {
+				target = block
+			}
+		}
+		return true
+	})
+	if target == nil {
+		return false
+	}
+	scoped := false
+	for _, statement := range target.List {
+		line := fset.Position(statement.Pos()).Line
+		end := fset.Position(statement.End()).Line
+		if line <= queryLine && queryLine <= end {
+			return scoped
+		}
+		if line >= queryLine {
+			break
+		}
+		if policyAttachmentChecked(statement, receiver) {
+			scoped = true
+			continue
+		}
+		if assignsIdentifier(statement, receiver) {
+			scoped = false
+		}
+	}
+	return scoped
+}
+
+func policyAttachmentChecked(statement ast.Stmt, receiver string) bool {
+	conditional, ok := statement.(*ast.IfStmt)
+	if !ok || conditional.Init == nil || conditional.Body == nil || len(conditional.Body.List) == 0 {
+		return false
+	}
+	assignment, ok := conditional.Init.(*ast.AssignStmt)
+	if !ok || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+		return false
+	}
+	errName, ok := assignment.Lhs[0].(*ast.Ident)
+	if !ok {
+		return false
+	}
+	call, ok := assignment.Rhs[0].(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "WithPolicyContext" && selector.Sel.Name != "WithPostgresPolicyContext" {
+		return false
+	}
+	ident, ok := selector.X.(*ast.Ident)
+	if !ok || ident.Name != receiver {
+		return false
+	}
+	condition, ok := conditional.Cond.(*ast.BinaryExpr)
+	if !ok || condition.Op != token.NEQ {
+		return false
+	}
+	left, leftOK := condition.X.(*ast.Ident)
+	right, rightOK := condition.Y.(*ast.Ident)
+	checksError := leftOK && rightOK && (left.Name == errName.Name && right.Name == "nil" || right.Name == errName.Name && left.Name == "nil")
+	if !checksError {
+		return false
+	}
+	_, returns := conditional.Body.List[len(conditional.Body.List)-1].(*ast.ReturnStmt)
+	return returns
+}
+
+func assignsIdentifier(statement ast.Stmt, name string) bool {
+	assigned := false
+	ast.Inspect(statement, func(node ast.Node) bool {
+		assignment, ok := node.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for _, lhs := range assignment.Lhs {
+			if ident, ok := lhs.(*ast.Ident); ok && ident.Name == name {
+				assigned = true
+				return false
+			}
+		}
+		return true
+	})
+	return assigned
 }
 
 func ruleRowPolicyContextSpoof(ctx *AnalysisContext) []Finding {

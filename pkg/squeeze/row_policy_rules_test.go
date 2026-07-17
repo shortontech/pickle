@@ -58,10 +58,34 @@ func TestRowPolicyContextMissingDoesNotTrustTransactionVariableName(t *testing.T
 }
 
 func TestRowPolicyContextMissingProvesScopedTransactionBeforeQuery(t *testing.T) {
-	method := rowPolicyMethod(t, "\ntx.WithPostgresPolicyContext(policyContext)\ntx.QueryMessage().All()")
+	method := rowPolicyMethod(t, "\nif err := tx.WithPostgresPolicyContext(policyContext); err != nil { return }\ntx.QueryMessage().All()")
 	findings := ruleRowPolicyContextMissing(&AnalysisContext{Methods: map[string]*ControllerMethod{"C.Show": method}, RowPolicies: protectedMessages()})
 	if len(findings) != 0 {
 		t.Fatalf("scoped tx was rejected: %+v", findings)
+	}
+}
+
+func TestRowPolicyContextMissingRejectsConditionalTransactionScoping(t *testing.T) {
+	method := rowPolicyMethod(t, "\nif usePolicy { _ = tx.WithPostgresPolicyContext(policyContext) }\ntx.QueryMessage().All()")
+	findings := ruleRowPolicyContextMissing(&AnalysisContext{Methods: map[string]*ControllerMethod{"C.Show": method}, RowPolicies: protectedMessages()})
+	if len(findings) != 1 {
+		t.Fatalf("conditional transaction scoping was trusted: %+v", findings)
+	}
+}
+
+func TestRowPolicyContextMissingRejectsIgnoredAttachmentError(t *testing.T) {
+	method := rowPolicyMethod(t, "\n_ = tx.WithPolicyContext(policyContext)\ntx.QueryMessage().All()")
+	findings := ruleRowPolicyContextMissing(&AnalysisContext{Methods: map[string]*ControllerMethod{"C.Show": method}, RowPolicies: protectedMessages()})
+	if len(findings) != 1 {
+		t.Fatalf("ignored attachment error was trusted: %+v", findings)
+	}
+}
+
+func TestRowPolicyContextMissingRejectsReassignedTransaction(t *testing.T) {
+	method := rowPolicyMethod(t, "\nif err := tx.WithPolicyContext(policyContext); err != nil { return }\ntx = otherTx\ntx.QueryMessage().All()")
+	findings := ruleRowPolicyContextMissing(&AnalysisContext{Methods: map[string]*ControllerMethod{"C.Show": method}, RowPolicies: protectedMessages()})
+	if len(findings) != 1 {
+		t.Fatalf("reassigned transaction was trusted: %+v", findings)
 	}
 }
 

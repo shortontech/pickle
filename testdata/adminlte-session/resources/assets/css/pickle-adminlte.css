@@ -1,0 +1,6 @@
+.brand-link { text-decoration: none; }
+.brand-mark { display: inline-grid; width: 2rem; height: 2rem; margin-right: .5rem; place-items: center; color: white; background: #0d6efd; border-radius: .5rem; }
+.small-box .small-box-icon { opacity: .3; }
+.demo-user { max-width: 18rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.login-page { min-height: 100vh; }
+.login-logo a { text-decoration: none; }

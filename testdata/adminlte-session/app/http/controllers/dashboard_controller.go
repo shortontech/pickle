@@ -9,14 +9,14 @@ func (DashboardController) Asset(ctx *pickle.Context) pickle.Response {
 }
 
 func (DashboardController) Index(ctx *pickle.Context) pickle.Response {
-	data := pickle.DashboardData{Authenticated: true}
+	data := pickle.DashboardData{}
 	data.Page.Title = "Warehouse dashboard"
 	data.Page.Heading = "Dashboard"
 	data.User.Name = ctx.Auth().UserID
 	data.CsrfToken, _ = ctx.Cookie("csrf_token")
-	data.Metrics = append(data.Metrics, struct {
-		Label string
-		Value string
-	}{Label: "Open orders", Value: "12"})
+	data.Orders.Value = "12"
+	data.Shipments.Value = "8"
+	data.Inventory.Value = "5"
+	data.Suppliers.Value = "2"
 	return pickle.Dashboard(ctx, data)
 }

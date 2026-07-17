@@ -1,0 +1,15 @@
+{
+  "name": "admin-lte",
+  "version": "4.0.0",
+  "license": "MIT",
+  "homepage": "https://adminlte.io",
+  "repository": "https://github.com/ColorlibHQ/AdminLTE",
+  "release": "https://github.com/ColorlibHQ/AdminLTE/releases/tag/v4.0.0",
+  "npm_tarball": "https://registry.npmjs.org/admin-lte/-/admin-lte-4.0.0.tgz",
+  "npm_integrity": "sha512-vuUo9yFI0bxbWXKclLRRuAbxLn3x3PdEAcuXOnzoYQ9EoOAbedj87Fb4FPF4BV2rPLfScFEQLbWngS4WtmPZJA==",
+  "files": {
+    "dist/css/adminlte.min.css": "sha256:95a94aea26a9b8d2868670145a87057737e79e137dcadebb376916f23f11532c",
+    "dist/js/adminlte.min.js": "sha256:3bddff2ca28853aae6f3dd504275273f425411520352ab9f99d47f2080ac2a54",
+    "LICENSE": "sha256:9e8b0d4e7ce8c13e67a2373d5094910c263fd95b1e49bdf45dc2a9813be5996b"
+  }
+}

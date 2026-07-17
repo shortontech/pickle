@@ -1,14 +1,13 @@
 # AdminLTE + session-auth test application
 
-This is the active integration fixture for spec 081. It deliberately starts
-small: an AdminLTE-shaped dashboard is authored as `*.blade.php`, compiled to a
-typed Go renderer, and protected by Pickle's session auth driver.
+This is the active integration fixture for spec 081. It vendors the published
+AdminLTE 4.0.0 CSS and JavaScript, uses AdminLTE's real v4 layout structure, and
+protects its typed Blade dashboard with Pickle's session auth driver.
 
-The CSS in this first slice is a tiny Pickle-owned compatibility fixture using
-AdminLTE's public class vocabulary. It is not the upstream AdminLTE
-distribution. The pinned upstream assets, license/provenance manifest,
-content-addressed embedding, and scaffold installer land in subsequent 081
-slices.
+The upstream assets are pinned, content-addressed, embedded into the Go binary,
+and recorded with their npm integrity, SHA-256 hashes, MIT license, and release
+provenance under `third_party/adminlte/`. The fixture requires no Node.js or
+network access to generate, build, or run.
 
 ## Run it
 

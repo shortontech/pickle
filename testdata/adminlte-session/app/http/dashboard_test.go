@@ -12,7 +12,7 @@ func TestDashboardRendersHTMLAndEscapesData(t *testing.T) {
 	request := httptest.NewRequest("GET", "/", nil)
 	recorder := httptest.NewRecorder()
 	ctx := NewContext(recorder, request)
-	data := DashboardData{Authenticated: true}
+	data := DashboardData{}
 	data.Page.Title = `<script>alert("title")</script>`
 	data.Page.Heading = "Dashboard"
 	data.User.Name = `<img src=x onerror=alert(1)>`

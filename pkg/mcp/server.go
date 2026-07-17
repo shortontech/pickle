@@ -35,7 +35,7 @@ func NewServer(projectDir string) (*Server, error) {
 	s := &Server{project: project, picklePkgDir: findPicklePkgDir()}
 	s.server = mcp.NewServer(&mcp.Implementation{
 		Name:    "pickle",
-		Version: "v0.2.0",
+		Version: "v0.3.0",
 	}, nil)
 
 	s.registerTools()

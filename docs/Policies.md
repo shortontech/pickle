@@ -24,7 +24,7 @@ func (p *MessageAccess_2026_07_16_120000) Up() {
     p.IdentityUUID("workspace_id")
 
     p.Protect("messages", func(rows *Rows) {
-		rows.ExistingRowsAlreadyValid("ownership backfill 2026-07-16 completed")
+        rows.ExistingRowsAlreadyValid("ownership backfill 2026-07-16 completed")
         rows.Rule("workspace_member").ForAuthenticated().
             Select(Owner("workspace_id", Identity("workspace_id"))).
             Insert(Owner("workspace_id", Identity("workspace_id"))).
@@ -59,6 +59,8 @@ Predicates are a typed tree, not Go or SQL strings:
 
 Generation replays every policy, resolves tables, columns, roles, identity types, and operation positions, then feeds one normalized representation to both application and PostgreSQL emitters. Unknown or ambiguous references stop generation.
 
+The first `Protect` transition must also make an explicit decision about rows that already exist. Call `ExistingRowsAlreadyValid(reason)` only after a reviewed backfill or when the table is known to be empty. Pickle records that acknowledgement but does not execute or infer a backfill. Add ownership columns and populate them in schema migrations before the policy transition; later `AlterProtection` transitions operate on an already protected table and do not repeat the acknowledgement.
+
 `UPDATE` requires both `Existing(...)` and `Proposed(...)`. Immutable history tables cannot safely reduce to the globally current version after PostgreSQL has applied per-row RLS. Any row policy on an immutable table therefore requires the explicit `rows.AllowApplicationOnly("non_bijective_physical_plan")` acknowledgement. Generated application enforcement remains active for every operation, but Pickle emits no RLS that could resurrect an older or pre-delete version.
 
 For immutable reads, Pickle first finds the globally newest version and then applies row admission. A denied newest version never reveals an older allowed version.
@@ -68,11 +70,10 @@ For immutable reads, Pickle first finds the globally newest version and then app
 Protected queries fail before database access when no matching subject or required identity is present. Authentication returns a sealed source that application packages cannot implement; the generated model adapter converts it to `PolicyContext`. Verified custom string claims are available by their claim name, and `user_id` always comes from the verified authentication subject:
 
 ```go
-verified, err := auth.AuthenticatePolicySource(ctx.Request())
-if err != nil {
-    return ctx.Unauthorized("invalid credentials")
+policyContext, ok := models.PolicyContextFromHTTP(ctx)
+if !ok {
+    return ctx.Error(errors.New("policy context boundary is not installed"))
 }
-policyContext := models.PolicyContextFromVerified(verified)
 ```
 
 Ordinary controller code attaches that context with `WithPolicyContext`, or seals it on a transaction. PostgreSQL dual enforcement uses transaction-local settings:
@@ -90,14 +91,13 @@ err := models.WithTransaction(func(tx *models.Tx) error {
 
 `pickle.identity.*` is reserved. `Tx.SetLocal` cannot spoof it, a transaction context cannot be overwritten, and nested savepoints inherit but cannot broaden it.
 
-HTTP and GraphQL entry points derive context from verified authentication. Background jobs and CLI commands pass a driver-native, request-shaped credential through `auth.AuthenticateJobPolicySource` or `auth.AuthenticateCLIPolicySource`, then call `models.PolicyContextFromVerified`. These adapters deliberately do not accept identity maps or role lists. Tests alone receive `models.NewVerifiedPolicyContext` from a generated `_test.go` adapter. Never accept identity values directly from request JSON or flags without verifying them against the entry point's authority.
+HTTP and GraphQL entry points derive context automatically from the active driver's verified credential; absence produces only the public context, while an invalid presented credential fails. Controllers read the established value with `models.PolicyContextFromHTTP(ctx)`. Background jobs and CLI commands have no ambient request, so they call `models.AuthenticateJobPolicyContext` or `models.AuthenticateCLIPolicyContext` with a driver-native, request-shaped credential. These adapters deliberately do not accept identity maps or role lists. Tests alone receive `models.NewVerifiedPolicyContext` from a generated `_test.go` adapter. Never accept identity values directly from request JSON or flags without verifying them against the entry point's authority.
 
 ```go
-verified, err := auth.AuthenticateJobPolicySource(credentialRequest)
+policyContext, err := models.AuthenticateJobPolicyContext(credentialRequest)
 if err != nil {
     return err
 }
-policyContext := models.PolicyContextFromVerified(verified)
 ```
 
 Ownership transfer is an update with different existing and proposed rules: the existing predicate decides who may touch the current row, while the proposed predicate constrains its new owner. For a direct migration-defined foreign-key relationship, `Exists("memberships", Equal(PolicyColumn("workspace_id"), Identity("workspace_id")))` is portable in select, delete, and the existing-row half of update. Pickle resolves the parent/child join and emits the same correlated `EXISTS` in application SQL and PostgreSQL RLS. Proposed-row relationship checks, ambiguous foreign keys, recursion, and privilege-dependent graphs stop generation rather than weakening the rule.
@@ -247,14 +247,14 @@ func (p *RestrictUsers_2026_03_26_100000) Up() {
 The policy runner executes in a fixed order during `pickle migrate`:
 
 1. **Database migrations** -- schema changes first
-2. **Role policies** -- roles and permissions
+2. **Role and row policies** -- roles, normalized row admission, and generated PostgreSQL RLS
 3. **GraphQL policies** -- API surface exposure
 
-This ordering guarantees that roles exist before GraphQL policies reference them, and tables exist before roles reference their actions.
+This ordering guarantees that tables and backfills exist before protection is enabled, and that roles exist before GraphQL policies reference them. A schema migration and its later policy transition are separate recorded phases: failure in the policy phase does not pretend to roll back an already applied schema batch.
 
 ## State tracking
 
-Role policies track state in the `rbac_changelog` table. GraphQL policies track state in the `graphql_changelog` table. Both use the same state machine as migrations:
+Role and generated row-policy transitions track state in the `rbac_changelog` table in generated Pickle projects. Standalone exports use a dedicated `row_policy_changelog`. GraphQL policies track state in `graphql_changelog`. They use the same state machine as migrations:
 
 ```
 Pending -> Running -> Applied
@@ -272,7 +272,7 @@ Policies run inside a transaction by default. Override `Transactional()` to retu
 Rollback reverses the last batch of policies. The runner calls `Down()` on each policy in the batch in reverse order.
 
 ```bash
-pickle policies:rollback    # rolls back the last batch of role policies
+pickle policies:rollback    # rolls back the latest role/row-policy batch
 ```
 
 `Down()` must be symmetric with `Up()`. If `Up()` creates a role, `Down()` must drop it. If `Up()` grants permissions, `Down()` must revoke them.
@@ -280,9 +280,12 @@ pickle policies:rollback    # rolls back the last batch of role policies
 ## CLI
 
 ```bash
-pickle make:policy          # Scaffold a new policy file (prompts for type: role or graphql)
+pickle make:policy          # Scaffold a policy file
 pickle policies:status      # Show applied/pending status of all policies
-pickle policies:rollback    # Rollback the last batch of policies
+pickle policies:rollback    # Roll back the latest role/row-policy batch
+pickle policies:rows        # List normalized row-policy classifications
+pickle policies:row users   # Inspect one protected table
+pickle policies:explain users select authenticated
 ```
 
 ## Baked-in tables

@@ -2,7 +2,7 @@
 
 ## Protected queries
 
-When a table has a Pickle row policy, every generated terminal operation (`First`, `All`, `Count`, aggregates, `Create`, `Update`, and `Delete`) compiles the normalized predicate automatically. Attach verified identity with `.WithPolicyContext(policyContext)`. PostgreSQL callers should use a policy-scoped transaction so the same context also reaches RLS.
+When a table has a Pickle row policy, every supported generated terminal operation (`First`, `All`, `Count`, aggregates, relationship loaders, locks, `Create`, `Update`, and `Delete`) compiles the normalized predicate automatically. Attach verified identity with `.WithPolicyContext(policyContext)`. PostgreSQL callers should use a policy-scoped transaction so the same context also reaches RLS. Append-only generated query types omit `Update` and `Delete` entirely; raw and unclassified bulk surfaces are prohibited instead of receiving a bypass switch.
 
 Denials are expressed without disclosing whether a protected row exists. Immutable reads reduce to the globally newest version before applying admission. Immutable logical updates/deletes enforce their distinct existing/proposed rules even though their physical storage operation is an insert/update.
 

@@ -4,7 +4,7 @@
 
 Portable authorization belongs in `database/policies/`, not duplicated migration SQL. Pickle generates and reconciles its reserved `pickle_` PostgreSQL policies during explicit policy migration. Manual database-only constraints may coexist only through structured `CreateRLSPolicy(...).RestrictiveDefenseInDepth()`, which emits `AS RESTRICTIVE`. Raw migration SQL remains appropriate for roles, grants, and helper functions; Squeeze rejects unprovable policy-affecting SQL beside a Pickle-protected table.
 
-Protecting existing data after adding a non-null ownership column requires an explicit expand/backfill/protect sequence. Pickle never invents owners or silently classifies old rows.
+Protecting existing data after adding an ownership column requires an explicit expand/backfill/protect sequence. Add the schema, populate and validate every existing row, then use `ExistingRowsAlreadyValid(reason)` in the first `Protect` transition. Pickle records that deployment decision but never invents owners, runs a hidden backfill, or silently classifies old rows. Schema and policy phases have separate ledger state, so a failed policy transition does not masquerade as an atomic rollback of an already applied schema migration.
 
 PostgreSQL row-level security has a structured migration DSL for enabling RLS and managing policies. See [PostgreSQL Row-Level Security](RLS.md).
 

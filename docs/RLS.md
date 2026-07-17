@@ -39,7 +39,15 @@ Run explicit, read-only drift inspection with:
 pickle rls:status
 ```
 
-It compares managed names, commands, permissiveness, fingerprints, enabled/forced state, unexpected permissive policies, orphaned generated policies, ownership, superuser, and `BYPASSRLS`. MCP `rls_status` shows desired state without unexpectedly connecting to a live database.
+Or include the same live evidence in the complete static report:
+
+```bash
+pickle squeeze --live
+```
+
+Both commands load the target project's configuration and deliberately connect through its generated application. Inspection compares managed names, commands, permissiveness, fingerprints, enabled/forced state, unexpected permissive policies, orphaned generated policies, ownership, superuser, and `BYPASSRLS`. Plain `pickle squeeze` and MCP `rls_status` remain offline; MCP reports desired state without unexpectedly connecting to a live database.
+
+Generated RLS changes are applied by the policy runner after schema migrations. `policies:rollback` restores the exact preceding generated state for the latest batch. Use an expand/backfill/protect deployment when adding ownership data: migrate nullable structure if necessary, backfill and validate existing rows, then add the first `Protect` transition with `ExistingRowsAlreadyValid(reason)`. Pickle will not enable protection for pre-existing rows without that explicit decision.
 
 ## Manual restrictive defense in depth
 

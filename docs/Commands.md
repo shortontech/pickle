@@ -9,6 +9,7 @@ pickle policies:row users
 pickle policies:explain users select authenticated
 pickle rls:status       # explicit read-only PostgreSQL catalog drift inspection
 pickle squeeze          # static classification, rule IDs, and proof evidence
+pickle squeeze --live   # static report plus explicit live RLS evidence
 ```
 
 MCP exposes `policies_rows`, `policies_row`, `policies_explain`, and `rls_status`. MCP RLS status reports desired generated state only and does not unexpectedly open a production connection; use the CLI for explicit live inspection.

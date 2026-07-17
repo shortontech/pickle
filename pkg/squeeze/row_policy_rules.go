@@ -1,6 +1,7 @@
 package squeeze
 
 import (
+	"go/ast"
 	"strconv"
 	"strings"
 
@@ -153,6 +154,26 @@ func ruleRowPolicyContextMissing(ctx *AnalysisContext) []Finding {
 	var findings []Finding
 	for name, method := range ctx.Methods {
 		chains := ExtractCallChainsRecursive(method.Body, method.Fset, ctx.FuncRegistry, nil)
+		policyScopedAt := map[string]int{}
+		ast.Inspect(method.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || selector.Sel.Name != "WithPolicyContext" && selector.Sel.Name != "WithPostgresPolicyContext" {
+				return true
+			}
+			receiver, ok := selector.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			line := method.Fset.Position(call.Pos()).Line
+			if previous := policyScopedAt[receiver.Name]; previous == 0 || line < previous {
+				policyScopedAt[receiver.Name] = line
+			}
+			return true
+		})
 		type access struct {
 			query string
 			table string
@@ -176,7 +197,7 @@ func ruleRowPolicyContextMissing(ctx *AnalysisContext) []Finding {
 			if table == "" {
 				continue
 			}
-			safe := len(names) > 0 && strings.EqualFold(names[0], "tx")
+			safe := len(names) > 0 && policyScopedAt[names[0]] > 0 && policyScopedAt[names[0]] < chain.Line
 			for _, segment := range names {
 				if segment == "WithPolicyContext" {
 					safe = true

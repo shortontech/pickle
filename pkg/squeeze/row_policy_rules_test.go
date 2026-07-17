@@ -49,6 +49,30 @@ func TestRowPolicyContextMissingAcceptsExplicitContext(t *testing.T) {
 	}
 }
 
+func TestRowPolicyContextMissingDoesNotTrustTransactionVariableName(t *testing.T) {
+	method := rowPolicyMethod(t, `tx.QueryMessage().All()`)
+	findings := ruleRowPolicyContextMissing(&AnalysisContext{Methods: map[string]*ControllerMethod{"C.Show": method}, RowPolicies: protectedMessages()})
+	if len(findings) != 1 {
+		t.Fatalf("unscoped tx was trusted: %+v", findings)
+	}
+}
+
+func TestRowPolicyContextMissingProvesScopedTransactionBeforeQuery(t *testing.T) {
+	method := rowPolicyMethod(t, "\ntx.WithPostgresPolicyContext(policyContext)\ntx.QueryMessage().All()")
+	findings := ruleRowPolicyContextMissing(&AnalysisContext{Methods: map[string]*ControllerMethod{"C.Show": method}, RowPolicies: protectedMessages()})
+	if len(findings) != 0 {
+		t.Fatalf("scoped tx was rejected: %+v", findings)
+	}
+}
+
+func TestRowPolicyContextMissingRejectsTransactionScopedAfterQuery(t *testing.T) {
+	method := rowPolicyMethod(t, "\ntx.QueryMessage().All()\ntx.WithPolicyContext(policyContext)")
+	findings := ruleRowPolicyContextMissing(&AnalysisContext{Methods: map[string]*ControllerMethod{"C.Show": method}, RowPolicies: protectedMessages()})
+	if len(findings) != 1 {
+		t.Fatalf("late transaction scoping was trusted: %+v", findings)
+	}
+}
+
 func TestPolicyContextAnalysisIncludesJobsAndCommands(t *testing.T) {
 	root := t.TempDir()
 	for _, entry := range []struct{ dir, file, source string }{

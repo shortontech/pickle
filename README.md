@@ -160,6 +160,7 @@ See the [Getting Started guide](docs/GettingStarted.md) to create your first Pic
 | [Migrations](docs/Migrations.md) | Database schema as code |
 | [Seeders](docs/Seeders.md) | Deterministic fixture data, scenario graphs, and repeat policies |
 | [Views](docs/Views.md) | Database views with computed columns |
+| [Blade views](docs/Blade.md) | Experimental typed `*.blade.php` templates compiled to Go |
 | [Router](docs/Router.md) | Route definitions and groups |
 | [Context](docs/Context.md) | The request context object |
 | [Response](docs/Response.md) | Building HTTP responses |

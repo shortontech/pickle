@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/shortontech/pickle/pkg/blade"
 	"github.com/shortontech/pickle/pkg/schema"
 	"github.com/shortontech/pickle/pkg/tickle"
 )
@@ -603,6 +604,49 @@ func Generate(project *Project, picklePkgDir string) error {
 	fmt.Println("  generating pickle_gen.go")
 	if err := writeFile(filepath.Join(layout.HTTPDir, "pickle_gen.go"), GenerateCoreHTTP(httpPkg)); err != nil {
 		return err
+	}
+
+	// 1a. Compile authored Blade-shaped views into typed Go renderers. Views
+	// are a Pickle toolchain feature and never require PHP at build or runtime.
+	viewsDir := filepath.Join(project.Dir, "resources", "views")
+	if info, err := os.Stat(viewsDir); err == nil && info.IsDir() {
+		var docs []*blade.Document
+		err := filepath.WalkDir(viewsDir, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".blade.php") {
+				return nil
+			}
+			rel, err := filepath.Rel(viewsDir, path)
+			if err != nil {
+				return err
+			}
+			source, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			doc, err := blade.Parse(filepath.ToSlash(rel), string(source))
+			if err != nil {
+				return err
+			}
+			docs = append(docs, doc)
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("compiling views: %w", err)
+		}
+		sort.Slice(docs, func(i, j int) bool { return docs[i].Name < docs[j].Name })
+		if len(docs) > 0 {
+			fmt.Println("  generating views_gen.go")
+			src, err := blade.CompileGo(httpPkg, docs)
+			if err != nil {
+				return fmt.Errorf("compiling views: %w", err)
+			}
+			if err := writeFile(filepath.Join(layout.HTTPDir, "views_gen.go"), src); err != nil {
+				return err
+			}
+		}
 	}
 
 	fmt.Println("  generating models/pickle_gen.go")

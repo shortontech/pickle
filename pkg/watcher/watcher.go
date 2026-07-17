@@ -19,6 +19,8 @@ var WatchDirs = []string{
 	"database/migrations",
 	"routes",
 	"config",
+	"resources/views",
+	"resources/assets",
 }
 
 // WatchDirsForServices returns the watch directories for a multi-service project.

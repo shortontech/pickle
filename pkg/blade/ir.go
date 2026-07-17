@@ -1,0 +1,63 @@
+// Package blade compiles Pickle's safe Blade-shaped view language.
+package blade
+
+// Span identifies a byte range in an authored template.
+type Span struct {
+	Start int
+	End   int
+}
+
+// Document is target-neutral view IR. It contains presentation intent, not Go
+// or PHP renderer fragments.
+type Document struct {
+	Name         string
+	Nodes        []Node
+	Dependencies []Dependency
+}
+
+type Dependency struct {
+	Kind string
+	Name string
+	Span Span
+}
+
+type Node interface {
+	node()
+	SourceSpan() Span
+}
+
+type Text struct {
+	Value string
+	Span  Span
+}
+
+func (Text) node()              {}
+func (n Text) SourceSpan() Span { return n.Span }
+
+type Escaped struct {
+	Path []string
+	Span Span
+}
+
+func (Escaped) node()              {}
+func (n Escaped) SourceSpan() Span { return n.Span }
+
+type If struct {
+	Condition []string
+	Then      []Node
+	Else      []Node
+	Span      Span
+}
+
+func (If) node()              {}
+func (n If) SourceSpan() Span { return n.Span }
+
+type ForEach struct {
+	Collection []string
+	Item       string
+	Body       []Node
+	Span       Span
+}
+
+func (ForEach) node()              {}
+func (n ForEach) SourceSpan() Span { return n.Span }

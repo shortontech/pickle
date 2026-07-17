@@ -14,6 +14,19 @@ type Response struct {
 	Cookies    []*http.Cookie
 }
 
+// renderedView is intentionally package-private. Only generated renderers in
+// the application's HTTP package can construct an HTML response without JSON
+// serialization; controllers cannot bless arbitrary request strings as HTML.
+type renderedView string
+
+func renderedViewResponse(_ *Context, body string) Response {
+	return Response{
+		StatusCode: http.StatusOK,
+		Body:       renderedView(body),
+		Headers:    map[string]string{"Content-Type": "text/html; charset=utf-8"},
+	}
+}
+
 // Header returns a copy of the response with an additional header set.
 func (r Response) Header(key, value string) Response {
 	if r.Headers == nil {
@@ -48,6 +61,14 @@ func (r Response) Write(w http.ResponseWriter) {
 
 	if r.StatusCode == 0 {
 		r.StatusCode = http.StatusOK
+	}
+
+	if body, ok := r.Body.(renderedView); ok {
+		w.WriteHeader(r.StatusCode)
+		if _, err := w.Write([]byte(body)); err != nil {
+			log.Printf("pickle: failed to write response: %v", err)
+		}
+		return
 	}
 
 	data, err := json.Marshal(r.Body)

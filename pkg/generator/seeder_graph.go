@@ -35,6 +35,14 @@ func ValidateSeedGraph(graph *schema.SeedGraph, tables []*schema.Table) ([]Resol
 				return nil, fmt.Errorf("seeder %s overrides unknown column %s.%s", node.Seeder.Name, node.Seeder.Table, column)
 			}
 		}
+		for column, factory := range node.Factories {
+			if !tableHasColumn(tableByName[node.Seeder.Table], column) {
+				return nil, fmt.Errorf("seeder %s factory targets unknown column %s.%s", node.Seeder.Name, node.Seeder.Table, column)
+			}
+			if factory.Name == "" {
+				return nil, fmt.Errorf("seeder %s has an unnamed factory for %s.%s", node.Seeder.Name, node.Seeder.Table, column)
+			}
+		}
 		for _, column := range append(append([]string(nil), node.UniqueColumns...), node.UpdateColumns...) {
 			if !tableHasColumn(tableByName[node.Seeder.Table], column) {
 				return nil, fmt.Errorf("seeder %s repeat policy references unknown column %s.%s", node.Seeder.Name, node.Seeder.Table, column)
@@ -46,6 +54,11 @@ func ValidateSeedGraph(graph *schema.SeedGraph, tables []*schema.Table) ([]Resol
 			}
 		}
 		nodeByID[node.ID] = node
+		for _, dependency := range node.Dependencies {
+			if dependency < 1 {
+				return nil, fmt.Errorf("seeder %s has invalid dependency node %d", node.Seeder.Name, dependency)
+			}
+		}
 	}
 
 	var resolved []ResolvedSeedRelationship
@@ -79,17 +92,39 @@ func ValidateSeedGraph(graph *schema.SeedGraph, tables []*schema.Table) ([]Resol
 }
 
 func validateSeedNodeCycles(nodes []schema.SeedNode) error {
-	parents := map[int]int{}
+	byID := map[int]schema.SeedNode{}
 	for _, node := range nodes {
-		parents[node.ID] = node.ParentNodeID
+		byID[node.ID] = node
+	}
+	state := map[int]int{}
+	var visit func(int) error
+	visit = func(id int) error {
+		if state[id] == 1 {
+			return fmt.Errorf("seed graph contains a dependency cycle at node %d", id)
+		}
+		if state[id] == 2 {
+			return nil
+		}
+		node, ok := byID[id]
+		if !ok {
+			return fmt.Errorf("seed graph references missing dependency node %d", id)
+		}
+		state[id] = 1
+		edges := append([]int(nil), node.Dependencies...)
+		if node.ParentNodeID != 0 {
+			edges = append(edges, node.ParentNodeID)
+		}
+		for _, edge := range edges {
+			if err := visit(edge); err != nil {
+				return err
+			}
+		}
+		state[id] = 2
+		return nil
 	}
 	for _, node := range nodes {
-		seen := map[int]bool{}
-		for id := node.ID; id != 0; id = parents[id] {
-			if seen[id] {
-				return fmt.Errorf("seed graph contains a relationship cycle at node %d", id)
-			}
-			seen[id] = true
+		if err := visit(node.ID); err != nil {
+			return err
 		}
 	}
 	return nil

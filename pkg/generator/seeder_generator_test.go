@@ -8,7 +8,7 @@ import (
 )
 
 func TestGenerateSeederGlue(t *testing.T) {
-	source, err := GenerateSeederGlue("seeders", "example.com/crm/database/migrations", []SeederDefinition{{Name: "CRMSeeder", Kind: "scenario"}, {Name: "UserSeeder", Kind: "row"}}, []*schema.Table{{
+	source, err := GenerateSeederGlue("seeders", "example.com/crm/database/migrations", []SeederDefinition{{Name: "CRMSeeder", Kind: "scenario"}, {Name: "UserSeeder", Kind: "row", Table: "users"}}, []*schema.Table{{
 		Name:                 "users",
 		CompositePrimaryKeys: []string{"tenant_id", "id"},
 		Columns:              []*schema.Column{{Name: "id", Type: schema.BigInteger, IsPrimaryKey: true, IsUnique: true}, {Name: "first_name", Type: schema.String, Seeder: &schema.SeedSpec{Kind: "first_name"}}},
@@ -21,5 +21,17 @@ func TestGenerateSeederGlue(t *testing.T) {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("generated glue missing %q:\n%s", expected, text)
 		}
+	}
+}
+
+func TestValidateSeederDefinitionsUsesTypedAliasesAndTags(t *testing.T) {
+	tables := []*schema.Table{{Name: "contacts", Columns: []*schema.Column{{Name: "status", Type: schema.String}, {Name: "count", Type: schema.Integer}}}}
+	definitions := []SeederDefinition{{Name: "ContactSeeder", Kind: "row", Table: "contacts", Fields: []SeederReturnField{{Name: "status", GoType: "ContactStatus", Underlying: "string"}, {Name: "count", GoType: "int", Underlying: "int"}}}}
+	if err := ValidateSeederDefinitions(definitions, tables); err != nil {
+		t.Fatal(err)
+	}
+	definitions[0].Fields[1] = SeederReturnField{Name: "count", GoType: "bool", Underlying: "bool"}
+	if err := ValidateSeederDefinitions(definitions, tables); err == nil || !strings.Contains(err.Error(), "contacts.count") || !strings.Contains(err.Error(), "actual bool") {
+		t.Fatalf("mismatch error = %v", err)
 	}
 }

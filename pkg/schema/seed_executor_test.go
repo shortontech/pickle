@@ -154,6 +154,49 @@ func TestSeedExecutorDryRunDoesNotOpenTransaction(t *testing.T) {
 	}
 }
 
+func TestSeedExecutorDryRunReportsDatabaseDefaults(t *testing.T) {
+	table := &Table{Name: "users", Columns: []*Column{
+		{Name: "id", Type: BigInteger, IsPrimaryKey: true},
+		{Name: "created_at", Type: Timestamp, HasDefault: true, DefaultValue: "NOW()"},
+	}}
+	graph := &SeedGraph{Nodes: []SeedNode{{ID: 1, Seeder: NewRowSeederRef("UserSeeder", "users"), Count: FixedCount(1)}}}
+	result, err := (SeedExecutor{Tables: []*Table{table}}).Run(context.Background(), graph, SeedExecutionOptions{Scenario: "Users", Environment: "production", DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.NondeterministicDefaults) != 1 || result.NondeterministicDefaults[0] != "users.created_at" {
+		t.Fatalf("nondeterministic defaults = %#v", result.NondeterministicDefaults)
+	}
+}
+
+func TestSeedExecutorTransformsOnlyInsertionValues(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	table := &Table{Name: "users", Columns: []*Column{{Name: "id", Type: BigInteger, IsPrimaryKey: true}, {Name: "email", Type: String, IsEncrypted: true}}}
+	graph := &SeedGraph{Nodes: []SeedNode{{ID: 1, Seeder: NewRowSeederRef("UserSeeder", "users"), Count: FixedCount(1), Values: map[string]any{"id": 1, "email": "ada@example.test"}}}}
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO "users" ("email_encrypted", "id") VALUES (?, ?)`)).WithArgs("ciphertext", 1).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+	result, err := (SeedExecutor{DB: db, Tables: []*Table{table}}).Run(context.Background(), graph, SeedExecutionOptions{
+		Scenario: "Encrypted", Environment: "test", Driver: "sqlite",
+		ValueTransformer: func(_ string, values map[string]any) (map[string]any, error) {
+			return map[string]any{"id": values["id"], "email_encrypted": "ciphertext"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Rows[0].Values["email"] != "ada@example.test" {
+		t.Fatal("plan values were replaced with storage ciphertext")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestValidateSeedEnvironment(t *testing.T) {
 	if err := ValidateSeedEnvironment("production", false, "", false); err == nil {
 		t.Fatal("production mutation should require confirmation")
@@ -232,6 +275,13 @@ func TestReplaceScenarioRequiresProvenance(t *testing.T) {
 	}
 }
 
+func TestReplaceScenarioRejectsIntegrityHistory(t *testing.T) {
+	row := SeedPlannedRow{Table: "events", AppendOnly: true, PrimaryKey: []string{"id"}, Values: map[string]any{"id": "x"}}
+	if err := validateSeedRepeatPolicy([]SeedPlannedRow{row}, SeedExecutionOptions{Policy: ReplaceScenario, ProvenanceEnabled: true}); err == nil || !strings.Contains(err.Error(), "append-only") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestPlanSeedGraphUsesCustomRowAndFieldSeeders(t *testing.T) {
 	type userSeed struct {
 		ID        int64  `db:"id"`
@@ -262,10 +312,58 @@ func TestPlanSeedGraphUsesCustomRowAndFieldSeeders(t *testing.T) {
 	}
 }
 
+func TestPlanSeedGraphUsesWithFactoryAfterDependencies(t *testing.T) {
+	tables := []*Table{
+		{Name: "roles", Columns: []*Column{{Name: "id", Type: BigInteger, IsPrimaryKey: true}, {Name: "slug", Type: String}}},
+		{Name: "users", Columns: []*Column{{Name: "id", Type: BigInteger, IsPrimaryKey: true}, {Name: "email", Type: String}}},
+	}
+	graph := &SeedGraph{}
+	catalog := graph.DependsOn(NewRowSeederRef("RoleSeeder", "roles"))
+	graph.Create(NewRowSeederRef("UserSeeder", "users")).DependsOn(catalog).WithFactory("email", NewSeederRef("EmailSeeder", String))
+	resolver := func(name string, _ SeedValueContext) (any, bool, error) {
+		switch name {
+		case "RoleSeeder":
+			return map[string]any{"id": 1, "slug": "admin"}, true, nil
+		case "UserSeeder":
+			return map[string]any{"id": 2}, true, nil
+		case "EmailSeeder":
+			return "admin@example.test", true, nil
+		default:
+			return nil, false, nil
+		}
+	}
+	rows, err := PlanSeedGraph(graph, tables, SeedExecutionOptions{Scenario: "Factory", SeederResolver: resolver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Table != "roles" || rows[1].Values["email"] != "admin@example.test" {
+		t.Fatalf("rows = %#v", rows)
+	}
+}
+
 func TestCustomFieldSeederMustBeRegistered(t *testing.T) {
 	table := &Table{Name: "users", Columns: []*Column{{Name: "role", Type: String, Seeder: &SeedSpec{Kind: "custom", Reference: "RoleSeeder"}}}}
 	if _, err := GenerateSeedRow(table, nil, SeedValueContext{}); err == nil {
 		t.Fatal("expected missing custom seeder error")
+	}
+}
+
+func TestPlanSeedGraphRetriesAndExhaustsUniqueProvidersDeterministically(t *testing.T) {
+	table := &Table{Name: "users", Columns: []*Column{
+		{Name: "id", Type: BigInteger, IsPrimaryKey: true},
+		{Name: "email", Type: String, IsUnique: true, Seeder: &SeedSpec{Kind: "safe_email"}},
+	}}
+	graph := &SeedGraph{Nodes: []SeedNode{{ID: 1, Seeder: NewRowSeederRef("UserSeeder", "users"), Count: FixedCount(2)}}}
+	rows, err := PlanSeedGraph(graph, []*Table{table}, SeedExecutionOptions{Scenario: "Unique", RootSeed: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows[0].Values["email"] == rows[1].Values["email"] {
+		t.Fatal("unique provider produced duplicate values")
+	}
+	table.Columns[1].Seeder = &SeedSpec{Kind: "values", Arguments: []string{"only@example.test"}}
+	if _, err := PlanSeedGraph(graph, []*Table{table}, SeedExecutionOptions{Scenario: "Exhaust", RootSeed: 7}); err == nil || !strings.Contains(err.Error(), "exhausted after 32 retries") {
+		t.Fatalf("unique exhaustion error = %v", err)
 	}
 }
 

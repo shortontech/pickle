@@ -127,6 +127,50 @@ These values are framework-derived for immutable and append-only tables.
 Remove them from scenario overrides and row-seeder returns; Pickle derives the
 chain inside the seed transaction.
 
+### seeder_missing_value
+
+**Severity:** error
+
+**What it catches:** A typed row seeder leaves a required column without a row
+value, relationship, migration field provider, default, or framework-derived
+value.
+
+### seeder_type_mismatch
+
+**Severity:** error
+
+**What it catches:** A typed value or row seeder return field cannot be safely
+converted to its target migration column.
+
+### seeder_ambiguous_relationship
+
+**Severity:** error
+
+**What it catches:** `For(...)` omits a local-column selector when schema
+metadata proves that more than one foreign key can connect the two tables.
+
+### seeder_incomplete_composite_key
+
+**Severity:** error
+
+**What it catches:** Scenario overrides author only part of a composite foreign
+key. Composite relationship values must flow as a complete tuple.
+
+### seeder_sensitive_literal
+
+**Severity:** error
+
+**What it catches:** A literal value is assigned to schema-proven sensitive
+seed fields. Use a provider or environment-backed custom seeder instead.
+
+### seeder_production_unsafe
+
+**Severity:** error
+
+**What it catches:** Seeder configuration that can mutate a non-development
+environment without the mandatory force and exact environment confirmation.
+Generated commands enforce those gates even when no finding is emitted.
+
 ### ownership_scoping
 
 **Severity:** error

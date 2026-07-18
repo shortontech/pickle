@@ -291,3 +291,52 @@ func TestSeedExecutorSQLiteImmutableVersionsAndRollback(t *testing.T) {
 		t.Fatalf("failed scenario mutated rows: %d", count)
 	}
 }
+
+func TestSeedExecutorSQLiteReplaceScenarioUsesOwnedProvenance(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`CREATE TABLE contacts (id INTEGER PRIMARY KEY, name TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	table := &Table{Name: "contacts", Columns: []*Column{{Name: "id", Type: BigInteger, IsPrimaryKey: true}, {Name: "name", Type: String}}}
+	graph := &SeedGraph{Nodes: []SeedNode{{ID: 1, Seeder: NewRowSeederRef("ContactSeeder", "contacts"), Count: FixedCount(2), UniqueColumns: []string{"id"}}}}
+	version := 1
+	resolver := func(_ string, ctx SeedValueContext) (any, bool, error) {
+		return map[string]any{"id": int64(version*10 + ctx.RowOrdinal), "name": fmt.Sprintf("v%d-%d", version, ctx.RowOrdinal)}, true, nil
+	}
+	options := SeedExecutionOptions{Scenario: "CRM", Environment: "test", Driver: "sqlite", Policy: ReplaceScenario, ProvenanceEnabled: true, SeederResolver: resolver}
+	executor := SeedExecutor{DB: db, Tables: []*Table{table}}
+	if _, err := executor.Run(context.Background(), graph, options); err != nil {
+		t.Fatal(err)
+	}
+	version = 2
+	graph.Nodes[0].Count = FixedCount(1)
+	if _, err := executor.Run(context.Background(), graph, options); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	var id int64
+	if err := db.QueryRow(`SELECT COUNT(*), MIN(id) FROM contacts`).Scan(&count, &id); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || id != 20 {
+		t.Fatalf("replacement rows=%d id=%d", count, id)
+	}
+	if _, err := db.Exec(`INSERT INTO contacts (id,name) VALUES (99,'unowned')`); err != nil {
+		t.Fatal(err)
+	}
+	version = 3
+	if _, err := executor.Run(context.Background(), graph, options); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM contacts WHERE id = 99`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("replacement deleted a row not owned by the scenario")
+	}
+}

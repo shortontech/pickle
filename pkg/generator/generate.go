@@ -1061,6 +1061,13 @@ func Generate(project *Project, picklePkgDir string) error {
 			if err := writeFile(filepath.Join(seedersDir, "pickle_gen.go"), source); err != nil {
 				return err
 			}
+			modelSource, err := GenerateSeederModelGlue("models", tables, false)
+			if err != nil {
+				return fmt.Errorf("generating seeder model glue: %w", err)
+			}
+			if err := writeFile(filepath.Join(modelsDir, "seeders_gen.go"), modelSource); err != nil {
+				return err
+			}
 		}
 	}
 

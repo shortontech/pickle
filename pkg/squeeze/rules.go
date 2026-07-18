@@ -126,6 +126,12 @@ func AllRules() map[string]Rule {
 		"seeder_unstable_identity":             ruleSeederUnstableIdentity,
 		"seeder_nondeterministic":              ruleSeederNondeterministic,
 		"seeder_integrity_override":            ruleSeederIntegrityOverride,
+		"seeder_missing_value":                 ruleSeederMissingValue,
+		"seeder_type_mismatch":                 ruleSeederTypeMismatch,
+		"seeder_ambiguous_relationship":        ruleSeederAmbiguousRelationship,
+		"seeder_incomplete_composite_key":      ruleSeederIncompleteCompositeKey,
+		"seeder_sensitive_literal":             ruleSeederSensitiveLiteral,
+		"seeder_production_unsafe":             ruleSeederProductionUnsafe,
 	}
 }
 

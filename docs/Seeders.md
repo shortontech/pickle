@@ -211,15 +211,24 @@ func (CRMSeeder) Seed(graph *SeedGraph) {
 }
 ```
 
-`InsertOrIgnore` and `Upsert` require `UniqueBy` on every affected row node;
-Pickle never guesses a primary key or unique constraint. `Upsert` additionally
-requires an explicit `Update` allowlist, and identity columns cannot appear in
-that allowlist. SQL generation uses `ON CONFLICT` for PostgreSQL and SQLite and
-the corresponding `INSERT IGNORE` or `ON DUPLICATE KEY UPDATE` forms for MySQL.
+`InsertOrIgnore` and `Upsert` use an explicit `UniqueBy` identity when one is
+declared, then the command-level identity, and finally the table's authoritative
+primary key. `Upsert` additionally requires an explicit `Update` allowlist, and
+identity columns cannot appear in that allowlist. SQL generation uses
+`ON CONFLICT` for PostgreSQL and SQLite and the corresponding `INSERT IGNORE`
+or `ON DUPLICATE KEY UPDATE` forms for MySQL.
 
-`ReplaceScenario` remains unavailable unless generated seed provenance is
-explicitly enabled. Pickle rejects it instead of approximating destructive
-replacement from ordinary application columns.
+`ReplaceScenario` requires a root seeder to opt into generated provenance:
+
+```go
+func (CRMSeeder) Policy() SeedPolicy { return ReplaceScenario }
+func (CRMSeeder) SeedProvenance() bool { return true }
+```
+
+Pickle records the exact scenario-owned identities in
+`pickle_seed_provenance`. The next run removes only those rows, in reverse
+insertion order, and replaces them in the same transaction. Replacement is
+rejected for immutable and append-only history tables.
 
 ## MCP visibility
 

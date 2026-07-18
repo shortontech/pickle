@@ -29,20 +29,22 @@ const (
 
 // SeedExecutionOptions controls one root scenario execution.
 type SeedExecutionOptions struct {
-	Scenario           string
-	RootSeed           int64
-	Environment        string
-	Force              bool
-	ConfirmEnvironment string
-	DryRun             bool
-	Driver             string
-	Policy             SeedPolicy
-	UniqueBy           []string
-	UpdateColumns      []string
-	ProvenanceEnabled  bool
-	PasswordHasher     func(string) (string, error)
-	SeederResolver     func(string, SeedValueContext) (value any, found bool, err error)
-	AnchorTime         time.Time
+	Scenario            string
+	RootSeed            int64
+	Environment         string
+	Force               bool
+	ConfirmEnvironment  string
+	DryRun              bool
+	Driver              string
+	Policy              SeedPolicy
+	UniqueBy            []string
+	UpdateColumns       []string
+	ProvenanceEnabled   bool
+	PasswordHasher      func(string) (string, error)
+	SeederResolver      func(string, SeedValueContext) (value any, found bool, err error)
+	ValueTransformer    func(table string, values map[string]any) (map[string]any, error)
+	StorageColumnMapper func(table, column string) string
+	AnchorTime          time.Time
 }
 
 // SeedPlannedRow is a resolved row in insertion order. Password values are
@@ -56,6 +58,7 @@ type SeedPlannedRow struct {
 	Sensitive        map[string]bool
 	UniqueBy         []string
 	Updates          []string
+	PrimaryKey       []string
 	Authored         map[string]bool
 	Immutable        bool
 	AppendOnly       bool
@@ -64,11 +67,12 @@ type SeedPlannedRow struct {
 
 // SeedExecutionResult describes what was planned or inserted.
 type SeedExecutionResult struct {
-	Scenario   string
-	RootSeed   int64
-	Rows       []SeedPlannedRow
-	DryRun     bool
-	AnchorTime time.Time
+	Scenario                 string
+	RootSeed                 int64
+	Rows                     []SeedPlannedRow
+	DryRun                   bool
+	AnchorTime               time.Time
+	NondeterministicDefaults []string
 }
 
 // SeedExecutor expands and inserts one validated scenario graph.
@@ -96,7 +100,7 @@ func (e SeedExecutor) Run(ctx context.Context, graph *SeedGraph, options SeedExe
 	if err := validateSeedRepeatPolicy(rows, options); err != nil {
 		return nil, fmt.Errorf("seed scenario %s: %w", options.Scenario, err)
 	}
-	result := &SeedExecutionResult{Scenario: options.Scenario, RootSeed: options.RootSeed, Rows: rows, DryRun: options.DryRun, AnchorTime: effectiveSeedAnchor(options.AnchorTime)}
+	result := &SeedExecutionResult{Scenario: options.Scenario, RootSeed: options.RootSeed, Rows: rows, DryRun: options.DryRun, AnchorTime: effectiveSeedAnchor(options.AnchorTime), NondeterministicDefaults: seedDatabaseDefaults(rows, e.Tables)}
 	if options.DryRun {
 		return result, nil
 	}
@@ -119,6 +123,11 @@ func (e SeedExecutor) Run(ctx context.Context, graph *SeedGraph, options SeedExe
 	}
 	tails := map[string]seedIntegrityTail{}
 	locked := map[string]bool{}
+	if options.Policy == ReplaceScenario {
+		if err := prepareSeedReplacement(ctx, tx, options.Driver, options.Scenario); err != nil {
+			return nil, fmt.Errorf("seed scenario %s: %w", options.Scenario, err)
+		}
+	}
 	for _, row := range rows {
 		table := tableByName[row.Table]
 		if table == nil {
@@ -152,13 +161,28 @@ func (e SeedExecutor) Run(ctx context.Context, graph *SeedGraph, options SeedExe
 			row.Values["prev_hash"] = append([]byte(nil), tail.Hash...)
 			row.Values["row_hash"] = computeSeedRowHash(tail.Hash, row.Values, table.Columns)
 		}
-		query, arguments, err := seedInsertSQL(options.Driver, row, options)
+		insertRow := row
+		if options.ValueTransformer != nil {
+			insertRow.Values, err = options.ValueTransformer(row.Table, row.Values)
+			if err != nil {
+				return nil, fmt.Errorf("seed scenario %s path %s row %d table %s: transforming storage values: %w", options.Scenario, row.NodePath, row.RowOrdinal, row.Table, err)
+			}
+		}
+		query, arguments, err := seedInsertSQL(options.Driver, insertRow, options)
 		if err != nil {
 			return nil, fmt.Errorf("seed scenario %s path %s row %d table %s: %w", options.Scenario, row.NodePath, row.RowOrdinal, row.Table, err)
 		}
 		execResult, err := tx.ExecContext(ctx, query, arguments...)
 		if err != nil {
 			return nil, fmt.Errorf("seed scenario %s path %s row %d table %s: insert failed: %w", options.Scenario, row.NodePath, row.RowOrdinal, row.Table, err)
+		}
+		if options.Policy == ReplaceScenario {
+			inserted, _ := execResult.RowsAffected()
+			if inserted > 0 {
+				if err := recordSeedProvenance(ctx, tx, options.Driver, options.Scenario, row, options); err != nil {
+					return nil, fmt.Errorf("seed scenario %s path %s row %d table %s: recording provenance: %w", options.Scenario, row.NodePath, row.RowOrdinal, row.Table, err)
+				}
+			}
 		}
 		if row.IntegrityDerived {
 			inserted, _ := execResult.RowsAffected()
@@ -172,6 +196,36 @@ func (e SeedExecutor) Run(ctx context.Context, graph *SeedGraph, options SeedExe
 	}
 	committed = true
 	return result, nil
+}
+
+func seedDatabaseDefaults(rows []SeedPlannedRow, tables []*Table) []string {
+	tableByName := make(map[string]*Table, len(tables))
+	for _, table := range tables {
+		tableByName[table.Name] = table
+	}
+	seen := map[string]bool{}
+	var defaults []string
+	for _, row := range rows {
+		table := tableByName[row.Table]
+		if table == nil {
+			continue
+		}
+		for _, column := range table.Columns {
+			if !column.HasDefault {
+				continue
+			}
+			if _, supplied := row.Values[column.Name]; supplied {
+				continue
+			}
+			name := row.Table + "." + column.Name
+			if !seen[name] {
+				seen[name] = true
+				defaults = append(defaults, name)
+			}
+		}
+	}
+	sort.Strings(defaults)
+	return defaults
 }
 
 // ValidateSeedEnvironment permits mutation in development-like environments.
@@ -212,6 +266,14 @@ func PlanSeedGraph(graph *SeedGraph, tables []*Table, options SeedExecutionOptio
 		if node.Count.Min < 0 || node.Count.Max < node.Count.Min {
 			return nil, fmt.Errorf("seeder %s has invalid count range", node.Seeder.Name)
 		}
+		for column, factory := range node.Factories {
+			if seedTableColumn(tableByName[node.Seeder.Table], column) == nil {
+				return nil, fmt.Errorf("seeder %s factory targets unknown column %s.%s", node.Seeder.Name, node.Seeder.Table, column)
+			}
+			if factory.Name == "" {
+				return nil, fmt.Errorf("seeder %s has unnamed factory for column %s", node.Seeder.Name, column)
+			}
+		}
 		nodeByID[node.ID] = node
 	}
 	if err := validateExecutionCycles(graph.Nodes, nodeByID); err != nil {
@@ -225,6 +287,7 @@ func PlanSeedGraph(graph *SeedGraph, tables []*Table, options SeedExecutionOptio
 		}
 	}
 	rowsByNode := map[int][]SeedPlannedRow{}
+	uniqueState := map[string]map[string]bool{}
 	var planned []SeedPlannedRow
 	remaining := append([]SeedNode(nil), graph.Nodes...)
 	for len(remaining) > 0 {
@@ -237,7 +300,18 @@ func PlanSeedGraph(graph *SeedGraph, tables []*Table, options SeedExecutionOptio
 					continue
 				}
 			}
-			produced, err := planSeedNode(node, tableByName, rowsByNode, options, hasher)
+			dependenciesReady := true
+			for _, dependency := range node.Dependencies {
+				if _, ready := rowsByNode[dependency]; !ready {
+					dependenciesReady = false
+					break
+				}
+			}
+			if !dependenciesReady {
+				next = append(next, node)
+				continue
+			}
+			produced, err := planSeedNode(node, tableByName, rowsByNode, options, hasher, uniqueState)
 			if err != nil {
 				return nil, err
 			}
@@ -256,7 +330,7 @@ func PlanSeedGraph(graph *SeedGraph, tables []*Table, options SeedExecutionOptio
 	return planned, nil
 }
 
-func planSeedNode(node SeedNode, tables map[string]*Table, rowsByNode map[int][]SeedPlannedRow, options SeedExecutionOptions, hasher func(string) (string, error)) ([]SeedPlannedRow, error) {
+func planSeedNode(node SeedNode, tables map[string]*Table, rowsByNode map[int][]SeedPlannedRow, options SeedExecutionOptions, hasher func(string) (string, error), uniqueState map[string]map[string]bool) ([]SeedPlannedRow, error) {
 	table := tables[node.Seeder.Table]
 	parents := []SeedPlannedRow{{}}
 	var relationship *ForeignKey
@@ -277,6 +351,10 @@ func planSeedNode(node SeedNode, tables map[string]*Table, rowsByNode map[int][]
 		for index := 0; index < count; index++ {
 			path := fmt.Sprintf("%s/%d", node.Seeder.Name, ordinal)
 			overrides := cloneSeedValues(node.Values)
+			authored := map[string]bool{}
+			for column := range overrides {
+				authored[column] = true
+			}
 			base := SeedValueContext{RootSeed: options.RootSeed, Scenario: options.Scenario, NodePath: path, RowOrdinal: ordinal, AnchorTime: effectiveSeedAnchor(options.AnchorTime)}
 			if options.SeederResolver != nil {
 				seeded, found, err := options.SeederResolver(node.Seeder.Name, base)
@@ -290,8 +368,23 @@ func planSeedNode(node SeedNode, tables map[string]*Table, rowsByNode map[int][]
 					}
 					for column, value := range values {
 						overrides[column] = value
+						authored[column] = true
 					}
 				}
+			}
+			for column, factory := range node.Factories {
+				if options.SeederResolver == nil {
+					return nil, fmt.Errorf("seeder %s path %s row %d: factory %s is not registered", node.Seeder.Name, path, ordinal, factory.Name)
+				}
+				value, found, err := options.SeederResolver(factory.Name, SeedValueContext{RootSeed: base.RootSeed, Scenario: base.Scenario, NodePath: base.NodePath, RowOrdinal: base.RowOrdinal, Column: column, AnchorTime: base.AnchorTime})
+				if err != nil {
+					return nil, fmt.Errorf("seeder %s path %s row %d column %s: factory %s failed: %w", node.Seeder.Name, path, ordinal, column, factory.Name, err)
+				}
+				if !found {
+					return nil, fmt.Errorf("seeder %s path %s row %d column %s: factory %s is not registered", node.Seeder.Name, path, ordinal, column, factory.Name)
+				}
+				overrides[column] = value
+				authored[column] = true
 			}
 			if relationship != nil {
 				for position, column := range relationship.Columns {
@@ -300,14 +393,21 @@ func planSeedNode(node SeedNode, tables map[string]*Table, rowsByNode map[int][]
 						return nil, fmt.Errorf("seeder %s path %s: parent %s has no value for relationship column %s", node.Seeder.Name, path, parent.Table, relationship.ReferencedColumns[position])
 					}
 					overrides[column] = value
+					authored[column] = true
 				}
 			}
 			values, err := GenerateSeedRowWith(table, overrides, base, options.SeederResolver)
 			if err != nil {
 				return nil, fmt.Errorf("seeder %s path %s row %d: %w", node.Seeder.Name, path, ordinal, err)
 			}
+			if err := ensurePlannedUniqueValues(table, values, authored, base, options.SeederResolver, uniqueState); err != nil {
+				return nil, fmt.Errorf("seeder %s path %s row %d: %w", node.Seeder.Name, path, ordinal, err)
+			}
 			sensitive := map[string]bool{}
 			for _, column := range table.Columns {
+				if isSensitiveSeedColumn(column) {
+					sensitive[column.Name] = true
+				}
 				if column.Seeder == nil || column.Seeder.Kind != "password" {
 					continue
 				}
@@ -322,11 +422,7 @@ func planSeedNode(node SeedNode, tables map[string]*Table, rowsByNode map[int][]
 				values[column.Name] = hash
 				sensitive[column.Name] = true
 			}
-			authored := map[string]bool{}
-			for column := range overrides {
-				authored[column] = true
-			}
-			rows = append(rows, SeedPlannedRow{NodeID: node.ID, NodePath: path, RowOrdinal: ordinal, Table: table.Name, Values: values, Sensitive: sensitive, UniqueBy: append([]string(nil), node.UniqueColumns...), Updates: append([]string(nil), node.UpdateColumns...), Authored: authored, Immutable: table.IsImmutable, AppendOnly: table.IsAppendOnly, IntegrityDerived: table.IsImmutable || table.IsAppendOnly})
+			rows = append(rows, SeedPlannedRow{NodeID: node.ID, NodePath: path, RowOrdinal: ordinal, Table: table.Name, Values: values, Sensitive: sensitive, UniqueBy: append([]string(nil), node.UniqueColumns...), Updates: append([]string(nil), node.UpdateColumns...), PrimaryKey: seedPrimaryColumns(table), Authored: authored, Immutable: table.IsImmutable, AppendOnly: table.IsAppendOnly, IntegrityDerived: table.IsImmutable || table.IsAppendOnly})
 			ordinal++
 		}
 	}
@@ -357,7 +453,10 @@ func seedStructValues(value any) (map[string]any, error) {
 		if !field.IsExported() {
 			continue
 		}
-		name := strings.Split(field.Tag.Get("db"), ",")[0]
+		name := strings.Split(field.Tag.Get("seed"), ",")[0]
+		if name == "" {
+			name = strings.Split(field.Tag.Get("db"), ",")[0]
+		}
 		if name == "" {
 			name = strings.Split(field.Tag.Get("json"), ",")[0]
 		}
@@ -370,6 +469,101 @@ func seedStructValues(value any) (map[string]any, error) {
 		values[name] = reflected.Field(index).Interface()
 	}
 	return values, nil
+}
+
+const seedUniqueRetryLimit = 32
+
+func ensurePlannedUniqueValues(table *Table, values map[string]any, authored map[string]bool, base SeedValueContext, resolver func(string, SeedValueContext) (any, bool, error), state map[string]map[string]bool) error {
+	for _, column := range table.Columns {
+		if !column.IsUnique {
+			continue
+		}
+		value, exists := values[column.Name]
+		if !exists || value == nil {
+			continue
+		}
+		bucket := table.Name + "\x00" + column.Name
+		if state[bucket] == nil {
+			state[bucket] = map[string]bool{}
+		}
+		key := comparableSeedValue(value)
+		if !state[bucket][key] {
+			state[bucket][key] = true
+			continue
+		}
+		if authored[column.Name] || column.Seeder == nil || column.Seeder.Kind == "none" || column.Seeder.Kind == "password" {
+			return fmt.Errorf("seed %s.%s: duplicate planned unique value from an explicit or non-retryable source", table.Name, column.Name)
+		}
+		resolved := false
+		for retry := 1; retry <= seedUniqueRetryLimit; retry++ {
+			ctx := base
+			ctx.Column = column.Name
+			ctx.Retry = retry
+			var candidate any
+			var err error
+			if column.Seeder.Kind == "custom" || column.Seeder.Kind == "json" {
+				if resolver == nil {
+					return fmt.Errorf("seed %s.%s: custom seeder %q is not registered", table.Name, column.Name, column.Seeder.Reference)
+				}
+				var found bool
+				candidate, found, err = resolver(column.Seeder.Reference, ctx)
+				if err == nil && !found {
+					err = fmt.Errorf("custom seeder %q is not registered", column.Seeder.Reference)
+				}
+			} else {
+				candidate, err = SeedValue(column.Seeder, ctx)
+			}
+			if err != nil {
+				return fmt.Errorf("seed %s.%s unique retry %d: %w", table.Name, column.Name, retry, err)
+			}
+			candidate, err = castSeedValue(column.Type, candidate)
+			if err != nil {
+				return fmt.Errorf("seed %s.%s unique retry %d: %w", table.Name, column.Name, retry, err)
+			}
+			candidateKey := comparableSeedValue(candidate)
+			if !state[bucket][candidateKey] {
+				values[column.Name] = candidate
+				state[bucket][candidateKey] = true
+				resolved = true
+				break
+			}
+		}
+		if !resolved {
+			return fmt.Errorf("seed %s.%s: deterministic unique generation exhausted after %d retries", table.Name, column.Name, seedUniqueRetryLimit)
+		}
+	}
+	primary := table.CompositePrimaryKeys
+	if len(primary) == 0 {
+		for _, column := range table.Columns {
+			if column.IsPrimaryKey {
+				primary = append(primary, column.Name)
+			}
+		}
+	}
+	if len(primary) > 0 {
+		parts := make([]string, len(primary))
+		complete := true
+		for index, column := range primary {
+			value, exists := values[column]
+			if !exists || value == nil {
+				complete = false
+				break
+			}
+			parts[index] = comparableSeedValue(value)
+		}
+		if complete {
+			bucket := table.Name + "\x00__primary__"
+			if state[bucket] == nil {
+				state[bucket] = map[string]bool{}
+			}
+			key := strings.Join(parts, "\x00")
+			if state[bucket][key] {
+				return fmt.Errorf("seed %s: duplicate planned primary identity (%s)", table.Name, strings.Join(primary, ", "))
+			}
+			state[bucket][key] = true
+		}
+	}
+	return nil
 }
 
 func seedSnakeCase(value string) string {
@@ -527,11 +721,21 @@ func seedInsertSQL(driver string, row SeedPlannedRow, options SeedExecutionOptio
 	if len(uniqueBy) == 0 {
 		uniqueBy = options.UniqueBy
 	}
+	if len(uniqueBy) == 0 {
+		uniqueBy = row.PrimaryKey
+	}
 	updateColumns := row.Updates
 	if len(updateColumns) == 0 {
 		updateColumns = options.UpdateColumns
 	}
 	identity := seedQuotedColumns(driver, uniqueBy)
+	if options.StorageColumnMapper != nil {
+		mapped := make([]string, len(uniqueBy))
+		for index, column := range uniqueBy {
+			mapped[index] = options.StorageColumnMapper(row.Table, column)
+		}
+		identity = seedQuotedColumns(driver, mapped)
+	}
 	switch policy {
 	case InsertOnly:
 	case InsertOrIgnore:
@@ -541,7 +745,11 @@ func seedInsertSQL(driver string, row SeedPlannedRow, options SeedExecutionOptio
 	case Upsert:
 		updates := make([]string, len(updateColumns))
 		for index, column := range updateColumns {
-			quoted := seedQuoteIdentifier(driver, column)
+			storageColumn := column
+			if options.StorageColumnMapper != nil {
+				storageColumn = options.StorageColumnMapper(row.Table, column)
+			}
+			quoted := seedQuoteIdentifier(driver, storageColumn)
 			if driver == "mysql" {
 				updates[index] = quoted + " = VALUES(" + quoted + ")"
 			} else {
@@ -554,11 +762,97 @@ func seedInsertSQL(driver string, row SeedPlannedRow, options SeedExecutionOptio
 			query += " ON CONFLICT (" + identity + ") DO UPDATE SET " + strings.Join(updates, ", ")
 		}
 	case ReplaceScenario:
-		return "", nil, errors.New("replace-scenario execution requires generated provenance support")
+		// Prior scenario-owned rows were removed inside this transaction.
 	default:
 		return "", nil, fmt.Errorf("unknown seed repeat policy %q", policy)
 	}
 	return query, arguments, nil
+}
+
+func prepareSeedReplacement(ctx context.Context, tx *sql.Tx, driver, scenario string) error {
+	ddl := `CREATE TABLE IF NOT EXISTS pickle_seed_provenance (scenario VARCHAR(255) NOT NULL, table_name VARCHAR(255) NOT NULL, identity_json VARCHAR(2048) NOT NULL, ordinal BIGINT NOT NULL, PRIMARY KEY (scenario, table_name, identity_json))`
+	if _, err := tx.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("creating seed provenance metadata: %w", err)
+	}
+	placeholder := func(index int) string {
+		if driver == "postgres" || driver == "pgsql" {
+			return fmt.Sprintf("$%d", index)
+		}
+		return "?"
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT table_name, identity_json FROM pickle_seed_provenance WHERE scenario = "+placeholder(1)+" ORDER BY ordinal DESC", scenario)
+	if err != nil {
+		return fmt.Errorf("reading seed provenance: %w", err)
+	}
+	type ownedRow struct{ table, identity string }
+	var owned []ownedRow
+	for rows.Next() {
+		var row ownedRow
+		if err := rows.Scan(&row.table, &row.identity); err != nil {
+			rows.Close()
+			return err
+		}
+		owned = append(owned, row)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, row := range owned {
+		identity := map[string]string{}
+		if err := json.Unmarshal([]byte(row.identity), &identity); err != nil {
+			return fmt.Errorf("invalid seed provenance identity for %s", row.table)
+		}
+		columns := make([]string, 0, len(identity))
+		for column := range identity {
+			columns = append(columns, column)
+		}
+		sort.Strings(columns)
+		where := make([]string, len(columns))
+		arguments := make([]any, len(columns))
+		for index, column := range columns {
+			where[index] = seedQuoteIdentifier(driver, column) + " = " + placeholder(index+1)
+			arguments[index] = identity[column]
+		}
+		query := "DELETE FROM " + seedQuoteIdentifier(driver, row.table) + " WHERE " + strings.Join(where, " AND ")
+		if result, err := tx.ExecContext(ctx, query, arguments...); err != nil {
+			return fmt.Errorf("deleting prior scenario row from %s: %w", row.table, err)
+		} else if affected, _ := result.RowsAffected(); affected != 1 {
+			return fmt.Errorf("prior scenario identity for %s matched %d rows; refusing destructive replacement", row.table, affected)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM pickle_seed_provenance WHERE scenario = "+placeholder(1), scenario); err != nil {
+		return fmt.Errorf("clearing seed provenance: %w", err)
+	}
+	return nil
+}
+
+func recordSeedProvenance(ctx context.Context, tx *sql.Tx, driver, scenario string, row SeedPlannedRow, options SeedExecutionOptions) error {
+	identityColumns := row.UniqueBy
+	if len(identityColumns) == 0 {
+		identityColumns = options.UniqueBy
+	}
+	if len(identityColumns) == 0 {
+		identityColumns = row.PrimaryKey
+	}
+	identity := make(map[string]string, len(identityColumns))
+	for _, column := range identityColumns {
+		value, exists := row.Values[column]
+		if !exists {
+			return fmt.Errorf("identity column %s is missing", column)
+		}
+		identity[column] = fmt.Sprint(value)
+	}
+	encoded, err := json.Marshal(identity)
+	if err != nil {
+		return err
+	}
+	placeholders := []string{"?", "?", "?", "?"}
+	if driver == "postgres" || driver == "pgsql" {
+		placeholders = []string{"$1", "$2", "$3", "$4"}
+	}
+	query := "INSERT INTO pickle_seed_provenance (scenario, table_name, identity_json, ordinal) VALUES (" + strings.Join(placeholders, ", ") + ")"
+	_, err = tx.ExecContext(ctx, query, scenario, row.Table, string(encoded), int64(row.NodeID)*1_000_000+int64(row.RowOrdinal))
+	return err
 }
 
 func validateSeedRepeatPolicy(rows []SeedPlannedRow, options SeedExecutionOptions) error {
@@ -570,7 +864,22 @@ func validateSeedRepeatPolicy(rows []SeedPlannedRow, options SeedExecutionOption
 		if !options.ProvenanceEnabled {
 			return errors.New("replace-scenario policy requires explicitly enabled seed provenance")
 		}
-		return errors.New("replace-scenario policy is not available until provenance tables are generated")
+		for _, row := range rows {
+			if row.Immutable || row.AppendOnly {
+				return fmt.Errorf("replace-scenario is unavailable for immutable or append-only table %s", row.Table)
+			}
+			identity := row.UniqueBy
+			if len(identity) == 0 {
+				identity = options.UniqueBy
+			}
+			if len(identity) == 0 {
+				identity = row.PrimaryKey
+			}
+			if len(identity) == 0 {
+				return fmt.Errorf("replace-scenario policy requires a declared identity for table %s", row.Table)
+			}
+		}
+		return nil
 	}
 	if policy != InsertOrIgnore && policy != Upsert {
 		return fmt.Errorf("unknown seed repeat policy %q", policy)
@@ -582,6 +891,9 @@ func validateSeedRepeatPolicy(rows []SeedPlannedRow, options SeedExecutionOption
 		uniqueBy := row.UniqueBy
 		if len(uniqueBy) == 0 {
 			uniqueBy = options.UniqueBy
+		}
+		if len(uniqueBy) == 0 {
+			uniqueBy = row.PrimaryKey
 		}
 		updates := row.Updates
 		if len(updates) == 0 {
@@ -608,6 +920,19 @@ func validateSeedRepeatPolicy(rows []SeedPlannedRow, options SeedExecutionOption
 		}
 	}
 	return nil
+}
+
+func seedPrimaryColumns(table *Table) []string {
+	if len(table.CompositePrimaryKeys) > 0 {
+		return append([]string(nil), table.CompositePrimaryKeys...)
+	}
+	var columns []string
+	for _, column := range table.Columns {
+		if column.IsPrimaryKey {
+			columns = append(columns, column.Name)
+		}
+	}
+	return columns
 }
 
 func deriveSeedFrameworkIdentities(rows []SeedPlannedRow, options SeedExecutionOptions) error {
@@ -956,17 +1281,48 @@ func seedContains(values []string, target string) bool {
 	return false
 }
 
+func seedTableColumn(table *Table, name string) *Column {
+	if table == nil {
+		return nil
+	}
+	for _, column := range table.Columns {
+		if column.Name == name {
+			return column
+		}
+	}
+	return nil
+}
+
 func validateExecutionCycles(nodes []SeedNode, byID map[int]SeedNode) error {
+	state := map[int]int{}
+	var visit func(int) error
+	visit = func(id int) error {
+		if state[id] == 1 {
+			return fmt.Errorf("seed graph contains a dependency cycle at node %d", id)
+		}
+		if state[id] == 2 {
+			return nil
+		}
+		node, ok := byID[id]
+		if !ok {
+			return fmt.Errorf("seed node references missing dependency %d", id)
+		}
+		state[id] = 1
+		edges := append([]int(nil), node.Dependencies...)
+		if node.ParentNodeID != 0 {
+			edges = append(edges, node.ParentNodeID)
+		}
+		for _, edge := range edges {
+			if err := visit(edge); err != nil {
+				return err
+			}
+		}
+		state[id] = 2
+		return nil
+	}
 	for _, node := range nodes {
-		seen := map[int]bool{}
-		for id := node.ID; id != 0; id = byID[id].ParentNodeID {
-			if seen[id] {
-				return fmt.Errorf("seed graph contains a relationship cycle at node %d", id)
-			}
-			seen[id] = true
-			if byID[id].ID == 0 {
-				return fmt.Errorf("seed node %d references missing parent", id)
-			}
+		if err := visit(node.ID); err != nil {
+			return err
 		}
 	}
 	return nil

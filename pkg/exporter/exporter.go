@@ -2142,6 +2142,15 @@ func (e *exporter) writeModels(tables []*schema.Table, views []*schema.View) err
 			return err
 		}
 	}
+	if e.hasSeedScenarios() {
+		data, err := generator.GenerateSeederModelGlue("models", tables, true)
+		if err != nil {
+			return err
+		}
+		if err := e.writeFile(filepath.Join("app", "models", "seeders_gen.go"), data); err != nil {
+			return err
+		}
+	}
 	if e.needsModelQuerySupport() {
 		data, err := e.generateModelQuerySupport(tables, views, e.hasGraphQLPackage())
 		if err != nil {
@@ -7878,11 +7887,11 @@ func (c dbSeedCommand) Run(args []string) error {
 	result, err := executor.Run(context.Background(), definition.Graph, migrations.SeedExecutionOptions{
 		Scenario: scenario, RootSeed: *rootSeed, Environment: config.App.Env, Force: *force,
 		ConfirmEnvironment: *confirmEnvironment, DryRun: *dryRun, Driver: config.Database.Connection().Driver,
-		Policy: definition.Policy, SeederResolver: seeders.ResolveValue, AnchorTime: anchor,
+		Policy: definition.Policy, ProvenanceEnabled: definition.Provenance, SeederResolver: seeders.ResolveValue, ValueTransformer: models.TransformSeedValues, StorageColumnMapper: models.TransformSeedColumn, AnchorTime: anchor,
 		PasswordHasher: func(value string) (string, error) { hash, err := bcrypt.GenerateFromPassword([]byte(value), bcrypt.DefaultCost); return string(hash), err },
 	})
 	if err != nil { return err }
-	if result.DryRun { for _, row := range result.Rows { if row.IntegrityDerived { fmt.Println("Integrity: framework-derived; live chain head is resolved only during execution"); break } } }
+	if result.DryRun { for _, row := range result.Rows { if row.IntegrityDerived { fmt.Println("Integrity: framework-derived; live chain head is resolved only during execution"); break } }; for _, column := range result.NondeterministicDefaults { fmt.Printf("Nondeterministic database default: %s\n", column) } }
 	if result.DryRun { fmt.Printf("Plan: %s (%d rows)\n", result.Scenario, len(result.Rows)) } else { fmt.Printf("Seeded: %s (%d rows)\n", result.Scenario, len(result.Rows)) }
 	return nil
 }

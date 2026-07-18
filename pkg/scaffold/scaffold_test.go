@@ -278,6 +278,24 @@ func TestMakeSeeder(t *testing.T) {
 	}
 }
 
+func TestMakeValueSeeder(t *testing.T) {
+	dir := t.TempDir()
+	relPath, err := MakeValueSeeder("Contact", dir, "example.com/crm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, relPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, want := range []string{"type ContactSeed struct", "type ContactSeeder struct", "Seed(ctx *seed.SeedValueContext) ContactSeed"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("missing %q in:\n%s", want, content)
+		}
+	}
+}
+
 func TestMakeMigrationContent(t *testing.T) {
 	dir := t.TempDir()
 	relPath, err := MakeMigration("create_orders_table", dir)

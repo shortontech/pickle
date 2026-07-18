@@ -2,14 +2,17 @@ package schema
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // SeedValueContext identifies one generated field. Each field receives its own
@@ -325,6 +328,9 @@ func GenerateSeedRowWith(table *Table, overrides map[string]any, base SeedValueC
 		}
 		value, err = castSeedValue(column.Type, value)
 		if err != nil {
+			if isSensitiveSeedColumn(column) {
+				return nil, fmt.Errorf("seed %s.%s: sensitive value is incompatible with %s", table.Name, column.Name, column.Type)
+			}
 			return nil, fmt.Errorf("seed %s.%s: %w", table.Name, column.Name, err)
 		}
 		row[column.Name] = value
@@ -385,11 +391,64 @@ func GenerateSeedRowWith(table *Table, overrides map[string]any, base SeedValueC
 		}
 		cast, err := castSeedValue(column.Type, value)
 		if err != nil {
+			if isSensitiveSeedColumn(column) {
+				return nil, fmt.Errorf("seed %s.%s: sensitive value is incompatible with %s", table.Name, column.Name, column.Type)
+			}
+			return nil, fmt.Errorf("seed %s.%s: %w", table.Name, column.Name, err)
+		}
+		if err := validateSeedColumnValue(column, cast); err != nil {
 			return nil, fmt.Errorf("seed %s.%s: %w", table.Name, column.Name, err)
 		}
 		row[column.Name] = cast
 	}
 	return row, nil
+}
+
+func isSensitiveSeedColumn(column *Column) bool {
+	if column.IsEncrypted || column.IsSealed {
+		return true
+	}
+	name := strings.ToLower(column.Name)
+	for _, marker := range []string{"password", "secret", "token", "credential", "api_key", "private_key"} {
+		if strings.Contains(name, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateSeedColumnValue(column *Column, value any) error {
+	if value == nil {
+		if !column.IsNullable {
+			return errors.New("null value is not allowed")
+		}
+		return nil
+	}
+	if (column.Type == String || column.Type == Text) && column.Length > 0 {
+		text := fmt.Sprint(value)
+		if utf8.RuneCountInString(text) > column.Length {
+			return fmt.Errorf("value exceeds maximum length %d", column.Length)
+		}
+	}
+	if column.Type == Decimal && column.Precision > 0 {
+		text := strings.TrimPrefix(strings.TrimSpace(fmt.Sprint(value)), "-")
+		parts := strings.SplitN(text, ".", 2)
+		integerDigits := strings.TrimLeft(parts[0], "0")
+		if integerDigits == "" {
+			integerDigits = "0"
+		}
+		fractionDigits := 0
+		if len(parts) == 2 {
+			fractionDigits = len(parts[1])
+		}
+		if fractionDigits > column.Scale {
+			return fmt.Errorf("decimal value exceeds scale %d", column.Scale)
+		}
+		if len(integerDigits)+fractionDigits > column.Precision {
+			return fmt.Errorf("decimal value exceeds precision %d", column.Precision)
+		}
+	}
+	return nil
 }
 
 func isSeedPrimaryKey(table *Table, column string) bool {
@@ -472,6 +531,39 @@ func seedSentence(count int, stream *seedStream) string {
 func castSeedValue(columnType ColumnType, value any) (any, error) {
 	if value == nil {
 		return nil, nil
+	}
+	switch typed := value.(type) {
+	case sql.NullString:
+		if !typed.Valid {
+			return nil, nil
+		}
+		value = typed.String
+	case sql.NullInt64:
+		if !typed.Valid {
+			return nil, nil
+		}
+		value = typed.Int64
+	case sql.NullBool:
+		if !typed.Valid {
+			return nil, nil
+		}
+		value = typed.Bool
+	case sql.NullTime:
+		if !typed.Valid {
+			return nil, nil
+		}
+		value = typed.Time
+	default:
+		reflected := reflect.ValueOf(value)
+		for reflected.IsValid() && (reflected.Kind() == reflect.Pointer || reflected.Kind() == reflect.Interface) {
+			if reflected.IsNil() {
+				return nil, nil
+			}
+			reflected = reflected.Elem()
+		}
+		if reflected.IsValid() {
+			value = reflected.Interface()
+		}
 	}
 	text := fmt.Sprint(value)
 	switch columnType {

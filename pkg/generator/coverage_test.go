@@ -815,7 +815,7 @@ func TestGenerateCommandsGlueWithSeeders(t *testing.T) {
 		t.Fatalf("GenerateCommandsGlue: %v", err)
 	}
 	text := string(out)
-	for _, want := range []string{"type dbSeedCommand struct", "seeders.Resolve(scenario)", "seeders.ResolveValue", "bcrypt.GenerateFromPassword", "migrations.SeedExecutor", "definition.Policy", "Environment:        config.App.Env", `flags.Var(&asOf, "as-of"`, "migrations.SeedAnchorFlag", "AnchorTime:", "As of:", "if argument == \"--seed\"", "dbSeedCommand{}.Run(seedArgs)", "dbSeedCommand{}"} {
+	for _, want := range []string{"type dbSeedCommand struct", "seeders.Resolve(scenario)", "seeders.ResolveValue", "bcrypt.GenerateFromPassword", "migrations.SeedExecutor", "definition.Policy", "Environment:", "config.App.Env", `flags.Var(&asOf, "as-of"`, "migrations.SeedAnchorFlag", "AnchorTime:", "As of:", "if argument == \"--seed\"", "dbSeedCommand{}.Run(seedArgs)", "dbSeedCommand{}"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("generated commands missing %q", want)
 		}

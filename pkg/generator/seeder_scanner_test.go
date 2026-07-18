@@ -15,8 +15,12 @@ func (CRMSeeder) Seed(graph *SeedGraph) {
     graph.CreateN(ContactSeederRef, 25).UniqueBy("email").Update("name").With("password", "redacted")
 }
 type ContactSeeder struct{}
-type ContactSeed struct{}
+type ContactStatus string
+type ContactSeed struct{ Status ContactStatus ` + "`seed:\"status\"`" + ` }
+func (ContactSeeder) Table() string { return "crm_contacts" }
 func (ContactSeeder) Seed(ctx *SeedValueContext) ContactSeed { return ContactSeed{} }
+type RegionSeeder struct{}
+func (RegionSeeder) Seed(ctx *SeedValueContext) string { return "west" }
 `
 	if err := os.WriteFile(filepath.Join(dir, "crm.go"), []byte(source), 0o644); err != nil {
 		t.Fatal(err)
@@ -25,7 +29,7 @@ func (ContactSeeder) Seed(ctx *SeedValueContext) ContactSeed { return ContactSee
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(definitions) != 2 {
+	if len(definitions) != 3 {
 		t.Fatalf("definitions = %#v", definitions)
 	}
 	if definitions[0].Name != "CRMSeeder" || definitions[0].Kind != "scenario" {
@@ -34,15 +38,21 @@ func (ContactSeeder) Seed(ctx *SeedValueContext) ContactSeed { return ContactSee
 	if definitions[0].Policy != "Upsert" {
 		t.Fatalf("policy = %q", definitions[0].Policy)
 	}
-	if len(definitions[0].GraphCalls) != 3 {
+	if len(definitions[0].GraphCalls) != 4 {
 		t.Fatalf("safe graph calls = %#v", definitions[0].GraphCalls)
 	}
 	for _, call := range definitions[0].GraphCalls {
-		if call.Method == "With" {
-			t.Fatal("value-bearing With call must be redacted")
+		if call.Method == "With" && (len(call.Arguments) != 1 || call.Arguments[0] != `"password"`) {
+			t.Fatalf("With value was not redacted: %#v", call)
 		}
 	}
-	if definitions[1].Name != "ContactSeeder" || definitions[1].Kind != "row" || definitions[1].Table != "contacts" || definitions[1].ReturnType != "ContactSeed" {
+	if definitions[1].Name != "ContactSeeder" || definitions[1].Kind != "row" || definitions[1].Table != "crm_contacts" || definitions[1].ReturnType != "ContactSeed" {
 		t.Fatalf("row = %#v", definitions[1])
+	}
+	if len(definitions[1].Fields) != 1 || definitions[1].Fields[0].Name != "status" || definitions[1].Fields[0].Underlying != "string" {
+		t.Fatalf("typed fields = %#v", definitions[1].Fields)
+	}
+	if definitions[2].Kind != "value" || definitions[2].ReturnType != "string" {
+		t.Fatalf("value = %#v", definitions[2])
 	}
 }

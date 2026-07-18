@@ -29,6 +29,8 @@ type SeedNode struct {
 	ParentNodeID  int
 	Through       string
 	Values        map[string]any
+	Factories     map[string]SeederRef
+	Dependencies  []int
 	UniqueColumns []string
 	UpdateColumns []string
 }
@@ -71,9 +73,15 @@ func (g *SeedGraph) CreateN(seeder SeederRef, count any) *SeedNodeBuilder {
 	default:
 		panic("pickle: CreateN count must be int or SeedCount")
 	}
-	node := SeedNode{ID: len(g.Nodes) + 1, Seeder: seeder, Count: resolved, Values: map[string]any{}}
+	node := SeedNode{ID: len(g.Nodes) + 1, Seeder: seeder, Count: resolved, Values: map[string]any{}, Factories: map[string]SeederRef{}}
 	g.Nodes = append(g.Nodes, node)
 	return &SeedNodeBuilder{graph: g, index: len(g.Nodes) - 1}
+}
+
+// DependsOn declares a reusable catalog or setup seeder that must finish
+// before subsequent graph nodes. The returned handle may also be used by For.
+func (g *SeedGraph) DependsOn(seeder SeederRef) SeedRecord {
+	return g.Create(seeder).One()
 }
 
 // ForEach declares nested graph shape using a representative handle to every
@@ -118,6 +126,32 @@ func (b *SeedNodeBuilder) With(column string, value any) *SeedNodeBuilder {
 		panic(fmt.Sprintf("pickle: duplicate seed override %q", column))
 	}
 	b.node().Values[column] = value
+	return b
+}
+
+// WithFactory overrides one column with a named deterministic value seeder.
+func (b *SeedNodeBuilder) WithFactory(column string, factory SeederRef) *SeedNodeBuilder {
+	if column == "" || factory.Name == "" {
+		panic("pickle: WithFactory requires a column and value seeder")
+	}
+	if _, exists := b.node().Values[column]; exists {
+		panic(fmt.Sprintf("pickle: duplicate seed override %q", column))
+	}
+	if _, exists := b.node().Factories[column]; exists {
+		panic(fmt.Sprintf("pickle: duplicate seed factory %q", column))
+	}
+	b.node().Factories[column] = factory
+	return b
+}
+
+// DependsOn adds an ordering dependency without implying a foreign key.
+func (b *SeedNodeBuilder) DependsOn(records ...SeedRecord) *SeedNodeBuilder {
+	for _, record := range records {
+		if record.NodeID < 1 || record.NodeID == b.node().ID || seedGraphContainsInt(b.node().Dependencies, record.NodeID) {
+			panic("pickle: invalid or duplicate seed dependency")
+		}
+		b.node().Dependencies = append(b.node().Dependencies, record.NodeID)
+	}
 	return b
 }
 
@@ -168,7 +202,24 @@ func NewRowSeederRef(name, table string) SeederRef {
 	return SeederRef{Name: name, Table: table}
 }
 
+// Through names the local relationship column used by For.
+func Through(column string) string {
+	if column == "" {
+		panic("pickle: Through requires a local relationship column")
+	}
+	return column
+}
+
 func seedGraphContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func seedGraphContainsInt(values []int, target int) bool {
 	for _, value := range values {
 		if value == target {
 			return true

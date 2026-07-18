@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/format"
 	"sort"
+	"strings"
 
 	"github.com/shortontech/pickle/pkg/schema"
 )
@@ -13,12 +14,15 @@ import (
 // compiled application independent of Pickle by referring only to the schema
 // types already generated into the project's migrations package.
 func GenerateSeederGlue(packageName, migrationsImport string, definitions []SeederDefinition, tables []*schema.Table) ([]byte, error) {
+	if err := ValidateSeederDefinitions(definitions, tables); err != nil {
+		return nil, err
+	}
 	var scenarios []SeederDefinition
 	var valueSeeders []SeederDefinition
 	for _, definition := range definitions {
 		if definition.Kind == "scenario" {
 			scenarios = append(scenarios, definition)
-		} else if definition.Kind == "row" {
+		} else if definition.Kind == "row" || definition.Kind == "value" {
 			valueSeeders = append(valueSeeders, definition)
 		}
 	}
@@ -32,14 +36,15 @@ func GenerateSeederGlue(packageName, migrationsImport string, definitions []Seed
 	fmt.Fprintf(&out, "import (\n\t\"fmt\"\n\t\"sort\"\n\n\tseed %q\n)\n\n", migrationsImport)
 	out.WriteString("type Scenario interface { Seed(*seed.SeedGraph) }\n\n")
 	out.WriteString("type policyScenario interface { Policy() seed.SeedPolicy }\n\n")
-	out.WriteString("type Definition struct { Name string; Graph *seed.SeedGraph; Policy seed.SeedPolicy }\n\n")
+	out.WriteString("type provenanceScenario interface { SeedProvenance() bool }\n\n")
+	out.WriteString("type Definition struct { Name string; Graph *seed.SeedGraph; Policy seed.SeedPolicy; Provenance bool }\n\n")
 	out.WriteString("var scenarioFactories = map[string]func() Scenario{\n")
 	for _, scenario := range scenarios {
 		fmt.Fprintf(&out, "\t%q: func() Scenario { return &%s{} },\n", scenario.Name, scenario.Name)
 	}
 	out.WriteString("}\n\n")
 	out.WriteString("func Names() []string {\n\tnames := make([]string, 0, len(scenarioFactories))\n\tfor name := range scenarioFactories { names = append(names, name) }\n\tsort.Strings(names)\n\treturn names\n}\n\n")
-	out.WriteString("func Resolve(name string) (*Definition, error) {\n\tfactory := scenarioFactories[name]\n\tif factory == nil { return nil, fmt.Errorf(\"unknown seed scenario %q\", name) }\n\tscenario := factory()\n\tgraph := &seed.SeedGraph{}\n\tscenario.Seed(graph)\n\tpolicy := seed.InsertOnly\n\tif declared, ok := scenario.(policyScenario); ok { policy = declared.Policy() }\n\treturn &Definition{Name: name, Graph: graph, Policy: policy}, nil\n}\n\n")
+	out.WriteString("func Resolve(name string) (*Definition, error) {\n\tfactory := scenarioFactories[name]\n\tif factory == nil { return nil, fmt.Errorf(\"unknown seed scenario %q\", name) }\n\tscenario := factory()\n\tgraph := &seed.SeedGraph{}\n\tscenario.Seed(graph)\n\tpolicy := seed.InsertOnly\n\tif declared, ok := scenario.(policyScenario); ok { policy = declared.Policy() }\n\tprovenance := false\n\tif declared, ok := scenario.(provenanceScenario); ok { provenance = declared.SeedProvenance() }\n\treturn &Definition{Name: name, Graph: graph, Policy: policy, Provenance: provenance}, nil\n}\n\n")
 	out.WriteString("func Graph(name string) (*seed.SeedGraph, error) {\n\tdefinition, err := Resolve(name)\n\tif err != nil { return nil, err }\n\treturn definition.Graph, nil\n}\n\n")
 	out.WriteString("func ResolveValue(name string, context seed.SeedValueContext) (any, bool, error) {\n\tswitch name {\n")
 	for _, definition := range valueSeeders {
@@ -71,6 +76,72 @@ func GenerateSeederGlue(packageName, migrationsImport string, definitions []Seed
 		return out.Bytes(), fmt.Errorf("format seeder glue: %w\n%s", err, out.String())
 	}
 	return formatted, nil
+}
+
+// ValidateSeederDefinitions proves typed row-seeder fields against schema
+// metadata before generating runtime dispatch glue.
+func ValidateSeederDefinitions(definitions []SeederDefinition, tables []*schema.Table) error {
+	tableByName := make(map[string]*schema.Table, len(tables))
+	for _, table := range tables {
+		tableByName[table.Name] = table
+	}
+	for _, definition := range definitions {
+		if definition.Kind != "row" {
+			continue
+		}
+		table := tableByName[definition.Table]
+		if table == nil {
+			return fmt.Errorf("seeder %s targets unknown table %q", definition.Name, definition.Table)
+		}
+		for _, field := range definition.Fields {
+			var column *schema.Column
+			for _, candidate := range table.Columns {
+				if candidate.Name == field.Name {
+					column = candidate
+					break
+				}
+			}
+			if column == nil {
+				return fmt.Errorf("seeder %s field %s targets unknown column %s.%s", definition.Name, field.GoType, definition.Table, field.Name)
+			}
+			actual := field.Underlying
+			if actual == "" {
+				actual = field.GoType
+			}
+			if !seederGoTypeCompatible(actual, column.Type) {
+				return fmt.Errorf("seeder %s field for %s.%s: expected %s-compatible value, actual %s", definition.Name, definition.Table, column.Name, column.Type, field.GoType)
+			}
+		}
+	}
+	return nil
+}
+
+func seederGoTypeCompatible(goType string, columnType schema.ColumnType) bool {
+	goType = strings.TrimPrefix(goType, "*")
+	switch columnType {
+	case schema.UUID:
+		return goType == "uuid.UUID" || goType == "[16]byte" || goType == "string"
+	case schema.String, schema.Text:
+		return goType == "string" || goType == "[]byte"
+	case schema.Integer:
+		return goType == "int" || goType == "int8" || goType == "int16" || goType == "int32" || goType == "int64"
+	case schema.BigInteger:
+		return goType == "int" || goType == "int32" || goType == "int64"
+	case schema.Decimal:
+		return goType == "decimal.Decimal" || goType == "string" || strings.HasPrefix(goType, "int") || strings.HasPrefix(goType, "uint") || goType == "float32" || goType == "float64"
+	case schema.Boolean:
+		return goType == "bool"
+	case schema.Timestamp, schema.Date, schema.Time:
+		return goType == "time.Time" || goType == "string"
+	case schema.JSONB:
+		return goType == "json.RawMessage" || goType == "[]byte" || goType == "string" || strings.HasPrefix(goType, "map[") || strings.HasPrefix(goType, "[]")
+	case schema.Binary:
+		return goType == "[]byte" || goType == "string"
+	case schema.Float, schema.Double:
+		return goType == "float32" || goType == "float64" || strings.HasPrefix(goType, "int") || strings.HasPrefix(goType, "uint")
+	default:
+		return false
+	}
 }
 
 func seedSpecLiteral(spec *schema.SeedSpec) string {

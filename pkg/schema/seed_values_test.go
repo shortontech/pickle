@@ -2,6 +2,7 @@ package schema
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -193,6 +194,19 @@ func TestGenerateSeedRowValidatesAndCastsOverrides(t *testing.T) {
 	}
 	if _, err := GenerateSeedRow(table, map[string]any{"count": 1, "typo": true}, SeedValueContext{}); err == nil {
 		t.Fatal("expected unknown override error")
+	}
+}
+
+func TestGenerateSeedRowEnforcesLengthAndDecimalShape(t *testing.T) {
+	table := &Table{Name: "examples", Columns: []*Column{{Name: "code", Type: String, Length: 3}, {Name: "amount", Type: Decimal, Precision: 5, Scale: 2}}}
+	if _, err := GenerateSeedRow(table, map[string]any{"code": "four", "amount": "1.00"}, SeedValueContext{}); err == nil || !strings.Contains(err.Error(), "maximum length") {
+		t.Fatalf("length error = %v", err)
+	}
+	if _, err := GenerateSeedRow(table, map[string]any{"code": "ok", "amount": "1.234"}, SeedValueContext{}); err == nil || !strings.Contains(err.Error(), "scale") {
+		t.Fatalf("scale error = %v", err)
+	}
+	if _, err := GenerateSeedRow(table, map[string]any{"code": "ok", "amount": "1234.56"}, SeedValueContext{}); err == nil || !strings.Contains(err.Error(), "precision") {
+		t.Fatalf("precision error = %v", err)
 	}
 }
 

@@ -149,6 +149,20 @@ func MakeSeeder(name, projectDir, moduleName string) (string, error) {
 	return writeScaffold(projectDir, relPath, tmplMakeSeeder(structName, moduleName))
 }
 
+// MakeValueSeeder scaffolds a typed reusable row seeder.
+func MakeValueSeeder(name, projectDir, moduleName string) (string, error) {
+	if err := sanitizeName(name); err != nil {
+		return "", err
+	}
+	name = strings.TrimSuffix(name, "Seeder")
+	base := names.SnakeToPascal(name)
+	structName := base + "Seeder"
+	seedName := base + "Seed"
+	fileName := names.PascalToSnake(name) + "_seeder.go"
+	relPath := filepath.Join("database", "seeders", fileName)
+	return writeScaffold(projectDir, relPath, tmplMakeValueSeeder(structName, seedName, moduleName))
+}
+
 func tmplMakeSeeder(structName, moduleName string) string {
 	return r(`package seeders
 
@@ -160,6 +174,23 @@ type `+structName+` struct {
 
 func (`+structName+`) Seed(graph *seed.SeedGraph) {
 	// Declare row seeder tokens and build the scenario graph here.
+}
+`, moduleName)
+}
+
+func tmplMakeValueSeeder(structName, seedName, moduleName string) string {
+	return r(`package seeders
+
+import seed "{{.ModuleName}}/database/migrations"
+
+type `+seedName+` struct {
+	// Add typed fields matching migration columns. Use db or json tags for deliberate name differences.
+}
+
+type `+structName+` struct{}
+
+func (`+structName+`) Seed(ctx *seed.SeedValueContext) `+seedName+` {
+	return `+seedName+`{}
 }
 `, moduleName)
 }

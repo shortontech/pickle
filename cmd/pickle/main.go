@@ -908,9 +908,9 @@ func cmdMakeJob() {
 }
 
 func cmdMakeSeeder() {
-	name, projectDir := parseMakeArgs()
+	name, projectDir, valueSeeder := parseMakeSeederArgs()
 	if name == "" {
-		fmt.Fprintf(os.Stderr, "Usage: pickle make:seeder <Name>\n")
+		fmt.Fprintf(os.Stderr, "Usage: pickle make:seeder <Name> [--value]\n")
 		os.Exit(1)
 	}
 	project, err := generator.DetectProject(projectDir)
@@ -918,12 +918,44 @@ func cmdMakeSeeder() {
 		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
 		os.Exit(1)
 	}
-	relPath, err := scaffold.MakeSeeder(name, project.Dir, project.ModulePath)
+	var relPath string
+	if valueSeeder {
+		relPath, err = scaffold.MakeValueSeeder(name, project.Dir, project.ModulePath)
+	} else {
+		relPath, err = scaffold.MakeSeeder(name, project.Dir, project.ModulePath)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pickle: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("  created %s\n", relPath)
+}
+
+func parseMakeSeederArgs() (name, projectDir string, value bool) {
+	projectDir = "."
+	args := os.Args[2:]
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--project":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "pickle: --project requires a directory")
+				os.Exit(1)
+			}
+			projectDir = args[i+1]
+			i++
+		case "--value":
+			value = true
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				fmt.Fprintf(os.Stderr, "pickle: unknown flag %q\n", args[i])
+				os.Exit(1)
+			}
+			if name == "" {
+				name = args[i]
+			}
+		}
+	}
+	return
 }
 
 func cmdMakePolicy() {

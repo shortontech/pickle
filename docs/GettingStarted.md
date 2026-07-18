@@ -59,7 +59,7 @@ field seed providers and scaffold a root scenario:
 ```bash
 pickle make:seeder Demo
 pickle db:seed DemoSeeder --dry-run
-pickle db:seed DemoSeeder
+pickle db:seed DemoSeeder --seed 8675309 --as-of 2026-07-18T12:00:00Z
 ```
 
 See [Seeders](Seeders.md) for scenario graphs, relationships, reproducible root

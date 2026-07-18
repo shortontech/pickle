@@ -48,7 +48,7 @@ func GenerateSeederGlue(packageName, migrationsImport string, definitions []Seed
 	out.WriteString("\tdefault:\n\t\treturn nil, false, nil\n\t}\n}\n\n")
 	out.WriteString("func Tables() []*seed.Table {\n\treturn []*seed.Table{\n")
 	for _, table := range tables {
-		fmt.Fprintf(&out, "\t\t{Name: %q, CompositePrimaryKeys: %#v, Columns: []*seed.Column{\n", table.Name, table.CompositePrimaryKeys)
+		fmt.Fprintf(&out, "\t\t{Name: %q, CompositePrimaryKeys: %#v, IsImmutable: %t, IsAppendOnly: %t, Columns: []*seed.Column{\n", table.Name, table.CompositePrimaryKeys, table.IsImmutable, table.IsAppendOnly)
 		for _, column := range table.Columns {
 			fmt.Fprintf(&out, "\t\t\t{Name: %q, Type: seed.ColumnType(%d), IsPrimaryKey: %t, IsNullable: %t, IsUnique: %t, HasDefault: %t", column.Name, column.Type, column.IsPrimaryKey, column.IsNullable, column.IsUnique, column.HasDefault)
 			if column.ForeignKeyTable != "" {

@@ -10,6 +10,18 @@ import (
 	"time"
 )
 
+func lockIntegrityChain(db dbExecutor, table string) error {
+	if DatabaseDriver != "pgsql" && DatabaseDriver != "postgres" {
+		return nil
+	}
+	digest := sha256.Sum256([]byte("pickle-integrity-chain:" + table))
+	key := int64(binary.BigEndian.Uint64(digest[:8]))
+	if _, err := db.Exec("SELECT pg_advisory_xact_lock($1)", key); err != nil {
+		return fmt.Errorf("lock integrity chain %s: %w", table, err)
+	}
+	return nil
+}
+
 // Type tags for canonical serialization. Each column type gets a unique tag
 // to prevent type confusion in the hash (e.g., string "42" vs integer 42).
 const (

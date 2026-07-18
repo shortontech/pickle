@@ -49,9 +49,11 @@ Seeder commands may also be forwarded through Pickle:
 ```bash
 pickle db:seed
 pickle db:seed CRMSeeder --seed 8675309
+pickle db:seed CRMSeeder --seed 8675309 --as-of 2026-07-18T12:00:00Z
 pickle db:seed --list
 pickle db:seed CRMSeeder --dry-run
 pickle migrate:fresh --seed
+pickle migrate:fresh --seed --as-of 2026-07-18T12:00:00Z
 ```
 
 When no scenario is named, Pickle runs the first root scenario by its stable

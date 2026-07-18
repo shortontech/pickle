@@ -191,7 +191,7 @@ func TestFormatSeederPlanRedactsPasswordComposite(t *testing.T) {
 		{Method: "UniqueBy", Arguments: []string{`"email"`}, Line: 10},
 	}}
 	tables := []*schema.Table{{Name: "users", Columns: []*schema.Column{{Name: "first_name", Seeder: &schema.SeedSpec{Kind: "first_name"}}, {Name: "password_hash", Seeder: &schema.SeedSpec{Kind: "password", Fields: []string{"first_name", "id"}}}}}}
-	out := formatSeederPlan(definition, tables, 8675309, "/tmp/project")
+	out := formatSeederPlan(definition, tables, 8675309, schema.DefaultSeedAnchor, "/tmp/project")
 	for _, want := range []string{"CRMSeeder", "root seed: 8675309", "policy: Upsert", "CreateN(ContactSeeder, 25)", "users.first_name", "[REDACTED COMPOSITE]", "mutation: none"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("plan missing %q:\n%s", want, out)

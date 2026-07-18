@@ -5615,6 +5615,7 @@ func writeExportedIntegrityBehaviorTest(t *testing.T, out string) {
 	testSrc := `package models_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -5624,6 +5625,8 @@ import (
 	"gorm.io/gorm"
 
 	"ledger/app/models"
+	"ledger/database/migrations"
+	"ledger/database/seeders"
 )
 
 func TestExportedIntegrityTablesPreserveBehavior(t *testing.T) {
@@ -5757,6 +5760,25 @@ func TestExportedIntegrityDatabaseErrorsAreSanitized(t *testing.T) {
 	}
 }
 
+func TestExportedSeederRowsVerifyThroughGeneratedIntegrityAPI(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil { t.Fatal(err) }
+	models.SetDBWithDriver(db, "sqlite")
+	if err := db.AutoMigrate(&models.Account{}, &models.Transaction{}); err != nil { t.Fatal(err) }
+	sqlDB, err := db.DB()
+	if err != nil { t.Fatal(err) }
+	definition, err := seeders.Resolve("LedgerSeeder")
+	if err != nil { t.Fatal(err) }
+	executor := migrations.SeedExecutor{DB: sqlDB, Tables: seeders.Tables()}
+	result, err := executor.Run(context.Background(), definition.Graph, migrations.SeedExecutionOptions{
+		Scenario: "LedgerSeeder", RootSeed: 8675309, Environment: "test", Driver: "sqlite",
+		Policy: definition.Policy, SeederResolver: seeders.ResolveValue,
+	})
+	if err != nil { t.Fatal(err) }
+	if len(result.Rows) != 2 { t.Fatalf("planned rows = %d", len(result.Rows)) }
+	if err := models.VerifyTransactionChain(); err != nil { t.Fatalf("seeded chain: %v", err) }
+}
+
 func bytesEqual(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false
@@ -5777,6 +5799,7 @@ func bytesEqual(a, b []byte) bool {
 func TestExportLedgerCompiles(t *testing.T) {
 	projectDir := copyProject(t, filepath.Join("..", "..", "testdata", "ledger"))
 	writeLedgerIntegrityQuerySourceFixture(t, projectDir)
+	writeLedgerSeederFixture(t, projectDir)
 	out := filepath.Join(t.TempDir(), "exported")
 	_, err := Export(Options{
 		ProjectDir:   projectDir,
@@ -5807,6 +5830,34 @@ func TestExportLedgerCompiles(t *testing.T) {
 	assertNoGoFileContains(t, out, "QueryAccount")
 	writeExportedIntegrityBehaviorTest(t, out)
 	runExported(t, out, "go", "test", "./...")
+}
+
+func writeLedgerSeederFixture(t *testing.T, projectDir string) {
+	t.Helper()
+	dir := filepath.Join(projectDir, "database", "seeders")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := `package seeders
+
+import seed "github.com/shortontech/ledger/database/migrations"
+
+var TransactionSeederRef = seed.NewRowSeederRef("TransactionSeeder", "transactions")
+
+type LedgerSeeder struct{ seed.ScenarioSeeder }
+func (LedgerSeeder) Seed(graph *seed.SeedGraph) { graph.CreateN(TransactionSeederRef, 2) }
+
+type TransactionSeeder struct{}
+func (TransactionSeeder) Seed(ctx *seed.SeedValueContext) map[string]any {
+	return map[string]any{
+		"account_id": "018cc251-f400-7000-8000-000000000001",
+		"type": "credit", "amount": "100", "currency": "USD",
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "ledger_seeder.go"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeLedgerIntegrityQuerySourceFixture(t *testing.T, projectDir string) {

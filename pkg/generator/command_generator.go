@@ -307,18 +307,19 @@ type migrateFreshCommand struct{}
 func (c migrateFreshCommand) Name() string        { return "migrate:fresh" }
 func (c migrateFreshCommand) Description() string { return "Drop all tables and re-run all migrations" }
 func (c migrateFreshCommand) Run(args []string) error {
-	runner := migrations.NewRunner(models.DB, config.Database.Connection().Driver)
-	if err := runner.Fresh(migrations.Registry); err != nil { return err }
-{{ if .HasPolicies }}	policyRunner := policies.NewPolicyRunner(models.DB, config.Database.Connection().Driver)
-	if err := policyRunner.Migrate(policies.PolicyRegistry); err != nil { return err }
-{{ end }}
 {{ if .HasSeeders }}	seed := false
 	seedArgs := make([]string, 0, len(args))
 	for _, argument := range args {
 		if argument == "--seed" { seed = true; continue }
 		seedArgs = append(seedArgs, argument)
 	}
-	if seed { return dbSeedCommand{}.Run(seedArgs) }
+	if seed { if err := migrations.ValidateSeedAnchorArguments(seedArgs); err != nil { return err } }
+{{ end }}	runner := migrations.NewRunner(models.DB, config.Database.Connection().Driver)
+	if err := runner.Fresh(migrations.Registry); err != nil { return err }
+{{ if .HasPolicies }}	policyRunner := policies.NewPolicyRunner(models.DB, config.Database.Connection().Driver)
+	if err := policyRunner.Migrate(policies.PolicyRegistry); err != nil { return err }
+{{ end }}
+{{ if .HasSeeders }}	if seed { return dbSeedCommand{}.Run(seedArgs) }
 {{ end }}	return nil
 }
 
@@ -389,6 +390,8 @@ func (c dbSeedCommand) Run(args []string) error {
 	rootSeed := flags.Int64("seed", 0, "deterministic 64-bit root seed")
 	list := flags.Bool("list", false, "list root scenarios")
 	dryRun := flags.Bool("dry-run", false, "plan without inserting")
+	var asOf migrations.SeedAnchorFlag
+	flags.Var(&asOf, "as-of", "explicit deterministic RFC3339 time anchor")
 	force := flags.Bool("force", false, "permit a confirmed non-development environment")
 	confirmEnvironment := flags.String("confirm-environment", "", "exact environment mutation confirmation")
 	var flagArgs, scenarioArgs []string
@@ -399,7 +402,7 @@ func (c dbSeedCommand) Run(args []string) error {
 			continue
 		}
 		flagArgs = append(flagArgs, argument)
-		if (argument == "--seed" || argument == "--confirm-environment") && i+1 < len(args) {
+		if (argument == "--seed" || argument == "--as-of" || argument == "--confirm-environment") && i+1 < len(args) {
 			i++
 			flagArgs = append(flagArgs, args[i])
 		}
@@ -414,12 +417,14 @@ func (c dbSeedCommand) Run(args []string) error {
 	scenario := names[0]
 	if len(scenarioArgs) > 1 { return fmt.Errorf("db:seed accepts at most one scenario name") }
 	if len(scenarioArgs) == 1 { scenario = scenarioArgs[0] }
+	anchor := asOf.Anchor()
 	if *rootSeed == 0 {
 		var raw [8]byte
 		if _, err := rand.Read(raw[:]); err != nil { return fmt.Errorf("generate root seed: %w", err) }
 		*rootSeed = int64(binary.BigEndian.Uint64(raw[:]))
 	}
 	fmt.Printf("Seed: %d\n", *rootSeed)
+	fmt.Printf("As of: %s\n", anchor.UTC().Format(time.RFC3339))
 	definition, err := seeders.Resolve(scenario)
 	if err != nil { return err }
 	executor := migrations.SeedExecutor{DB: models.DB, Tables: seeders.Tables()}
@@ -433,12 +438,16 @@ func (c dbSeedCommand) Run(args []string) error {
 		Driver: config.Database.Connection().Driver,
 		Policy: definition.Policy,
 		SeederResolver: seeders.ResolveValue,
+		AnchorTime: anchor,
 		PasswordHasher: func(value string) (string, error) {
 			hash, err := bcrypt.GenerateFromPassword([]byte(value), bcrypt.DefaultCost)
 			return string(hash), err
 		},
 	})
 	if err != nil { return err }
+	if result.DryRun {
+		for _, row := range result.Rows { if row.IntegrityDerived { fmt.Println("Integrity: framework-derived; live chain head is resolved only during execution"); break } }
+	}
 	if result.DryRun { fmt.Printf("Plan: %s (%d rows)\n", result.Scenario, len(result.Rows)) } else { fmt.Printf("Seeded: %s (%d rows)\n", result.Scenario, len(result.Rows)) }
 	return nil
 }
@@ -477,6 +486,7 @@ func NewApp() *pickle.App {
 		func() {
 			config.Init()
 			models.DB = config.Database.Open()
+			models.DatabaseDriver = config.Database.Connection().Driver
 {{ if .HasAuth }}			auth.Init(config.Env, models.DB)
 {{ if .HasPolicies }}			pickle.RegisterHTTPPolicyAuthenticator(func(r *http.Request) (any, *pickle.AuthInfo, error) {
 				source, present, err := auth.TryAuthenticatePolicySource(r)

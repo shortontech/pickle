@@ -33,3 +33,26 @@ func TestRuleSeederNondeterministic(t *testing.T) {
 		t.Fatalf("findings = %#v", findings)
 	}
 }
+
+func TestRuleSeederNondeterministicAllowsAnchorContext(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stable.go")
+	if err := os.WriteFile(path, []byte("package seeders\nfunc x(ctx SeedValueContext){ _, _, _ = ctx.AnchorTime, ctx.Past(1), ctx.Future(1) }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if findings := ruleSeederNondeterministic(&AnalysisContext{Seeders: []generator.SeederDefinition{{File: path}}}); len(findings) != 0 {
+		t.Fatalf("anchor context findings = %#v", findings)
+	}
+}
+
+func TestRuleSeederIntegrityOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.go")
+	if err := os.WriteFile(path, []byte("package seeders\nfunc x(){ _ = map[string]any{\"row_hash\": []byte{1}} }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := ruleSeederIntegrityOverride(&AnalysisContext{Seeders: []generator.SeederDefinition{{File: path}}})
+	if len(findings) != 1 || findings[0].Rule != "seeder_integrity_override" {
+		t.Fatalf("findings = %#v", findings)
+	}
+}

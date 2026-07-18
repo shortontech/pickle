@@ -125,6 +125,7 @@ func AllRules() map[string]Rule {
 		"handler_package":                      ruleHandlerPackage,
 		"seeder_unstable_identity":             ruleSeederUnstableIdentity,
 		"seeder_nondeterministic":              ruleSeederNondeterministic,
+		"seeder_integrity_override":            ruleSeederIntegrityOverride,
 	}
 }
 

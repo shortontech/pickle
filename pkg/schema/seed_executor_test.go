@@ -6,9 +6,62 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
+
+func TestParseSeedAnchor(t *testing.T) {
+	parsed, err := ParseSeedAnchor("2026-07-18T05:00:00-07:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.Format(time.RFC3339); got != "2026-07-18T12:00:00Z" {
+		t.Fatalf("normalized anchor = %s", got)
+	}
+	for _, invalid := range []string{"", "2026-07-18", "2026-07-18T12:00:00", "tomorrow"} {
+		if _, err := ParseSeedAnchor(invalid); err == nil {
+			t.Errorf("ParseSeedAnchor(%q) succeeded", invalid)
+		}
+	}
+}
+
+func TestSeedAnchorFlagRejectsConflictingValues(t *testing.T) {
+	var flag SeedAnchorFlag
+	if err := flag.Set("2026-07-18T05:00:00-07:00"); err != nil {
+		t.Fatal(err)
+	}
+	if err := flag.Set("2026-07-18T12:00:00Z"); err != nil {
+		t.Fatalf("same normalized anchor rejected: %v", err)
+	}
+	if err := flag.Set("2026-07-19T12:00:00Z"); err == nil {
+		t.Fatal("conflicting anchor accepted")
+	}
+}
+
+func TestPostgresIntegrityLockUsesTransactionAdvisoryLock(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectBegin()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock\(\$1\)`).WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := lockSeedIntegrityTable(context.Background(), tx, "postgres", "events"); err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectRollback()
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestPlanSeedGraphExpandsRelationshipsAndHashesPasswords(t *testing.T) {
 	users := &Table{Name: "users", Columns: []*Column{
@@ -149,6 +202,27 @@ func TestSeedRepeatPolicyRequiresExplicitIdentity(t *testing.T) {
 	rows[0].UniqueBy = []string{"email"}
 	if err := validateSeedRepeatPolicy(rows, SeedExecutionOptions{Policy: Upsert}); err == nil {
 		t.Fatal("expected missing update allowlist error")
+	}
+}
+
+func TestImmutableAndAppendOnlySeedRules(t *testing.T) {
+	appendOnly := &Table{Name: "events", IsAppendOnly: true, Columns: []*Column{{Name: "id", Type: UUID, IsPrimaryKey: true}, {Name: "row_hash", Type: Binary}, {Name: "prev_hash", Type: Binary}, {Name: "body", Type: String}}}
+	graph := &SeedGraph{Nodes: []SeedNode{{ID: 1, Seeder: NewRowSeederRef("EventSeeder", "events"), Count: FixedCount(1), Values: map[string]any{"body": "created", "row_hash": []byte("authored")}}}}
+	if _, err := PlanSeedGraph(graph, []*Table{appendOnly}, SeedExecutionOptions{Scenario: "Audit"}); err == nil || !strings.Contains(err.Error(), "framework-derived") {
+		t.Fatalf("authored hash error = %v", err)
+	}
+	graph.Nodes[0].Values = map[string]any{"body": "created"}
+	rows, err := PlanSeedGraph(graph, []*Table{appendOnly}, SeedExecutionOptions{Scenario: "Audit", RootSeed: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Values["id"] == "" || !rows[0].IntegrityDerived {
+		t.Fatalf("planned integrity row = %#v", rows)
+	}
+	rows[0].UniqueBy = []string{"id"}
+	rows[0].Updates = []string{"body"}
+	if err := validateSeedRepeatPolicy(rows, SeedExecutionOptions{Policy: Upsert}); err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("append-only upsert error = %v", err)
 	}
 }
 

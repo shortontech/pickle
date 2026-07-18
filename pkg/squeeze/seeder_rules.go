@@ -4,8 +4,44 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"strconv"
 	"strings"
 )
+
+func ruleSeederIntegrityOverride(ctx *AnalysisContext) []Finding {
+	seen := map[string]bool{}
+	var findings []Finding
+	for _, definition := range ctx.Seeders {
+		if seen[definition.File] {
+			continue
+		}
+		seen[definition.File] = true
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, definition.File, nil, 0)
+		if err != nil {
+			continue
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			switch value := node.(type) {
+			case *ast.BasicLit:
+				if value.Kind != token.STRING {
+					return true
+				}
+				text, err := strconv.Unquote(value.Value)
+				if err != nil || text != "row_hash" && text != "prev_hash" {
+					return true
+				}
+				findings = append(findings, Finding{Rule: "seeder_integrity_override", Severity: SeverityError, File: definition.File, Line: fset.Position(value.Pos()).Line, Message: text + " is framework-derived for immutable and append-only seed rows; remove the authored value"})
+			case *ast.KeyValueExpr:
+				if ident, ok := value.Key.(*ast.Ident); ok && (ident.Name == "RowHash" || ident.Name == "PrevHash") {
+					findings = append(findings, Finding{Rule: "seeder_integrity_override", Severity: SeverityError, File: definition.File, Line: fset.Position(value.Pos()).Line, Message: ident.Name + " is framework-derived for immutable and append-only seed rows; remove the authored value"})
+				}
+			}
+			return true
+		})
+	}
+	return findings
+}
 
 func ruleSeederUnstableIdentity(ctx *AnalysisContext) []Finding {
 	var findings []Finding

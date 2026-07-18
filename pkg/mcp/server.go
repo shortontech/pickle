@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/shortontech/pickle/pkg/generator"
@@ -241,6 +242,7 @@ func (s *Server) migrationsList(_ context.Context, _ *mcp.CallToolRequest, _ any
 type seederInput struct {
 	Name string `json:"name,omitempty"`
 	Seed int64  `json:"seed,omitempty"`
+	AsOf string `json:"as_of,omitempty"`
 }
 
 func (s *Server) scanSeeders() ([]generator.SeederDefinition, error) {
@@ -307,7 +309,14 @@ func (s *Server) seedersPlan(_ context.Context, _ *mcp.CallToolRequest, input se
 	if err != nil {
 		return errResult("schema inspection failed: " + err.Error()), nil, nil
 	}
-	return textResult(formatSeederPlan(*scenario, tables, input.Seed, s.project.Dir)), nil, nil
+	anchor := schema.DefaultSeedAnchor
+	if input.AsOf != "" {
+		anchor, err = schema.ParseSeedAnchor(input.AsOf)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+	}
+	return textResult(formatSeederPlan(*scenario, tables, input.Seed, anchor, s.project.Dir)), nil, nil
 }
 
 func (s *Server) authDrivers(_ context.Context, _ *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
@@ -609,7 +618,7 @@ func formatSeederDefinition(definition generator.SeederDefinition, projectDir st
 	return out.String()
 }
 
-func formatSeederPlan(definition generator.SeederDefinition, tables []*schema.Table, rootSeed int64, projectDir string) string {
+func formatSeederPlan(definition generator.SeederDefinition, tables []*schema.Table, rootSeed int64, anchor time.Time, projectDir string) string {
 	var out strings.Builder
 	fmt.Fprintf(&out, "# Seed plan: %s\n", definition.Name)
 	if rootSeed == 0 {
@@ -617,6 +626,7 @@ func formatSeederPlan(definition generator.SeederDefinition, tables []*schema.Ta
 	} else {
 		fmt.Fprintf(&out, "root seed: %d\n", rootSeed)
 	}
+	fmt.Fprintf(&out, "anchor: %s\n", anchor.UTC().Format(time.RFC3339))
 	policy := definition.Policy
 	if policy == "" {
 		policy = "InsertOnly"
@@ -648,6 +658,18 @@ func formatSeederPlan(definition generator.SeederDefinition, tables []*schema.Ta
 		}
 	}
 	if providerCount == 0 {
+		out.WriteString("  none\n")
+	}
+	out.WriteString("\nframework-derived integrity:\n")
+	integrityCount := 0
+	for _, table := range tables {
+		if !table.IsImmutable && !table.IsAppendOnly {
+			continue
+		}
+		integrityCount++
+		fmt.Fprintf(&out, "  %s: id/hash columns derived during execution; live chain head required (database not opened by this plan)\n", table.Name)
+	}
+	if integrityCount == 0 {
 		out.WriteString("  none\n")
 	}
 	out.WriteString("\nsafety: sensitive values are redacted; use the compiled db:seed --dry-run command for fully resolved row counts.\n")

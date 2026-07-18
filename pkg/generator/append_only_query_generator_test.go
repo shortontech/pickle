@@ -25,6 +25,8 @@ func TestAppendOnlyQueryStructurallyExcludesMutableBuilder(t *testing.T) {
 		"*AppendOnlyQueryBuilder[InventoryMovement]",
 		"AppendOnlyQuery[InventoryMovement](\"inventory_movements\")",
 		"q.AppendOnlyQueryBuilder.Create(model)",
+		"TransactionOn(",
+		`lockIntegrityChain(q.db(), "inventory_movements")`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("generated append-only query missing %q:\n%s", want, got)

@@ -171,10 +171,27 @@ Run a root scenario through the project binary or the forwarding Pickle CLI:
 
 ```bash
 pickle db:seed CRMSeeder --seed 8675309
+pickle db:seed CRMSeeder --seed 8675309 --as-of 2026-07-18T12:00:00Z
 pickle db:seed --list
 pickle db:seed CRMSeeder --dry-run
 pickle migrate:fresh --seed
+pickle migrate:fresh --seed --as-of 2026-07-18T12:00:00Z
 ```
+
+`--as-of` supplies an explicit RFC 3339 fixture anchor. It is normalized to
+UTC and printed beside the root seed. Relative time providers and custom
+seeders using `ctx.AnchorTime`, `ctx.Past(...)`, or `ctx.Future(...)` derive
+from that value. Omitting the flag preserves Pickle's fixed
+`2024-01-01T00:00:00Z` default. The anchor does not enter random substream or
+stable identity derivation, so advancing fixture time does not reshuffle
+unrelated rows.
+
+Immutable and append-only seed rows declare logical values only. Pickle derives
+their UUIDv7 identities, predecessor hashes, and row hashes inside the scenario
+transaction using the same canonical representation as generated model writes.
+Authored `row_hash`, `prev_hash`, and immutable `version_id` values are rejected.
+`Upsert` is unavailable for these physical history rows; use explicit versions
+and an identity-backed insert policy.
 
 `migrate:fresh --seed` completes the fresh migration first and then delegates
 to the same compiled `db:seed` command. It does not create a second seeding
@@ -210,7 +227,7 @@ The read-only MCP surface exposes:
 
 - `seeders_list` — root scenarios and row seeders;
 - `seeders_show` — source, target, repeat policy, and redacted graph calls;
-- `seeders_plan` — deterministic seed metadata, declared counts and
+- `seeders_plan` — deterministic seed metadata, optional `as_of` anchor, declared counts and
   relationships, repeat identities, and migration field providers.
 
 `seeders_plan` never opens the database or inserts rows. Value-bearing `With`

@@ -1,13 +1,20 @@
 package schema
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // SeedPolicy controls how a root scenario behaves when it is repeated.
@@ -35,27 +42,33 @@ type SeedExecutionOptions struct {
 	ProvenanceEnabled  bool
 	PasswordHasher     func(string) (string, error)
 	SeederResolver     func(string, SeedValueContext) (value any, found bool, err error)
+	AnchorTime         time.Time
 }
 
 // SeedPlannedRow is a resolved row in insertion order. Password values are
 // always redacted; Values contains the application-supplied insertion values.
 type SeedPlannedRow struct {
-	NodeID     int
-	NodePath   string
-	RowOrdinal int
-	Table      string
-	Values     map[string]any
-	Sensitive  map[string]bool
-	UniqueBy   []string
-	Updates    []string
+	NodeID           int
+	NodePath         string
+	RowOrdinal       int
+	Table            string
+	Values           map[string]any
+	Sensitive        map[string]bool
+	UniqueBy         []string
+	Updates          []string
+	Authored         map[string]bool
+	Immutable        bool
+	AppendOnly       bool
+	IntegrityDerived bool
 }
 
 // SeedExecutionResult describes what was planned or inserted.
 type SeedExecutionResult struct {
-	Scenario string
-	RootSeed int64
-	Rows     []SeedPlannedRow
-	DryRun   bool
+	Scenario   string
+	RootSeed   int64
+	Rows       []SeedPlannedRow
+	DryRun     bool
+	AnchorTime time.Time
 }
 
 // SeedExecutor expands and inserts one validated scenario graph.
@@ -83,7 +96,7 @@ func (e SeedExecutor) Run(ctx context.Context, graph *SeedGraph, options SeedExe
 	if err := validateSeedRepeatPolicy(rows, options); err != nil {
 		return nil, fmt.Errorf("seed scenario %s: %w", options.Scenario, err)
 	}
-	result := &SeedExecutionResult{Scenario: options.Scenario, RootSeed: options.RootSeed, Rows: rows, DryRun: options.DryRun}
+	result := &SeedExecutionResult{Scenario: options.Scenario, RootSeed: options.RootSeed, Rows: rows, DryRun: options.DryRun, AnchorTime: effectiveSeedAnchor(options.AnchorTime)}
 	if options.DryRun {
 		return result, nil
 	}
@@ -100,13 +113,58 @@ func (e SeedExecutor) Run(ctx context.Context, graph *SeedGraph, options SeedExe
 			_ = tx.Rollback()
 		}
 	}()
+	tableByName := make(map[string]*Table, len(e.Tables))
+	for _, table := range e.Tables {
+		tableByName[table.Name] = table
+	}
+	tails := map[string]seedIntegrityTail{}
+	locked := map[string]bool{}
 	for _, row := range rows {
+		table := tableByName[row.Table]
+		if table == nil {
+			return nil, fmt.Errorf("seed scenario %s: table metadata missing for %s", options.Scenario, row.Table)
+		}
+		if row.IntegrityDerived {
+			if !locked[row.Table] {
+				if err := lockSeedIntegrityTable(ctx, tx, options.Driver, row.Table); err != nil {
+					return nil, err
+				}
+				locked[row.Table] = true
+			}
+			exists, err := seedExistingRowMatches(ctx, tx, options.Driver, row)
+			if err != nil {
+				return nil, fmt.Errorf("seed scenario %s path %s row %d table %s: %w", options.Scenario, row.NodePath, row.RowOrdinal, row.Table, err)
+			}
+			if exists {
+				continue
+			}
+			tail, ok := tails[row.Table]
+			if !ok {
+				tail, err = readSeedIntegrityTail(ctx, tx, options.Driver, table)
+				if err != nil {
+					return nil, err
+				}
+			}
+			order := seedIntegrityOrder(row, table)
+			if tail.Order != "" && order <= tail.Order {
+				return nil, fmt.Errorf("seed scenario %s path %s row %d table %s: generated integrity order %s does not follow existing chain tail %s", options.Scenario, row.NodePath, row.RowOrdinal, row.Table, order, tail.Order)
+			}
+			row.Values["prev_hash"] = append([]byte(nil), tail.Hash...)
+			row.Values["row_hash"] = computeSeedRowHash(tail.Hash, row.Values, table.Columns)
+		}
 		query, arguments, err := seedInsertSQL(options.Driver, row, options)
 		if err != nil {
 			return nil, fmt.Errorf("seed scenario %s path %s row %d table %s: %w", options.Scenario, row.NodePath, row.RowOrdinal, row.Table, err)
 		}
-		if _, err := tx.ExecContext(ctx, query, arguments...); err != nil {
+		execResult, err := tx.ExecContext(ctx, query, arguments...)
+		if err != nil {
 			return nil, fmt.Errorf("seed scenario %s path %s row %d table %s: insert failed: %w", options.Scenario, row.NodePath, row.RowOrdinal, row.Table, err)
+		}
+		if row.IntegrityDerived {
+			inserted, _ := execResult.RowsAffected()
+			if inserted > 0 {
+				tails[row.Table] = seedIntegrityTail{Hash: append([]byte(nil), row.Values["row_hash"].([]byte)...), Order: seedIntegrityOrder(row, table)}
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -192,6 +250,9 @@ func PlanSeedGraph(graph *SeedGraph, tables []*Table, options SeedExecutionOptio
 		}
 		remaining = next
 	}
+	if err := deriveSeedFrameworkIdentities(planned, options); err != nil {
+		return nil, err
+	}
 	return planned, nil
 }
 
@@ -216,7 +277,7 @@ func planSeedNode(node SeedNode, tables map[string]*Table, rowsByNode map[int][]
 		for index := 0; index < count; index++ {
 			path := fmt.Sprintf("%s/%d", node.Seeder.Name, ordinal)
 			overrides := cloneSeedValues(node.Values)
-			base := SeedValueContext{RootSeed: options.RootSeed, Scenario: options.Scenario, NodePath: path, RowOrdinal: ordinal}
+			base := SeedValueContext{RootSeed: options.RootSeed, Scenario: options.Scenario, NodePath: path, RowOrdinal: ordinal, AnchorTime: effectiveSeedAnchor(options.AnchorTime)}
 			if options.SeederResolver != nil {
 				seeded, found, err := options.SeederResolver(node.Seeder.Name, base)
 				if err != nil {
@@ -261,7 +322,11 @@ func planSeedNode(node SeedNode, tables map[string]*Table, rowsByNode map[int][]
 				values[column.Name] = hash
 				sensitive[column.Name] = true
 			}
-			rows = append(rows, SeedPlannedRow{NodeID: node.ID, NodePath: path, RowOrdinal: ordinal, Table: table.Name, Values: values, Sensitive: sensitive, UniqueBy: append([]string(nil), node.UniqueColumns...), Updates: append([]string(nil), node.UpdateColumns...)})
+			authored := map[string]bool{}
+			for column := range overrides {
+				authored[column] = true
+			}
+			rows = append(rows, SeedPlannedRow{NodeID: node.ID, NodePath: path, RowOrdinal: ordinal, Table: table.Name, Values: values, Sensitive: sensitive, UniqueBy: append([]string(nil), node.UniqueColumns...), Updates: append([]string(nil), node.UpdateColumns...), Authored: authored, Immutable: table.IsImmutable, AppendOnly: table.IsAppendOnly, IntegrityDerived: table.IsImmutable || table.IsAppendOnly})
 			ordinal++
 		}
 	}
@@ -326,9 +391,87 @@ func seedNodeCount(node SeedNode, options SeedExecutionOptions, parentOrdinal in
 	if node.Count.Min == node.Count.Max {
 		return node.Count.Min
 	}
-	ctx := SeedValueContext{RootSeed: options.RootSeed, Scenario: options.Scenario, NodePath: node.Seeder.Name, RowOrdinal: parentOrdinal, Column: "__count"}
+	ctx := SeedValueContext{RootSeed: options.RootSeed, Scenario: options.Scenario, NodePath: node.Seeder.Name, RowOrdinal: parentOrdinal, Column: "__count", AnchorTime: effectiveSeedAnchor(options.AnchorTime)}
 	stream := newSeedStream(ctx)
 	return node.Count.Min + stream.index(node.Count.Max-node.Count.Min+1)
+}
+
+func effectiveSeedAnchor(anchor time.Time) time.Time {
+	if anchor.IsZero() {
+		return DefaultSeedAnchor
+	}
+	return anchor.UTC()
+}
+
+func ParseSeedAnchor(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, errors.New("seed anchor is empty")
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid --as-of %q: expected RFC3339 timestamp with explicit offset", value)
+	}
+	return parsed.UTC(), nil
+}
+
+// SeedAnchorFlag is a repeat-aware flag.Value for --as-of. Repeating the same
+// normalized instant is harmless; conflicting anchors are rejected.
+type SeedAnchorFlag struct {
+	anchor time.Time
+	set    bool
+}
+
+func (f *SeedAnchorFlag) String() string {
+	if f == nil || !f.set {
+		return ""
+	}
+	return f.anchor.Format(time.RFC3339)
+}
+
+func (f *SeedAnchorFlag) Set(value string) error {
+	anchor, err := ParseSeedAnchor(value)
+	if err != nil {
+		return err
+	}
+	if f.set && !f.anchor.Equal(anchor) {
+		return fmt.Errorf("conflicting --as-of values %s and %s", f.anchor.Format(time.RFC3339), anchor.Format(time.RFC3339))
+	}
+	f.anchor = anchor
+	f.set = true
+	return nil
+}
+
+func (f *SeedAnchorFlag) Anchor() time.Time {
+	if f == nil || !f.set {
+		return DefaultSeedAnchor
+	}
+	return f.anchor
+}
+
+// ValidateSeedAnchorArguments validates --as-of before commands such as
+// migrate:fresh perform any database mutation.
+func ValidateSeedAnchorArguments(args []string) error {
+	var anchor SeedAnchorFlag
+	for i := 0; i < len(args); i++ {
+		argument := args[i]
+		if argument == "--as-of" {
+			if i+1 >= len(args) {
+				return errors.New("--as-of requires an RFC3339 value")
+			}
+			i++
+			if err := anchor.Set(args[i]); err != nil {
+				return err
+			}
+			continue
+		}
+		if strings.HasPrefix(argument, "--as-of=") {
+			if err := anchor.Set(strings.TrimPrefix(argument, "--as-of=")); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func resolveExecutionRelationship(child *Table, parentTable, through string) (*ForeignKey, error) {
@@ -433,6 +576,9 @@ func validateSeedRepeatPolicy(rows []SeedPlannedRow, options SeedExecutionOption
 		return fmt.Errorf("unknown seed repeat policy %q", policy)
 	}
 	for _, row := range rows {
+		if policy == Upsert && (row.Immutable || row.AppendOnly) {
+			return fmt.Errorf("upsert is unavailable for immutable or append-only table %s", row.Table)
+		}
 		uniqueBy := row.UniqueBy
 		if len(uniqueBy) == 0 {
 			uniqueBy = options.UniqueBy
@@ -462,6 +608,320 @@ func validateSeedRepeatPolicy(rows []SeedPlannedRow, options SeedExecutionOption
 		}
 	}
 	return nil
+}
+
+func deriveSeedFrameworkIdentities(rows []SeedPlannedRow, options SeedExecutionOptions) error {
+	ordinals := map[string]int{}
+	lastOrder := map[string]string{}
+	for index := range rows {
+		row := &rows[index]
+		if !row.IntegrityDerived {
+			continue
+		}
+		tableOrdinal := ordinals[row.Table]
+		ordinals[row.Table]++
+		if !row.Authored["id"] {
+			row.Values["id"] = deterministicSeedUUIDv7(options, row.Table, row.NodePath, "id", tableOrdinal)
+		}
+		if row.Immutable && !row.Authored["version_id"] {
+			row.Values["version_id"] = deterministicSeedUUIDv7(options, row.Table, row.NodePath, "version_id", tableOrdinal)
+		}
+		delete(row.Values, "row_hash")
+		delete(row.Values, "prev_hash")
+		order := fmt.Sprint(row.Values["id"])
+		if row.Immutable {
+			order += "\x00" + fmt.Sprint(row.Values["version_id"])
+		}
+		if previous := lastOrder[row.Table]; previous != "" && order <= previous {
+			return fmt.Errorf("seed table %s has non-monotonic explicit integrity identity; declare rows in id/version order", row.Table)
+		}
+		lastOrder[row.Table] = order
+	}
+	return nil
+}
+
+func deterministicSeedUUIDv7(options SeedExecutionOptions, table, path, column string, ordinal int) string {
+	identity := fmt.Sprintf("pickle-integrity-id-v1\x00%d\x00%s\x00%s\x00%s", options.RootSeed, table, path, column)
+	digest := sha256.Sum256([]byte(identity))
+	value := digest[:16]
+	ms := DefaultSeedAnchor.Add(time.Duration(ordinal) * time.Millisecond).UnixMilli()
+	for i := 5; i >= 0; i-- {
+		value[i] = byte(ms)
+		ms >>= 8
+	}
+	value[6] = (value[6] & 0x0f) | 0x70
+	value[8] = (value[8] & 0x3f) | 0x80
+	return formatSeedUUID(value)
+}
+
+func formatSeedUUID(value []byte) string {
+	if len(value) != 16 {
+		return ""
+	}
+	encoded := hex.EncodeToString(value)
+	return encoded[:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:]
+}
+
+func parseSeedUUID(value string) ([]byte, bool) {
+	compact := strings.ReplaceAll(value, "-", "")
+	if len(compact) != 32 {
+		return nil, false
+	}
+	decoded, err := hex.DecodeString(compact)
+	return decoded, err == nil
+}
+
+func lockSeedIntegrityTable(ctx context.Context, tx *sql.Tx, driver, table string) error {
+	if driver == "pgsql" || driver == "postgres" {
+		digest := sha256.Sum256([]byte("pickle-integrity-chain:" + table))
+		key := int64(binary.BigEndian.Uint64(digest[:8]))
+		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", key); err != nil {
+			return fmt.Errorf("lock integrity chain %s: %w", table, err)
+		}
+	}
+	return nil
+}
+
+type seedIntegrityTail struct {
+	Hash  []byte
+	Order string
+}
+
+func readSeedIntegrityTail(ctx context.Context, tx *sql.Tx, driver string, table *Table) (seedIntegrityTail, error) {
+	order := "id DESC"
+	selectColumns := "row_hash, id"
+	if table.IsImmutable {
+		order += ", version_id DESC"
+		selectColumns += ", version_id"
+	}
+	query := "SELECT " + selectColumns + " FROM " + seedQuoteIdentifier(driver, table.Name) + " ORDER BY " + order + " LIMIT 1"
+	var tail []byte
+	var id any
+	var version any
+	scan := []any{&tail, &id}
+	if table.IsImmutable {
+		scan = append(scan, &version)
+	}
+	err := tx.QueryRowContext(ctx, query).Scan(scan...)
+	if errors.Is(err, sql.ErrNoRows) {
+		return seedIntegrityTail{Hash: make([]byte, 32)}, nil
+	}
+	if err != nil {
+		return seedIntegrityTail{}, fmt.Errorf("read integrity chain tail for %s: %w", table.Name, err)
+	}
+	orderValue := seedComparableIdentity(id)
+	if table.IsImmutable {
+		orderValue += "\x00" + seedComparableIdentity(version)
+	}
+	return seedIntegrityTail{Hash: tail, Order: orderValue}, nil
+}
+
+func seedIntegrityOrder(row SeedPlannedRow, table *Table) string {
+	order := seedComparableIdentity(row.Values["id"])
+	if table.IsImmutable {
+		order += "\x00" + seedComparableIdentity(row.Values["version_id"])
+	}
+	return order
+}
+
+func seedComparableIdentity(value any) string {
+	switch typed := value.(type) {
+	case []byte:
+		return string(typed)
+	case [16]byte:
+		return string(typed[:])
+	default:
+		return fmt.Sprint(value)
+	}
+}
+
+func seedExistingRowMatches(ctx context.Context, tx *sql.Tx, driver string, row SeedPlannedRow) (bool, error) {
+	identity := row.UniqueBy
+	if len(identity) == 0 {
+		return false, nil
+	}
+	columns := make([]string, 0, len(row.Values))
+	for column := range row.Values {
+		if column != "row_hash" && column != "prev_hash" {
+			columns = append(columns, column)
+		}
+	}
+	sort.Strings(columns)
+	where := make([]string, len(identity))
+	args := make([]any, len(identity))
+	for i, column := range identity {
+		placeholder := "?"
+		if driver == "pgsql" || driver == "postgres" {
+			placeholder = fmt.Sprintf("$%d", i+1)
+		}
+		where[i] = seedQuoteIdentifier(driver, column) + " = " + placeholder
+		args[i] = row.Values[column]
+	}
+	query := "SELECT " + seedQuotedColumns(driver, columns) + " FROM " + seedQuoteIdentifier(driver, row.Table) + " WHERE " + strings.Join(where, " AND ") + " LIMIT 1"
+	dest := make([]any, len(columns))
+	holders := make([]any, len(columns))
+	for i := range dest {
+		dest[i] = &holders[i]
+	}
+	err := tx.QueryRowContext(ctx, query, args...).Scan(dest...)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for i, column := range columns {
+		if comparableSeedValue(holders[i]) != comparableSeedValue(row.Values[column]) {
+			return false, fmt.Errorf("existing repeat identity for %s differs at column %s", row.Table, column)
+		}
+	}
+	return true, nil
+}
+
+func comparableSeedValue(value any) string {
+	switch typed := value.(type) {
+	case []byte:
+		return string(typed)
+	case [16]byte:
+		return formatSeedUUID(typed[:])
+	case time.Time:
+		return typed.UTC().Format(time.RFC3339Nano)
+	default:
+		return fmt.Sprint(value)
+	}
+}
+
+func computeSeedRowHash(prev []byte, values map[string]any, columns []*Column) []byte {
+	h := sha256.New()
+	h.Write(prev)
+	h.Write(canonicalSeedRow(values, columns))
+	return h.Sum(nil)
+}
+
+// ComputeSeedIntegrityHash exposes the canonical seeder hash for compatibility
+// checks and tooling that validates a planned immutable or append-only row.
+func ComputeSeedIntegrityHash(prev []byte, values map[string]any, columns []*Column) []byte {
+	return computeSeedRowHash(prev, values, columns)
+}
+
+func canonicalSeedRow(values map[string]any, columns []*Column) []byte {
+	var out bytes.Buffer
+	for _, column := range columns {
+		if column.Name == "row_hash" || column.Name == "prev_hash" {
+			continue
+		}
+		out.WriteString(column.Name)
+		out.WriteByte(0)
+		value, ok := values[column.Name]
+		if !ok || value == nil {
+			out.WriteByte(0)
+			out.WriteByte(0)
+			continue
+		}
+		tag := seedIntegrityTypeTag(column.Type)
+		out.WriteByte(tag)
+		writeCanonicalSeedValue(&out, tag, value)
+		out.WriteByte(0)
+	}
+	return out.Bytes()
+}
+
+func seedIntegrityTypeTag(kind ColumnType) byte {
+	switch kind {
+	case UUID:
+		return 1
+	case String, Text:
+		return 2
+	case Integer:
+		return 3
+	case BigInteger:
+		return 4
+	case Decimal:
+		return 5
+	case Boolean:
+		return 6
+	case Timestamp:
+		return 7
+	case JSONB:
+		return 8
+	case Binary:
+		return 9
+	case Date:
+		return 10
+	case Time:
+		return 11
+	case Float:
+		return 12
+	case Double:
+		return 13
+	}
+	return 2
+}
+
+func writeCanonicalSeedValue(out *bytes.Buffer, tag byte, value any) {
+	switch tag {
+	case 1:
+		switch typed := value.(type) {
+		case [16]byte:
+			out.Write(typed[:])
+		case []byte:
+			if len(typed) == 16 {
+				out.Write(typed)
+			} else if parsed, ok := parseSeedUUID(string(typed)); ok {
+				out.Write(parsed)
+			}
+		default:
+			if parsed, ok := parseSeedUUID(fmt.Sprint(value)); ok {
+				out.Write(parsed)
+			}
+		}
+	case 2, 5:
+		out.WriteString(fmt.Sprint(value))
+	case 3, 4:
+		parsed, _ := strconv.ParseInt(fmt.Sprint(value), 10, 64)
+		var data [8]byte
+		binary.BigEndian.PutUint64(data[:], uint64(parsed))
+		out.Write(data[:])
+	case 6:
+		if parsed, _ := strconv.ParseBool(fmt.Sprint(value)); parsed {
+			out.WriteByte(1)
+		} else {
+			out.WriteByte(0)
+		}
+	case 7:
+		if parsed, ok := value.(time.Time); ok {
+			parsed = parsed.UTC().Truncate(time.Microsecond)
+			var data [8]byte
+			binary.BigEndian.PutUint64(data[:], uint64(parsed.UnixNano()))
+			out.Write(data[:])
+		}
+	case 8:
+		var raw []byte
+		switch typed := value.(type) {
+		case []byte:
+			raw = typed
+		case json.RawMessage:
+			raw = typed
+		default:
+			raw, _ = json.Marshal(value)
+		}
+		var compact bytes.Buffer
+		if json.Compact(&compact, raw) == nil {
+			out.Write(compact.Bytes())
+		}
+	case 9:
+		if raw, ok := value.([]byte); ok {
+			out.Write(raw)
+		}
+	case 10:
+		if parsed, ok := value.(time.Time); ok {
+			out.WriteString(parsed.UTC().Format("2006-01-02"))
+		}
+	case 11:
+		if parsed, ok := value.(time.Time); ok {
+			out.WriteString(parsed.UTC().Format("15:04:05"))
+		}
+	}
 }
 
 func seedQuoteIdentifier(driver, value string) string {

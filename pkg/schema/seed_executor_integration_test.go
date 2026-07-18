@@ -3,6 +3,7 @@
 package schema
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -162,5 +163,131 @@ func TestSeedExecutorSQLiteEndToEnd(t *testing.T) {
 	}
 	if generatedUserID == 0 || generatedContactUserID != generatedUserID {
 		t.Fatalf("database rows did not share generated identity: user=%d contact=%d", generatedUserID, generatedContactUserID)
+	}
+}
+
+func TestSeedExecutorSQLiteDerivesAppendOnlyIntegrityAndRepeats(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`CREATE TABLE events (id TEXT PRIMARY KEY, row_hash BLOB NOT NULL, prev_hash BLOB NOT NULL, body TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	table := &Table{Name: "events", IsAppendOnly: true, Columns: []*Column{{Name: "id", Type: UUID, IsPrimaryKey: true}, {Name: "row_hash", Type: Binary}, {Name: "prev_hash", Type: Binary}, {Name: "body", Type: String}}}
+	graph := &SeedGraph{Nodes: []SeedNode{{ID: 1, Seeder: NewRowSeederRef("EventSeeder", "events"), Count: FixedCount(2), Values: map[string]any{}, UniqueColumns: []string{"id"}}}}
+	resolver := func(_ string, ctx SeedValueContext) (any, bool, error) {
+		return map[string]any{"body": fmt.Sprintf("event-%d", ctx.RowOrdinal)}, true, nil
+	}
+	options := SeedExecutionOptions{Scenario: "Audit", RootSeed: 8675309, Environment: "test", Driver: "sqlite", Policy: InsertOrIgnore, SeederResolver: resolver}
+	executor := SeedExecutor{DB: db, Tables: []*Table{table}}
+	if _, err := executor.Run(context.Background(), graph, options); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.Query(`SELECT id,row_hash,prev_hash,body FROM events ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	prev := make([]byte, 32)
+	count := 0
+	for rows.Next() {
+		var id, body string
+		var rowHash, prevHash []byte
+		if err := rows.Scan(&id, &rowHash, &prevHash, &body); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(prevHash, prev) {
+			t.Fatalf("row %d predecessor mismatch", count)
+		}
+		expected := computeSeedRowHash(prev, map[string]any{"id": id, "body": body}, table.Columns)
+		if !bytes.Equal(rowHash, expected) {
+			t.Fatalf("row %d hash mismatch", count)
+		}
+		prev = rowHash
+		count++
+	}
+	if count != 2 {
+		t.Fatalf("rows = %d", count)
+	}
+	if _, err := executor.Run(context.Background(), graph, options); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("repeat rows = %d", count)
+	}
+}
+
+func TestSeedExecutorSQLiteImmutableVersionsAndRollback(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`CREATE TABLE documents (id TEXT NOT NULL, version_id TEXT PRIMARY KEY, row_hash BLOB NOT NULL, prev_hash BLOB NOT NULL, body TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	table := &Table{Name: "documents", IsImmutable: true, Columns: []*Column{{Name: "id", Type: UUID}, {Name: "version_id", Type: UUID, IsPrimaryKey: true}, {Name: "row_hash", Type: Binary}, {Name: "prev_hash", Type: Binary}, {Name: "body", Type: String}}}
+	graph := &SeedGraph{Nodes: []SeedNode{{ID: 1, Seeder: NewRowSeederRef("DocumentSeeder", "documents"), Count: FixedCount(2), UniqueColumns: []string{"version_id"}}}}
+	resolver := func(_ string, ctx SeedValueContext) (any, bool, error) {
+		return map[string]any{"id": "018cc251-f400-7000-8000-000000000001", "body": fmt.Sprintf("version-%d", ctx.RowOrdinal)}, true, nil
+	}
+	executor := SeedExecutor{DB: db, Tables: []*Table{table}}
+	options := SeedExecutionOptions{Scenario: "Documents", RootSeed: 42, Environment: "test", Driver: "sqlite", Policy: InsertOrIgnore, SeederResolver: resolver}
+	if _, err := executor.Run(context.Background(), graph, options); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.Query(`SELECT id,version_id,row_hash,prev_hash,body FROM documents ORDER BY id,version_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := make([]byte, 32)
+	count := 0
+	for rows.Next() {
+		var id, versionID, body string
+		var rowHash, prevHash []byte
+		if err := rows.Scan(&id, &versionID, &rowHash, &prevHash, &body); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(prevHash, prev) {
+			t.Fatalf("version %d predecessor mismatch", count)
+		}
+		expected := computeSeedRowHash(prev, map[string]any{"id": id, "version_id": versionID, "body": body}, table.Columns)
+		if !bytes.Equal(rowHash, expected) {
+			t.Fatalf("version %d hash mismatch", count)
+		}
+		prev = rowHash
+		count++
+	}
+	rows.Close()
+	if count != 2 {
+		t.Fatalf("versions = %d", count)
+	}
+
+	rollbackGraph := &SeedGraph{Nodes: []SeedNode{{ID: 1, Seeder: NewRowSeederRef("RollbackSeeder", "documents"), Count: FixedCount(2), UniqueColumns: []string{"version_id"}}}}
+	if _, err := db.Exec(`CREATE TRIGGER reject_second_version BEFORE INSERT ON documents WHEN NEW.body = 'rollback-1' BEGIN SELECT RAISE(FAIL, 'rejected'); END`); err != nil {
+		t.Fatal(err)
+	}
+	rollbackResolver := func(_ string, ctx SeedValueContext) (any, bool, error) {
+		return map[string]any{"id": "018cc251-f400-7000-8000-000000000002", "body": fmt.Sprintf("rollback-%d", ctx.RowOrdinal)}, true, nil
+	}
+	rollbackOptions := options
+	rollbackOptions.Scenario = "Rollback"
+	rollbackOptions.Policy = InsertOnly
+	rollbackOptions.SeederResolver = rollbackResolver
+	if _, err := executor.Run(context.Background(), rollbackGraph, rollbackOptions); err == nil {
+		t.Fatal("expected second insert to fail")
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM documents`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("failed scenario mutated rows: %d", count)
 	}
 }

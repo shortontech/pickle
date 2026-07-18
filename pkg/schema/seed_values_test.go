@@ -6,6 +6,46 @@ import (
 	"time"
 )
 
+func TestRelativeSeedTimeUsesExplicitAnchor(t *testing.T) {
+	anchor := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	ctx := SeedValueContext{RootSeed: 7, Scenario: "Demo", NodePath: "events/0", Column: "occurred_at", AnchorTime: anchor}
+	past, err := SeedValue(&SeedSpec{Kind: "past_time", Arguments: []string{"24h"}}, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	future, err := SeedValue(&SeedSpec{Kind: "future_time", Arguments: []string{"24h"}}, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !past.(time.Time).Before(anchor) || !future.(time.Time).After(anchor) {
+		t.Fatalf("relative values past=%s future=%s anchor=%s", past, future, anchor)
+	}
+	ctx.AnchorTime = time.Time{}
+	value, err := SeedValue(&SeedSpec{Kind: "future_time", Arguments: []string{"24h"}}, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !value.(time.Time).After(DefaultSeedAnchor) {
+		t.Fatalf("omitted anchor did not preserve fixed default: %s", value)
+	}
+}
+
+func TestSeedAnchorDoesNotChangeRandomIdentity(t *testing.T) {
+	base := SeedValueContext{RootSeed: 8675309, Scenario: "Demo", NodePath: "users/0", Column: "id"}
+	one, err := SeedValue(&SeedSpec{Kind: "uuid"}, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.AnchorTime = time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	two, err := SeedValue(&SeedSpec{Kind: "uuid"}, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one != two {
+		t.Fatalf("anchor reshuffled stable identity: %v != %v", one, two)
+	}
+}
+
 func TestSeedValueStableSubstreams(t *testing.T) {
 	ctx := SeedValueContext{RootSeed: 8675309, Scenario: "CRMSeeder", NodePath: "users", RowOrdinal: 0, Column: "first_name"}
 	spec := &SeedSpec{Kind: "first_name"}

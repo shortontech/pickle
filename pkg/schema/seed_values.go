@@ -21,6 +21,24 @@ type SeedValueContext struct {
 	RowOrdinal int
 	Column     string
 	Retry      int
+	AnchorTime time.Time
+}
+
+var DefaultSeedAnchor = time.Date(2024, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+func (c SeedValueContext) EffectiveAnchor() time.Time {
+	if c.AnchorTime.IsZero() {
+		return DefaultSeedAnchor
+	}
+	return c.AnchorTime.UTC()
+}
+
+func (c SeedValueContext) Past(distance time.Duration) time.Time {
+	return c.EffectiveAnchor().Add(-distance)
+}
+
+func (c SeedValueContext) Future(distance time.Duration) time.Time {
+	return c.EffectiveAnchor().Add(distance)
 }
 
 // SeedValue generates one application-supplied value from migration metadata.
@@ -248,7 +266,7 @@ func SeedValue(spec *SeedSpec, ctx SeedValueContext) (any, error) {
 		if err != nil || distance <= 0 {
 			return nil, fmt.Errorf("invalid time distance %q", distanceText)
 		}
-		anchor := time.Date(2024, time.January, 1, 0, 0, 0, 0, time.UTC)
+		anchor := ctx.EffectiveAnchor()
 		offset := time.Duration(r.uint64() % uint64(distance))
 		if spec.Kind == "past_time" {
 			return anchor.Add(-offset), nil
@@ -274,6 +292,12 @@ func GenerateSeedRow(table *Table, overrides map[string]any, base SeedValueConte
 func GenerateSeedRowWith(table *Table, overrides map[string]any, base SeedValueContext, resolver func(string, SeedValueContext) (any, bool, error)) (map[string]any, error) {
 	row := make(map[string]any, len(table.Columns))
 	for key, value := range overrides {
+		if (table.IsImmutable || table.IsAppendOnly) && (key == "row_hash" || key == "prev_hash") {
+			return nil, fmt.Errorf("seed %s.%s: integrity columns are framework-derived and cannot be authored", table.Name, key)
+		}
+		if table.IsImmutable && key == "version_id" {
+			return nil, fmt.Errorf("seed %s.version_id: immutable version identities are framework-derived and cannot be authored", table.Name)
+		}
 		row[key] = value
 	}
 	for _, column := range table.Columns {
@@ -351,6 +375,9 @@ func GenerateSeedRowWith(table *Table, overrides map[string]any, base SeedValueC
 	for _, column := range table.Columns {
 		value, exists := row[column.Name]
 		if !exists {
+			if (table.IsImmutable || table.IsAppendOnly) && (column.Name == "row_hash" || column.Name == "prev_hash") {
+				continue
+			}
 			if !column.IsNullable && !column.HasDefault {
 				return nil, fmt.Errorf("seed %s.%s: required column has no value source", table.Name, column.Name)
 			}

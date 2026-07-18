@@ -344,6 +344,11 @@ func generateImmutableMethods(b *bytes.Buffer, table *schema.Table, queryType, s
 
 	// Create — generates id, version_id, and hash chain
 	b.WriteString(fmt.Sprintf("func (q *%s) Create(model *%s) error {\n", queryType, structName))
+	b.WriteString("\tif q.ImmutableQueryBuilder.tx == nil {\n")
+	b.WriteString("\t\treturn TransactionOn(func() *sql.DB { if q.connection != \"\" { if conn, ok := Connections[q.connection]; ok { return conn } }; return DB }(), func(tx *Tx) error {\n")
+	b.WriteString("\t\t\tif q.policyContext != nil { if err := tx.WithPolicyContext(*q.policyContext); err != nil { return err } }\n")
+	b.WriteString(fmt.Sprintf("\t\t\treturn tx.Query%s().Create(model)\n", structName))
+	b.WriteString("\t\t})\n\t}\n")
 	b.WriteString("\tif model.ID == (uuid.UUID{}) {\n\t\tmodel.ID = uuid.Must(uuid.NewV7())\n\t}\n")
 	b.WriteString("\tmodel.VersionID = uuid.Must(uuid.NewV7())\n")
 	b.WriteString(generateChainHashBlock(table.Name, structName, true))
@@ -418,6 +423,11 @@ func generateAppendOnlyMethods(b *bytes.Buffer, table *schema.Table, queryType, 
 
 	// Create override — generates id + hash chain
 	b.WriteString(fmt.Sprintf("func (q *%s) Create(model *%s) error {\n", queryType, structName))
+	b.WriteString("\tif q.AppendOnlyQueryBuilder.tx == nil {\n")
+	b.WriteString("\t\treturn TransactionOn(func() *sql.DB { if q.connection != \"\" { if conn, ok := Connections[q.connection]; ok { return conn } }; return DB }(), func(tx *Tx) error {\n")
+	b.WriteString("\t\t\tif q.policyContext != nil { if err := tx.WithPolicyContext(*q.policyContext); err != nil { return err } }\n")
+	b.WriteString(fmt.Sprintf("\t\t\treturn tx.Query%s().Create(model)\n", structName))
+	b.WriteString("\t\t})\n\t}\n")
 	b.WriteString("\tif model.ID == (uuid.UUID{}) {\n\t\tmodel.ID = uuid.Must(uuid.NewV7())\n\t}\n")
 	b.WriteString(generateChainHashBlock(table.Name, structName, false))
 	b.WriteString("\treturn q.AppendOnlyQueryBuilder.Create(model)\n}\n\n")
@@ -1061,6 +1071,7 @@ func generateChainHashBlock(tableName, structName string, isImmutable bool) stri
 	// Fetch chain tail — wrapped in block to avoid err redeclaration in Update
 	sb.WriteString("\t// Hash chain: fetch tail and compute row_hash\n")
 	sb.WriteString("\t{\n")
+	sb.WriteString(fmt.Sprintf("\t\tif err := lockIntegrityChain(q.db(), %q); err != nil { return err }\n", tableName))
 	sb.WriteString("\t\tvar chainTailHash []byte\n")
 	if isImmutable {
 		sb.WriteString(fmt.Sprintf("\t\tchainErr := q.db().QueryRow(\"SELECT row_hash FROM %s ORDER BY id DESC, version_id DESC LIMIT 1\").Scan(&chainTailHash)\n", tableName))

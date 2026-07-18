@@ -111,6 +111,7 @@ Options:
   --seed <int64>                Use a deterministic 64-bit root seed
   --list                        List compiled root scenarios
   --dry-run                     Plan without inserting rows
+  --as-of <RFC3339>             Use an explicit deterministic time anchor
   --force                       Permit a confirmed non-development environment
   --confirm-environment <name>  Confirm the exact environment to mutate
   --project <dir>               Project directory (default: current directory)

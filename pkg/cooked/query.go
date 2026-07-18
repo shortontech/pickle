@@ -13,6 +13,10 @@ import (
 // DB is the package-level database connection. Set during app initialization.
 var DB *sql.DB
 
+// DatabaseDriver identifies the configured database/sql driver for generated
+// behavior that has driver-specific transactional semantics.
+var DatabaseDriver string
+
 // Connections holds named database connections for multi-connection support.
 // Keyed by connection name from config/database.go.
 // Deprecated: Use ManagedConnections and WrapConnection for hot-reloadable connections.

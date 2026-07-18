@@ -118,6 +118,15 @@ explicit `Update(...)` allowlist. Pickle never guesses a conflict identity.
 or `time.Now()`, bypassing the deterministic root-seed substreams. Generate
 values through migration field providers or the supplied seed context instead.
 
+### seeder_integrity_override
+
+**Severity:** error
+
+**What it catches:** Seeder source that authors `row_hash` or `prev_hash`.
+These values are framework-derived for immutable and append-only tables.
+Remove them from scenario overrides and row-seeder returns; Pickle derives the
+chain inside the seed transaction.
+
 ### ownership_scoping
 
 **Severity:** error

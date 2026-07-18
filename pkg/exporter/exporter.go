@@ -7667,8 +7667,11 @@ type migrateFreshCommand struct{}
 func (c migrateFreshCommand) Name() string { return "migrate:fresh" }
 func (c migrateFreshCommand) Description() string { return "Drop all tables and re-run all migrations" }
 func (c migrateFreshCommand) Run(args []string) error {
-	runner := migrations.NewRunner(models.DB, config.Database.Connection().Driver)
 `)
+	if hasSeeders {
+		b.WriteString("\tseed := false\n\tseedArgs := make([]string, 0, len(args))\n\tfor _, argument := range args { if argument == \"--seed\" { seed = true; continue }; seedArgs = append(seedArgs, argument) }\n\tif seed { if err := migrations.ValidateSeedAnchorArguments(seedArgs); err != nil { return err } }\n")
+	}
+	b.WriteString("\trunner := migrations.NewRunner(models.DB, config.Database.Connection().Driver)\n")
 	if hasPolicies {
 		b.WriteString("\tif err := policies.Fresh(models.DB, config.Database.Connection().Driver); err != nil {\n\t\treturn err\n\t}\n")
 	}
@@ -7680,7 +7683,7 @@ func (c migrateFreshCommand) Run(args []string) error {
 		b.WriteString("\tif err := policies.Migrate(models.DB, config.Database.Connection().Driver); err != nil { return err }\n")
 	}
 	if hasSeeders {
-		b.WriteString("\tseed := false\n\tseedArgs := make([]string, 0, len(args))\n\tfor _, argument := range args { if argument == \"--seed\" { seed = true; continue }; seedArgs = append(seedArgs, argument) }\n\tif seed { return dbSeedCommand{}.Run(seedArgs) }\n")
+		b.WriteString("\tif seed { return dbSeedCommand{}.Run(seedArgs) }\n")
 	}
 	b.WriteString("\treturn nil\n")
 	b.WriteString(`
@@ -7840,6 +7843,8 @@ func (c dbSeedCommand) Run(args []string) error {
 	rootSeed := flags.Int64("seed", 0, "deterministic 64-bit root seed")
 	list := flags.Bool("list", false, "list root scenarios")
 	dryRun := flags.Bool("dry-run", false, "plan without inserting")
+	var asOf migrations.SeedAnchorFlag
+	flags.Var(&asOf, "as-of", "explicit deterministic RFC3339 time anchor")
 	force := flags.Bool("force", false, "permit a confirmed non-development environment")
 	confirmEnvironment := flags.String("confirm-environment", "", "exact environment mutation confirmation")
 	var flagArgs, scenarioArgs []string
@@ -7847,7 +7852,7 @@ func (c dbSeedCommand) Run(args []string) error {
 		argument := args[i]
 		if !strings.HasPrefix(argument, "-") { scenarioArgs = append(scenarioArgs, argument); continue }
 		flagArgs = append(flagArgs, argument)
-		if (argument == "--seed" || argument == "--confirm-environment") && i+1 < len(args) { i++; flagArgs = append(flagArgs, args[i]) }
+		if (argument == "--seed" || argument == "--as-of" || argument == "--confirm-environment") && i+1 < len(args) { i++; flagArgs = append(flagArgs, args[i]) }
 	}
 	if err := flags.Parse(flagArgs); err != nil { return err }
 	names := seeders.Names()
@@ -7856,12 +7861,14 @@ func (c dbSeedCommand) Run(args []string) error {
 	scenario := names[0]
 	if len(scenarioArgs) > 1 { return fmt.Errorf("db:seed accepts at most one scenario name") }
 	if len(scenarioArgs) == 1 { scenario = scenarioArgs[0] }
+	anchor := asOf.Anchor()
 	if *rootSeed == 0 {
 		var raw [8]byte
 		if _, err := rand.Read(raw[:]); err != nil { return fmt.Errorf("generate root seed: %w", err) }
 		*rootSeed = int64(binary.BigEndian.Uint64(raw[:]))
 	}
 	fmt.Printf("Seed: %d\n", *rootSeed)
+	fmt.Printf("As of: %s\n", anchor.UTC().Format(time.RFC3339))
 	definition, err := seeders.Resolve(scenario)
 	if err != nil { return err }
 	if models.DB == nil { return fmt.Errorf("database is not initialized") }
@@ -7871,10 +7878,11 @@ func (c dbSeedCommand) Run(args []string) error {
 	result, err := executor.Run(context.Background(), definition.Graph, migrations.SeedExecutionOptions{
 		Scenario: scenario, RootSeed: *rootSeed, Environment: config.App.Env, Force: *force,
 		ConfirmEnvironment: *confirmEnvironment, DryRun: *dryRun, Driver: config.Database.Connection().Driver,
-		Policy: definition.Policy, SeederResolver: seeders.ResolveValue,
+		Policy: definition.Policy, SeederResolver: seeders.ResolveValue, AnchorTime: anchor,
 		PasswordHasher: func(value string) (string, error) { hash, err := bcrypt.GenerateFromPassword([]byte(value), bcrypt.DefaultCost); return string(hash), err },
 	})
 	if err != nil { return err }
+	if result.DryRun { for _, row := range result.Rows { if row.IntegrityDerived { fmt.Println("Integrity: framework-derived; live chain head is resolved only during execution"); break } } }
 	if result.DryRun { fmt.Printf("Plan: %s (%d rows)\n", result.Scenario, len(result.Rows)) } else { fmt.Printf("Seeded: %s (%d rows)\n", result.Scenario, len(result.Rows)) }
 	return nil
 }
@@ -8976,6 +8984,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9012,6 +9021,11 @@ type ChainError struct {
 	Actual []byte
 }
 
+type integrityColumn struct {
+	Name string
+	TypeTag byte
+}
+
 func (e *ChainError) Error() string {
 	return fmt.Sprintf("chain integrity error on %s at position %d: expected %x but found %x", e.Table, e.Position, e.Expected, e.Actual)
 }
@@ -9026,10 +9040,10 @@ func (e *ChainError) Error() string {
 		verifyOrder := "id ASC"
 		latestOrder := "id DESC"
 		if table.IsImmutable {
-			verifyOrder = "version_id ASC"
-			latestOrder = "version_id DESC"
+			verifyOrder = "id ASC, version_id ASC"
+			latestOrder = "id DESC, version_id DESC"
 		}
-		fmt.Fprintf(&b, "var %sIntegrityColumns = []string{%s}\n\n", model, quotedStringList(columns))
+		fmt.Fprintf(&b, "var %sIntegrityColumns = []integrityColumn{%s}\n\n", model, integrityColumnLiteral(table, columns))
 		fmt.Fprintf(&b, "func Create%s(record *%s) error {\n", model, model)
 		fmt.Fprintf(&b, "\treturn createIntegrityRecord(DB, %q, record, %t, %q, %sIntegrityColumns)\n", table.Name, table.IsImmutable, latestOrder, model)
 		b.WriteString("}\n\n")
@@ -9066,6 +9080,48 @@ func integrityColumnList(table *schema.Table) []string {
 		out = append(out, col.Name)
 	}
 	return out
+}
+
+func integrityColumnLiteral(table *schema.Table, columns []string) string {
+	byName := make(map[string]*schema.Column, len(table.Columns))
+	for _, column := range table.Columns {
+		byName[column.Name] = column
+	}
+	parts := make([]string, 0, len(columns))
+	for _, name := range columns {
+		column := byName[name]
+		tag := byte(2)
+		if column != nil {
+			switch column.Type {
+			case schema.UUID:
+				tag = 1
+			case schema.Integer:
+				tag = 3
+			case schema.BigInteger:
+				tag = 4
+			case schema.Decimal:
+				tag = 5
+			case schema.Boolean:
+				tag = 6
+			case schema.Timestamp:
+				tag = 7
+			case schema.JSONB:
+				tag = 8
+			case schema.Binary:
+				tag = 9
+			case schema.Date:
+				tag = 10
+			case schema.Time:
+				tag = 11
+			case schema.Float:
+				tag = 12
+			case schema.Double:
+				tag = 13
+			}
+		}
+		parts = append(parts, fmt.Sprintf("{Name: %q, TypeTag: %d}", name, tag))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func quotedStringList(values []string) string {
@@ -11703,71 +11759,105 @@ func integrityDatabaseError() error {
 	return errors.New("integrity database error")
 }
 
-func createIntegrityRecord(db *gorm.DB, table string, record any, immutable bool, order string, columns []string) error {
+func createIntegrityRecord(db *gorm.DB, table string, record any, immutable bool, order string, columns []integrityColumn) error {
 	if db == nil {
 		return integrityDatabaseError()
 	}
-	if err := ensureUUIDField(record, "ID"); err != nil {
-		return err
+	callbackStarted := false
+	err := db.Transaction(func(tx *gorm.DB) error {
+		callbackStarted = true
+		if err := lockIntegrityChain(tx, table); err != nil {
+			return err
+		}
+		if err := ensureUUIDField(record, "ID"); err != nil {
+			return err
+		}
+		if immutable {
+			if err := setUUIDField(record, "VersionID", newUUIDV7()); err != nil {
+				return err
+			}
+		}
+		prev, err := latestIntegrityHash(tx, table, order)
+		if err != nil {
+			return err
+		}
+		if err := setBytesField(record, "PrevHash", prev); err != nil {
+			return err
+		}
+		rowHash := computeIntegrityHash(prev, record, columns)
+		if err := setBytesField(record, "RowHash", rowHash); err != nil {
+			return err
+		}
+		if err := tx.Create(record).Error; err != nil {
+			return integrityDatabaseError()
+		}
+		return nil
+	})
+	if err != nil && !callbackStarted {
+		return integrityDatabaseError()
 	}
-	if immutable {
+	return err
+}
+
+func updateImmutableRecord(db *gorm.DB, table string, record any, order string, columns []integrityColumn) error {
+	if db == nil {
+		return integrityDatabaseError()
+	}
+	callbackStarted := false
+	err := db.Transaction(func(tx *gorm.DB) error {
+		callbackStarted = true
+		if err := lockIntegrityChain(tx, table); err != nil {
+			return err
+		}
+		id, err := getUUIDField(record, "ID")
+		if err != nil {
+			return err
+		}
+		versionID, err := getUUIDField(record, "VersionID")
+		if err != nil {
+			return err
+		}
+		var latest struct {
+		VersionID uuid.UUID ` + "`" + `gorm:"column:version_id"` + "`" + `
+		RowHash []byte ` + "`" + `gorm:"column:row_hash"` + "`" + `
+		}
+		if err := tx.Table(table).Select("version_id, row_hash").Where("id = ?", id).Order("version_id DESC").Limit(1).Scan(&latest).Error; err != nil {
+			return integrityDatabaseError()
+		}
+		if latest.VersionID == uuid.Nil {
+			return fmt.Errorf("no current version found for %s id=%s", table, id)
+		}
+		if latest.VersionID != versionID {
+			return &StaleVersionError{Table: table, EntityID: id.String(), ExpectedVersion: latest.VersionID.String(), ActualVersion: versionID.String()}
+		}
+		if err := setBytesField(record, "PrevHash", latest.RowHash); err != nil {
+			return err
+		}
 		if err := setUUIDField(record, "VersionID", newUUIDV7()); err != nil {
 			return err
 		}
-	}
-	prev, err := latestIntegrityHash(db, table, order)
-	if err != nil {
-		return err
-	}
-	if err := setBytesField(record, "PrevHash", prev); err != nil {
-		return err
-	}
-	rowHash := computeIntegrityHash(prev, record, columns)
-	if err := setBytesField(record, "RowHash", rowHash); err != nil {
-		return err
-	}
-	if err := db.Create(record).Error; err != nil {
+		rowHash := computeIntegrityHash(latest.RowHash, record, columns)
+		if err := setBytesField(record, "RowHash", rowHash); err != nil {
+			return err
+		}
+		if err := tx.Create(record).Error; err != nil {
+			return integrityDatabaseError()
+		}
+		return nil
+	})
+	if err != nil && !callbackStarted {
 		return integrityDatabaseError()
 	}
-	return nil
+	return err
 }
 
-func updateImmutableRecord(db *gorm.DB, table string, record any, order string, columns []string) error {
-	if db == nil {
-		return integrityDatabaseError()
+func lockIntegrityChain(db *gorm.DB, table string) error {
+	if dbDriver != "postgres" && dbDriver != "pgsql" {
+		return nil
 	}
-	id, err := getUUIDField(record, "ID")
-	if err != nil {
-		return err
-	}
-	versionID, err := getUUIDField(record, "VersionID")
-	if err != nil {
-		return err
-	}
-	var latest struct {
-		VersionID uuid.UUID ` + "`" + `gorm:"column:version_id"` + "`" + `
-		RowHash []byte ` + "`" + `gorm:"column:row_hash"` + "`" + `
-	}
-	if err := db.Table(table).Select("version_id, row_hash").Where("id = ?", id).Order("version_id DESC").Limit(1).Scan(&latest).Error; err != nil {
-		return integrityDatabaseError()
-	}
-	if latest.VersionID == uuid.Nil {
-		return fmt.Errorf("no current version found for %s id=%s", table, id)
-	}
-	if latest.VersionID != versionID {
-		return &StaleVersionError{Table: table, EntityID: id.String(), ExpectedVersion: latest.VersionID.String(), ActualVersion: versionID.String()}
-	}
-	if err := setBytesField(record, "PrevHash", latest.RowHash); err != nil {
-		return err
-	}
-	if err := setUUIDField(record, "VersionID", newUUIDV7()); err != nil {
-		return err
-	}
-	rowHash := computeIntegrityHash(latest.RowHash, record, columns)
-	if err := setBytesField(record, "RowHash", rowHash); err != nil {
-		return err
-	}
-	if err := db.Create(record).Error; err != nil {
+	digest := sha256.Sum256([]byte("pickle-integrity-chain:" + table))
+	key := int64(binary.BigEndian.Uint64(digest[:8]))
+	if err := db.Exec("SELECT pg_advisory_xact_lock(?)", key).Error; err != nil {
 		return integrityDatabaseError()
 	}
 	return nil
@@ -11784,7 +11874,7 @@ func latestIntegrityHash(db *gorm.DB, table, order string) ([]byte, error) {
 	return append([]byte(nil), row.RowHash...), nil
 }
 
-func verifyIntegrityRow(table string, record any, columns []string) error {
+func verifyIntegrityRow(table string, record any, columns []integrityColumn) error {
 	prev, err := getBytesField(record, "PrevHash")
 	if err != nil {
 		return err
@@ -11800,7 +11890,7 @@ func verifyIntegrityRow(table string, record any, columns []string) error {
 	return nil
 }
 
-func verifyIntegrityRecords[T any](table string, records []T, columns []string) error {
+func verifyIntegrityRecords[T any](table string, records []T, columns []integrityColumn) error {
 	prev := append([]byte(nil), genesisHash...)
 	for i := range records {
 		record := &records[i]
@@ -11824,14 +11914,14 @@ func verifyIntegrityRecords[T any](table string, records []T, columns []string) 
 	return nil
 }
 
-func computeIntegrityHash(prevHash []byte, record any, columns []string) []byte {
+func computeIntegrityHash(prevHash []byte, record any, columns []integrityColumn) []byte {
 	h := sha256.New()
 	h.Write(prevHash)
 	h.Write(canonicalIntegrityBytes(record, columns))
 	return h.Sum(nil)
 }
 
-func canonicalIntegrityBytes(record any, columns []string) []byte {
+func canonicalIntegrityBytes(record any, columns []integrityColumn) []byte {
 	rv := reflect.ValueOf(record)
 	if rv.Kind() == reflect.Ptr {
 		rv = rv.Elem()
@@ -11847,29 +11937,59 @@ func canonicalIntegrityBytes(record any, columns []string) []byte {
 	}
 	var out []byte
 	for _, column := range columns {
-		out = append(out, []byte(column)...)
+		out = append(out, []byte(column.Name)...)
 		out = append(out, 0)
-		field, ok := fieldByColumn[column]
+		field, ok := fieldByColumn[column.Name]
 		if !ok || (field.Kind() == reflect.Ptr && field.IsNil()) {
-			out = append(out, []byte("null")...)
+			out = append(out, 0)
 			out = append(out, 0)
 			continue
 		}
 		if field.Kind() == reflect.Ptr {
 			field = field.Elem()
 		}
-		value := field.Interface()
-		if timestamp, ok := value.(time.Time); ok {
-			value = timestamp.UTC().Truncate(time.Microsecond)
-		}
-		data, err := json.Marshal(value)
-		if err != nil {
-			data = []byte(fmt.Sprint(value))
-		}
-		out = append(out, data...)
+		out = append(out, column.TypeTag)
+		var data bytes.Buffer
+		writeCanonicalIntegrityValue(&data, column.TypeTag, field)
+		out = append(out, data.Bytes()...)
 		out = append(out, 0)
 	}
 	return out
+}
+
+func writeCanonicalIntegrityValue(out *bytes.Buffer, tag byte, field reflect.Value) {
+	switch tag {
+	case 1:
+		if field.Kind() == reflect.Array && field.Len() == 16 {
+			for i := 0; i < 16; i++ { out.WriteByte(byte(field.Index(i).Uint())) }
+		}
+	case 2:
+		out.WriteString(field.String())
+	case 3, 4:
+		var data [8]byte
+		binary.BigEndian.PutUint64(data[:], uint64(field.Int()))
+		out.Write(data[:])
+	case 5:
+		if stringer, ok := field.Interface().(fmt.Stringer); ok { out.WriteString(stringer.String()) }
+	case 6:
+		if field.Bool() { out.WriteByte(1) } else { out.WriteByte(0) }
+	case 7:
+		if timestamp, ok := field.Interface().(time.Time); ok {
+			var data [8]byte
+			binary.BigEndian.PutUint64(data[:], uint64(timestamp.UTC().Truncate(time.Microsecond).UnixNano()))
+			out.Write(data[:])
+		}
+	case 8:
+		var raw []byte
+		switch value := field.Interface().(type) { case json.RawMessage: raw = value; case []byte: raw = value }
+		if raw != nil { var compact bytes.Buffer; if json.Compact(&compact, raw) == nil { out.Write(compact.Bytes()) } else { out.Write(raw) } }
+	case 9:
+		if raw, ok := field.Interface().([]byte); ok { out.Write(raw) }
+	case 10:
+		if value, ok := field.Interface().(time.Time); ok { out.WriteString(value.UTC().Format("2006-01-02")) }
+	case 11:
+		if value, ok := field.Interface().(time.Time); ok { out.WriteString(value.UTC().Format("15:04:05")) }
+	}
 }
 
 func gormColumnName(field reflect.StructField) string {

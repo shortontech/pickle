@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/shortontech/pickle/pkg/schema"
 )
 
 // testIntegrityModel simulates a generated model with db tags.
@@ -18,6 +20,27 @@ type testIntegrityModel struct {
 	Amount   int64     `db:"amount"`
 	Active   bool      `db:"active"`
 	Created  time.Time `db:"created_at"`
+}
+
+func TestSeederHashMatchesQueryBuilderHash(t *testing.T) {
+	created := time.Date(2026, time.July, 18, 12, 34, 56, 123456000, time.FixedZone("test", -7*60*60))
+	id := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	model := &testIntegrityModel{ID: id, Name: "seeded", Amount: 42, Active: true, Created: created}
+	queryHash := computeRowHash(GenesisHash, model, testColumns)
+	seedHash := schema.ComputeSeedIntegrityHash(GenesisHash, map[string]any{
+		"id": id, "name": "seeded", "amount": int64(42), "active": true, "created_at": created,
+	}, []*schema.Column{
+		{Name: "id", Type: schema.UUID},
+		{Name: "row_hash", Type: schema.Binary},
+		{Name: "prev_hash", Type: schema.Binary},
+		{Name: "name", Type: schema.String},
+		{Name: "amount", Type: schema.Integer},
+		{Name: "active", Type: schema.Boolean},
+		{Name: "created_at", Type: schema.Timestamp},
+	})
+	if !bytes.Equal(queryHash, seedHash) {
+		t.Fatalf("seeder hash %x != query builder hash %x", seedHash, queryHash)
+	}
 }
 
 var testColumns = []ColumnMeta{

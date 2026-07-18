@@ -82,3 +82,28 @@ func TestGenerateBasicCrudScopes(t *testing.T) {
 		t.Logf("generated %s_query.go (%d bytes)", tbl.Name, len(out))
 	}
 }
+
+func TestGenerateScopesDisambiguatesRepeatedForeignKeyTargets(t *testing.T) {
+	tbl := &schema.Table{Name: "resource_links", Columns: []*schema.Column{
+		{Name: "resource_type_code", ForeignKeyTable: "resource_type_registry", ForeignKeyColumn: "code"},
+		{Name: "reference_resource_type_code", ForeignKeyTable: "resource_type_registry", ForeignKeyColumn: "code"},
+	}}
+	scopesPath := filepath.Join("..", "..", "pkg", "cooked", "scopes.go")
+	blocks, err := tickle.ParseScopeBlocks(scopesPath)
+	if err != nil {
+		t.Fatalf("parsing scope blocks: %v", err)
+	}
+	out, err := GenerateQueryScopes(tbl, blocks, "models")
+	if err != nil {
+		t.Fatalf("GenerateQueryScopes: %v", err)
+	}
+	src := string(out)
+	for _, method := range []string{"WithResourceTypeCode()", "WithReferenceResourceTypeCode()"} {
+		if strings.Count(src, method) != 1 {
+			t.Errorf("expected one %s method, generated:\n%s", method, src)
+		}
+	}
+	if strings.Contains(src, "WithResourceTypeRegistry()") {
+		t.Errorf("repeated FK target retained ambiguous method name:\n%s", src)
+	}
+}

@@ -260,16 +260,48 @@ func TestAppendWhereMultipleConditions(t *testing.T) {
 func TestWhereInNotIn(t *testing.T) {
 	q := Query[testModel]("users")
 	q.whereIn("id", []string{"1", "2", "3"})
-	sql, _ := q.buildSelect()
-	if !strings.Contains(sql, "id IN $1") {
-		t.Errorf("whereIn = %q, want id IN $1", sql)
+	sql, args := q.buildSelect()
+	if !strings.Contains(sql, "id IN ($1, $2, $3)") {
+		t.Errorf("whereIn = %q, want expanded placeholders", sql)
+	}
+	if len(args) != 3 || args[0] != "1" || args[2] != "3" {
+		t.Errorf("whereIn args = %#v, want flattened values", args)
 	}
 
 	q2 := Query[testModel]("users")
 	q2.whereNotIn("id", []string{"1"})
 	sql2, _ := q2.buildSelect()
-	if !strings.Contains(sql2, "id NOT IN $1") {
-		t.Errorf("whereNotIn = %q, want id NOT IN $1", sql2)
+	if !strings.Contains(sql2, "id NOT IN ($1)") {
+		t.Errorf("whereNotIn = %q, want id NOT IN ($1)", sql2)
+	}
+}
+
+func TestWhereInEmptySliceUsesBooleanCondition(t *testing.T) {
+	q := Query[testModel]("users").whereIn("id", []string{})
+	sql, args := q.buildSelect()
+	if !strings.Contains(sql, "WHERE FALSE") || len(args) != 0 {
+		t.Fatalf("empty IN = %q %#v, want WHERE FALSE with no args", sql, args)
+	}
+
+	q = Query[testModel]("users").whereNotIn("id", []string{})
+	sql, args = q.buildSelect()
+	if !strings.Contains(sql, "WHERE TRUE") || len(args) != 0 {
+		t.Fatalf("empty NOT IN = %q %#v, want WHERE TRUE with no args", sql, args)
+	}
+}
+
+func TestWhereInExpandsAfterExistingPolicyArguments(t *testing.T) {
+	q := Query[testModel]("resources")
+	q.policyClause = "tenant_id = ? AND kind = ?"
+	q.policyArgs = []any{"tenant-1", "document"}
+	q.whereIn("resource_local_id", []int64{7, 11})
+
+	sql, args := q.buildSelect()
+	if !strings.Contains(sql, "resource_local_id IN ($3, $4)") {
+		t.Fatalf("policy-scoped IN = %q, want placeholders after policy args", sql)
+	}
+	if len(args) != 4 || args[2] != int64(7) || args[3] != int64(11) {
+		t.Fatalf("policy-scoped IN args = %#v, want flattened values after policy args", args)
 	}
 }
 

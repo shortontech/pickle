@@ -574,10 +574,42 @@ func (q *QueryBuilder[T]) appendWhere(b *strings.Builder) []any {
 		if i > 0 || q.policyClause != "" {
 			b.WriteString(" AND ")
 		}
-		b.WriteString(fmt.Sprintf("%s %s $%d", c.column, c.op, len(args)+1))
-		args = append(args, c.value)
+		appendCondition(b, &args, c)
 	}
 	return args
+}
+
+func appendCondition(b *strings.Builder, args *[]any, c condition) {
+	if c.op != "IN" && c.op != "NOT IN" {
+		b.WriteString(fmt.Sprintf("%s %s $%d", c.column, c.op, len(*args)+1))
+		*args = append(*args, c.value)
+		return
+	}
+
+	values := reflect.ValueOf(c.value)
+	if values.Kind() != reflect.Slice && values.Kind() != reflect.Array {
+		b.WriteString(fmt.Sprintf("%s %s ($%d)", c.column, c.op, len(*args)+1))
+		*args = append(*args, c.value)
+		return
+	}
+	if values.Len() == 0 {
+		if c.op == "IN" {
+			b.WriteString("FALSE")
+		} else {
+			b.WriteString("TRUE")
+		}
+		return
+	}
+
+	b.WriteString(c.column + " " + c.op + " (")
+	for i := 0; i < values.Len(); i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(fmt.Sprintf("$%d", len(*args)+1))
+		*args = append(*args, values.Index(i).Interface())
+	}
+	b.WriteString(")")
 }
 
 // dbColumns returns the db-tagged column names from a struct in field order.
@@ -731,8 +763,7 @@ func buildUpdate[T any](table string, record *T, conditions []condition, policyC
 			if i > 0 || policyClause != "" {
 				b.WriteString(" AND ")
 			}
-			b.WriteString(fmt.Sprintf("%s %s $%d", c.column, c.op, len(args)+1))
-			args = append(args, c.value)
+			appendCondition(&b, &args, c)
 		}
 	} else if idVal != nil {
 		b.WriteString(fmt.Sprintf(" WHERE id = $%d", len(args)+1))

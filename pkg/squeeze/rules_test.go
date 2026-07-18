@@ -523,6 +523,19 @@ func Handler() {
 	}
 }
 
+func TestRuleRawSQL_IgnoresRequestURLQuery(t *testing.T) {
+	src := `package controllers
+func Handler() {
+	values := request.URL.Query()
+	_ = values
+}`
+	m := method(t, src)
+	ctx := &AnalysisContext{Methods: map[string]*ControllerMethod{"C.Handler": m}}
+	if findings := ruleRawSQL(ctx); len(findings) != 0 {
+		t.Errorf("expected 0 findings for request.URL.Query(), got %d: %+v", len(findings), findings)
+	}
+}
+
 func TestRuleRawSQL_FlagsRealRawSQL(t *testing.T) {
 	// Genuine raw SQL on a DB/tx handle — and on a handle obtained from ctx.DB()
 	// (receiver is ctx.DB(), a CallExpr, not the bare ctx ident) — must still fire.
@@ -796,6 +809,15 @@ func TestRuleSensitiveFieldEncryption_EmailNotSensitive(t *testing.T) {
 	}
 	if findings := ruleSensitiveFieldEncryption(ctx); len(findings) != 0 {
 		t.Errorf("expected 0 findings for plaintext email, got %d", len(findings))
+	}
+}
+
+func TestRuleSensitiveFieldEncryption_StableKeyNotSensitive(t *testing.T) {
+	if isSensitiveColumn("stable_key") {
+		t.Error("stable_key is a durable lookup identifier, not secret key material")
+	}
+	if !isSensitiveColumn("api_key") {
+		t.Error("api_key must remain classified as sensitive")
 	}
 }
 

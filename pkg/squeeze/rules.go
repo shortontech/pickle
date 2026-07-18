@@ -310,9 +310,15 @@ var alreadyHashedColumns = map[string]bool{
 	"prev_hash":     true,
 }
 
+// nonSensitiveKeyColumns are identifiers whose names describe stable lookup
+// keys rather than secret key material.
+var nonSensitiveKeyColumns = map[string]bool{
+	"stable_key": true,
+}
+
 // isSensitiveColumn returns true if the column name matches a known sensitive pattern.
 func isSensitiveColumn(name string) bool {
-	if alreadyHashedColumns[name] {
+	if alreadyHashedColumns[name] || nonSensitiveKeyColumns[name] {
 		return false
 	}
 	if sensitiveExactNames[name] {
@@ -1672,6 +1678,13 @@ func ruleRawSQL(ctx *AnalysisContext) []Finding {
 			// query obtains a DB/tx handle first (db.Query, tx.Exec, ctx.DB().Query),
 			// where sel.X is not the bare `ctx` ident.
 			if recv, ok := sel.X.(*ast.Ident); ok && recv.Name == "ctx" {
+				return true
+			}
+			// net/url.URL.Query takes no arguments and returns url.Values. Recognize
+			// the standard request.URL.Query() shape without exempting arbitrary
+			// zero-argument Query methods.
+			if urlSelector, ok := sel.X.(*ast.SelectorExpr); ok &&
+				sel.Sel.Name == "Query" && urlSelector.Sel.Name == "URL" && len(call.Args) == 0 {
 				return true
 			}
 			msg := "raw SQL via " + sel.Sel.Name + "() — use the generated query builder instead"

@@ -22,6 +22,7 @@ func TestAppendOnlyQueryStructurallyExcludesMutableBuilder(t *testing.T) {
 	}
 	got := string(src)
 	for _, want := range []string{
+		`"database/sql"`,
 		"*AppendOnlyQueryBuilder[InventoryMovement]",
 		"AppendOnlyQuery[InventoryMovement](\"inventory_movements\")",
 		"q.AppendOnlyQueryBuilder.Create(model)",

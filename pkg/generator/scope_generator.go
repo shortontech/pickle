@@ -597,9 +597,10 @@ func collectScopeImports(table *schema.Table, blocks []tickle.ScopeBlock) []stri
 		}
 	}
 
-	// Append-only tables need uuid for Create override
+	// Append-only tables need uuid and database/sql for the transactional Create override.
 	if table.IsAppendOnly {
 		imports["github.com/google/uuid"] = true
+		imports["database/sql"] = true
 	}
 
 	// Only need strconv if there are numeric or boolean columns
